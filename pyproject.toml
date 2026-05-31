@@ -9,5 +9,6 @@ dependencies = [
     "lightgbm>=4.6.0",
     "pandas>=3.0.3",
     "polars>=1.41.2",
+    "python-dotenv>=1.2.2",
     "scikit-learn>=1.8.0",
 ]

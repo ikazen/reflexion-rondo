@@ -14,9 +14,11 @@
 - 결정: 성찰은 CV 델타 기준, LB는 희소 확인.
 - 근거: CV는 무제한·결정적. "trust your CV" 정석.
 
-## ADR-004 — 추론 역할은 Ollama Cloud, 나머지는 로컬
-- 결정: Strategist/Coder/Reflector만 클라우드. 오케스트레이션·저장소·임베딩·CV·dbt는 로컬.
-- 근거: 로컬 부담 제거 + 드롭인. v1의 "Cloud A/B" 추상은 조기 분산화로 판단해 제거.
+## ADR-004 — 추론은 Mac Ollama 서버, 프로덕션 전환 시 Ollama Cloud
+- 결정: 맥북(M1 Pro 32GB)을 Ollama 서버로 운영. Strategist/Reflector(`qwen3.5:14b`) + Coder(`devstral-small-2`) + 임베딩(`qwen3-embedding:8b`)을 Mac에서 실행. 오케스트레이션·저장소·CV·dbt는 WSL2 로컬.
+- 엔드포인트: `OLLAMA_BASE_URL=http://<mac-ip>:11434` (`.env`). 모델명도 `.env`에서 관리해 Cloud 전환 시 한 줄 교체.
+- 프로덕션 전환 트리거: 로컬 모델 품질 한계 체감 시 → `OLLAMA_BASE_URL=https://ollama.com` + Cloud Pro 모델(deepseek-v4-pro / glm-5 / qwen3-coder-next)으로 교체. 코드 변경 없음.
+- 근거: M1 Pro 32GB에서 14b~24b 모델이 충분히 돌아가므로 Cloud 비용 없이 Phase 2~3 전체 테스트 가능. ADR-016 패밀리 다양성(Strategist≠Reflector)은 프로덕션 전환 시 자동으로 확보됨.
 
 ## ADR-005 — Evaluator는 결정적 코드
 - 결정: 채점은 코드로만. LLM-as-judge 금지.
