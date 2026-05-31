@@ -35,8 +35,6 @@ def feature_fn(
     valid: pl.DataFrame,
     target: str,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    drop = [c for c in DROP_COLS if c in train.columns]
-
     # label-encode categoricals using train 맵 (누수 방지)
     cat_maps: dict[str, dict] = {}
     for c in CAT_COLS:
@@ -45,6 +43,7 @@ def feature_fn(
             cat_maps[c] = {v: i for i, v in enumerate(sorted(str(v) for v in vals))}
 
     def prep(df: pl.DataFrame, maps: dict) -> pl.DataFrame:
+        drop = [c for c in DROP_COLS if c in df.columns]
         df = df.drop(drop)
         for c, m in maps.items():
             if c in df.columns:
