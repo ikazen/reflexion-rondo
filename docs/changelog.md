@@ -1,5 +1,12 @@
 # 변경 이력
 
+## DuckDB 단일 스토어로 통합 (2026-05-31)
+- ADR-007 개정: 별도 벡터DB(Chroma) + dual-write 폐기. DuckDB 하나가 기록·검색·분석을 모두 담당.
+- 임베딩은 `reflections.embedding`(`float[768]`) 컬럼에 저장, 검색은 `array_cosine_similarity` 브루트포스 + 메타필터.
+- 근거: 누적 1만~수만 벡터 규모에선 브루트포스가 수십 ms로 충분 → ANN 인덱스는 조기 최적화. dual-write 정합성 부담 제거 + zero-server(ADR-011) 유지.
+- 승격 트리거: 수십만 건 초과 시 DuckDB `vss`(HNSW) 인덱스 추가.
+- 영향: `memory/vector_store.py` → `memory/retriever.py`, setup의 Chroma 초기화 제거.
+
 ## 설계 문서 구조화 (2026-05-31)
 - `init.md`(v2 설계서)를 표준 문서 구조로 분산: README, architecture, decisions, spec, tasks, setup, runbook. `init.md` 제거.
 - 결정 추가:

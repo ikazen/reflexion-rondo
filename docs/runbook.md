@@ -33,8 +33,8 @@
 
 ## 6. 관측·디버깅
 
-- 벡터DB에 document 동봉 → 검색 결과를 사람이 직접 읽음 (`collection.get()` 덤프).
-- DuckDB 미러로 SQL 디버깅.
+- `reflections.embedded_text`/`full_lesson`을 함께 저장 → 검색 결과(`spec.md §1.6` 쿼리)를 사람이 SQL로 바로 읽음.
+- 기록·검색·분석이 한 DuckDB라 SQL 한 곳에서 디버깅.
 - `raw.attempts.reflection_ids` + `retrieval_scores`로 검색 단계까지 역추적 ("전략가가 왜 엉뚱한 조언을 받았나").
 - 실패 attempt도 기록되어 분석 대상.
 - transfer 점검: `cold_start_progression`의 `warm_start_ratio` 추세. 우상향 아니면 fingerprint 가중치/generality 라벨링/검색 메타필터 점검.

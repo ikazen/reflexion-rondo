@@ -1,6 +1,6 @@
 # 명세 (스키마·dbt·API·컨트랙트)
 
-이중 기록 원칙: 벡터DB는 검색용, DuckDB는 분석/디버깅용. 결정 근거는 `decisions.md`.
+단일 스토어 원칙: DuckDB 하나가 기록·검색·분석을 모두 맡는다 (임베딩은 벡터 컬럼, 검색은 브루트포스 코사인). 결정 근거는 `decisions.md` ADR-007.
 
 ## 1. DB 스키마 (DuckDB `raw`)
 
@@ -46,7 +46,8 @@ reflection_id   text primary key,
 created_at      timestamp,
 attempt_id      text,
 competition_id  text,
-embedded_text   text,
+embedded_text   text,           -- 검색 결과를 사람이 읽는 원문
+embedding       float[768],     -- nomic-embed-text(embedded_text). 검색용 벡터 컬럼
 full_lesson     text,
 generality      text,           -- L1_local / L2_class / L3_general (Reflector)
 label           text,           -- 결정적 진실값 (attempts.label 복제, 마트·검색용)
@@ -83,19 +84,27 @@ gain_vs_best         double
 
 cold-start 시 유사 fingerprint에서 검색해 그대로 baseline으로 재사용.
 
-### 1.6 벡터DB 레코드 (Chroma)
+### 1.6 벡터 검색 (DuckDB, 별도 스토어 없음)
 
-```text
-id:        "refl_000123"
-vector:    nomic-embed-text(embedded_text)
-document:  "<임베딩된 문자열>"
-metadata:  { full_lesson, attempt_id, competition_id, metric,
-             generality, label, gain_vs_best, archived, created_at }
+별도 벡터DB 없이 `raw.reflections.embedding`(§1.3) 컬럼을 직접 검색한다 (ADR-007).
+
+```sql
+-- 메타필터로 후보를 좁힌 뒤 브루트포스 코사인 + 재순위
+select r.reflection_id, r.full_lesson, r.generality,
+       array_cosine_similarity(r.embedding, $query_vec) as sim,
+       -- 재순위: 효과 좋은 교훈 가중 (reflection_impact 마트 LEFT JOIN)
+       sim * (1 + greatest(-$k, least($k, coalesce(i.avg_gain, 0)))) as score
+from raw.reflections r
+left join reflection_impact i using (reflection_id)
+where r.archived = false
+  and (r.generality in ('L2_class','L3_general')
+       or r.competition_id = $competition_id)        -- cold-start 메타필터(architecture §7)
+order by score desc
+limit $k;
 ```
 
-검색:
-- 메타필터(`archived=false`, `generality ∈ {...}`, `competition_id ∈ {...}`) + 벡터 유사도.
-- 재순위: `score = similarity * (1 + clip(reflection_impact.avg_gain, -k, +k))`.
+검색 결과의 `full_lesson`/`embedded_text`를 사람이 그대로 읽어 디버깅한다(`runbook.md §6`).
+규모가 커져 브루트포스가 느려지면 `vss` 확장으로 HNSW 인덱스만 추가 (ADR-007 승격 트리거).
 
 ### 1.7 `submission_budget`
 

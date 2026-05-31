@@ -26,9 +26,11 @@
 - 결정: `reflexion` stage의 attempt만 단일 변경 강제. `bootstrap`/`exploitation`은 예외.
 - 근거: 인과 귀속은 유지하되, cold-start 비효율을 피한다.
 
-## ADR-007 — 이중 기록(dual-write)
-- 결정: 교훈을 벡터DB + DuckDB 양쪽에 기록.
-- 근거: 검색(벡터)과 분석(SQL) 역할 분리. 디버깅 용이.
+## ADR-007 — DuckDB 단일 스토어 (검색·분석 통합)
+- 결정: 별도 벡터DB(Chroma) 없이 DuckDB 하나에 모두 둔다. 임베딩은 `reflections.embedding`을 `FLOAT[768]` 컬럼으로 저장하고, 검색은 `array_cosine_similarity` 브루트포스 + 메타필터로 수행. 분석 마트도 같은 DB.
+- 대안: (a) Chroma 별도 + DuckDB dual-write (v2 초안), (b) pgvector로 전부 Postgres.
+- 근거: 이 프로젝트의 벡터 규모는 누적 1만~수만 건 수준이라 768차원 브루트포스 코사인이 수십 ms로 충분 — ANN 인덱스(Chroma/pgvector HNSW)는 조기 최적화. dual-write를 없애 검색·분석·기록의 정합성을 한 트랜잭션으로 보장하고, zero-server(ADR-011)와 DuckDB의 OLAP 강점(마트 window 쿼리)을 동시에 유지. pgvector는 분석까지 Postgres로 옮겨야 이득이 생겨 ADR-011과 충돌하므로 제외.
+- 승격 트리거: 벡터 수십만 건 초과로 브루트포스 지연이 체감되면 DuckDB `vss` 확장(HNSW)으로 인덱스만 추가. 그래도 부족하면 그때 전용 벡터DB 재검토.
 
 ## ADR-008 — 임베딩은 로컬
 - 결정: nomic-embed-text 로컬 실행.
@@ -76,8 +78,8 @@
 |---|---|---|
 | Strategist/Reflector 모델 | gpt-oss:120b / glm-5.1:cloud / deepseek 대형 | TBD |
 | Coder 모델 | 시작은 동일 모델, 추후 코드 특화 분리 | TBD |
-| 벡터DB | Chroma | 권장(시작) |
-| Warehouse | DuckDB | 권장(시작) |
+| 스토어 (검색+분석) | DuckDB 단일 (벡터 컬럼) | 권장(시작), ADR-007 |
+| 벡터 인덱스 | 브루트포스 → 필요 시 vss(HNSW) | 승격 조건부 |
 | Ollama Cloud 요금제 | Pro($20, 동시 3) | 시작값 |
 | 시작 대회 | 현재 열린 Playground Series 1개 | TBD |
 | 임베딩 모델 | nomic-embed-text(로컬) | 권장(시작) |

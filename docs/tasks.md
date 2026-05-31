@@ -5,11 +5,11 @@
 각 phase는 독립적으로 동작 가능한 단위. 앞 phase가 돌아야 다음 phase 의미 있음.
 
 ## Phase 0 — PoC (배관만) · 미착수
-선택한 대회 1개. LightGBM 5-fold + DuckDB 로깅 + 수동 제출. LLM/벡터DB/transfer 모두 OFF.
+선택한 대회 1개. LightGBM 5-fold + DuckDB 로깅 + 수동 제출. LLM/검색/transfer 모두 OFF.
 한 사이클이 도는지만 확인.
 - [ ] 시작 대회 선정 (열린 Playground Series 1개)
 - [ ] Kaggle API 다운로드 + Evaluator k-fold 하니스
-- [ ] `raw.competitions`/`raw.attempts` 스키마 + dual-write 골격
+- [ ] `raw.competitions`/`raw.attempts` 스키마 + 단일 스토어 기록 골격
 - [ ] 수동 제출 1회로 CV-LB 연결 확인
 
 ## Phase 1 — Fingerprint + 베이스라인 자동화 · 미착수
@@ -20,9 +20,9 @@
 - [ ] 생성 코드 격리 런타임 (`runtime/`, 컨테이너 vs nsjail 선정)
 
 ## Phase 2 — Reflexion (한 대회) · 미착수
-Strategist + Reflector + 벡터DB + reflexion 1변경 규율. 이중 기록.
+Strategist + Reflector + DuckDB 벡터 검색 + reflexion 1변경 규율.
 - [ ] Coder 컨트랙트(`feature_fn`/`model_fn`) + 실행 전 검증 게이트
-- [ ] 벡터DB(Chroma) add/query + 메타필터
+- [ ] `reflections.embedding` 컬럼 + 브루트포스 코사인 검색 + 메타필터
 - [ ] `reflection_impact` 마트
 - [ ] Strategist의 "실제 채택 교훈 id" 출력
 

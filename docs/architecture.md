@@ -11,9 +11,9 @@
 | Evaluator (CV · 지표 · Optuna · label) | 로컬 워커 | 결정적 코드 |
 | 생성 코드 실행 | 로컬 (컨테이너/nsjail) | 격리 실행, §5 |
 | 임베딩 | 로컬 | nomic-embed-text |
-| Memory (벡터DB) | 로컬 | Chroma |
+| Memory (검색) | 로컬 | DuckDB (벡터 컬럼 + 브루트포스 코사인) |
 | Orchestrator | 로컬 | 단순 Python 러너 + cron |
-| Warehouse + dbt | 로컬 | DuckDB |
+| Warehouse + dbt | 로컬 | DuckDB (스토어·검색·분석 단일화) |
 
 설계 의도: **추론만 클라우드, 나머지는 로컬에서 시작.** 병목/비용이 데이터로 잡히면 그때 분산화.
 
@@ -21,25 +21,25 @@
 
 ```text
               (retrieve)                                   (CV score)
- vector DB --------------> [Strategize] -> [Generate] -> [Evaluate: k-fold]
-     ^                       (Cloud)        (Cloud)         (Local, 결정적)
-     |                                                            |
+ DuckDB ------------------> [Strategize] -> [Generate] -> [Evaluate: k-fold]
+ (벡터검색)                  (Cloud)        (Cloud)         (Local, 결정적)
+     ^                                                            |
      | (lessons)                                                  v
  [Reflect] <------------ best 후보 --------------------- [Submit? <=5/day] -> LB
- (Cloud) ----> DuckDB(competitions/attempts/reflections/pipelines) + dbt marts
+ (Cloud) ----> DuckDB(competitions/attempts/reflections[+embedding]/pipelines) + dbt marts
      |
      +--------------- next attempt -----------------> [Strategize]
 ```
 
 ## 3. Reflexion 루프 (1 attempt = 1 cycle)
 
-1. **Retrieve**: 검색 키 = `(competition_fingerprint, last_attempt_summary 또는 seed_query)` → 벡터DB + 메타필터로 교훈 top-k.
+1. **Retrieve**: 검색 키 = `(competition_fingerprint, last_attempt_summary 또는 seed_query)` → DuckDB 벡터 검색(브루트포스 코사인) + 메타필터로 교훈 top-k.
 2. **Strategize**: EDA 카드 + 검색 교훈 + 현재 stage → 다음 가설 1개 (`action_type` enum 강제). 실제 채택한 교훈 id를 함께 출력.
 3. **Generate**: 가설 → `feature_fn` + `model_fn` (컨트랙트는 `spec.md`). 시드·k-fold·IO는 Evaluator가 주입.
 4. **Evaluate**: k-fold CV + 지표 + (필요 시) Optuna. **결정적 코드. CV 델타·fold 분산으로 `label`도 여기서 계산** (LLM 아님).
 5. **Submit?**: 제출 예산 남았을 때만. best 후보 → LB.
 6. **Reflect**: (가설, 코드, retrieved_ids, CV 결과, best 대비 델타, feature_importance, fold variance, 에러 trace) → 교훈 본문 + `generality`. Reflector의 정성 판정(`reflector_label`)은 참고용으로만 기록.
-7. **Persist**: 벡터DB + DuckDB 이중 기록. dbt 마트 갱신.
+7. **Persist**: DuckDB 단일 스토어에 기록(임베딩은 벡터 컬럼). dbt 마트 갱신.
 
 피드백 신호 정책: **CV = 주 신호**(무제한·결정적), **LB = 확인용 희소 신호**(하루 예산 내, CV-LB 상관/shake 감지).
 
@@ -77,7 +77,7 @@ LLM 역할 3개:
 
 비-LLM 컴포넌트:
 - **Evaluator**: k-fold CV + 지표 + Optuna 캡슐화. 결정적 시드·budget. `label`·`gain_vs_best` 계산.
-- **Memory/Retriever**: 벡터DB + 임베딩 + 메타필터 + 재순위.
+- **Memory/Retriever**: DuckDB 벡터 컬럼 + 임베딩 + 메타필터 + 재순위 (브루트포스 코사인, ADR-007).
 - **Fingerprinter**: 결정적 메타피처 계산기.
 
 권장 시작: Ollama Cloud 모델 1개로 3역할 수행. Coder만 코드 특화 모델로 분리하는 건 호출 빈도/비용이 보인 다음.

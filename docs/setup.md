@@ -27,9 +27,9 @@ ollama pull nomic-embed-text       # 임베딩 (로컬)
 ```
 
 ## 4. 데이터 스토어 초기화
-- DuckDB: `store/schema.sql` 적용 (competitions / attempts / reflections / pipelines / submission_budget)
-- Chroma: 로컬 영속 디렉터리 1개
+- DuckDB(단일 스토어): `store/schema.sql` 적용 (competitions / attempts / reflections[embedding 컬럼 포함] / pipelines / submission_budget)
 - dbt(dbt-duckdb): `dbt deps && dbt run` 으로 staging + marts 빌드
+- 별도 벡터DB 불필요 (검색은 DuckDB 벡터 컬럼 브루트포스, ADR-007)
 
 ## 5. 동작 확인 (Phase 0)
 - `bin/start_competition.py`로 대회 1개 등록 → fingerprint insert

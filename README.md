@@ -33,11 +33,11 @@ reflexion-rondo/
   runtime/                # 생성 코드 격리 실행 (컨테이너/nsjail)
   memory/
     embed.py              # 로컬 임베딩
-    vector_store.py       # Chroma add/query + 재순위
+    retriever.py          # DuckDB 벡터 검색(브루트포스 코사인) + 메타필터 + 재순위
     transfer.py           # fingerprint 거리, 유사 대회 검색, warm-start 시드
   store/
     schema.sql            # competitions, attempts, reflections, pipelines
-    ingest.py             # dual-write
+    ingest.py             # 단일 스토어 기록
     fingerprint.py        # 결정적 메타피처 계산기
   dbt/
     models/staging/       # stg_attempts (+ reflexion_only view)
