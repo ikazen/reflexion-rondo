@@ -14,12 +14,12 @@ LightGBM 5-fold + DuckDB 로깅 + 수동 제출. LLM/검색/transfer 모두 OFF.
 
 전이 코퍼스 후보(Phase 3, 착수 시 지표 재확인): AUC 클러스터 `s4e1`/`s5e3`/`s5e8`, 회귀 `s4e4`/`s5e5`/`s5e9`, accuracy `s4e11`/`s5e7`, 다중분류 `s4e2`.
 
-## Phase 1 — Fingerprint + 베이스라인 자동화 · 미착수
+## Phase 1 — Fingerprint + 베이스라인 자동화 · 완료
 같은 대회에 여러 attempt를 자동 누적.
-- [ ] `store/fingerprint.py` 결정적 메타피처 계산기
-- [ ] `score_progression` 마트
-- [ ] Evaluator `label`/`gain_vs_best` 결정 규칙 (spec §4)
-- [ ] 생성 코드 격리 런타임 (`runtime/`, 컨테이너 vs nsjail 선정)
+- [x] `store/fingerprint.py` 결정적 메타피처 계산기 (14개 메타피처, s4e1: mid/21.2% minority)
+- [x] `score_progression` DuckDB 뷰 (dbt는 Phase 3 마트 3개 이상 시 도입)
+- [x] Evaluator `label`/`gain_vs_best` 결정 규칙 (Phase 0에서 구현, fold_std 기반)
+- [x] `runtime/` 스캐폴드 (Phase 2에서 컨테이너/nsjail 구현)
 
 ## Phase 2 — Reflexion (한 대회) · 미착수
 Strategist + Reflector + DuckDB 벡터 검색 + reflexion 1변경 규율.
