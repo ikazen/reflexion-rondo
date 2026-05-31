@@ -93,7 +93,7 @@
 | 스토어 (검색+분석) | DuckDB 단일 (벡터 컬럼) | 권장(시작), ADR-007 |
 | 벡터 인덱스 | 브루트포스 → 필요 시 vss(HNSW) | 승격 조건부 |
 | Ollama Cloud 요금제 | Pro($20, 동시 3) | 시작값 |
-| 시작 대회 | 현재 열린 Playground Series 1개 | TBD |
+| 시작 대회 | playground-series-s4e1 (Bank Churn, 이진/AUC, ~16.5만 행) | 확정 |
 | 임베딩 모델 | qwen3-embedding:0.6b(로컬, 1024d) | 확정, ADR-008 |
 | 격리 런타임 | 컨테이너 vs nsjail 구체 선정 | TBD |
 | label 임계값 z | fold_std 배수(기본 1.0) | TBD (캘리브레이션 필요) |

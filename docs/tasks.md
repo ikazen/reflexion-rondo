@@ -5,12 +5,14 @@
 각 phase는 독립적으로 동작 가능한 단위. 앞 phase가 돌아야 다음 phase 의미 있음.
 
 ## Phase 0 — PoC (배관만) · 미착수
-선택한 대회 1개. LightGBM 5-fold + DuckDB 로깅 + 수동 제출. LLM/검색/transfer 모두 OFF.
-한 사이클이 도는지만 확인.
-- [ ] 시작 대회 선정 (열린 Playground Series 1개)
+시작 대회 `playground-series-s4e1` (Bank Churn, 이진/AUC). closed라 late submission으로 LB 채점.
+LightGBM 5-fold + DuckDB 로깅 + 수동 제출. LLM/검색/transfer 모두 OFF. 한 사이클이 도는지만 확인.
+- [x] 시작 대회 선정 → `playground-series-s4e1`
 - [ ] Kaggle API 다운로드 + Evaluator k-fold 하니스
 - [ ] `raw.competitions`/`raw.attempts` 스키마 + 단일 스토어 기록 골격
 - [ ] 수동 제출 1회로 CV-LB 연결 확인
+
+전이 코퍼스 후보(Phase 3, 착수 시 지표 재확인): AUC 클러스터 `s4e1`/`s5e3`/`s5e8`, 회귀 `s4e4`/`s5e5`/`s5e9`, accuracy `s4e11`/`s5e7`, 다중분류 `s4e2`.
 
 ## Phase 1 — Fingerprint + 베이스라인 자동화 · 미착수
 같은 대회에 여러 attempt를 자동 누적.
