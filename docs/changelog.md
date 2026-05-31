@@ -1,8 +1,15 @@
 # 변경 이력
 
+## LLM/임베딩 모델 배정 (2026-05-31)
+- ADR-016 신설: 역할별 모델 배정. Reflexion Actor = Strategist(정책) + Coder(실행), Reflector = self-reflection.
+  - Strategist `deepseek-v4-pro` / Coder `qwen3-coder-next` 시작값.
+  - Reflector는 Strategist와 추론 모델 공유로 시작(2모델) → 메타 루프 데이터 후 **다른 패밀리**로 분리(3모델). 근거: 상관된 맹점 완화.
+- ADR-008 개정: 임베딩 `nomic-embed-text`(768d) → `qwen3-embedding:0.6b`(1024d, MRL). 2026 MTEB v2 오픈웨이트 최상위. 스키마 `reflections.embedding` → `float[1024]`.
+- 모델 ID 변동성 주의: 확정 전 ollama.com/search?c=cloud 재확인.
+
 ## DuckDB 단일 스토어로 통합 (2026-05-31)
 - ADR-007 개정: 별도 벡터DB(Chroma) + dual-write 폐기. DuckDB 하나가 기록·검색·분석을 모두 담당.
-- 임베딩은 `reflections.embedding`(`float[768]`) 컬럼에 저장, 검색은 `array_cosine_similarity` 브루트포스 + 메타필터.
+- 임베딩은 `reflections.embedding` 벡터 컬럼에 저장, 검색은 `array_cosine_similarity` 브루트포스 + 메타필터.
 - 근거: 누적 1만~수만 벡터 규모에선 브루트포스가 수십 ms로 충분 → ANN 인덱스는 조기 최적화. dual-write 정합성 부담 제거 + zero-server(ADR-011) 유지.
 - 승격 트리거: 수십만 건 초과 시 DuckDB `vss`(HNSW) 인덱스 추가.
 - 영향: `memory/vector_store.py` → `memory/retriever.py`, setup의 Chroma 초기화 제거.

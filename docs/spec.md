@@ -47,7 +47,7 @@ created_at      timestamp,
 attempt_id      text,
 competition_id  text,
 embedded_text   text,           -- 검색 결과를 사람이 읽는 원문
-embedding       float[768],     -- nomic-embed-text(embedded_text). 검색용 벡터 컬럼
+embedding       float[1024],    -- qwen3-embedding:0.6b(embedded_text). 검색용 벡터 컬럼 (MRL로 차원 절단 가능)
 full_lesson     text,
 generality      text,           -- L1_local / L2_class / L3_general (Reflector)
 label           text,           -- 결정적 진실값 (attempts.label 복제, 마트·검색용)
@@ -304,18 +304,18 @@ cloud = Client(
     headers={"Authorization": f"Bearer {os.environ['OLLAMA_API_KEY']}"},
 )
 resp = cloud.chat(
-    model="<heavy-reasoning-model>",   # TBD
+    model="deepseek-v4-pro",           # Strategist (Coder는 qwen3-coder-next). ADR-016
     messages=[...],
     format=hypothesis_schema_dict,     # ollama-python: JSON Schema dict 허용
 )
 
 # 임베딩은 로컬 (클라우드 키가 /api/embed 미인가일 수 있음)
 local = Client(host="http://localhost:11434")
-local.embed(model="nomic-embed-text", input=note_text)
+local.embed(model="qwen3-embedding:0.6b", input=note_text)   # 1024d
 ```
 
 비용 통제 레버:
-1. 모델 티어링: Strategist/Reflector만 무거운 모델, 고빈도 Coder는 가벼운 모델.
+1. 모델 배정(ADR-016): Strategist/Reflector는 추론 모델, Coder는 코드 특화 모델.
 2. 구조화 출력(JSON Schema): 디코딩 단계 검증으로 재시도 제거.
 3. 컨텍스트 캐싱: EDA 카드·교훈 패키지를 안정 유지해 캐시 활용.
 4. 클라우드 밖은 클라우드 밖에: 임베딩·CV·dbt는 로컬.

@@ -7,10 +7,11 @@
 
 | 컴포넌트 | 위치 | 비고 |
 |---|---|---|
-| Strategist, Coder, Reflector | Ollama Cloud | 시작은 모델 1개를 system prompt만 바꿔 3역할 |
+| Strategist, Reflector (추론) | Ollama Cloud | 추론 모델. 시작은 공유, Reflector는 다른 패밀리로 분리 (ADR-016) |
+| Coder (실행) | Ollama Cloud | 코드 특화 모델 (ADR-016) |
 | Evaluator (CV · 지표 · Optuna · label) | 로컬 워커 | 결정적 코드 |
 | 생성 코드 실행 | 로컬 (컨테이너/nsjail) | 격리 실행, §5 |
-| 임베딩 | 로컬 | nomic-embed-text |
+| 임베딩 | 로컬 | qwen3-embedding:0.6b (1024d, MRL) |
 | Memory (검색) | 로컬 | DuckDB (벡터 컬럼 + 브루트포스 코사인) |
 | Orchestrator | 로컬 | 단순 Python 러너 + cron |
 | Warehouse + dbt | 로컬 | DuckDB (스토어·검색·분석 단일화) |
@@ -80,7 +81,7 @@ LLM 역할 3개:
 - **Memory/Retriever**: DuckDB 벡터 컬럼 + 임베딩 + 메타필터 + 재순위 (브루트포스 코사인, ADR-007).
 - **Fingerprinter**: 결정적 메타피처 계산기.
 
-권장 시작: Ollama Cloud 모델 1개로 3역할 수행. Coder만 코드 특화 모델로 분리하는 건 호출 빈도/비용이 보인 다음.
+역할별 모델 배정과 단계적 분리는 ADR-016 참조. Reflexion 관점에서 **Actor = Strategist(정책) + Coder(실행)**, **Reflector = self-reflection**, Evaluator = 결정적 코드.
 
 ## 7. Cross-Competition Transfer
 

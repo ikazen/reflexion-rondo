@@ -22,8 +22,8 @@ KAGGLE_KEY=<your-kaggle-key>
 ## 3. 로컬 모델
 
 ```bash
-ollama pull nomic-embed-text       # 임베딩 (로컬)
-# Strategist/Coder/Reflector 모델은 Ollama Cloud (decisions.md TBD)
+ollama pull qwen3-embedding:0.6b   # 임베딩 (로컬, 1024d, ADR-008)
+# Strategist/Coder/Reflector 모델은 Ollama Cloud (모델 배정 ADR-016)
 ```
 
 ## 4. 데이터 스토어 초기화

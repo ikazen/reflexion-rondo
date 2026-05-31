@@ -32,9 +32,10 @@
 - 근거: 이 프로젝트의 벡터 규모는 누적 1만~수만 건 수준이라 768차원 브루트포스 코사인이 수십 ms로 충분 — ANN 인덱스(Chroma/pgvector HNSW)는 조기 최적화. dual-write를 없애 검색·분석·기록의 정합성을 한 트랜잭션으로 보장하고, zero-server(ADR-011)와 DuckDB의 OLAP 강점(마트 window 쿼리)을 동시에 유지. pgvector는 분석까지 Postgres로 옮겨야 이득이 생겨 ADR-011과 충돌하므로 제외.
 - 승격 트리거: 벡터 수십만 건 초과로 브루트포스 지연이 체감되면 DuckDB `vss` 확장(HNSW)으로 인덱스만 추가. 그래도 부족하면 그때 전용 벡터DB 재검토.
 
-## ADR-008 — 임베딩은 로컬
-- 결정: nomic-embed-text 로컬 실행.
-- 근거: 클라우드 키가 임베딩 미인가 가능 + 고지능 불필요 + 비용 절감.
+## ADR-008 — 임베딩은 로컬 (qwen3-embedding)
+- 결정: `qwen3-embedding:0.6b`(1024차원, MRL 32~1024 절단 가능)를 로컬 실행. 스키마는 `reflections.embedding float[1024]`.
+- 대안: nomic-embed-text(768d, v2 초안) / embeddinggemma:300m(경량 768d).
+- 근거: 검색 품질이 transfer 메커니즘을 직접 좌우하는데, qwen3-embedding이 2026 MTEB v2 오픈웨이트 최상위(0.6b도 OpenAI/Google API 상회)면서 0.6b는 로컬 부담이 작다. 클라우드 키가 임베딩 미인가일 수 있어 로컬 유지. 저장 압박 시 MRL로 차원 절단.
 
 ## ADR-009 — LLM 출력은 JSON Schema 강제
 - 결정: 가설/교훈을 스키마로 강제.
@@ -70,19 +71,30 @@
 - 대안: 인터리브 ablation / 별도 memory-OFF 대조 대회.
 - 근거: 초기 단순성 우선. 단 이는 인과 증명이 아니라는 한계를 명시하고(`architecture.md` §4), 신호가 모호하면 ablation을 후속 과제로 승격한다.
 
+## ADR-016 — LLM 역할별 모델 배정 (Actor 분리 + Reflector 패밀리 다양성)
+- 역할 매핑: Reflexion의 **Actor = Strategist(정책) + Coder(실행)**, **Self-Reflection = Reflector**, Evaluator는 결정적 코드(ADR-005).
+- 결정:
+  - **추론 모델**(Strategist) — `deepseek-v4-pro` 시작값 (대안 `glm-5`, `kimi-k2.6`).
+  - **코드 모델**(Coder) — `qwen3-coder-next` 시작값 (대안 `glm-4.7`, 저비용 `devstral-small-2:24b`).
+  - **Reflector** — 시작은 Strategist와 추론 모델 공유(system prompt만 교체)로 2모델 운영. 메타 루프(Phase 4)에서 교훈 품질 데이터가 보이면 **Strategist와 다른 패밀리**(예: Strategist=DeepSeek → Reflector=`glm-5`/`kimi-k2.6`)로 분리해 3모델.
+- 근거: Coder 분리는 코드 특화 모델이 컨트랙트 준수에 유리(태스크 성격). Reflector를 다른 패밀리로 두는 건 **상관된 맹점** 완화 — 같은 모델이 가설을 내고 스스로 성찰하면 자기 추론을 합리화한다. ADR-005가 채점에서 LLM을 뺐어도 Reflector의 정성 진단·generality 라벨링엔 자기편향이 남으므로 교차 패밀리가 교훈 품질을 높인다.
+- 비용: 세 역할 모두 사이클당 1회라 분리해도 호출 수는 안 늘고 설정만 는다. 그래서 처음부터 3모델로 가도 부담이 거의 없으나, "분리가 실제로 도움됐나"를 측정하려면 2→3 단계 분리가 깔끔하다.
+- 주의: 모델 ID는 변동성이 크다. 확정 전 `ollama.com/search?c=cloud`에서 현재 태그 재확인.
+
 ---
 
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |
 |---|---|---|
-| Strategist/Reflector 모델 | gpt-oss:120b / glm-5.1:cloud / deepseek 대형 | TBD |
-| Coder 모델 | 시작은 동일 모델, 추후 코드 특화 분리 | TBD |
+| Strategist 추론 모델 | deepseek-v4-pro (대안 glm-5/kimi-k2.6) | 시작값, ADR-016 |
+| Reflector 모델 | 시작 Strategist 공유 → 다른 패밀리 분리 | 시작값, ADR-016 |
+| Coder 모델 | qwen3-coder-next (대안 glm-4.7/devstral-small-2) | 시작값, ADR-016 |
 | 스토어 (검색+분석) | DuckDB 단일 (벡터 컬럼) | 권장(시작), ADR-007 |
 | 벡터 인덱스 | 브루트포스 → 필요 시 vss(HNSW) | 승격 조건부 |
 | Ollama Cloud 요금제 | Pro($20, 동시 3) | 시작값 |
 | 시작 대회 | 현재 열린 Playground Series 1개 | TBD |
-| 임베딩 모델 | nomic-embed-text(로컬) | 권장(시작) |
+| 임베딩 모델 | qwen3-embedding:0.6b(로컬, 1024d) | 확정, ADR-008 |
 | 격리 런타임 | 컨테이너 vs nsjail 구체 선정 | TBD |
 | label 임계값 z | fold_std 배수(기본 1.0) | TBD (캘리브레이션 필요) |
 | fingerprint 거리 가중치 | task/metric 큼·size 중간·기타 작음 | TBD (대회 누적 후 캘리브레이션) |
