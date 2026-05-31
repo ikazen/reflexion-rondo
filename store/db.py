@@ -19,14 +19,17 @@ def ensure_competition(
     task_type: str,
     metric: str,
     metric_sign: int,
+    fingerprint: dict | None = None,
 ) -> None:
+    import json
+    fp_json = json.dumps(fingerprint or {})
     conn.execute(
         """
         insert into raw.competitions (competition_id, name, task_type, metric, metric_sign, start_ts, fingerprint)
-        values (?, ?, ?, ?, ?, now(), '{}')
-        on conflict (competition_id) do nothing
+        values (?, ?, ?, ?, ?, now(), ?)
+        on conflict (competition_id) do update set fingerprint = excluded.fingerprint
         """,
-        [competition_id, name, task_type, metric, metric_sign],
+        [competition_id, name, task_type, metric, metric_sign, fp_json],
     )
 
 
