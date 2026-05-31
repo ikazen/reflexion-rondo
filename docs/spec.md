@@ -304,7 +304,7 @@ cloud = Client(
     headers={"Authorization": f"Bearer {os.environ['OLLAMA_API_KEY']}"},
 )
 resp = cloud.chat(
-    model="deepseek-v4-pro",           # Strategist (Coder는 qwen3-coder-next). ADR-016
+    model="deepseek-v4-pro",           # Strategist. Reflector=glm-5, Coder=qwen3-coder-next (ADR-016)
     messages=[...],
     format=hypothesis_schema_dict,     # ollama-python: JSON Schema dict 허용
 )

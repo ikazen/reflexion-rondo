@@ -7,8 +7,9 @@
 
 | 컴포넌트 | 위치 | 비고 |
 |---|---|---|
-| Strategist, Reflector (추론) | Ollama Cloud | 추론 모델. 시작은 공유, Reflector는 다른 패밀리로 분리 (ADR-016) |
-| Coder (실행) | Ollama Cloud | 코드 특화 모델 (ADR-016) |
+| Strategist (정책) | Ollama Cloud | 추론 모델 deepseek-v4-pro (ADR-016) |
+| Reflector (성찰) | Ollama Cloud | 다른 패밀리 추론 모델 glm-5 (ADR-016) |
+| Coder (실행) | Ollama Cloud | 코드 특화 qwen3-coder-next (ADR-016) |
 | Evaluator (CV · 지표 · Optuna · label) | 로컬 워커 | 결정적 코드 |
 | 생성 코드 실행 | 로컬 (컨테이너/nsjail) | 격리 실행, §5 |
 | 임베딩 | 로컬 | qwen3-embedding:0.6b (1024d, MRL) |
@@ -81,7 +82,7 @@ LLM 역할 3개:
 - **Memory/Retriever**: DuckDB 벡터 컬럼 + 임베딩 + 메타필터 + 재순위 (브루트포스 코사인, ADR-007).
 - **Fingerprinter**: 결정적 메타피처 계산기.
 
-역할별 모델 배정과 단계적 분리는 ADR-016 참조. Reflexion 관점에서 **Actor = Strategist(정책) + Coder(실행)**, **Reflector = self-reflection**, Evaluator = 결정적 코드.
+역할별 모델 배정은 ADR-016 참조 (세 역할을 처음부터 분리). Reflexion 관점에서 **Actor = Strategist(정책) + Coder(실행)**, **Reflector = self-reflection**, Evaluator = 결정적 코드.
 
 ## 7. Cross-Competition Transfer
 
