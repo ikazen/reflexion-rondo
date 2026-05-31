@@ -1,0 +1,13 @@
+[project]
+name = "reflexion-rondo"
+version = "0.1.0"
+description = "Self-improving Reflexion system for Kaggle tabular competitions"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.5.3",
+    "kaggle>=2.2.0",
+    "lightgbm>=4.6.0",
+    "pandas>=3.0.3",
+    "polars>=1.41.2",
+    "scikit-learn>=1.8.0",
+]
