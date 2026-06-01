@@ -55,7 +55,6 @@ reflexion-rondo/
 - `docs/architecture.md` — 컴포넌트·데이터 흐름·transfer 메커니즘
 - `docs/decisions.md` — 기술 결정 이력 (ADR)
 - `docs/spec.md` — DB 스키마·dbt 모델·LLM API·코드 컨트랙트
-- `docs/tasks.md` — 개발 로드맵·진행 상태
 - `docs/setup.md` — 초기 셋업
 - `docs/runbook.md` — 운영 절차·관측·디버깅
 - `docs/strategy.md` — 정형 대회 일반 전략 노트 (Strategist/Reflector 컨텍스트)

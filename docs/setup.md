@@ -35,4 +35,4 @@ ollama pull qwen3-embedding:0.6b   # 임베딩 (로컬, 1024d, ADR-008)
 - `bin/start_competition.py`로 대회 1개 등록 → fingerprint insert
 - `bin/run_cycle.py` 1회 실행 → `raw.attempts`에 row 1개 + CV 기록 확인
 
-> 미구현: 대부분 Phase별로 채워진다(`tasks.md`). 이 문서는 환경/자격증명 셋업 기준만 정의.
+> 미구현: 대부분 Phase별로 채워진다(진행 상태는 Linear 프로젝트 reflexion-rondo, Phase 마일스톤). 이 문서는 환경/자격증명 셋업 기준만 정의.
