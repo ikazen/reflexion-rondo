@@ -67,17 +67,7 @@ def search(
             array_cosine_similarity(r.embedding, $query_vec::float[1024]) as sim,
             sim * (1 + greatest(-1.0, least(1.0, coalesce(i.avg_gain, 0.0)))) as score
         from raw.reflections r
-        left join (
-            select reflection_id, avg(gain_vs_best) as avg_gain
-            from (
-                select unnest(reflection_ids) as reflection_id,
-                       gain_vs_best
-                from raw.attempts
-                where stage = 'reflexion'
-                  and reflection_ids is not null
-            )
-            group by reflection_id
-        ) i using (reflection_id)
+        left join reflection_impact i using (reflection_id)
         where r.archived = false
           and (
               r.generality in ('L2_class', 'L3_general')

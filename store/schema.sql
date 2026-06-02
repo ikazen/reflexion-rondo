@@ -73,3 +73,42 @@ create table if not exists raw.reflections (
 
 alter table raw.attempts add column if not exists reflection_ids   text[];
 alter table raw.attempts add column if not exists retrieval_scores double[];
+
+create view if not exists stg_attempts as
+select
+    a.*,
+    c.metric_sign
+from raw.attempts a
+join raw.competitions c using (competition_id);
+
+create view if not exists stg_attempts_reflexion_only as
+select * from stg_attempts
+where stage = 'reflexion';
+
+create view if not exists reflection_impact as
+with scored as (
+    select
+        competition_id,
+        reflection_ids,
+        metric_sign * cv_score
+        - max(metric_sign * cv_score) over (
+            partition by competition_id
+            order by run_ts rows between unbounded preceding and 1 preceding
+          ) as gain_vs_best
+    from stg_attempts_reflexion_only
+),
+per_reflection as (
+    select unnest(reflection_ids) as reflection_id, gain_vs_best
+    from scored
+    where reflection_ids is not null
+      and gain_vs_best is not null
+)
+select
+    reflection_id,
+    count(*)                                          as times_applied,
+    round(avg(gain_vs_best), 5)                       as avg_gain,
+    sum(case when gain_vs_best > 0 then 1 else 0 end) as jumps,
+    round(max(gain_vs_best), 5)                       as best_jump
+from per_reflection
+group by reflection_id
+order by avg_gain desc;

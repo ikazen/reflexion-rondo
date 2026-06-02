@@ -150,12 +150,22 @@ def test_rerank_boosts_high_gain(conn: duckdb.DuckDBPyConnection) -> None:
                 """,
                 [rid, rid, vec, gain],
             )
-        # inject reflection_ids into an attempt so the inline subquery picks it up
+        conn.execute(
+            """
+            insert into raw.competitions (competition_id, name, task_type, metric, metric_sign)
+            values ('comp1', 'test', 'binary', 'auc', 1)
+            """
+        )
+        # a0 establishes baseline (no reflection); a1 jumps using r_high_gain
+        # gain = 1*(0.85 - 0.35) = 0.50 → avg_gain for r_high_gain = 0.50
+        # score: r_high_gain = 0.8*(1+0.50)=1.20 > r_low_gain = 1.0*(1+0)=1.0
         conn.execute(
             """
             insert into raw.attempts
-                (attempt_id, competition_id, run_ts, stage, reflection_ids, gain_vs_best)
-            values ('a1', 'comp1', now(), 'reflexion', ['r_high_gain'], 0.5)
+                (attempt_id, competition_id, run_ts, stage, cv_score, reflection_ids)
+            values
+                ('a0', 'comp1', now() - interval '1 second', 'reflexion', 0.35, null),
+                ('a1', 'comp1', now(),                       'reflexion', 0.85, ['r_high_gain'])
             """
         )
 
