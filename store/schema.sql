@@ -55,3 +55,21 @@ create table if not exists raw.submission_budget (
     count           int,
     primary key (competition_id, day)
 );
+
+create table if not exists raw.reflections (
+    reflection_id   text primary key,
+    created_at      timestamp,
+    attempt_id      text,
+    competition_id  text,
+    embedded_text   text,
+    embedding       float[1024],
+    full_lesson     text,
+    generality      text,
+    label           text,
+    reflector_label text,
+    gain_vs_best    double,
+    archived        boolean default false
+);
+
+alter table raw.attempts add column if not exists reflection_ids   text[];
+alter table raw.attempts add column if not exists retrieval_scores double[];
