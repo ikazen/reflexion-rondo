@@ -57,26 +57,16 @@ ollama pull devstral-small-2
 
 ---
 
-## 4. WSL2 — 호스트명 설정 (IP 대신 별칭 사용)
+## 4. WSL2 — 호스트명 설정 (Tailscale)
 
-`ssh mac-server`가 작동하더라도 SSH config 별칭은 HTTP 요청에 적용되지 않는다.
-먼저 확인:
-
-```bash
-curl http://mac-server:11434/api/tags
-```
-
-응답이 없으면 `/etc/hosts`에 추가:
+모든 인스턴스가 Tailscale 아래에 있으므로 Tailscale IP 또는 MagicDNS 호스트명을 사용한다.
 
 ```bash
-# Mac IP 확인 (Mac 터미널)
-ipconfig getifaddr en0
-
-# WSL2에서 등록
-echo "<Mac-IP>  mac-server" | sudo tee -a /etc/hosts
+# MagicDNS resolve 확인 (WSL2에서)
+ping mac-server.<tailnet>.ts.net
 ```
 
-이후 `mac-server`를 URL 호스트명으로 쓸 수 있다.
+resolve 되면 MagicDNS 호스트명을 사용한다. 안 되면 Tailscale IP(`tailscale status`에서 확인)를 사용한다. Tailscale IP는 `100.x.x.x` 대역으로 네트워크가 바뀌어도 고정된다.
 
 ---
 
@@ -85,7 +75,10 @@ echo "<Mac-IP>  mac-server" | sudo tee -a /etc/hosts
 프로젝트 루트에 `.env` 파일 생성:
 
 ```dotenv
-OLLAMA_BASE_URL=http://mac-server:11434
+# MagicDNS 사용 시
+OLLAMA_BASE_URL=http://mac-server.<tailnet>.ts.net:11434
+# 또는 Tailscale IP 직접 사용
+# OLLAMA_BASE_URL=http://100.x.x.x:11434
 
 # 모델 (기본값과 동일하면 생략 가능)
 MODEL_STRATEGIST=qwen3.5:14b
@@ -94,7 +87,7 @@ MODEL_CODER=devstral-small-2
 MODEL_EMBEDDING=qwen3-embedding:0.6b
 ```
 
-`.env`는 `.gitignore`에 포함되어 있으므로 커밋되지 않는다.
+`.env`는 `.gitignore`에 포함되어 있으므로 커밋되지 않는다. 실제 tailnet 이름과 IP는 `.env`에만 보관한다.
 
 ---
 
