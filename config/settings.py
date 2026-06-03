@@ -4,10 +4,11 @@ import os
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-OLLAMA_BASE_URL   = os.environ["OLLAMA_BASE_URL"]
-OLLAMA_API_KEY    = os.getenv("OLLAMA_API_KEY", "")
+OLLAMA_BASE_URL       = os.environ["OLLAMA_BASE_URL"]
+OLLAMA_CLOUD_BASE_URL = os.getenv("OLLAMA_CLOUD_BASE_URL", "https://ollama.com")
+OLLAMA_API_KEY        = os.getenv("OLLAMA_API_KEY", "")
 
-MODEL_STRATEGIST  = os.getenv("MODEL_STRATEGIST", "qwen3.5:9b-mlx")
-MODEL_REFLECTOR   = os.getenv("MODEL_REFLECTOR",  "qwen3.5:9b-mlx")
-MODEL_CODER       = os.getenv("MODEL_CODER",       "devstral-small-2")
-MODEL_EMBEDDING   = os.getenv("MODEL_EMBEDDING",   "qwen3-embedding:0.6b")
+MODEL_STRATEGIST  = os.getenv("MODEL_STRATEGIST", "deepseek-v4-pro")
+MODEL_REFLECTOR   = os.getenv("MODEL_REFLECTOR",  "glm-5")
+MODEL_CODER       = os.getenv("MODEL_CODER",       "qwen3-coder-next")
+MODEL_EMBEDDING   = os.getenv("MODEL_EMBEDDING",   "qwen3-embedding:8b")

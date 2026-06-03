@@ -9,10 +9,7 @@ _EMBED_DIM = 1024
 
 
 def _client() -> Client:
-    kwargs: dict = {"host": settings.OLLAMA_BASE_URL}
-    if settings.OLLAMA_API_KEY:
-        kwargs["headers"] = {"Authorization": f"Bearer {settings.OLLAMA_API_KEY}"}
-    return Client(**kwargs)
+    return Client(host=settings.OLLAMA_BASE_URL)
 
 
 def embed(text: str) -> list[float]:

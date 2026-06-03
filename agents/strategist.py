@@ -44,7 +44,7 @@ class StrategyDecision:
 
 
 def _client() -> Client:
-    kwargs: dict = {"host": settings.OLLAMA_BASE_URL}
+    kwargs: dict = {"host": settings.OLLAMA_CLOUD_BASE_URL}
     if settings.OLLAMA_API_KEY:
         kwargs["headers"] = {"Authorization": f"Bearer {settings.OLLAMA_API_KEY}"}
     return Client(**kwargs)
