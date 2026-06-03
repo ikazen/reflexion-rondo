@@ -3,19 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import streamlit as st
-import duckdb
 import polars as pl
 
-DB_PATH = Path(__file__).parent / "runs" / "reflexion.duckdb"
+from store.db import connect
 
 st.set_page_config(page_title="Reflexion Monitor", layout="wide")
 st.title("Reflexion Monitor")
 
-if not DB_PATH.exists():
-    st.error(f"DB not found: {DB_PATH}")
-    st.stop()
-
-conn = duckdb.connect(str(DB_PATH), read_only=True)
+conn = connect()
 
 # --- Competition selector ---
 competitions = conn.execute(
@@ -23,6 +18,7 @@ competitions = conn.execute(
 ).fetchall()
 
 if not competitions:
+    conn.close()
     st.info("No competitions registered yet.")
     st.stop()
 
