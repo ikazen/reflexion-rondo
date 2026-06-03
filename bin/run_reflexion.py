@@ -56,6 +56,7 @@ def main() -> None:
         print(f"label:         {result.label}")
         print(f"gain_vs_best:  {result.gain_vs_best}")
         print(f"reflection_id: {result.reflection_id}")
+        print(f"code:          {result.code_path}")
         if result.error_trace:
             print(f"error:\n{result.error_trace}")
 

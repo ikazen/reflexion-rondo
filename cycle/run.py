@@ -5,6 +5,7 @@ import types
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 import duckdb
 import polars as pl
@@ -12,10 +13,13 @@ import polars as pl
 from agents.coder import generate_code
 from agents.reflector import AttemptContext, reflect
 from agents.strategist import strategize
+from config.settings import MODEL_CODER
 from evaluator.contract import validate_code, smoke_test
 from evaluator.harness import run as eval_run
 from memory.retriever import search
 from store.db import insert_attempt
+
+RUNS_CODE_DIR = Path(__file__).parent.parent / "runs" / "code"
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +44,7 @@ class CycleResult:
     gain_vs_best: float | None
     reflection_id: str | None
     error_trace: str | None
+    code_path: Path
 
 
 def _prev_best(conn: duckdb.DuckDBPyConnection, competition_id: str) -> float | None:
@@ -66,6 +71,39 @@ def _last_hypothesis(conn: duckdb.DuckDBPyConnection, competition_id: str) -> st
         [competition_id],
     ).fetchone()
     return row[0] if row else None
+
+
+def _save_code(
+    source: str,
+    *,
+    competition_id: str,
+    attempt_id: str,
+    stage: str,
+    hypothesis: str,
+    action_type: str,
+    cv_score: float | None,
+    gain_vs_best: float | None,
+    error_trace: str | None,
+) -> Path:
+    """생성 코드를 로컬에 떨군다 — 사람이 품질 검토 후 reflection 반영 여부 판단용.
+
+    runs/ 는 gitignore. coder 모델 교체 전후 비교를 위해 헤더에 모델명·CV를 박는다.
+    """
+    out_dir = RUNS_CODE_DIR / competition_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    path = out_dir / f"{ts}_{attempt_id[:8]}.py"
+    header = (
+        f"# attempt_id:   {attempt_id}\n"
+        f"# coder_model:  {MODEL_CODER}\n"
+        f"# stage:        {stage}  action_type: {action_type}\n"
+        f"# cv_score:     {cv_score}  gain_vs_best: {gain_vs_best}\n"
+        f"# error:        {'yes' if error_trace else 'no'}\n"
+        f"# hypothesis:   {' '.join(hypothesis.split())}\n"
+        f"# {'-' * 60}\n"
+    )
+    path.write_text(header + source, encoding="utf-8")
+    return path
 
 
 def _load_functions(source: str) -> tuple[object, object] | str:
@@ -160,6 +198,19 @@ def run_cycle(
         label = result.label
         gain_vs_best = result.gain_vs_best
 
+    # 5b. 생성 코드 로컬 저장 (사람 검토용 — reflection 반영 여부는 사람이 판단)
+    code_path = _save_code(
+        source,
+        competition_id=config.competition_id,
+        attempt_id=attempt_id,
+        stage=config.stage,
+        hypothesis=decision.hypothesis,
+        action_type=decision.action_type,
+        cv_score=cv_score,
+        gain_vs_best=gain_vs_best,
+        error_trace=error_trace,
+    )
+
     # 6. Persist attempt
     duration_sec = time.monotonic() - cycle_start
     insert_attempt(conn, {
@@ -202,4 +253,5 @@ def run_cycle(
         gain_vs_best=gain_vs_best,
         reflection_id=reflection_id,
         error_trace=error_trace,
+        code_path=code_path,
     )
