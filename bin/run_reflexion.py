@@ -35,6 +35,7 @@ def main() -> None:
     train = pl.read_csv(DATA_DIR / "train.csv")
     conn = connect()
 
+    failed = 0
     for i in range(args.cycles):
         print(f"\n--- cycle {i + 1}/{args.cycles} (stage={args.stage}) ---")
         config = CycleConfig(
@@ -49,7 +50,12 @@ def main() -> None:
             k_retrieve=5,
             is_classification=True,
         )
-        result = run_cycle(conn, config)
+        try:
+            result = run_cycle(conn, config)
+        except Exception as exc:
+            failed += 1
+            print(f"[cycle {i + 1} FAILED] {exc}")
+            continue
 
         print(f"attempt_id:    {result.attempt_id}")
         print(f"cv_score:      {result.cv_score}")
@@ -59,6 +65,9 @@ def main() -> None:
         print(f"code:          {result.code_path}")
         if result.error_trace:
             print(f"error:\n{result.error_trace}")
+
+    if failed:
+        print(f"\n{failed}/{args.cycles} cycle(s) failed.")
 
     conn.close()
 
