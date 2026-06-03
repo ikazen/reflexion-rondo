@@ -14,7 +14,7 @@ def _client() -> Client:
 
 def embed(text: str) -> list[float]:
     resp = _client().embed(model=settings.MODEL_EMBEDDING, input=text)
-    return resp.embeddings[0]
+    return resp.embeddings[0][:_EMBED_DIM]
 
 
 def insert_reflection(

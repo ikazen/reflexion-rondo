@@ -214,22 +214,25 @@ def run_cycle(
 
     if not error_trace and loaded is not None:
         feature_fn, model_fn = loaded
-        result = eval_run(
-            train=config.train,
-            target_col=config.target_col,
-            metric=config.metric,
-            feature_fn=feature_fn,
-            model_fn=model_fn,
-            params={},
-            prev_best=prev_best_cv,
-            n_splits=config.n_splits,
-            seed=config.seed,
-            is_classification=config.is_classification,
-        )
-        cv_score = result.cv_score
-        cv_fold_var = result.cv_fold_var
-        label = result.label
-        gain_vs_best = result.gain_vs_best
+        try:
+            result = eval_run(
+                train=config.train,
+                target_col=config.target_col,
+                metric=config.metric,
+                feature_fn=feature_fn,
+                model_fn=model_fn,
+                params={},
+                prev_best=prev_best_cv,
+                n_splits=config.n_splits,
+                seed=config.seed,
+                is_classification=config.is_classification,
+            )
+            cv_score = result.cv_score
+            cv_fold_var = result.cv_fold_var
+            label = result.label
+            gain_vs_best = result.gain_vs_best
+        except Exception as exc:
+            error_trace = f"eval_run failed: {exc}"
 
     # 5b. 생성 코드 로컬 저장 (사람 검토용 — reflection 반영 여부는 사람이 판단)
     code_path = _save_code(
