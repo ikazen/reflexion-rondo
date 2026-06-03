@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import types
 import uuid
 from dataclasses import dataclass, field
@@ -85,6 +86,7 @@ def run_cycle(
     config: CycleConfig,
 ) -> CycleResult:
     attempt_id = str(uuid.uuid4())
+    cycle_start = time.monotonic()
 
     # 1. Retrieve
     query = _last_hypothesis(conn, config.competition_id) or config.eda_card
@@ -159,6 +161,7 @@ def run_cycle(
         gain_vs_best = result.gain_vs_best
 
     # 6. Persist attempt
+    duration_sec = time.monotonic() - cycle_start
     insert_attempt(conn, {
         "attempt_id":       attempt_id,
         "competition_id":   config.competition_id,
@@ -173,6 +176,7 @@ def run_cycle(
         "label":            label,
         "gain_vs_best":     gain_vs_best,
         "error_trace":      error_trace,
+        "duration_sec":     round(duration_sec, 1),
     })
 
     # 7. Reflect

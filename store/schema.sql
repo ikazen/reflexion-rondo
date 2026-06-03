@@ -73,6 +73,7 @@ create table if not exists raw.reflections (
 
 alter table raw.attempts add column if not exists reflection_ids   text[];
 alter table raw.attempts add column if not exists retrieval_scores double[];
+alter table raw.attempts add column if not exists duration_sec     double;
 
 create view if not exists stg_attempts as
 select
