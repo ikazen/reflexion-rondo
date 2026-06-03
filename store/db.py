@@ -27,7 +27,13 @@ def ensure_competition(
         """
         insert into raw.competitions (competition_id, name, task_type, metric, metric_sign, start_ts, fingerprint)
         values (?, ?, ?, ?, ?, now(), ?)
-        on conflict (competition_id) do update set fingerprint = excluded.fingerprint
+        on conflict (competition_id) do update set
+            fingerprint = case
+                when raw.competitions.fingerprint is not null
+                 and raw.competitions.fingerprint != '{}'
+                then raw.competitions.fingerprint
+                else excluded.fingerprint
+            end
         """,
         [competition_id, name, task_type, metric, metric_sign, fp_json],
     )
