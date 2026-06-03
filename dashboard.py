@@ -162,6 +162,54 @@ else:
 
 st.divider()
 
+# --- Cold-start Progression (전 대회 비교) ---
+st.subheader("Cold-start Progression")
+
+csp_df = conn.execute(
+    """
+    select competition_id, attempt_no, stage, cv_score, best_so_far
+    from cold_start_progression
+    order by competition_id, attempt_no
+    """
+).pl()
+
+if csp_df.is_empty():
+    st.info("No cold_start_progression data yet.")
+else:
+    # warm_start_ratio: bootstrap_best / overall_best per competition
+    summary = conn.execute(
+        """
+        select
+            c.competition_id,
+            c.name,
+            round(max(case when p.stage = 'bootstrap' then p.best_so_far else null end), 5) as bootstrap_best,
+            round(max(p.best_so_far), 5) as overall_best,
+            round(
+                max(case when p.stage = 'bootstrap' then p.best_so_far else null end)
+                / nullif(max(p.best_so_far), 0)
+            , 4) as warm_start_ratio
+        from cold_start_progression p
+        join raw.competitions c using (competition_id)
+        group by c.competition_id, c.name
+        order by c.competition_id
+        """
+    ).pl()
+    st.dataframe(summary, use_container_width=True)
+
+    st.caption("warm_start_ratio = bootstrap_best / overall_best (높을수록 cold-start 효과 좋음)")
+
+    # 대회별 best_so_far 추세 비교
+    pivot = (
+        csp_df
+        .filter(pl.col("best_so_far").is_not_null())
+        .select(["competition_id", "attempt_no", "best_so_far"])
+        .pivot(on="competition_id", index="attempt_no", values="best_so_far", aggregate_function="mean")
+        .sort("attempt_no")
+    )
+    st.line_chart(pivot.to_pandas().set_index("attempt_no"))
+
+st.divider()
+
 # --- Recent attempts table ---
 st.subheader("Recent Attempts")
 
