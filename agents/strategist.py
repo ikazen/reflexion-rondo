@@ -70,6 +70,7 @@ def strategize(
     lessons_text = _format_lessons(lessons)
     valid_ids = {l["reflection_id"] for l in lessons}
     prev_best_str = f"{prev_best_cv:.5f}" if prev_best_cv is not None else "none yet"
+    action_types_str = ", ".join(ACTION_TYPES)
 
     user_prompt = f"""## EDA Card
 {eda_card}
@@ -84,16 +85,34 @@ def strategize(
 ## Task
 Propose exactly one change to improve the CV score.
 Select which retrieved lessons (if any) directly informed your hypothesis and list their IDs in reflection_ids.
-Only include IDs from the list above — omit any that did not influence your reasoning."""
+Only include IDs from the list above — omit any that did not influence your reasoning.
+
+Respond with ONLY a JSON object using exactly these keys:
+{{"hypothesis": "...", "action_type": "<one of: {action_types_str}>", "reflection_ids": []}}"""
+
+    import json
+    import re
 
     resp = _client().chat(
         model=settings.MODEL_STRATEGIST,
         messages=[{"role": "user", "content": user_prompt}],
-        format=_OUTPUT_SCHEMA,
+        format="json",
     )
 
-    import json
-    data = json.loads(resp.message.content)
+    content = resp.message.content.strip()
+    if not content:
+        raise ValueError("Strategist returned empty response")
+    # strip markdown code block if model ignores format param
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
+    if m:
+        content = m.group(1).strip()
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Strategist JSON parse failed: {e}\nraw: {content[:300]}") from e
+
+    if data.get("action_type") not in ACTION_TYPES:
+        data["action_type"] = "feature_engineering"
 
     # keep only IDs that were actually provided (guard against hallucination)
     adopted = [rid for rid in data.get("reflection_ids", []) if rid in valid_ids]

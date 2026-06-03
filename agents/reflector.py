@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 
@@ -111,15 +112,33 @@ Write a lesson that captures what this attempt taught us.
 For generality:
 - L1_local if the lesson depends on column names or statistics specific to this competition
 - L2_class if it likely applies to competitions with a similar fingerprint (task/metric/size class)
-- L3_general if it is a universal principle for tabular ML"""
+- L3_general if it is a universal principle for tabular ML
+
+Respond with ONLY a JSON object using exactly these keys:
+{{"embedded_text": "one-paragraph summary for search", "full_lesson": "detailed lesson", "generality": "<L1_local|L2_class|L3_general>", "reflector_label": "<jump|neutral|regression>"}}"""
 
     resp = _client().chat(
         model=settings.MODEL_REFLECTOR,
         messages=[{"role": "user", "content": user_prompt}],
-        format=_OUTPUT_SCHEMA,
+        format="json",
     )
 
-    data = json.loads(resp.message.content)
+    content = resp.message.content.strip()
+    if not content:
+        raise ValueError("Reflector returned empty response")
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
+    if m:
+        content = m.group(1).strip()
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Reflector JSON parse failed: {e}\nraw: {content[:300]}") from e
+
+    if data.get("generality") not in GENERALITY_VALUES:
+        data["generality"] = "L3_general"
+    if data.get("reflector_label") not in LABEL_VALUES:
+        data["reflector_label"] = "neutral"
+
     reflection_id = str(uuid.uuid4())
 
     insert_reflection(
