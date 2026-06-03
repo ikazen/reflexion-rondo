@@ -2,15 +2,24 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import duckdb
 import streamlit as st
 import polars as pl
 
-from store.db import connect
+DB_PATH = __import__("pathlib").Path(__file__).parent / "runs" / "reflexion.duckdb"
 
 st.set_page_config(page_title="Reflexion Monitor", layout="wide")
 st.title("Reflexion Monitor")
 
-conn = connect()
+if not DB_PATH.exists():
+    st.error(f"DB not found: {DB_PATH}")
+    st.stop()
+
+try:
+    conn = duckdb.connect(str(DB_PATH), read_only=True)
+except duckdb.IOException:
+    st.warning("사이클 실행 중입니다. 잠시 후 새로고침 하세요.")
+    st.stop()
 
 # --- Competition selector ---
 competitions = conn.execute(
@@ -26,9 +35,15 @@ comp_options = {f"{c[0]} — {c[1]}": c[0] for c in competitions}
 selected_label = st.sidebar.selectbox("Competition", list(comp_options.keys()))
 comp_id = comp_options[selected_label]
 
+# 컬럼 존재 여부 확인
+cols = {r[0] for r in conn.execute("pragma table_info('raw.attempts')").fetchall()}
+has_duration = "duration_sec" in cols
+
+_duration_col = "duration_sec" if has_duration else "null as duration_sec"
+
 # --- Attempts ---
 attempts_df = conn.execute(
-    """
+    f"""
     select
         row_number() over (order by run_ts) as attempt_no,
         run_ts,
@@ -38,7 +53,7 @@ attempts_df = conn.execute(
         cv_score,
         label,
         gain_vs_best,
-        duration_sec,
+        {_duration_col},
         error_trace is not null as has_error
     from raw.attempts
     where competition_id = ?
