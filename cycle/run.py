@@ -43,6 +43,7 @@ class CycleResult:
     cv_score: float | None
     label: str
     gain_vs_best: float | None
+    retries: int
     reflection_id: str | None
     error_trace: str | None
     code_path: Path
@@ -168,43 +169,42 @@ def run_cycle(
         prev_best_cv=prev_best_cv,
     )
 
-    # 3. Generate code (1 retry on validation failure)
+    # 3. Generate code + validate + smoke (최대 2회 재시도, 에러 피드백 주입)
     # bootstrap은 1변경 규율 면제(§4) → from-scratch. 그 외엔 best 파이프라인을 한 군데만 수정.
+    _MAX_CODE_RETRIES = 2
     prev_code = None if config.stage == "bootstrap" else _best_code(conn, config.competition_id)
-    source = generate_code(
+    gen_kwargs: dict = dict(
         hypothesis=decision.hypothesis,
         action_type=decision.action_type,
         eda_card=config.eda_card,
         prev_code=prev_code,
     )
-    errors = validate_code(source)
-    if errors:
-        source = generate_code(
-            hypothesis=decision.hypothesis,
-            action_type=decision.action_type,
-            eda_card=config.eda_card,
-            prev_code=prev_code,
-            error_feedback="\n".join(errors),
-        )
-        errors = validate_code(source)
-
+    source = generate_code(**gen_kwargs)
+    retries = 0
     error_trace: str | None = None
+    feature_fn = model_fn = None
 
-    # 4. Load + smoke test
-    loaded = None
-    if not errors:
-        loaded = _load_functions(source)
-        if isinstance(loaded, str):
-            errors = [loaded]
+    for _i in range(_MAX_CODE_RETRIES + 1):
+        errors = validate_code(source)
+        if errors:
+            feedback: str = "\n".join(errors)
+        else:
+            _loaded = _load_functions(source)
+            if isinstance(_loaded, str):
+                feedback = _loaded
+            else:
+                feature_fn, model_fn = _loaded
+                feedback = smoke_test(feature_fn, model_fn, config.train, config.target_col) or ""
 
-    if not errors and loaded is not None:
-        feature_fn, model_fn = loaded
-        smoke_err = smoke_test(feature_fn, model_fn, config.train, config.target_col)
-        if smoke_err:
-            errors = [smoke_err]
+        if not feedback:
+            break
 
-    if errors:
-        error_trace = "\n".join(errors)
+        if _i < _MAX_CODE_RETRIES:
+            source = generate_code(**gen_kwargs, error_feedback=feedback)
+            retries += 1
+        else:
+            error_trace = feedback
+            feature_fn = model_fn = None
 
     # 5. Evaluate
     cv_score = None
@@ -212,8 +212,7 @@ def run_cycle(
     label = "regression"
     gain_vs_best = None
 
-    if not error_trace and loaded is not None:
-        feature_fn, model_fn = loaded
+    if not error_trace and feature_fn is not None:
         try:
             result = eval_run(
                 train=config.train,
@@ -265,6 +264,7 @@ def run_cycle(
         "error_trace":      error_trace,
         "duration_sec":     round(duration_sec, 1),
         "code_path":        str(code_path),
+        "retries":          retries,
     })
 
     # 7. Reflect
@@ -288,6 +288,7 @@ def run_cycle(
         cv_score=cv_score,
         label=label,
         gain_vs_best=gain_vs_best,
+        retries=retries,
         reflection_id=reflection_id,
         error_trace=error_trace,
         code_path=code_path,

@@ -85,6 +85,7 @@ def main() -> None:
         print(f"cv_score:      {result.cv_score}")
         print(f"label:         {result.label}")
         print(f"gain_vs_best:  {result.gain_vs_best}")
+        print(f"retries:       {result.retries}")
         print(f"reflection_id: {result.reflection_id}")
         print(f"code:          {result.code_path}")
         if result.error_trace:
