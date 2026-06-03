@@ -33,8 +33,12 @@ Rules:
 - Fit transformations on train only (no leakage)
 
 Polars rules (do NOT use pandas-style API):
-- dtype.is_categorical() does not exist → use dtype == pl.Categorical
-- series.cat.codes does not exist → use series.to_physical()
+- String columns have dtype pl.String (NOT pl.Categorical) — detect with dtype == pl.String
+- series.cat.codes does not exist → use series.to_physical() (only for pl.Categorical)
+- Correct ordinal encoding for pl.String columns:
+    mapping = {v: i for i, v in enumerate(sorted(train[col].unique().to_list()))}
+    train = train.with_columns(pl.col(col).replace_strict(mapping).cast(pl.Int32))
+    valid = valid.with_columns(pl.col(col).replace_strict(mapping).cast(pl.Int32))
 - pl.concat requires identical schemas → align columns before concat
 - No inplace mutations (no fillna(inplace=True) or similar)"""
 
