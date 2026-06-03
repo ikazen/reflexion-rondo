@@ -7,9 +7,9 @@
 
 | 컴포넌트 | 위치 | 비고 |
 |---|---|---|
-| Strategist (정책) | Mac Ollama 서버 | 테스트: qwen3.5:14b / 프로덕션: deepseek-v4-pro (ADR-016) |
-| Reflector (성찰) | Mac Ollama 서버 | 테스트: qwen3.5:14b / 프로덕션: glm-5 (ADR-016) |
-| Coder (실행) | Mac Ollama 서버 | 테스트: devstral-small-2 / 프로덕션: qwen3-coder-next (ADR-016) |
+| Strategist (정책) | Ollama Cloud | deepseek-v4-pro (ADR-016) |
+| Reflector (성찰) | Ollama Cloud | glm-5 (ADR-016) |
+| Coder (실행) | Ollama Cloud | qwen3-coder-next (ADR-016) |
 | 임베딩 | Mac Ollama 서버 | qwen3-embedding:8b (1024d, MRL) — ADR-008 |
 | Evaluator (CV · 지표 · Optuna · label) | WSL2 로컬 | 결정적 코드 |
 | 생성 코드 실행 | WSL2 로컬 | **현재 in-process `exec`** (격리 미구현, §5는 계획) |

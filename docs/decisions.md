@@ -14,11 +14,10 @@
 - 결정: 성찰은 CV 델타 기준, LB는 희소 확인.
 - 근거: CV는 무제한·결정적. "trust your CV" 정석.
 
-## ADR-004 — 추론은 Mac Ollama 서버, 프로덕션 전환 시 Ollama Cloud
-- 결정: 맥북(M1 Pro 32GB)을 Ollama 서버로 운영. Strategist/Reflector(`qwen3.5:14b`) + Coder(`devstral-small-2`) + 임베딩(`qwen3-embedding:8b`)을 Mac에서 실행. 오케스트레이션·저장소·CV·분석 뷰는 WSL2 로컬.
-- 엔드포인트: `OLLAMA_BASE_URL=http://<mac-ip>:11434` (`.env`). 모델명도 `.env`에서 관리해 Cloud 전환 시 한 줄 교체.
-- 프로덕션 전환 트리거: 로컬 모델 품질 한계 체감 시 → `OLLAMA_BASE_URL=https://ollama.com` + Cloud Pro 모델(deepseek-v4-pro / glm-5 / qwen3-coder-next)으로 교체. 코드 변경 없음.
-- 근거: M1 Pro 32GB에서 14b~24b 모델이 충분히 돌아가므로 Cloud 비용 없이 Phase 2~3 전체 테스트 가능. ADR-016 패밀리 다양성(Strategist≠Reflector)은 프로덕션 전환 시 자동으로 확보됨.
+## ADR-004 — 추론은 Ollama Cloud, 임베딩은 Mac 로컬 서버
+- 결정: Strategist/Reflector/Coder는 Ollama Cloud Pro(`OLLAMA_CLOUD_BASE_URL=https://ollama.com`, Bearer 인증). 임베딩(`qwen3-embedding:8b`)만 Mac Ollama 서버 로컬 유지. 오케스트레이션·저장소·CV·분석 뷰는 WSL2 로컬.
+- 코드 라우팅: 에이전트 3개는 `OLLAMA_CLOUD_BASE_URL` + `OLLAMA_API_KEY`, retriever는 `OLLAMA_BASE_URL`만 사용(키 없음).
+- 근거: Cloud Pro 모델(deepseek-v4-pro / glm-5 / qwen3-coder-next) 품질이 로컬 14b 대비 명확히 높다고 판단해 전환. 임베딩은 클라우드 키 인가 범위 밖이고 로컬 8b로 충분하므로 분리 유지. ADR-016 패밀리 다양성은 Cloud 전환으로 자동 확보.
 
 ## ADR-005 — Evaluator는 결정적 코드
 - 결정: 채점은 코드로만. LLM-as-judge 금지.
@@ -34,10 +33,10 @@
 - 근거: 이 프로젝트의 벡터 규모는 누적 1만~수만 건 수준이라 768차원 브루트포스 코사인이 수십 ms로 충분 — ANN 인덱스(Chroma/pgvector HNSW)는 조기 최적화. dual-write를 없애 검색·분석·기록의 정합성을 한 트랜잭션으로 보장하고, zero-server(ADR-011)와 DuckDB의 OLAP 강점(마트 window 쿼리)을 동시에 유지. pgvector는 분석까지 Postgres로 옮겨야 이득이 생겨 ADR-011과 충돌하므로 제외.
 - 승격 트리거: 벡터 수십만 건 초과로 브루트포스 지연이 체감되면 DuckDB `vss` 확장(HNSW)으로 인덱스만 추가. 그래도 부족하면 그때 전용 벡터DB 재검토.
 
-## ADR-008 — 임베딩은 로컬 (qwen3-embedding)
-- 결정: `qwen3-embedding:0.6b`(1024차원, MRL 32~1024 절단 가능)를 로컬 실행. 스키마는 `reflections.embedding float[1024]`.
-- 대안: nomic-embed-text(768d, v2 초안) / embeddinggemma:300m(경량 768d).
-- 근거: 검색 품질이 transfer 메커니즘을 직접 좌우하는데, qwen3-embedding이 2026 MTEB v2 오픈웨이트 최상위(0.6b도 OpenAI/Google API 상회)면서 0.6b는 로컬 부담이 작다. 클라우드 키가 임베딩 미인가일 수 있어 로컬 유지. 저장 압박 시 MRL로 차원 절단.
+## ADR-008 — 임베딩은 로컬 (qwen3-embedding:8b)
+- 결정: `qwen3-embedding:8b`(1024차원, MRL 32~1024 절단 가능)를 Mac Ollama 서버에서 로컬 실행. 스키마는 `reflections.embedding float[1024]`.
+- 대안: nomic-embed-text(768d, v2 초안) / embeddinggemma:300m(경량 768d) / qwen3-embedding:0.6b(경량 이전 버전).
+- 근거: 검색 품질이 transfer 메커니즘을 직접 좌우하는데, qwen3-embedding:8b가 2026 MTEB v2 오픈웨이트 최상위권이고 Ollama Cloud 키 인가 범위 밖이라 로컬 유지. 0.6b에서 8b로 업그레이드한 것은 교훈 검색 품질 향상이 목적 — 기존 임베딩과 차원(1024d)은 동일하므로 스키마 변경 없음. 저장 압박 시 MRL로 차원 절단.
 
 ## ADR-009 — LLM 출력은 JSON Schema 강제
 - 결정: 가설/교훈을 스키마로 강제.
@@ -96,7 +95,7 @@
 | 벡터 인덱스 | 브루트포스 → 필요 시 vss(HNSW) | 승격 조건부 |
 | Ollama Cloud 요금제 | Pro($20, 동시 3) | 시작값 |
 | 시작 대회 | playground-series-s4e1 (Bank Churn, 이진/AUC, ~16.5만 행) | 확정 |
-| 임베딩 모델 | qwen3-embedding:0.6b(로컬, 1024d) | 확정, ADR-008 |
+| 임베딩 모델 | qwen3-embedding:8b(로컬, 1024d) | 확정, ADR-008 |
 | 격리 런타임 | 컨테이너 vs nsjail 구체 선정 | TBD |
 | label 임계값 z | fold_std 배수(기본 1.0) | TBD (캘리브레이션 필요) |
 | fingerprint 거리 가중치 | task/metric 큼·size 중간·기타 작음 | TBD (대회 누적 후 캘리브레이션) |
