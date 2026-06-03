@@ -82,6 +82,17 @@
 - 비용: 세 역할 모두 사이클당 1회라 분리해도 호출 수는 안 늘고 설정만 는다. 처음부터 교차 패밀리 critic을 확보하는 편이 교훈 품질에 유리하다고 보고 단계적 분리(2→3)는 두지 않는다. 단순 베이스라인이 필요하면 Reflector를 Strategist 모델로 잠시 묶을 수 있으나 기본은 3모델.
 - 주의: 모델 ID는 변동성이 크다. 확정 전 `ollama.com/search?c=cloud`에서 현재 태그 재확인.
 
+## ADR-017 — 무인 24/7 운용은 worker-vm + 단일 daemon (Phase 5)
+- 결정: WSL2 로컬 → nexus-prime **worker-vm**(2 OCPU ARM64 / 12GB, always-on)으로 옮겨 무인 상주. 오케스트레이션은 cron이 아닌 **단일 장수 프로세스**(`bin/run_daemon.py` + systemd `Restart=always`). 추론만 Ollama Cloud, **임베딩은 Mac Ollama 유지**(ADR-004/008 재확인). 추적: 마일스톤 Phase 5, BON-67~70.
+- 대안: (a) WSL2 유지 + 데몬화 — 데스크톱이라 진짜 24/7 아님(슬립/재부팅), dev 머신과 충돌. (b) mac-server — M1 10c/32GB로 강하지만 intermittent(가정 NAT)라 무인 호스트 부적합. (c) cron + 파일락 유지(ADR-011).
+- 근거:
+  - **호스트**: 이 루프의 wall-clock은 Ollama Cloud 추론 대기가 지배하고 처리량은 Cloud rate-limit(5h 세션 + 주간 cap)이 이미 throttle한다. 따라서 always-on 노드는 약해도(2 ARM/12GB) 충분 — "강한 CPU"보다 "진짜 24/7"이 우선. nexus-prime에 ML 전용 여유 노드는 없고 worker-vm이 유일한 여유 always-on 노드(airflow edge-worker만 상주).
+  - **daemon > cron** (ADR-011 정련): 단일 24/7 워커에선 데몬이 cron 중첩/DuckDB 파일락(runbook §4) 문제를 제거하고, Ollama 페이싱 상태를 메모리에 들고 self-throttle 한다. ADR-011의 "Prefect 승격은 워커 ≥3"은 유지(BON-24) — 데몬화는 승격이 아니라 단일 워커의 단순화.
+  - **임베딩 Mac 유지**: 임베딩은 매 사이클 retrieve+persist 2회로 빈번하다. Cloud로 보내면 추론 3역할에 써야 할 한도/과금을 갉아먹어 사이클 처리량 자체가 준다. Mac이 사실상 always-on이므로 ADR-004/008 분리를 그대로 둔다. 단 Mac 일시 불통(슬립)에 대비해 daemon은 임베딩 호출에 retry/backoff, 실패 시 해당 사이클만 스킵(크래시 금지).
+  - **격리 = Docker `--network none`** (ADR-013의 "컨테이너 vs nsjail" TBD 확정): nexus-prime이 Docker는 제공하나 nsjail 표준은 없다. 생성 코드는 순수 compute라 네트워크 차단이 깔끔히 맞고, mem/cpu/timeout 상한으로 12GB ARM의 OOM 리스크를 흡수한다. OOM·타임아웃은 워커 사망이 아니라 `error_trace`→교훈이 된다.
+  - **DuckDB 영속 + 백업**: DuckDB 파일 = 누적 교훈 = transfer의 가치. nexus-prime L7("백업 안 함")의 재고 트리거("stateful 신규 서비스 추가")에 정확히 해당하므로, worker-vm 로컬 디스크 + MinIO 야간 스냅샷(systemd timer)으로 백업한다. nexus-prime decisions.md L7에 BON-70 cross-reference.
+- 한계: 12GB는 대형 데이터셋에서 빠듯 — 격리 컨테이너 mem-limit로 OOM을 lesson화해 흡수하되, 빈발하면 mac-server 디스패치(하이브리드)를 재고한다.
+
 ---
 
 ## 미정 항목 (TBD)
@@ -96,6 +107,7 @@
 | Ollama Cloud 요금제 | Pro($20, 동시 3) | 시작값 |
 | 시작 대회 | playground-series-s4e1 (Bank Churn, 이진/AUC, ~16.5만 행) | 확정 |
 | 임베딩 모델 | qwen3-embedding:8b(로컬, 1024d) | 확정, ADR-008 |
-| 격리 런타임 | 컨테이너 vs nsjail 구체 선정 | TBD |
+| 격리 런타임 | Docker `--network none` + mem/cpu/timeout | 확정, ADR-017 (BON-67) |
+| 운용 호스트 | worker-vm + 단일 daemon(systemd) | 확정, ADR-017 (Phase 5) |
 | label 임계값 z | fold_std 배수(기본 1.0) | TBD (캘리브레이션 필요) |
 | fingerprint 거리 가중치 | task/metric 큼·size 중간·기타 작음 | TBD (대회 누적 후 캘리브레이션) |
