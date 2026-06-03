@@ -31,7 +31,18 @@
 - 시간/메모리 상한, 네트워크 차단, FS 화이트리스트.
 - 타임아웃·OOM·격리 위반 → 강제 종료 후 `error_trace` 기록 → Reflect 단계가 실패에서 교훈 추출.
 
-## 6. 관측·디버깅
+## 6. 모니터링 대시보드
+
+```bash
+uv run streamlit run dashboard.py
+# → http://localhost:8501
+```
+
+- CV score 진행 곡선, label/action_type 분포, reflection_impact 상위 교훈, 최근 attempt 테이블 제공
+- DB 마이그레이션을 자동 적용하므로 스키마 변경 후에도 별도 작업 불필요
+- 사이클 실행 중에도 새로고침으로 실시간 확인 가능
+
+## 7. 관측·디버깅
 
 - `reflections.embedded_text`/`full_lesson`을 함께 저장 → 검색 결과(`spec.md §1.6` 쿼리)를 사람이 SQL로 바로 읽음.
 - 기록·검색·분석이 한 DuckDB라 SQL 한 곳에서 디버깅.
@@ -40,7 +51,7 @@
 - transfer 점검: `cold_start_progression`의 `warm_start_ratio` 추세. 우상향 아니면 fingerprint 가중치/generality 라벨링/검색 메타필터 점검.
 - 노이즈 점검: `cv_fold_var`가 큰 attempt의 label은 `neutral`로 빠지는지 확인 (spec §4).
 
-## 7. 교훈 위생 (메타 루프, Phase 4)
+## 8. 교훈 위생 (메타 루프, Phase 4)
 
 - `archived=true` 또는 `reflection_impact.avg_gain ≤ 0` 교훈은 검색 제외/가중치 하향.
 - `L1_local`은 transfer에서 자동 제외.
