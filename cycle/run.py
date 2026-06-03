@@ -20,6 +20,7 @@ from memory.retriever import search
 from store.db import insert_attempt
 
 RUNS_CODE_DIR = Path(__file__).parent.parent / "runs" / "code"
+_CODE_HEADER_SEP = "# " + "-" * 60  # 저장 헤더와 본문 경계 — _best_code가 이 줄로 헤더를 떼낸다
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,10 +101,38 @@ def _save_code(
         f"# cv_score:     {cv_score}  gain_vs_best: {gain_vs_best}\n"
         f"# error:        {'yes' if error_trace else 'no'}\n"
         f"# hypothesis:   {' '.join(hypothesis.split())}\n"
-        f"# {'-' * 60}\n"
+        f"{_CODE_HEADER_SEP}\n"
     )
     path.write_text(header + source, encoding="utf-8")
     return path
+
+
+def _best_code(conn: duckdb.DuckDBPyConnection, competition_id: str) -> str | None:
+    """1변경 규율의 기준점: best(에러 없는) attempt의 저장 코드 본문. 없으면 None."""
+    row = conn.execute(
+        """
+        select a.code_path
+        from raw.attempts a
+        join raw.competitions c using (competition_id)
+        where a.competition_id = ?
+          and a.cv_score is not null
+          and a.error_trace is null
+          and a.code_path is not null
+        order by c.metric_sign * a.cv_score desc
+        limit 1
+        """,
+        [competition_id],
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    path = Path(row[0])
+    if not path.exists():
+        return None
+    content = path.read_text(encoding="utf-8")
+    sep = _CODE_HEADER_SEP + "\n"
+    if sep in content:  # 저장 시 붙인 주석 헤더 제거 → 순수 소스만
+        content = content.split(sep, 1)[1]
+    return content.strip() or None
 
 
 def _load_functions(source: str) -> tuple[object, object] | str:
@@ -140,10 +169,13 @@ def run_cycle(
     )
 
     # 3. Generate code (1 retry on validation failure)
+    # bootstrap은 1변경 규율 면제(§4) → from-scratch. 그 외엔 best 파이프라인을 한 군데만 수정.
+    prev_code = None if config.stage == "bootstrap" else _best_code(conn, config.competition_id)
     source = generate_code(
         hypothesis=decision.hypothesis,
         action_type=decision.action_type,
         eda_card=config.eda_card,
+        prev_code=prev_code,
     )
     errors = validate_code(source)
     if errors:
@@ -151,6 +183,7 @@ def run_cycle(
             hypothesis=decision.hypothesis,
             action_type=decision.action_type,
             eda_card=config.eda_card,
+            prev_code=prev_code,
             error_feedback="\n".join(errors),
         )
         errors = validate_code(source)
@@ -228,6 +261,7 @@ def run_cycle(
         "gain_vs_best":     gain_vs_best,
         "error_trace":      error_trace,
         "duration_sec":     round(duration_sec, 1),
+        "code_path":        str(code_path),
     })
 
     # 7. Reflect

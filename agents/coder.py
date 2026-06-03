@@ -58,7 +58,13 @@ def generate_code(
         f"## Hypothesis\nAction type: {action_type}\n{hypothesis}",
     ]
     if prev_code:
-        parts.append(f"## Previous Code (for reference)\n```python\n{prev_code}\n```")
+        parts.append(
+            "## Previous Best Pipeline\n"
+            "Start from this exact code. Apply the single change the hypothesis "
+            f"(action_type: {action_type}) requires and nothing else — keep every "
+            "other line identical so the CV delta is attributable to one change.\n"
+            f"```python\n{prev_code}\n```"
+        )
     if error_feedback:
         parts.append(f"## Validation Errors (fix these)\n{error_feedback}")
 

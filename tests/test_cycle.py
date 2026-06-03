@@ -150,3 +150,33 @@ def test_attempt_persisted(conn: duckdb.DuckDBPyConnection, train_df: pl.DataFra
         "select count(*) from raw.attempts where attempt_id = ?", [result.attempt_id]
     ).fetchone()[0]
     assert count == 1
+
+
+def test_prev_code_threaded_on_second_attempt(
+    conn: duckdb.DuckDBPyConnection, train_df: pl.DataFrame
+) -> None:
+    """1변경 규율: 첫 reflexion 시도엔 prev_code 없음, 두 번째엔 best 코드 본문이 주입된다."""
+    config = CycleConfig(
+        competition_id="test-comp",
+        train=train_df,
+        target_col="target",
+        metric="auc",
+        stage="reflexion",
+        eda_card="x",
+    )
+
+    with (
+        patch("cycle.run.search", return_value=[]),
+        patch("cycle.run.strategize", return_value=_strategy()),
+        patch("cycle.run.generate_code", return_value=_VALID_CODE) as gen,
+        patch("cycle.run.reflect", return_value=_reflection()),
+        patch("memory.retriever.embed", return_value=[0.0] * 1024),
+    ):
+        run_cycle(conn, config)  # attempt 1 — 직전 best 없음
+        assert gen.call_args.kwargs["prev_code"] is None
+        run_cycle(conn, config)  # attempt 2 — best 코드 존재
+        prev = gen.call_args.kwargs["prev_code"]
+
+    assert prev is not None
+    assert "def feature_fn" in prev  # 저장 헤더는 떼고 순수 소스만
+    assert not prev.startswith("#")

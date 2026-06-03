@@ -37,7 +37,7 @@
 
 1. **Retrieve**: 검색 키 = `(competition_fingerprint, last_attempt_summary 또는 seed_query)` → DuckDB 벡터 검색(브루트포스 코사인) + 메타필터로 교훈 top-k.
 2. **Strategize**: EDA 카드 + 검색 교훈 + 현재 stage → 다음 가설 1개 (`action_type` enum 강제). 실제 채택한 교훈 id를 함께 출력.
-3. **Generate**: 가설 → `feature_fn` + `model_fn` (컨트랙트는 `spec.md`). 시드·k-fold·IO는 Evaluator가 주입.
+3. **Generate**: 가설 → `feature_fn` + `model_fn` (컨트랙트는 `spec.md`). 시드·k-fold·IO는 Evaluator가 주입. **bootstrap 외 단계는 직전 best 파이프라인을 `prev_code`로 받아 한 군데만 수정** — 1변경 규율을 코드로 강제(§4).
 4. **Evaluate**: k-fold CV + 지표 + (필요 시) Optuna. **결정적 코드. CV 델타·fold 분산으로 `label`도 여기서 계산** (LLM 아님).
 5. **Submit?**: 제출 예산 남았을 때만. best 후보 → LB.
 6. **Reflect**: (가설, 코드, retrieved_ids, CV 결과, best 대비 델타, feature_importance, fold variance, 에러 trace) → 교훈 본문 + `generality`. Reflector의 정성 판정(`reflector_label`)은 참고용으로만 기록.
@@ -52,6 +52,8 @@
 | `bootstrap` | 새 대회 진입 직후 N=3~5회. warm-start 시드 + 안전 베이스라인 정렬 | 예외 (큰 변경 허용) |
 | `reflexion` | 정상 루프. 시도당 1변경 | 강제 |
 | `exploitation` | best 후보 안정화 (시드 변경, 앙상블 결정 등) | 예외 |
+
+1변경 규율은 문서 규약이 아니라 코드로 강제된다: `reflexion`/`exploitation` 단계는 best(에러 없는) attempt의 저장 코드(`code_path`)를 `prev_code`로 Coder에 주입하고 "한 군데만 수정"을 지시한다. bootstrap만 면제(prev_code 없음 → from-scratch).
 
 `reflection_impact`는 `reflexion` 단계 attempt만 집계한다 (`stg_attempts`에서 필터). 인과 귀속을 깨끗하게 유지.
 

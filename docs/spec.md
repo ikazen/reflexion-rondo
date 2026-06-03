@@ -36,7 +36,9 @@ cv_score          double,
 cv_fold_var       double,      -- fold별 분산 (overfit·노이즈 감지)
 lb_score          double,      -- 미제출 시 null
 label             text,        -- jump / neutral / regression (Evaluator 결정, §4)
-error_trace       text         -- 실패 시
+error_trace       text,        -- 실패 시
+duration_sec      double,      -- 사이클 소요 시간
+code_path         text         -- 생성 코드 로컬 경로(runs/code/, 사람 검토 + prev_code 소스). 코드 본문은 DB에 두지 않음
 ```
 
 ### 1.3 `raw.reflections`
