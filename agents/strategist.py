@@ -10,7 +10,6 @@ ACTION_TYPES: list[str] = [
     "feature_engineering",
     "model_swap",
     "hyperparam_search",
-    "cv_strategy",
     "preprocessing",
     "ensemble",
 ]
