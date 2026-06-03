@@ -1,4 +1,4 @@
-# 명세 (스키마·dbt·API·컨트랙트)
+# 명세 (스키마·분석 뷰·API·컨트랙트)
 
 단일 스토어 원칙: DuckDB 하나가 기록·검색·분석을 모두 맡는다 (임베딩은 벡터 컬럼, 검색은 브루트포스 코사인). 결정 근거는 `decisions.md` ADR-007.
 
@@ -72,7 +72,9 @@ size_class ('tiny' <10k / 'small' <100k / 'mid' <1M / 'large')
 
 타깃 통계는 train fold 평균/분산으로만 계산 (test 누수 방지).
 
-### 1.5 `raw.pipelines` (코드 메모리)
+### 1.5 `raw.pipelines` (코드 메모리) — 계획 (Phase 3, BON-17)
+
+> 미구현. 현재 생성 코드는 `runs/code/`에 로컬 저장하고 `attempts.code_path`로 가리킨다(§1.2). cold-start 시드 재사용을 위한 DB 테이블은 Phase 3에서 도입.
 
 ```sql
 pipeline_id          text primary key,
@@ -201,97 +203,22 @@ cv_score = mean(scores); cv_fold_var = var(scores)
 
 검증 게이트(실행 전): 시그니처 일치, 허용 import만, 금지 호출(파일/네트워크/`eval`) 없음. 위반 시 재생성 1회, 실패면 `error_trace` 기록 후 Reflect로 진행.
 
-격리 실행: `runtime/`가 컨테이너/nsjail에서 위 골격을 돌린다 (ADR-013, `runbook.md`).
+격리 실행: `runtime/`가 컨테이너/nsjail에서 위 골격을 돌린다 (ADR-013, `runbook.md`). **계획 — 현재는 in-process `exec`, `runtime/`는 스텁** (architecture.md §5).
 
-## 6. dbt 모델
+## 6. 분석 뷰 (dbt 아님 — `store/schema.sql` 내 SQL view)
 
-`stg_attempts`: `raw.attempts` ⨝ `raw.competitions`로 `metric_sign` 노출.
-인과 귀속용 view `stg_attempts_reflexion_only`는 `stage='reflexion'` 필터.
+별도 dbt 프로젝트 없이 DuckDB SQL view로 둔다. 정의는 `store/schema.sql`이 진실 — 여기선 목록·용도만(중복 금지).
 
-### 6.1 `score_progression.sql` (대회 내 진보)
+| view | 용도 |
+|---|---|
+| `stg_attempts` | `raw.attempts` ⨝ `raw.competitions`로 `metric_sign` 노출 |
+| `stg_attempts_reflexion_only` | `stage='reflexion'` 필터 (인과 귀속용) |
+| `score_progression` | 대회 내 진보 — `attempt_no` vs `cv_score`·`best_so_far` |
+| `reflection_impact` | 교훈별 평균 gain·점프 수 (reflexion 단계만 집계) |
 
-```sql
-select
-  competition_id,
-  row_number() over (partition by competition_id order by run_ts) as attempt_no,
-  run_ts, cv_score, lb_score,
-  max(metric_sign * cv_score) over (
-    partition by competition_id
-    order by run_ts rows between unbounded preceding and current row
-  ) * metric_sign as best_so_far
-from {{ ref('stg_attempts') }}
-```
+**계획 (Phase 3, BON-18):** `cold_start_progression` — 대회별 bootstrap 첫 시도의 "최종 best 대비 비율"(`warm_start_ratio`)이 누적 경험과 함께 우상향하는지로 transfer 효과 측정. 미구현.
 
-### 6.2 `reflection_impact.sql` (어떤 반성이 점프를 만들었나)
-
-```sql
-with scored as (
-  select
-    competition_id, reflection_ids,
-    metric_sign * cv_score
-    - max(metric_sign * cv_score) over (
-        partition by competition_id
-        order by run_ts rows between unbounded preceding and 1 preceding
-      ) as gain_vs_best
-  from {{ ref('stg_attempts_reflexion_only') }}
-),
-per_reflection as (
-  select unnest(reflection_ids) as reflection_id, gain_vs_best
-  from scored where reflection_ids is not null
-)
-select
-  reflection_id,
-  count(*)                                          as times_applied,
-  round(avg(gain_vs_best), 5)                       as avg_gain,
-  sum(case when gain_vs_best > 0 then 1 else 0 end) as jumps,
-  round(max(gain_vs_best), 5)                       as best_jump
-from per_reflection
-group by reflection_id
-order by avg_gain desc
-```
-
-### 6.3 `cold_start_progression.sql` (transfer 효과 측정)
-
-대회별 bootstrap 첫 시도의 "그 대회 최종 best 대비 비율"이 누적 경험과 함께 어떻게 변하는가.
-
-```sql
-with first_boot as (
-  select competition_id,
-         arg_min(cv_score, run_ts) as first_cv,
-         min(run_ts)               as first_ts
-  from {{ source('raw', 'attempts') }}
-  where stage = 'bootstrap'
-  group by competition_id
-),
-best_per_comp as (
-  select competition_id,
-         max(metric_sign * cv_score) * metric_sign as best_cv,
-         any_value(metric_sign)                    as metric_sign
-  from {{ ref('stg_attempts') }}
-  group by competition_id, metric_sign
-)
-select
-  row_number() over (order by f.first_ts) as competition_no,
-  f.competition_id, f.first_ts,
-  f.first_cv, b.best_cv,
-  (b.metric_sign * f.first_cv) / nullif(b.metric_sign * b.best_cv, 0) as warm_start_ratio
-from first_boot f
-join best_per_comp b using (competition_id)
-order by f.first_ts
-```
-
-`warm_start_ratio`가 대회 번호에 따라 우상향하면 transfer 작동. 아니면 fingerprint/generality 튜닝 필요.
-
-### 6.4 디버깅 조인 (효과 좋은 교훈 전문 보기)
-
-```sql
-select r.reflection_id, r.full_lesson, r.generality, i.avg_gain, i.jumps
-from {{ ref('reflection_impact') }} i
-join {{ source('raw', 'reflections') }} r using (reflection_id)
-where r.archived = false
-order by i.avg_gain desc
-limit 20
-```
+디버깅: 효과 좋은 교훈 전문은 `reflection_impact` ⨝ `raw.reflections`(`archived=false`)로 조회.
 
 ## 7. Ollama Cloud 연동
 
@@ -320,5 +247,5 @@ local.embed(model="qwen3-embedding:0.6b", input=note_text)   # 1024d
 1. 모델 배정(ADR-016): Strategist/Reflector는 추론 모델, Coder는 코드 특화 모델.
 2. 구조화 출력(JSON Schema): 디코딩 단계 검증으로 재시도 제거.
 3. 컨텍스트 캐싱: EDA 카드·교훈 패키지를 안정 유지해 캐시 활용.
-4. 클라우드 밖은 클라우드 밖에: 임베딩·CV·dbt는 로컬.
+4. 클라우드 밖은 클라우드 밖에: 임베딩·CV·분석 뷰는 로컬.
 5. 도구 호출은 native `/api/chat`. (원격 `/v1`은 tool calling이 깨질 수 있음)
