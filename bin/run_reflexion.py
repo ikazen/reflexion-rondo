@@ -10,7 +10,7 @@ from pathlib import Path
 import polars as pl
 
 from cycle.run import CycleConfig, run_cycle
-from store.db import connect
+from store.db import connect, ensure_competition
 
 COMPETITION_ID = "playground-series-s4e1"
 TARGET = "Exited"
@@ -50,6 +50,14 @@ def main() -> None:
 
     train = pl.read_csv(DATA_DIR / "train.csv").drop(DROP_COLS)
     conn = connect()
+    ensure_competition(
+        conn,
+        competition_id=COMPETITION_ID,
+        name="Bank Customer Churn Prediction",
+        task_type="binary_classification",
+        metric=METRIC,
+        metric_sign=1,
+    )
 
     failed = 0
     for i in range(args.cycles):
