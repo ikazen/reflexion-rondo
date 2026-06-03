@@ -213,32 +213,52 @@ def run_cycle(
             error_trace = feedback
             feature_fn = model_fn = None
 
-    # 5. Evaluate
+    # 5. Evaluate (eval_run 실패 시 1회 코드 재생성 후 재시도)
     cv_score = None
     cv_fold_var = 0.0
     label = "regression"
     gain_vs_best = None
 
     if not error_trace and feature_fn is not None:
-        try:
-            result = eval_run(
-                train=config.train,
-                target_col=config.target_col,
-                metric=config.metric,
-                feature_fn=feature_fn,
-                model_fn=model_fn,
-                params={},
-                prev_best=prev_best_cv,
-                n_splits=config.n_splits,
-                seed=config.seed,
-                is_classification=config.is_classification,
-            )
-            cv_score = result.cv_score
-            cv_fold_var = result.cv_fold_var
-            label = result.label
-            gain_vs_best = result.gain_vs_best
-        except Exception as exc:
-            error_trace = f"eval_run failed: {exc}"
+        for _eval_i in range(2):
+            try:
+                result = eval_run(
+                    train=config.train,
+                    target_col=config.target_col,
+                    metric=config.metric,
+                    feature_fn=feature_fn,
+                    model_fn=model_fn,
+                    params={},
+                    prev_best=prev_best_cv,
+                    n_splits=config.n_splits,
+                    seed=config.seed,
+                    is_classification=config.is_classification,
+                )
+                cv_score = result.cv_score
+                cv_fold_var = result.cv_fold_var
+                label = result.label
+                gain_vs_best = result.gain_vs_best
+                break
+            except Exception as exc:
+                eval_feedback = f"eval_run failed: {exc}"
+                if _eval_i == 0:
+                    source = generate_code(**gen_kwargs, error_feedback=eval_feedback)
+                    retries += 1
+                    _errs = validate_code(source)
+                    if _errs:
+                        error_trace = "\n".join(_errs)
+                        break
+                    _reloaded = _load_functions(source)
+                    if isinstance(_reloaded, str):
+                        error_trace = _reloaded
+                        break
+                    _smoke = smoke_test(_reloaded[0], _reloaded[1], config.train, config.target_col)
+                    if _smoke:
+                        error_trace = _smoke
+                        break
+                    feature_fn, model_fn = _reloaded
+                else:
+                    error_trace = eval_feedback
 
     # 5b. 생성 코드 로컬 저장 (사람 검토용 — reflection 반영 여부는 사람이 판단)
     code_path = _save_code(
