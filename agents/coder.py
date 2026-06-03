@@ -30,7 +30,13 @@ Rules:
 - feature_fn must accept exactly 3 args and return a 2-tuple of polars DataFrames
 - model_fn must accept exactly 1 arg and return an object with fit() and predict()
 - No file I/O, no network calls, no eval/exec/open
-- Fit transformations on train only (no leakage)"""
+- Fit transformations on train only (no leakage)
+
+Polars rules (do NOT use pandas-style API):
+- dtype.is_categorical() does not exist → use dtype == pl.Categorical
+- series.cat.codes does not exist → use series.to_physical()
+- pl.concat requires identical schemas → align columns before concat
+- No inplace mutations (no fillna(inplace=True) or similar)"""
 
 
 def _extract_code(text: str) -> str:
