@@ -45,15 +45,19 @@ launchctl setenv OLLAMA_MODELS "/Users/<your-username>/mnt/ollama-model"
 # 임베딩 (필수)
 ollama pull qwen3-embedding:0.6b
 
-# Strategist / Reflector (테스트용 기본값)
-ollama pull qwen3.5:14b
+# Strategist / Reflector (테스트용 임시 공용 — ADR-016 참고)
+ollama pull qwen3.5:9b-mlx   # Apple Silicon 최적화 (M1/M2/M3)
 
 # Coder (테스트용 기본값)
 ollama pull devstral-small-2
 ```
 
-> 모델 태그는 바뀔 수 있다. 설치 전 [ollama.com/search](https://ollama.com/search) 에서 현재 태그 확인.
-> 프로덕션 모델(deepseek-v4-pro / glm-5 / qwen3-coder-next)은 Ollama Cloud 전환 시 `.env`만 수정하면 된다 (ADR-004).
+> **Strategist와 Reflector를 같은 모델로 쓰는 건 로컬 테스트 한계 때문에 임시다.**
+> ADR-016에서 두 역할은 서로 다른 패밀리여야 한다고 결정했다 (자기편향 완화).
+> 프로덕션 전환 시 Strategist=deepseek-v4-pro, Reflector=glm-5로 분리된다.
+>
+> 모델 태그는 바뀔 수 있다. 설치 전 [ollama.com/library](https://ollama.com/library) 에서 현재 태그 확인.
+> 프로덕션 모델은 Ollama Cloud 전환 시 `.env`만 수정하면 된다 (ADR-004).
 
 ---
 
@@ -81,8 +85,8 @@ OLLAMA_BASE_URL=http://mac-server.<tailnet>.ts.net:11434
 # OLLAMA_BASE_URL=http://100.x.x.x:11434
 
 # 모델 (기본값과 동일하면 생략 가능)
-MODEL_STRATEGIST=qwen3.5:14b
-MODEL_REFLECTOR=qwen3.5:14b
+MODEL_STRATEGIST=qwen3.5:9b-mlx
+MODEL_REFLECTOR=qwen3.5:9b-mlx   # 임시 공용 — 프로덕션에서 glm-5로 분리 (ADR-016)
 MODEL_CODER=devstral-small-2
 MODEL_EMBEDDING=qwen3-embedding:0.6b
 ```
