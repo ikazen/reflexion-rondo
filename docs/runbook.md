@@ -22,7 +22,49 @@ uv run python bin/reset.py -c playground-series-s4e1 -y
 
 대회별 초기화는 DB 행만 삭제하고 다른 대회 데이터는 건드리지 않는다.
 
-## 1. 오케스트레이션
+## 1. 새 대회 등록 절차
+
+### 1-1. 데이터 다운로드
+```bash
+# Kaggle 규칙 동의 먼저 (403 뜨면 브라우저에서 동의)
+! kaggle competitions download -c <competition-id> -p data/<competition-id>
+cd data/<competition-id> && unzip -q *.zip
+```
+
+### 1-2. config/competitions/<slug>.py 작성
+`config/competitions/s5e3.py` 참고. 필수 항목:
+- `COMPETITION_ID`, `NAME`, `TARGET`, `METRIC`, `TASK_TYPE`, `METRIC_SIGN`
+- `IS_CLASSIFICATION`, `DROP_COLS` (id 계열 컬럼)
+- `DATA_DIR`
+- `EDA_CARD` — feature별 dtype 명시 필수 (pl.String 컬럼 인코딩 방법 포함)
+
+### 1-3. cold-start 등록
+```bash
+uv run python -m bin.start_competition \
+    --id <competition-id> \
+    --name "<대회명>" \
+    --task binary --metric auc --target <타깃컬럼>
+# 출력: 유사 대회 목록, 교훈 수, 시드 파이프라인 수 확인
+```
+
+### 1-4. cold-start bootstrap 실행
+```bash
+uv run python -m bin.run_reflexion \
+    --competition <slug> --stage bootstrap --cycles 5 --cold-start
+```
+
+### 1-5. reflexion 루프
+```bash
+uv run python -m bin.run_reflexion \
+    --competition <slug> --stage reflexion --cycles 30
+```
+
+### 1-6. 교훈 위생 (30사이클마다)
+```bash
+uv run python -m bin.archive_lessons
+```
+
+## 2. 오케스트레이션
 
 - `bin/run_cycle.py`: 1 사이클 (retrieve → strategize → generate → evaluate → submit? → reflect → persist).
 - `bin/start_competition.py`: 새 대회 cold-start (fingerprint → warm-start 시드 → bootstrap 큐잉).
