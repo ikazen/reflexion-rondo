@@ -17,10 +17,12 @@ TARGET = "Exited"
 METRIC = "auc"
 DATA_DIR = Path(__file__).parent.parent / "data" / COMPETITION_ID
 
+DROP_COLS = ["id", "CustomerId", "Surname"]
+
 EDA_CARD = """competition: playground-series-s4e1 (Bank Churn)
 task: binary classification  metric: AUC  target: Exited
-rows: 165034  cols: 13 (10 numeric, 3 categorical)
-categorical: Geography, Gender, Surname
+rows: 165034  features: 10 (8 numeric, 2 categorical)
+categorical: Geography, Gender
 numeric: CreditScore, Age, Tenure, Balance, NumOfProducts, HasCrCard, IsActiveMember, EstimatedSalary
 target rate: 21.2% (mild imbalance)
 no missing values"""
@@ -32,7 +34,7 @@ def main() -> None:
     parser.add_argument("--cycles", type=int, default=1)
     args = parser.parse_args()
 
-    train = pl.read_csv(DATA_DIR / "train.csv")
+    train = pl.read_csv(DATA_DIR / "train.csv").drop(DROP_COLS)
     conn = connect()
 
     failed = 0
