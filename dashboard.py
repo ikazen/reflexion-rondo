@@ -36,10 +36,11 @@ selected_label = st.sidebar.selectbox("Competition", list(comp_options.keys()))
 comp_id = comp_options[selected_label]
 
 # 컬럼 존재 여부 확인
-cols = {r[0] for r in conn.execute("pragma table_info('raw.attempts')").fetchall()}
+cols = {r[0] for r in conn.execute("select column_name from information_schema.columns where table_schema='raw' and table_name='attempts'").fetchall()}
 has_duration = "duration_sec" in cols
 
 _duration_col = "duration_sec" if has_duration else "null as duration_sec"
+_retries_col  = "retries"       if "retries"      in cols else "0 as retries"
 
 # --- Attempts ---
 attempts_df = conn.execute(
@@ -54,6 +55,7 @@ attempts_df = conn.execute(
         label,
         gain_vs_best,
         {_duration_col},
+        {_retries_col},
         error_trace is not null as has_error
     from raw.attempts
     where competition_id = ?
@@ -168,7 +170,7 @@ display_df = (
     .head(20)
     .select([
         "attempt_no", "run_ts", "stage", "action_type",
-        "cv_score", "label", "gain_vs_best", "duration_sec", "has_error",
+        "cv_score", "label", "gain_vs_best", "duration_sec", "retries", "has_error",
         "hypothesis",
     ])
 )
