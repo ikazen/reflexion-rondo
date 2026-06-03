@@ -12,10 +12,10 @@
 | Coder (실행) | Mac Ollama 서버 | 테스트: devstral-small-2 / 프로덕션: qwen3-coder-next (ADR-016) |
 | 임베딩 | Mac Ollama 서버 | qwen3-embedding:8b (1024d, MRL) — ADR-008 |
 | Evaluator (CV · 지표 · Optuna · label) | WSL2 로컬 | 결정적 코드 |
-| 생성 코드 실행 | WSL2 로컬 (컨테이너/nsjail) | 격리 실행, §5 |
+| 생성 코드 실행 | WSL2 로컬 | **현재 in-process `exec`** (격리 미구현, §5는 계획) |
 | Memory (검색) | 로컬 | DuckDB (벡터 컬럼 + 브루트포스 코사인) |
 | Orchestrator | 로컬 | 단순 Python 러너 + cron |
-| Warehouse + dbt | 로컬 | DuckDB (스토어·검색·분석 단일화) |
+| Warehouse + 분석 뷰 | 로컬 | DuckDB (스토어·검색·분석 단일화, dbt 아닌 SQL view) |
 
 설계 의도: **추론만 클라우드, 나머지는 로컬에서 시작.** 병목/비용이 데이터로 잡히면 그때 분산화.
 
@@ -28,7 +28,7 @@
      ^                                                            |
      | (lessons)                                                  v
  [Reflect] <------------ best 후보 --------------------- [Submit? <=5/day] -> LB
- (Cloud) ----> DuckDB(competitions/attempts/reflections[+embedding]/pipelines) + dbt marts
+ (Cloud) ----> DuckDB(competitions/attempts/reflections[+embedding]) + 분석 뷰(SQL view)
      |
      +--------------- next attempt -----------------> [Strategize]
 ```
@@ -41,7 +41,7 @@
 4. **Evaluate**: k-fold CV + 지표 + (필요 시) Optuna. **결정적 코드. CV 델타·fold 분산으로 `label`도 여기서 계산** (LLM 아님).
 5. **Submit?**: 제출 예산 남았을 때만. best 후보 → LB.
 6. **Reflect**: (가설, 코드, retrieved_ids, CV 결과, best 대비 델타, feature_importance, fold variance, 에러 trace) → 교훈 본문 + `generality`. Reflector의 정성 판정(`reflector_label`)은 참고용으로만 기록.
-7. **Persist**: DuckDB 단일 스토어에 기록(임베딩은 벡터 컬럼). dbt 마트 갱신.
+7. **Persist**: DuckDB 단일 스토어에 기록(임베딩은 벡터 컬럼). 분석 뷰(SQL view)는 자동 반영. 생성 코드는 `runs/code/`에 로컬 저장(사람 검토용).
 
 피드백 신호 정책: **CV = 주 신호**(무제한·결정적), **LB = 확인용 희소 신호**(하루 예산 내, CV-LB 상관/shake 감지).
 
@@ -61,6 +61,8 @@
 > 신호가 모호하면 ablation 도입을 후속 과제로 둔다 (Linear BON-22, 트리거 ADR-015).
 
 ## 5. 생성 코드 격리 실행
+
+> **상태: 계획 (미구현).** 현재 `cycle/run.py`는 생성 코드를 in-process `exec`로 실행한다(`runtime/`은 스텁). 아래는 무인 cron 운용 전 도입할 목표 설계.
 
 Coder가 만든 `feature_fn`/`model_fn`은 cron에서 무인 실행되므로 **컨테이너/nsjail로 격리**한다 (ADR-013).
 - 시간/메모리 상한, 네트워크 차단, 파일시스템 화이트리스트.
@@ -85,6 +87,8 @@ LLM 역할 3개:
 역할별 모델 배정은 ADR-016 참조 (세 역할을 처음부터 분리). Reflexion 관점에서 **Actor = Strategist(정책) + Coder(실행)**, **Reflector = self-reflection**, Evaluator = 결정적 코드.
 
 ## 7. Cross-Competition Transfer
+
+> **상태: 설계만 (Phase 3 미구현).** `memory/transfer.py`·`cold_start_progression` 뷰·`start_competition.py`의 cold-start 절차가 아직 없다. 시드용 코드 소스도 미정(생성 코드는 `runs/code/`에 사람 검토용으로만 저장 — 시드 풀 승격 다리 필요). 아래는 목표 메커니즘.
 
 사용자 목표의 핵심: *"다른 Playground Series 하나 넣으면 예전 경험에 기반해 빠르게 시작."* 이를 메커니즘으로 보장한다.
 

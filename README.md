@@ -15,46 +15,53 @@
 
 ## 진입점
 
-- `bin/start_competition.py` — 새 대회 cold-start (fingerprint → warm-start 시드 → bootstrap)
-- `bin/run_cycle.py` — Reflexion 1 사이클 (retrieve → strategize → generate → evaluate → submit? → reflect → persist)
-- cron이 `run_cycle.py`를 주기 호출.
+- `bin/run_reflexion.py` — Reflexion 1 사이클 (`cycle/run.py` 호출: retrieve → strategize → generate → evaluate → reflect → persist + 생성 코드를 `runs/code/`에 저장). cron이 주기 호출.
+- `bin/start_competition.py` — 대회 등록 (fingerprint 계산 → `raw.competitions` insert). 유사 대회 검색·warm-start 시드는 Phase 3 계획.
+- `bin/run_cycle.py` — Phase 0 PoC (LLM 없는 LightGBM 베이스라인, 참고용).
+- `bin/submit.py` — Kaggle 제출.  `dashboard.py` — Streamlit 모니터링.
 
 ## 레포 구조
 
 ```text
 reflexion-rondo/
-  config/                 # 대회 설정, 모델/엔드포인트, 자격증명 로딩
-  agents/
-    strategist/           # 프롬프트 + 출력 스키마 (action_type enum)
-    coder/                # 출력 스키마 (feature_fn / model_fn 컨트랙트)
-    reflector/            # 출력 스키마 (generality enum, 참고 판정)
-    client.py             # Ollama Cloud / 로컬 클라이언트 래퍼
-  evaluator/              # 결정적 k-fold + Optuna 캡슐화 + 지표 + label 계산
-  runtime/                # 생성 코드 격리 실행 (컨테이너/nsjail)
-  memory/
-    embed.py              # 로컬 임베딩
-    retriever.py          # DuckDB 벡터 검색(브루트포스 코사인) + 메타필터 + 재순위
-    transfer.py           # fingerprint 거리, 유사 대회 검색, warm-start 시드
+  config/settings.py      # 모델/엔드포인트/자격증명 로딩
+  agents/                 # 평면 모듈 (서브디렉토리 아님)
+    strategist.py         # 프롬프트 + StrategyDecision (action_type enum)
+    coder.py              # feature_fn / model_fn 생성
+    reflector.py          # 성찰 → 교훈 + generality enum (참고 판정 포함)
+  cycle/run.py            # Reflexion 1 사이클 오케스트레이션 (7단계)
+  evaluator/
+    harness.py            # 결정적 k-fold CV + label 계산
+    metrics.py            # 지표 + metric_sign
+    contract.py           # 생성 코드 검증 + smoke test
+  memory/retriever.py     # DuckDB 벡터 검색(브루트포스 코사인) + embed() + 메타필터
   store/
-    schema.sql            # competitions, attempts, reflections, pipelines
-    ingest.py             # 단일 스토어 기록
-    fingerprint.py        # 결정적 메타피처 계산기
-  dbt/
-    models/staging/       # stg_attempts (+ reflexion_only view)
-    models/marts/         # score_progression, reflection_impact, cold_start_progression
+    schema.sql            # competitions, attempts, reflections, submission_budget + 분석 뷰
+    db.py                 # connect / ensure_competition / insert_attempt
+    fingerprint.py        # 결정적 메타피처(14개) 계산기
   bin/
-    run_cycle.py          # 1 사이클
-    start_competition.py  # cold-start (fingerprint → seed → bootstrap)
-  pipelines/              # 후보 파이프라인 산출물
-  runs/                   # 로그, 아티팩트
+    run_reflexion.py      # Reflexion 사이클 러너 (cron 호출 대상)
+    start_competition.py  # 대회 등록 (fingerprint → competitions insert)
+    run_cycle.py          # Phase 0 PoC (LLM 없는 베이스라인, 참고용)
+    submit.py             # Kaggle 제출
+  dashboard.py            # Streamlit 모니터링
+  runs/                   # DuckDB 파일 · 생성 코드(runs/code/) · 제출 CSV  (gitignore)
   docs/                   # 아래 문서
+
+분석 뷰(dbt 아님, schema.sql 내 SQL view): score_progression, stg_attempts,
+stg_attempts_reflexion_only, reflection_impact
+
+계획(미구현):
+  runtime/                # 생성 코드 격리 실행 (컨테이너/nsjail, ADR-013) — 현재 in-process exec. Phase 2 잔여
+  memory/transfer.py      # fingerprint 거리 · 유사 대회 검색 · warm-start 시드 — Phase 3
+  cold_start_progression  # 전이 효과 측정 뷰 — Phase 3
 ```
 
 ## 문서
 
 - `docs/architecture.md` — 컴포넌트·데이터 흐름·transfer 메커니즘
 - `docs/decisions.md` — 기술 결정 이력 (ADR)
-- `docs/spec.md` — DB 스키마·dbt 모델·LLM API·코드 컨트랙트
+- `docs/spec.md` — DB 스키마·분석 뷰·LLM API·코드 컨트랙트
 - `docs/setup.md` — 초기 셋업
 - `docs/runbook.md` — 운영 절차·관측·디버깅
 - `docs/strategy.md` — 정형 대회 일반 전략 노트 (Strategist/Reflector 컨텍스트)
