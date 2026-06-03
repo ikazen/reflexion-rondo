@@ -1,5 +1,27 @@
 # 운영 절차·관측·디버깅
 
+## 0. 상태 초기화 (reset)
+
+개발 중 모델 교체·스키마 변경 등으로 기존 이력을 버릴 때 사용한다.
+
+```bash
+# 전체 초기화 (DB + 생성 코드 + 제출 CSV)
+uv run python bin/reset.py
+
+# 특정 대회만 초기화 (다른 대회 이력 보존)
+uv run python bin/reset.py --competition playground-series-s4e1
+
+# 확인 프롬프트 생략 (-y)
+uv run python bin/reset.py -c playground-series-s4e1 -y
+```
+
+초기화 대상:
+- `runs/reflexion.duckdb` — 전체 attempts / reflections / competitions 기록
+- `runs/code/{competition_id}/` — 생성된 Python 코드 파일
+- `runs/submission_*.csv` — 제출 파일 (전체 초기화 시)
+
+대회별 초기화는 DB 행만 삭제하고 다른 대회 데이터는 건드리지 않는다.
+
 ## 1. 오케스트레이션
 
 - `bin/run_cycle.py`: 1 사이클 (retrieve → strategize → generate → evaluate → submit? → reflect → persist).
