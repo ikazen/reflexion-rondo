@@ -77,6 +77,31 @@ alter table raw.attempts add column if not exists duration_sec     double;
 alter table raw.attempts add column if not exists code_path        text;
 alter table raw.attempts add column if not exists retries          int default 0;
 
+create table if not exists raw.pipelines (
+    pipeline_id          text primary key,
+    attempt_id           text,
+    competition_id       text,
+    fingerprint_snapshot json,
+    code                 text,
+    cv_score             double,
+    gain_vs_best         double
+);
+
+create view if not exists cold_start_progression as
+select
+    a.competition_id,
+    row_number() over (partition by a.competition_id order by a.run_ts) as attempt_no,
+    a.run_ts,
+    a.stage,
+    a.cv_score,
+    max(c.metric_sign * a.cv_score) over (
+        partition by a.competition_id order by a.run_ts
+        rows between unbounded preceding and current row
+    ) * c.metric_sign as best_so_far
+from raw.attempts a
+join raw.competitions c using (competition_id)
+where a.cv_score is not null;
+
 create view if not exists stg_attempts as
 select
     a.*,

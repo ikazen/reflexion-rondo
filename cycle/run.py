@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import types
 import uuid
@@ -17,7 +18,7 @@ from config.settings import MODEL_CODER
 from evaluator.contract import validate_code, smoke_test
 from evaluator.harness import run as eval_run
 from memory.retriever import search
-from store.db import insert_attempt
+from store.db import insert_attempt, insert_pipeline
 
 RUNS_CODE_DIR = Path(__file__).parent.parent / "runs" / "code"
 _CODE_HEADER_SEP = "# " + "-" * 60  # 저장 헤더와 본문 경계 — _best_code가 이 줄로 헤더를 떼낸다
@@ -35,6 +36,7 @@ class CycleConfig:
     seed: int = 42
     k_retrieve: int = 5
     is_classification: bool = True
+    seed_code: str | None = None
 
 
 @dataclass
@@ -172,7 +174,12 @@ def run_cycle(
     # 3. Generate code + validate + smoke (최대 2회 재시도, 에러 피드백 주입)
     # bootstrap은 1변경 규율 면제(§4) → from-scratch. 그 외엔 best 파이프라인을 한 군데만 수정.
     _MAX_CODE_RETRIES = 2
-    prev_code = None if config.stage == "bootstrap" else _best_code(conn, config.competition_id)
+    if config.stage == "bootstrap" and config.seed_code:
+        prev_code: str | None = config.seed_code
+    elif config.stage == "bootstrap":
+        prev_code = None
+    else:
+        prev_code = _best_code(conn, config.competition_id)
     gen_kwargs: dict = dict(
         hypothesis=decision.hypothesis,
         action_type=decision.action_type,
@@ -266,6 +273,24 @@ def run_cycle(
         "code_path":        str(code_path),
         "retries":          retries,
     })
+
+    # 6b. gain_vs_best > 0 이면 raw.pipelines 저장 (cold-start 시드 후보)
+    if gain_vs_best is not None and gain_vs_best > 0 and not error_trace:
+        fp_row = conn.execute(
+            "select fingerprint from raw.competitions where competition_id = ?",
+            [config.competition_id],
+        ).fetchone()
+        fp_dict = json.loads(fp_row[0]) if fp_row else {}
+        insert_pipeline(
+            conn,
+            pipeline_id=str(uuid.uuid4()),
+            attempt_id=attempt_id,
+            competition_id=config.competition_id,
+            fingerprint_snapshot=fp_dict,
+            code=source,
+            cv_score=cv_score,
+            gain_vs_best=gain_vs_best,
+        )
 
     # 7. Reflect
     reflection_id: str | None = None
