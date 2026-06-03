@@ -24,7 +24,22 @@ curl http://localhost:11434/api/tags
 
 ---
 
-## 2. Mac — 모델 pull
+## 2. Mac — 모델 저장 경로 변경 (선택)
+
+기본 경로는 `~/.ollama/models`. 변경하려면 **절대경로**로 지정해야 한다 (`~` 확장 안 됨).
+
+```bash
+# Mac 터미널 — 디렉토리 먼저 생성
+mkdir -p /Users/<your-username>/mnt/ollama-model
+
+# 경로 등록 후 Ollama 재시작
+launchctl setenv OLLAMA_MODELS "/Users/<your-username>/mnt/ollama-model"
+# 메뉴바 → Quit → 다시 실행
+```
+
+---
+
+## 3. Mac — 모델 pull
 
 ```bash
 # 임베딩 (필수)
@@ -42,24 +57,35 @@ ollama pull devstral-small-2
 
 ---
 
-## 3. Mac — IP 주소 확인
+## 4. WSL2 — 호스트명 설정 (IP 대신 별칭 사용)
 
-WSL2에서 Mac에 접속할 IP가 필요하다.
+`ssh mac-server`가 작동하더라도 SSH config 별칭은 HTTP 요청에 적용되지 않는다.
+먼저 확인:
 
 ```bash
-# Mac 터미널에서 실행 — Wi-Fi 기준
-ipconfig getifaddr en0
-# 예: 192.168.x.x
+curl http://mac-server:11434/api/tags
 ```
+
+응답이 없으면 `/etc/hosts`에 추가:
+
+```bash
+# Mac IP 확인 (Mac 터미널)
+ipconfig getifaddr en0
+
+# WSL2에서 등록
+echo "<Mac-IP>  mac-server" | sudo tee -a /etc/hosts
+```
+
+이후 `mac-server`를 URL 호스트명으로 쓸 수 있다.
 
 ---
 
-## 4. WSL2 — .env 작성
+## 5. WSL2 — .env 작성
 
 프로젝트 루트에 `.env` 파일 생성:
 
 ```dotenv
-OLLAMA_BASE_URL=http://<위에서-확인한-Mac-IP>:11434
+OLLAMA_BASE_URL=http://mac-server:11434
 
 # 모델 (기본값과 동일하면 생략 가능)
 MODEL_STRATEGIST=qwen3.5:14b
@@ -72,7 +98,7 @@ MODEL_EMBEDDING=qwen3-embedding:0.6b
 
 ---
 
-## 5. WSL2 — 연결 확인
+## 6. WSL2 — 연결 확인
 
 ```bash
 # .env의 OLLAMA_BASE_URL로 직접 테스트
@@ -95,7 +121,7 @@ EOF
 
 ---
 
-## 6. WSL2 — Kaggle 데이터 세팅
+## 7. WSL2 — Kaggle 데이터 세팅
 
 ```bash
 # ~/.kaggle/kaggle.json 없으면 먼저 발급 (kaggle.com → Account → API)
@@ -107,7 +133,7 @@ unzip "*.zip"
 
 ---
 
-## 7. DuckDB 초기화 확인
+## 8. DuckDB 초기화 확인
 
 ```bash
 uv run python - <<'EOF'
@@ -121,7 +147,7 @@ EOF
 
 ---
 
-## 8. 한 사이클 실행 (연결 전체 테스트)
+## 9. 한 사이클 실행 (연결 전체 테스트)
 
 대회를 먼저 등록한 뒤 사이클을 돌린다.
 
