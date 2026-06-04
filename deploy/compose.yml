@@ -15,4 +15,4 @@ services:
       TMPDIR: /tmp/rondo-eval
       DAEMON_API_HOST: "0.0.0.0"
       PYTHONUNBUFFERED: "1"
-    restart: "no"   # systemd가 재시작 관리
+    restart: always
