@@ -1,0 +1,9 @@
+.venv/
+.git/
+.env
+runs/
+catboost_info/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo

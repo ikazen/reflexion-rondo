@@ -1,0 +1,17 @@
+services:
+  rondo-daemon:
+    image: registry.internal/reflexion-rondo:latest
+    network_mode: host
+    volumes:
+      - /var/lib/rondo:/app/runs             # DuckDB + 제출 파일
+      - /var/lib/rondo/data:/app/data        # 대회 데이터셋
+      - /tmp/rondo-eval:/tmp/rondo-eval      # eval DinD tmpdir (호스트와 공유)
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - /var/lib/rondo/.env
+    environment:
+      RONDO_DB_PATH: /app/runs/reflexion.duckdb
+      EVAL_DOCKER_IMAGE: registry.internal/reflexion-eval:latest
+      TMPDIR: /tmp/rondo-eval
+      DAEMON_API_HOST: "0.0.0.0"
+    restart: "no"   # systemd가 재시작 관리

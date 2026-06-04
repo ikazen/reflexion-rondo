@@ -1,7 +1,10 @@
+import os
 from pathlib import Path
 import duckdb
 
-_DB_PATH = Path(__file__).parent.parent / "runs" / "reflexion.duckdb"
+_DB_PATH = Path(
+    os.getenv("RONDO_DB_PATH", str(Path(__file__).parent.parent / "runs" / "reflexion.duckdb"))
+)
 _SCHEMA = Path(__file__).parent / "schema.sql"
 
 
