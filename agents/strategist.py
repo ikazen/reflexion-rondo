@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from ollama import Client
 
 from config import settings
+
+if TYPE_CHECKING:
+    from cycle.stagnation import StagnationSignal
 
 ACTION_TYPES: list[str] = [
     "feature_engineering",
@@ -60,16 +64,31 @@ def _format_lessons(lessons: list[dict]) -> str:
     return "\n".join(parts)
 
 
+def _format_stagnation(sig: StagnationSignal) -> str:
+    lines = [
+        f"- best CV stagnant for {sig.stagnant_for} attempts (jumps in last window: {sig.jumps_in_window})",
+    ]
+    if sig.underused_actions:
+        lines.append(f"- underused action_types: {', '.join(sig.underused_actions)}")
+        lines.append("- Prefer an underused action_type unless you have strong reason not to.")
+    return "\n".join(lines)
+
+
 def strategize(
     eda_card: str,
     lessons: list[dict],
     stage: str,
     prev_best_cv: float | None = None,
+    stagnation: StagnationSignal | None = None,
 ) -> StrategyDecision:
     lessons_text = _format_lessons(lessons)
     valid_ids = {l["reflection_id"] for l in lessons}
     prev_best_str = f"{prev_best_cv:.5f}" if prev_best_cv is not None else "none yet"
     action_types_str = ", ".join(ACTION_TYPES)
+
+    exploration_section = ""
+    if stagnation is not None and stagnation.is_stagnant:
+        exploration_section = f"\n## Exploration Signal\n{_format_stagnation(stagnation)}\n"
 
     user_prompt = f"""## EDA Card
 {eda_card}
@@ -80,7 +99,7 @@ def strategize(
 ## Context
 - Stage: {stage}
 - Previous best CV: {prev_best_str}
-
+{exploration_section}
 ## Task
 Propose exactly one change to improve the CV score.
 Select which retrieved lessons (if any) directly informed your hypothesis and list their IDs in reflection_ids.

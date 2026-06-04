@@ -14,6 +14,7 @@ from agents.coder import generate_code
 from agents.reflector import AttemptContext, reflect
 from agents.strategist import strategize
 from config.settings import MODEL_CODER
+from cycle.stagnation import detect_stagnation
 from evaluator.contract import validate_code
 from memory.retriever import search
 from runtime.isolate import eval_isolated
@@ -151,11 +152,13 @@ def run_cycle(
 
     # 2. Strategize
     prev_best_cv = _prev_best(conn, config.competition_id)
+    stagnation = detect_stagnation(conn, config.competition_id)
     decision = strategize(
         eda_card=config.eda_card,
         lessons=lessons,
         stage=config.stage,
         prev_best_cv=prev_best_cv,
+        stagnation=stagnation,
     )
 
     # 3. Generate code + validate (정적 검사) + Docker 격리 실행 (최대 2회 재시도)
