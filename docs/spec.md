@@ -251,7 +251,32 @@ cv_score = mean(scores); cv_fold_var = var(scores)
 
 디버깅: 효과 좋은 교훈 전문은 `reflection_impact` ⨝ `raw.reflections`(`archived=false`)로 조회.
 
-## 7. Ollama Cloud 연동
+## 7. Daemon API
+
+worker-vm의 daemon이 제공하는 HTTP API. 기본 포트 8000, tailnet-only.
+
+상세 스펙: `GET /docs` (Swagger UI) 또는 `GET /openapi.json`.
+
+### 엔드포인트 목록
+
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| GET | `/api/heartbeat` | daemon 생사 확인. `status: idle\|running` + 현재 사이클 정보 |
+| GET | `/api/competitions` | 등록된 대회 목록 |
+| GET | `/api/attempts` | 최근 attempt 목록. `?competition=`, `?limit=` 파라미터 |
+| GET | `/api/attempts/{id}` | attempt 단건 상세 (코드 경로·reflection_ids 포함) |
+| GET | `/api/lessons` | reflection 목록. `?competition=`, `?generality=`, `?limit=` 파라미터 |
+| GET | `/api/cold-start` | bootstrap 진행 곡선 |
+| GET | `/api/queue` | 큐 전체 목록 (pending → running → done 순) |
+| POST | `/api/queue` | 사이클 큐 등록. body: `{competition, stage, n_cycles, priority}` |
+| PATCH | `/api/queue/{id}` | 우선순위 변경 또는 취소. body: `{priority?, status?: "cancelled"}` |
+
+### 인증·노출 정책
+
+- 현재 인증 없음 — tailnet 내부 전용 (`network_mode: host`, 외부 미노출)
+- admin 엔드포인트(POST/PATCH queue)는 tailnet 접근만으로 충분
+
+## 8. Ollama Cloud 연동
 
 드롭인: 로컬과 동일 인터페이스. host를 `https://ollama.com`로 두고 `OLLAMA_API_KEY`만 설정.
 
