@@ -33,10 +33,12 @@
      +--------------- next attempt -----------------> [Strategize]
 ```
 
+외부 채널(§8, ADR-019, 미구현): Kaggle 화이트리스트 source → 주간 추출 LLM → `raw.external_ideas` 별도 게이트웨이. Strategize 가 **reflexion 단계만** 톰슨 샘플링으로 노출. reflections 풀과 검색·마트·가중치 모두 분리.
+
 ## 3. Reflexion 루프 (1 attempt = 1 cycle)
 
 1. **Retrieve**: 검색 키 = `(competition_fingerprint, last_attempt_summary 또는 seed_query)` → DuckDB 벡터 검색(브루트포스 코사인) + 메타필터로 교훈 top-k.
-2. **Strategize**: EDA 카드 + 검색 교훈 + 현재 stage → 다음 가설 1개 (`action_type` enum 강제). 실제 채택한 교훈 id를 함께 출력.
+2. **Strategize**: EDA 카드 + 검색 교훈 + 현재 stage → 다음 가설 1개 (`action_type` enum 강제). 실제 채택한 교훈 id를 함께 출력. **reflexion 단계 한정** 외부 아이디어 별도 섹션 노출 (ADR-019, 톰슨 샘플링 top-3 — §8).
 3. **Generate**: 가설 → `feature_fn` + `model_fn` (컨트랙트는 `spec.md`). 시드·k-fold·IO는 Evaluator가 주입. **bootstrap 외 단계는 직전 best 파이프라인을 `prev_code`로 받아 한 군데만 수정** — 1변경 규율을 코드로 강제(§4).
 4. **Evaluate**: k-fold CV + 지표 + (필요 시) Optuna. **결정적 코드. CV 델타·fold 분산으로 `label`도 여기서 계산** (LLM 아님).
 5. **Submit?**: 제출 예산 남았을 때만. best 후보 → LB.
@@ -119,3 +121,34 @@ LLM 역할 3개:
 - Playground Series는 task 다양성이 좁아 transfer 신호가 약할 수 있음 → 측정 마트가 검증 도구이자 튜닝 신호.
 - fingerprint가 비슷해도 metric 부류가 다르면 노하우가 어긋남 → `metric_class` 페널티로 보호.
 - 시드 파이프라인의 hard-coded 경로/칼럼명은 cold-start에서 깨질 수 있음 → Coder 컨트랙트(주입식 IO)를 강제해 회피.
+
+## 8. 외부 아이디어 채널
+
+> **상태: 설계만 (미구현, ADR-019).** 스키마/스케줄러+추출/Strategist 통합은 Linear BON-86~89.
+
+목적: Strategist+Coder prior 의 천장을 외부 ML 지식으로 들어 올린다 (ADR-019). 누적 시도가 같은 모델 prior 안에 갇히지 않도록 외부 자극을 별도 채널로 주입하되, earned knowledge 풀(`raw.reflections`)을 오염시키지 않는다.
+
+- **격리된 게이트웨이**: `raw.external_ideas` 가 `raw.reflections` 와 완전 분리(스키마는 `spec.md` §1.8). retrieval / `reflection_impact` 마트 / 검색 score 가중치에 안 섞임.
+- **소스 → 추출 → 게이트웨이**: 주간 systemd timer(ADR-017 daemon 흡수) 가 화이트리스트 소스(우승 writeup / pinned tips / gold·silver solution) 조회 → 추출 LLM(Strategist/Reflector 와 다른 호출) → 가드 4개(실측 수치 인용 / 다수 동의 / 조건부 진술만 / 500자 상한 + 코드 블록 분리) → `raw.external_ideas` insert (Beta(1, 1) 균일 prior).
+- **노출 = stage 게이팅 + 톰슨 샘플링**: `reflexion` Strategist 만, `applies_when` fingerprint 1차 필터 → 각 후보 θ ~ Beta(α, β) 샘플 → top-3. `bootstrap`/`exploitation` 은 외부 idea 차단 (cold-start lessons + seed_code 가 이미 외부 신호, exploitation 은 안정화 우선).
+- **승격 = 시스템 기본 루프**: 외부 idea 채택 → Coder 실행 → Evaluator 결정적 신호 → Reflector 정상 reflection. 검증된 부분만 자연히 lessons 풀로 진입. 외부 idea 자체는 `verified` 마킹 없이 영구 게이트웨이.
+- **사후 학습**: 채택+jump → α++, 채택+regression → β++, 미채택 무변화. `external_idea_bandit` 뷰가 사후 상태 노출. 자동 archive: `trials ≥ 10 AND posterior_mean < 0.1` (source 단위 archive 는 사람 수동).
+
+### Cold-start lessons 와 구분 (ADR-010 vs ADR-019)
+
+| | Cold-start lessons (ADR-010) | External ideas (ADR-019) |
+|---|---|---|
+| 출처 | 우리 시스템이 다른 대회에서 측정한 reflection | 외부인의 미검증 주장 |
+| 신뢰 | 측정 결과의 자연어 추상화 | LLM 추출, 가드 4개로 1차 정제 |
+| 저장 | `raw.reflections` (L2/L3 generality) | `raw.external_ideas` (분리) |
+| 검색 | retrieval + retrieval_score 가중치 | 톰슨 샘플링 + fingerprint 필터 |
+| 노출 위치 | `## Retrieved Lessons` | `## External Ideas` (reflexion 단계만) |
+| 노출 대상 | Strategist | Strategist 만 (Coder/Reflector 차단) |
+
+### 외부 채널 리스크
+
+- **추출 노이즈**: 일화 잡음이 false signal 양산 — 가드 4개로 1차 방어, α/β 누적으로 사후 정제.
+- **천장 vs 1변경 규율 충돌**: 외부 복합 아이디어를 한 사이클에 다 적용 못함 — 같은 idea 가 다음 사이클 다시 톰슨 샘플링되면 다른 부분/다른 `action_type` 으로 채택. 의도된 점진 분해.
+- **노출 대상 격리 필요**: Coder 노출 시 검증 안 된 코드 카피 위험 → `prev_code` 위 1변경 컨트랙트(ADR-014) 파괴. Reflector 노출 시 자기 추론을 외부 주장으로 정당화 → ADR-016 cross-family critic 효과 깎임. Strategist 단일 진입점으로 격리.
+- **승격 평가의 인과 한계**: `reflection_impact` 와 같은 상관 한계(ADR-015). ablation 도입 시 같이 캘리브레이션.
+- **톰슨 staleness**: 시간 decay 없음 — 누적 우위 idea 가 영구 우위. 트렌드 변화 시 weekly decay 도입 가능.

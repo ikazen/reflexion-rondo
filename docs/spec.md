@@ -28,6 +28,7 @@ stage             text,        -- bootstrap / reflexion / exploitation
 hypothesis        text,
 action_type       text,        -- §3 enum
 reflection_ids    text[],      -- Strategist가 실제 채택한 교훈 id
+adopted_external_idea_ids text[],  -- ADR-019 외부 아이디어 채택 역추적
 retrieval_scores  double[],
 model_type        text,
 params            json,
@@ -118,6 +119,28 @@ day             date,
 count           int          -- 일별 제출 수. Submit 단계가 SELECT-then-UPDATE
 ```
 
+### 1.8 `raw.external_ideas` (외부 아이디어 게이트웨이) — ADR-019, BON-86
+
+```sql
+idea_id                text primary key,
+fetched_at             timestamp,
+source_url             text,
+source_kind            text,           -- §2 enum (writeup / tips / solution)
+idea_text              text,           -- 500자 상한 (ADR-019 가드 iv)
+probable_action_type   text,           -- 추출 LLM 추정값, nullable. Strategist 가 채택 시 자기 action_type 자유 결정
+applies_when_json      json,           -- {task_type, metric_class, size_class} fingerprint 메타필터
+confidence             text,           -- §2 enum (low / medium / high)
+alpha                  double default 1.0,    -- Beta(1,1) prior. 채택+jump → α++
+beta                   double default 1.0,    --                채택+regression → β++. 미채택 무변화
+archived               boolean default false,
+adopted_attempt_ids    text[]          -- 채택 attempt 역추적 (디버깅·사후 분석용)
+```
+
+- `reflections` 풀과 완전 분리 (ADR-019) — retrieval / `reflection_impact` 마트 / 검색 score 가중치에 안 섞임.
+- α/β 만이 운영 결정의 dominant 상태. `adopted_attempt_ids` 는 디버깅용.
+- Archive 정책: 자동 idea 단위(`trials ≥ 10 AND posterior_mean < 0.1`) + 수동 source 단위(BON-87).
+- 노출: `reflexion` 단계 Strategist 프롬프트에만, `applies_when` fingerprint 매치 + 톰슨 샘플링 top-3 (BON-89).
+
 ## 2. enum 정의
 
 `action_type` (Strategist 출력 강제):
@@ -134,6 +157,13 @@ count           int          -- 일별 제출 수. Submit 단계가 SELECT-then-
 - `L3_general`: 정형 대회 보편 원칙.
 
 `label` (Evaluator 결정, §4): `jump` / `neutral` / `regression`.
+
+`source_kind` (`raw.external_ideas`, §1.8, ADR-019):
+- `writeup`: 종료된 유사 fingerprint 대회 우승 writeup
+- `tips`: 대회 pinned "Tips & Tricks" 스레드
+- `solution`: gold/silver solution 스레드
+
+`confidence` (`raw.external_ideas`, 추출 LLM 추정): `low` / `medium` / `high`. 현재는 추출 가드 통과 후 메타데이터로만 사용 (prior 초기화엔 영향 없음, ADR-019).
 
 ## 3. 지표 레지스트리
 
@@ -215,6 +245,7 @@ cv_score = mean(scores); cv_fold_var = var(scores)
 | `stg_attempts_reflexion_only` | `stage='reflexion'` 필터 (인과 귀속용) |
 | `score_progression` | 대회 내 진보 — `attempt_no` vs `cv_score`·`best_so_far` |
 | `reflection_impact` | 교훈별 평균 gain·점프 수 (reflexion 단계만 집계) |
+| `external_idea_bandit` | 외부 아이디어 톰슨 샘플링 사후 상태 — `posterior_mean=α/(α+β)`, `trials=α+β`, `archived` (ADR-019, BON-86) |
 
 **계획 (Phase 3, BON-18):** `cold_start_progression` — 대회별 bootstrap 첫 시도의 "최종 best 대비 비율"(`warm_start_ratio`)이 누적 경험과 함께 우상향하는지로 transfer 효과 측정. 미구현.
 
