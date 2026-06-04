@@ -16,6 +16,7 @@ DaemonState는 daemon 메인 루프가 갱신하고 API가 읽는 공유 객체.
 """
 from __future__ import annotations
 
+import importlib
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -225,6 +226,10 @@ def create_app(conn: duckdb.DuckDBPyConnection, state: DaemonState) -> FastAPI:
 
     @app.post("/api/queue", status_code=201)
     def enqueue(body: EnqueueRequest):
+        try:
+            importlib.import_module(f"config.competitions.{body.competition}")
+        except ModuleNotFoundError:
+            raise HTTPException(status_code=422, detail=f"unknown competition: {body.competition}")
         qid = str(uuid.uuid4())
         conn.execute(
             """

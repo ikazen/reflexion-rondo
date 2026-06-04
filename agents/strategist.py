@@ -10,13 +10,7 @@ from config import settings
 if TYPE_CHECKING:
     from cycle.stagnation import StagnationSignal
 
-ACTION_TYPES: list[str] = [
-    "feature_engineering",
-    "model_swap",
-    "hyperparam_search",
-    "preprocessing",
-    "ensemble",
-]
+from config.settings import ACTION_TYPES
 
 _OUTPUT_SCHEMA: dict = {
     "type": "object",

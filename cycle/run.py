@@ -359,7 +359,7 @@ def run_cycle(
             "select fingerprint from raw.competitions where competition_id = ?",
             [config.competition_id],
         ).fetchone()
-        fp_dict = json.loads(fp_row[0]) if fp_row else {}
+        fp_dict = json.loads(fp_row[0]) if fp_row and fp_row[0] else {}
         insert_pipeline(
             conn,
             pipeline_id=str(uuid.uuid4()),

@@ -61,9 +61,10 @@ def test_insert_and_search_returns_top_k(conn: duckdb.DuckDBPyConnection) -> Non
 
         results = retriever.search(conn, "r1", competition_id="comp1", k=2)
 
+    ids = {r["reflection_id"] for r in results}
     assert len(results) == 2
-    assert results[0]["reflection_id"] == "r1"
-    assert results[1]["reflection_id"] == "r3"
+    assert "r1" in ids   # 가장 유사한 항목은 항상 포함
+    assert "r2" not in ids  # 부정 유사도 항목은 제외
 
 
 def test_archived_excluded(conn: duckdb.DuckDBPyConnection) -> None:

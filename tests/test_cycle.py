@@ -11,6 +11,7 @@ import pytest
 from agents.strategist import StrategyDecision
 from agents.reflector import ReflectionOutput
 from cycle.run import CycleConfig, CycleResult, run_cycle
+from runtime.isolate import IsolatedResult
 
 _SCHEMA = (Path(__file__).parent.parent / "store" / "schema.sql").read_text()
 
@@ -59,6 +60,17 @@ def _strategy() -> StrategyDecision:
     )
 
 
+def _iso_ok() -> IsolatedResult:
+    return IsolatedResult(
+        cv_score=0.75,
+        cv_fold_var=0.01,
+        fold_scores=[0.75] * 5,
+        label="jump",
+        gain_vs_best=0.05,
+        error_trace=None,
+    )
+
+
 def _reflection() -> ReflectionOutput:
     return ReflectionOutput(
         reflection_id="r-test",
@@ -83,6 +95,7 @@ def test_successful_cycle(conn: duckdb.DuckDBPyConnection, train_df: pl.DataFram
         patch("cycle.run.search", return_value=[]),
         patch("cycle.run.strategize", return_value=_strategy()),
         patch("cycle.run.generate_code", return_value=_VALID_CODE),
+        patch("cycle.run.eval_isolated", return_value=_iso_ok()),
         patch("cycle.run.reflect", return_value=_reflection()),
         patch("memory.retriever.embed", return_value=[0.0] * 1024),
     ):
@@ -141,6 +154,7 @@ def test_attempt_persisted(conn: duckdb.DuckDBPyConnection, train_df: pl.DataFra
         patch("cycle.run.search", return_value=[]),
         patch("cycle.run.strategize", return_value=_strategy()),
         patch("cycle.run.generate_code", return_value=_VALID_CODE),
+        patch("cycle.run.eval_isolated", return_value=_iso_ok()),
         patch("cycle.run.reflect", return_value=_reflection()),
         patch("memory.retriever.embed", return_value=[0.0] * 1024),
     ):
@@ -169,6 +183,7 @@ def test_prev_code_threaded_on_second_attempt(
         patch("cycle.run.search", return_value=[]),
         patch("cycle.run.strategize", return_value=_strategy()),
         patch("cycle.run.generate_code", return_value=_VALID_CODE) as gen,
+        patch("cycle.run.eval_isolated", return_value=_iso_ok()),
         patch("cycle.run.reflect", return_value=_reflection()),
         patch("memory.retriever.embed", return_value=[0.0] * 1024),
     ):

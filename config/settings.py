@@ -12,3 +12,11 @@ MODEL_STRATEGIST  = os.getenv("MODEL_STRATEGIST", "deepseek-v4-pro")
 MODEL_REFLECTOR   = os.getenv("MODEL_REFLECTOR",  "glm-5")
 MODEL_CODER       = os.getenv("MODEL_CODER",       "qwen3-coder-next")
 MODEL_EMBEDDING   = os.getenv("MODEL_EMBEDDING",   "qwen3-embedding:8b")
+
+ACTION_TYPES: list[str] = [
+    "feature_engineering",
+    "model_swap",
+    "hyperparam_search",
+    "preprocessing",
+    "ensemble",
+]

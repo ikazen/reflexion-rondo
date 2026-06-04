@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 import duckdb
 
-from agents.strategist import ACTION_TYPES
+from config.settings import ACTION_TYPES
 
 _STAGNANT_THRESHOLD = 3  # 이 횟수 이상 jump 없으면 is_stagnant=True
 
@@ -18,7 +18,7 @@ _STAGNANT_THRESHOLD = 3  # 이 횟수 이상 jump 없으면 is_stagnant=True
 class StagnationSignal:
     is_stagnant: bool
     jumps_in_window: int
-    underused_actions: list[str]
+    underused_actions: tuple[str, ...]
     stagnant_for: int
 
 
@@ -43,13 +43,13 @@ def detect_stagnation(
         return StagnationSignal(
             is_stagnant=False,
             jumps_in_window=0,
-            underused_actions=[],
+            underused_actions=(),
             stagnant_for=0,
         )
 
     jumps_in_window = sum(1 for label, _ in rows if label == "jump")
     used_actions = {action for _, action in rows}
-    underused_actions = [a for a in ACTION_TYPES if a not in used_actions]
+    underused_actions = tuple(a for a in ACTION_TYPES if a not in used_actions)
 
     # stagnant_for: 가장 최근 jump 이후 연속 비-jump 횟수
     stagnant_for = 0
