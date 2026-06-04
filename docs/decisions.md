@@ -93,6 +93,24 @@
   - **DuckDB 영속 + 백업**: DuckDB 파일 = 누적 교훈 = transfer의 가치. nexus-prime L7("백업 안 함")의 재고 트리거("stateful 신규 서비스 추가")에 정확히 해당하므로, worker-vm 로컬 디스크 + MinIO 야간 스냅샷(systemd timer)으로 백업한다. nexus-prime decisions.md L7에 BON-70 cross-reference.
 - 한계: 12GB는 대형 데이터셋에서 빠듯 — 격리 컨테이너 mem-limit로 OOM을 lesson화해 흡수하되, 빈발하면 mac-server 디스패치(하이브리드)를 재고한다.
 
+## ADR-018 — 통합 웹은 aggregator 패턴 (각 워크로드 자체 API + ops-vm 통합 UI)
+- 결정: kaggle.<your-domain> 공개 웹은 각 워크로드가 read/admin API를 자체 제공하고, ops-vm의 별도 aggregator 웹(신규 repo `aggregator-web`(이름 미정), 신규 Linear 프로젝트)이 두 API를 호출해 단일 UI로 렌더한다. 공유 store(Postgres publish layer) 없음. rondo daemon은 자기 DuckDB 위에 FastAPI 라우터를 추가하고, droid controller는 이미 FastAPI 예정이라 endpoint만 합의. 추적: BON-75~77 (rondo 측) + droid BON-72 재정의 + 신규 aggregator 프로젝트.
+- 대안:
+  - (a) **공유 Postgres publish layer + 통합 웹**: daemon이 attempt 요약을 Postgres에 push → ops-vm 웹이 직접 read. dual-write 일관성·schema 강제 결합·pgvector 등 새 컴포넌트 부담.
+  - (b) **별개 웹 ×2, 같은 Postgres**: 도메인 단절을 인스턴스 단절로 표현. publish layer 부담은 (a)와 동일.
+  - (c) **각 워크로드 API + aggregator** (선택): publish layer 폐기, DuckDB가 그대로 truth.
+- 근거:
+  - **도메인 단절 결정과 일관** (2026-06-04): lesson/work_unit을 두 시스템에 분리하기로 한 시점에 "공유 store"의 의미가 약해졌다. transfer가 불가능한 두 도메인(kaggle 노하우 ↛ 게임 조작)을 한 스키마에 묶을 이유 없음. API contract만 공통.
+  - **DuckDB truth 유지**: ADR-017의 "DuckDB가 시스템의 전부"가 그대로. publish hook·마이그레이션 도구·pgvector·dual-write 일관성 검증 모두 불필요. 가장 큰 단순화.
+  - **repo 자율성**: 각 워크로드가 스키마/저장 방식을 자유롭게 진화. contract 변경 시에만 aggregator 동기 업데이트.
+  - **보안 모델 자연**: daemon API는 tailnet only, public 노출은 ops-vm aggregator 하나로 집중. worker-vm은 공인 IP 없음(infra-lookup 결과)이라 외부 노출 자체가 불가능하므로 이 분할이 강제이자 이득.
+  - **자랑 의도 달성**: 한 페이지에서 두 시스템 표시.
+- 한계/위험:
+  - **API contract 합의 비용 1회**: 양 repo가 공통 응답 모양 합의. JSON schema 1장 + 명시적 버전.
+  - **daemon에 HTTP 추가**: rondo daemon은 LLM 호출이 동기 블로킹이면 API 응답 지연. asyncio 또는 워커 스레드 분리로 흡수. ADR-017의 "단일 장수 프로세스" 문구는 깨지지 않음(같은 프로세스 안 라우터 추가).
+  - **aggregator 가용성 의존**: 한 API down 시 부분 표시(degraded mode 처리 필요).
+  - **인증 라우팅**: viewer 무인증 / admin path는 별도 internal 도메인 또는 Caddy의 path matcher로 tailnet only 분리. SSO 미도입(nexus-prime R6 트리거 미발동) 가정.
+
 ---
 
 ## 미정 항목 (TBD)
