@@ -113,6 +113,21 @@ create view if not exists stg_attempts_reflexion_only as
 select * from stg_attempts
 where stage = 'reflexion';
 
+create table if not exists raw.cycle_queue (
+    queue_id     text primary key,
+    competition  text not null,
+    stage        text not null,
+    n_cycles     int not null,
+    priority     int default 0,
+    status       text not null default 'pending',
+    created_at   timestamp default now(),
+    started_at   timestamp,
+    ended_at     timestamp,
+    cycles_done  int default 0,
+    latest_score double,
+    error        text
+);
+
 create view if not exists reflection_impact as
 with scored as (
     select
