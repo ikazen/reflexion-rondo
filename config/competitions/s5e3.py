@@ -8,6 +8,7 @@ TASK_TYPE         = "binary_classification"
 METRIC_SIGN       = 1
 IS_CLASSIFICATION = True
 DROP_COLS         = ["id"]
+N_SPLITS          = 10
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 
 EDA_CARD = """competition: playground-series-s5e3 (Rainfall Prediction in Australia)

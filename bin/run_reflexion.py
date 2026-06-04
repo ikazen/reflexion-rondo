@@ -103,7 +103,7 @@ def main() -> None:
             metric=comp.METRIC,
             stage=args.stage,
             eda_card=eda_card,
-            n_splits=5,
+            n_splits=getattr(comp, "N_SPLITS", 5),
             seed=42,
             k_retrieve=5,
             is_classification=comp.IS_CLASSIFICATION,
