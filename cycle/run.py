@@ -77,6 +77,38 @@ def _last_hypothesis(conn: duckdb.DuckDBPyConnection, competition_id: str) -> st
     return row[0] if row else None
 
 
+def _recent_failure_summary(
+    conn: duckdb.DuckDBPyConnection,
+    competition_id: str,
+    window: int = 5,
+) -> str:
+    rows = conn.execute(
+        """
+        select action_type, hypothesis
+        from raw.attempts
+        where competition_id = ?
+          and (label = 'regression' or error_trace is not null)
+        order by run_ts desc
+        limit ?
+        """,
+        [competition_id, window],
+    ).fetchall()
+    if not rows:
+        return ""
+    return "; ".join(f"{r[0]}: {(r[1] or '')[:60]}" for r in rows)
+
+
+def _build_retrieval_query(
+    conn: duckdb.DuckDBPyConnection,
+    competition_id: str,
+    eda_card: str,
+) -> str:
+    last_hyp = _last_hypothesis(conn, competition_id) or ""
+    fail_summary = _recent_failure_summary(conn, competition_id)
+    parts = [p for p in [last_hyp, f"avoid: {fail_summary}" if fail_summary else ""] if p]
+    return "; ".join(parts) if parts else eda_card
+
+
 def _save_code(
     source: str,
     *,
@@ -147,7 +179,7 @@ def run_cycle(
     cycle_start = time.monotonic()
 
     # 1. Retrieve
-    query = _last_hypothesis(conn, config.competition_id) or config.eda_card
+    query = _build_retrieval_query(conn, config.competition_id, config.eda_card)
     lessons = search(conn, query, config.competition_id, k=config.k_retrieve)
 
     # 2. Strategize
