@@ -7,3 +7,4 @@ runs/
 *.db
 .env
 .kaggle/
+catboost_info/
