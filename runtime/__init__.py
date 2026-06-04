@@ -1,1 +1,3 @@
-# Phase 2에서 구현 — LLM 생성 코드 격리 실행 (컨테이너/nsjail, ADR-013)
+from runtime.isolate import eval_isolated, IsolatedResult
+
+__all__ = ["eval_isolated", "IsolatedResult"]
