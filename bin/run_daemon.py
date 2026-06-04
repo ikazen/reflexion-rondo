@@ -16,6 +16,7 @@ import importlib
 import math
 import os
 import signal
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ from pathlib import Path
 
 import polars as pl
 
+from bin.api import DaemonState, create_app
 from cycle.run import CycleConfig, run_cycle
 from memory.retriever import EmbeddingUnavailableError
 from store.db import connect, ensure_competition
@@ -162,7 +164,17 @@ def _is_cancelled(conn, queue_id: str) -> bool:
 # 큐 아이템 처리
 # ---------------------------------------------------------------------------
 
-def _process(conn, item: dict, pacer: OllamaPacer) -> None:
+def _run_api(state: DaemonState) -> None:
+    import uvicorn
+    api_conn = connect()
+    app = create_app(api_conn, state)
+    host = os.getenv("DAEMON_API_HOST", "127.0.0.1")
+    port = int(os.getenv("DAEMON_API_PORT", "8000"))
+    print(f"[api] listening on {host}:{port}")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
+
+
+def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
     qid = item["queue_id"]
     competition = item["competition"]
     stage = item["stage"]
@@ -170,6 +182,12 @@ def _process(conn, item: dict, pacer: OllamaPacer) -> None:
 
     print(f"[daemon] starting queue_id={qid} competition={competition} stage={stage} n={n_cycles}")
     _set_status(conn, qid, "running", started_at=datetime.now(timezone.utc))
+    state.update(
+        current_queue_id=qid,
+        current_competition=competition,
+        current_cycle=0,
+        current_n_cycles=n_cycles,
+    )
 
     try:
         comp = importlib.import_module(f"config.competitions.{competition}")
@@ -221,6 +239,10 @@ def _process(conn, item: dict, pacer: OllamaPacer) -> None:
                 latest_score = result.cv_score
             cycles_done += 1
             pacer.record()
+            state.update(
+                current_cycle=cycles_done,
+                last_cycle_at=datetime.now(timezone.utc),
+            )
             print(
                 f"[daemon] cycle {i + 1}/{n_cycles} attempt={result.attempt_id[:8]}"
                 f" cv={result.cv_score} label={result.label}"
@@ -250,6 +272,9 @@ def _process(conn, item: dict, pacer: OllamaPacer) -> None:
                     cycles_done=cycles_done, latest_score=latest_score)
         print(f"[daemon] queue_id={qid} done latest_score={latest_score}")
 
+    state.update(current_queue_id=None, current_competition=None,
+                 current_cycle=0, current_n_cycles=0)
+
 
 # ---------------------------------------------------------------------------
 # 진입점
@@ -267,6 +292,10 @@ def main() -> None:
             f"weekly={pacer.weekly_cycles} cycles"
         )
 
+    state = DaemonState()
+    api_thread = threading.Thread(target=_run_api, args=(state,), daemon=True)
+    api_thread.start()
+
     conn = connect()
     print("[daemon] started — polling raw.cycle_queue")
 
@@ -275,7 +304,7 @@ def main() -> None:
         if item is None:
             time.sleep(POLL_INTERVAL)
             continue
-        _process(conn, item, pacer)
+        _process(conn, item, pacer, state)
 
     conn.close()
     print("[daemon] stopped")

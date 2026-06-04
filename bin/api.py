@@ -1,0 +1,273 @@
+"""reflexion-rondo daemon FastAPI 앱.
+
+엔드포인트:
+  GET  /api/heartbeat
+  GET  /api/competitions
+  GET  /api/attempts
+  GET  /api/attempts/{id}
+  GET  /api/lessons
+  GET  /api/cold-start
+  GET  /api/queue
+  POST /api/queue
+  PATCH /api/queue/{id}
+
+DuckDB 연결은 호출 측(daemon)이 주입한다.
+DaemonState는 daemon 메인 루프가 갱신하고 API가 읽는 공유 객체.
+"""
+from __future__ import annotations
+
+import threading
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Literal
+
+import duckdb
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+
+# ---------------------------------------------------------------------------
+# 공유 상태 (daemon 메인 루프 ↔ API 스레드)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DaemonState:
+    current_queue_id: str | None = None
+    current_competition: str | None = None
+    current_cycle: int = 0
+    current_n_cycles: int = 0
+    last_cycle_at: datetime | None = None
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def update(self, **kwargs) -> None:
+        with self._lock:
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "current_queue_id": self.current_queue_id,
+                "current_competition": self.current_competition,
+                "current_cycle": self.current_cycle,
+                "current_n_cycles": self.current_n_cycles,
+                "last_cycle_at": self.last_cycle_at.isoformat() if self.last_cycle_at else None,
+            }
+
+
+# ---------------------------------------------------------------------------
+# Pydantic 모델
+# ---------------------------------------------------------------------------
+
+class EnqueueRequest(BaseModel):
+    competition: str
+    stage: str = "reflexion"
+    n_cycles: int = 1
+    priority: int = 0
+
+
+class QueuePatchRequest(BaseModel):
+    priority: int | None = None
+    status: Literal["cancelled"] | None = None
+
+
+# ---------------------------------------------------------------------------
+# 앱 팩토리
+# ---------------------------------------------------------------------------
+
+def create_app(conn: duckdb.DuckDBPyConnection, state: DaemonState) -> FastAPI:
+    app = FastAPI(title="reflexion-rondo", version="v1")
+
+    # ---- read endpoints -----------------------------------------------
+
+    @app.get("/api/heartbeat")
+    def heartbeat():
+        snap = state.snapshot()
+        status = "running" if snap["current_queue_id"] else "idle"
+        return {"status": status, **snap}
+
+    @app.get("/api/competitions")
+    def get_competitions():
+        rows = conn.execute(
+            "select competition_id, name, task_type, metric, metric_sign, start_ts from raw.competitions"
+        ).fetchall()
+        cols = ["competition_id", "name", "task_type", "metric", "metric_sign", "start_ts"]
+        return [dict(zip(cols, r)) for r in rows]
+
+    @app.get("/api/attempts")
+    def get_attempts(competition: str | None = None, limit: int = 50):
+        limit = min(limit, 500)
+        where = "where a.competition_id = ?" if competition else ""
+        params = [competition] if competition else []
+        rows = conn.execute(
+            f"""
+            select
+                a.attempt_id, a.competition_id, a.run_ts, a.stage,
+                a.hypothesis, a.action_type, a.cv_score, a.cv_fold_var,
+                a.label, a.gain_vs_best, a.error_trace, a.duration_sec,
+                a.retries, a.code_path,
+                s.best_so_far
+            from raw.attempts a
+            left join score_progression s using (attempt_id)
+            {where}
+            order by a.run_ts desc
+            limit ?
+            """,
+            params + [limit],
+        ).fetchall()
+        cols = [
+            "attempt_id", "competition_id", "run_ts", "stage",
+            "hypothesis", "action_type", "cv_score", "cv_fold_var",
+            "label", "gain_vs_best", "error_trace", "duration_sec",
+            "retries", "code_path", "best_so_far",
+        ]
+        return [dict(zip(cols, r)) for r in rows]
+
+    @app.get("/api/attempts/{attempt_id}")
+    def get_attempt(attempt_id: str):
+        row = conn.execute(
+            """
+            select
+                attempt_id, competition_id, run_ts, stage,
+                hypothesis, action_type, cv_score, cv_fold_var,
+                label, gain_vs_best, error_trace, duration_sec,
+                retries, code_path, reflection_ids, retrieval_scores
+            from raw.attempts
+            where attempt_id = ?
+            """,
+            [attempt_id],
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="attempt not found")
+        cols = [
+            "attempt_id", "competition_id", "run_ts", "stage",
+            "hypothesis", "action_type", "cv_score", "cv_fold_var",
+            "label", "gain_vs_best", "error_trace", "duration_sec",
+            "retries", "code_path", "reflection_ids", "retrieval_scores",
+        ]
+        return dict(zip(cols, row))
+
+    @app.get("/api/lessons")
+    def get_lessons(
+        competition: str | None = None,
+        generality: str | None = None,
+        limit: int = 50,
+    ):
+        limit = min(limit, 500)
+        conditions = ["r.archived = false"]
+        params: list = []
+        if competition:
+            conditions.append("(r.competition_id = ? or r.generality in ('L2_class', 'L3_general'))")
+            params.append(competition)
+        if generality:
+            conditions.append("r.generality = ?")
+            params.append(generality)
+        where = "where " + " and ".join(conditions)
+        rows = conn.execute(
+            f"""
+            select
+                r.reflection_id, r.created_at, r.competition_id,
+                r.embedded_text, r.full_lesson, r.generality,
+                r.label, r.gain_vs_best,
+                coalesce(i.times_applied, 0) as times_applied,
+                coalesce(i.avg_gain, 0.0) as avg_gain
+            from raw.reflections r
+            left join reflection_impact i using (reflection_id)
+            {where}
+            order by r.created_at desc
+            limit ?
+            """,
+            params + [limit],
+        ).fetchall()
+        cols = [
+            "reflection_id", "created_at", "competition_id",
+            "embedded_text", "full_lesson", "generality",
+            "label", "gain_vs_best", "times_applied", "avg_gain",
+        ]
+        return [dict(zip(cols, r)) for r in rows]
+
+    @app.get("/api/cold-start")
+    def get_cold_start(competition: str | None = None):
+        where = "where competition_id = ?" if competition else ""
+        params = [competition] if competition else []
+        rows = conn.execute(
+            f"""
+            select competition_id, attempt_no, run_ts, stage, cv_score, best_so_far
+            from cold_start_progression
+            {where}
+            order by competition_id, attempt_no
+            """,
+            params,
+        ).fetchall()
+        cols = ["competition_id", "attempt_no", "run_ts", "stage", "cv_score", "best_so_far"]
+        return [dict(zip(cols, r)) for r in rows]
+
+    # ---- admin endpoints -----------------------------------------------
+
+    @app.get("/api/queue")
+    def get_queue():
+        rows = conn.execute(
+            """
+            select queue_id, competition, stage, n_cycles, priority,
+                   status, created_at, started_at, ended_at,
+                   cycles_done, latest_score, error
+            from raw.cycle_queue
+            order by priority desc, created_at asc
+            """
+        ).fetchall()
+        cols = [
+            "queue_id", "competition", "stage", "n_cycles", "priority",
+            "status", "created_at", "started_at", "ended_at",
+            "cycles_done", "latest_score", "error",
+        ]
+        return [dict(zip(cols, r)) for r in rows]
+
+    @app.post("/api/queue", status_code=201)
+    def enqueue(body: EnqueueRequest):
+        qid = str(uuid.uuid4())
+        conn.execute(
+            """
+            insert into raw.cycle_queue
+                (queue_id, competition, stage, n_cycles, priority, status, created_at)
+            values (?, ?, ?, ?, ?, 'pending', ?)
+            """,
+            [qid, body.competition, body.stage, body.n_cycles,
+             body.priority, datetime.now(timezone.utc)],
+        )
+        return {"queue_id": qid}
+
+    @app.patch("/api/queue/{queue_id}")
+    def patch_queue(queue_id: str, body: QueuePatchRequest):
+        row = conn.execute(
+            "select status from raw.cycle_queue where queue_id = ?",
+            [queue_id],
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="queue item not found")
+
+        sets: list[str] = []
+        vals: list = []
+        if body.priority is not None:
+            sets.append("priority = ?")
+            vals.append(body.priority)
+        if body.status == "cancelled":
+            if row[0] not in ("pending", "running"):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"cannot cancel item with status '{row[0]}'",
+                )
+            sets.append("status = ?")
+            vals.append("cancelled")
+
+        if not sets:
+            raise HTTPException(status_code=422, detail="nothing to update")
+
+        vals.append(queue_id)
+        conn.execute(
+            f"update raw.cycle_queue set {', '.join(sets)} where queue_id = ?",
+            vals,
+        )
+        return {"queue_id": queue_id, "updated": True}
+
+    return app
