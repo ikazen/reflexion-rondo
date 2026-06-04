@@ -111,6 +111,52 @@
   - **aggregator 가용성 의존**: 한 API down 시 부분 표시(degraded mode 처리 필요).
   - **인증 라우팅**: viewer 무인증 / admin path는 별도 internal 도메인 또는 Caddy의 path matcher로 tailnet only 분리. SSO 미도입(nexus-prime R6 트리거 미발동) 가정.
 
+## ADR-019 — 외부 아이디어 채널: 분리된 게이트웨이 + 톰슨 샘플링 노출
+
+- 결정:
+  - Kaggle 우승 writeup / pinned tips / 유사 fingerprint 대회 솔루션 스레드 등 외부 소스에서 추출한 ML 아이디어를 별도 테이블 `raw.external_ideas` 에 보관하고 Strategist 프롬프트에만 별도 섹션으로 노출. **reflections 풀 / `reflection_impact` 마트 / 검색 score 가중치에 일절 섞지 않는다.**
+  - **외부 아이디어 자체는 `verified` / `promoted` 마킹 없이 영구 게이트웨이로 둔다.** 검증 가치는 채택된 사이클의 정상 reflection 이 lessons 풀에 들어가는 것으로만 살린다 — 시스템 기본 루프가 곧 승격 경로.
+  - **복합 아이디어를 atomic action 으로 쪼개지 않는다.** `idea_text` 원문 보존, Strategist 가 읽은 후 자기 출력에서 `action_type` 을 결정. 외부 단에는 enum 강제 없음(추출 LLM 의 `probable_action_type` 은 nullable 추정값에 한함).
+  - **노출은 stage 게이팅 + 톰슨 샘플링 (Beta-Bernoulli)** — `bootstrap`/`exploitation` 은 외부 idea 차단, `reflexion` 단계만 노출. `applies_when` fingerprint 1차 필터 → 각 후보 θᵢ ~ Beta(αᵢ, βᵢ) 샘플 → **top-3 노출**. 모든 idea 균일 Beta(1, 1) prior. 채택 + jump → α++, 채택 + regression → β++, **미채택 무변화** (Strategist 가 단지 다른 걸 선호했을 뿐, 실패 신호 아님).
+  - **Archive 정책 = 자동 idea + 수동 source 분리**: idea 단위는 `trials ≥ 10 AND posterior_mean < 0.1` 자동 archive(sustained-bad 자연 감쇠). source 단위는 사람이 사후 평가해 화이트리스트 업데이트(자동화 안 함 — 좋은/나쁜 스레드 판단은 측정만으로 부족).
+  - **추출 LLM 가드 4개 모두 적용**: (i) 실측 수치 인용 있는 글만, (ii) upvote/다수 동의 임계값 통과, (iii) 조건부 진술만(절대 추천 차단), (iv) `idea_text` 500자 상한 + 코드 블록 분리. 추출 단계 시스템 프롬프트에 포함.
+- 대안:
+  - (a) **lessons 풀에 `source='external'` + L3_general 직접 삽입**: 검색 단일 채널이라 우아하지만 earned knowledge 오염. `gain_vs_best` 가 null 이라 `reflection_impact` 계산 분기 필요. Strategist 가 "측정된 교훈"과 "남의 주장"을 구분 못함.
+  - (b) **시드 코드/큐로 변환** (cold-start path 연장): LLM 이 아이디어를 `feature_fn`/`model_fn` 까지 만들어 큐잉. 검증 안 된 코드가 Coder/Evaluator 비용 부담. cold-start 는 유사 대회 `gain_vs_best > 0` 검증 코드라 외부 아이디어와 신뢰 수준이 다름.
+  - (c) **분리된 게이트웨이 + Strategist 프롬프트 힌트** (선택).
+  - 노출 정책 대안: **정적 top-K (최근 N일 + score 정렬)** — 외부 source 수가 주 N=5 수준이라 빈번한 후보 중복. 톰슨 샘플링이 적은 풀에서 exploration/exploitation 균형을 자동 학습.
+- 근거:
+  - **천장 상승의 외부 경로**: 현 시스템은 Strategist+Coder prior 안에서만 가설을 낸다(ADR-014). 누적 학습은 "알려진 도구를 이 데이터셋에 언제·어떻게 적용할지" 의 조건부 정책일 뿐, 새 기법 도입 경로가 없다. 외부 주입이 prior 천장을 들어 올리는 가장 직접적인 수단.
+  - **분리 = ADR-005 정합**: LLM-as-judge 금지의 본질은 "측정 안 된 LLM 판정을 진실값으로 못 쓴다". 외부 아이디어는 정확히 측정 안 된 주장 — earned reflection(측정의 자연어 추상화)과 같은 풀에 두면 retrieval score 가중치(`sim * (1 + avg_gain)`)와 `reflection_impact` 인과 귀속(ADR-015)이 동시에 오염된다. 분리하면 두 자산 모두 손상 없음.
+  - **Cold-start lessons(ADR-010) 와 구분**: cold-start lessons 는 *우리 시스템이 다른 대회에서 측정한* L2/L3 reflection(검증 자산). external_ideas 는 *외부인의 미검증 주장*. 둘 다 "다른 컨텍스트의 교훈을 현재 대회에 끌고 옴"이지만 신뢰 수준이 달라 풀·검색·프롬프트 섹션 모두 분리.
+  - **노출 대상은 Strategist 만**: Coder 에 외부 텍스트(특히 코드 조각)를 노출하면 검증 안 된 코드 직접 카피 위험 — `prev_code` 위 1변경 컨트랙트(ADR-014)가 깨짐. Reflector 에 노출하면 자기 추론을 외부 주장으로 정당화 — ADR-016 의 cross-family critic 효과가 깎임. 외부 신호는 가설 생성 단계에만 영감으로 들어가고, 구현·성찰은 측정 결과에만 기반하도록 분리.
+  - **자연 승격**: 외부 아이디어 → Strategist 채택 → Coder 실행 → Evaluator 결정적 신호 → Reflector 정상 reflection. 승격 경로가 시스템 기본 루프와 동일해서 별도 검증 로직 불필요.
+  - **Atomic 분해 안 함의 함의**: Strategist 가 복합 아이디어를 단일 사이클에 다 적용 못함 — 1변경 규율(ADR-006)과 충돌하지 않음. 같은 idea 가 다음 사이클에 다시 톰슨 샘플링으로 뽑히면 다른 부분 / 다른 `action_type` 으로 채택 가능. 의도된 점진 분해.
+  - **톰슨 샘플링 fit**: 외부 source 가 주 N=5 수준으로 적어 정적 top-K 는 빈번한 후보 중복. Beta-Bernoulli 가 α/β 만으로 사후 효과를 누적해 좋은 idea 자동 식별, 나쁜 idea 자연 감쇠. **α/β 자체가 모니터링 상태라 별도 채택률 마트 불필요** — 분석 뷰 `external_idea_bandit` 하나로 노출.
+  - **source 품질이 결정적**: Kaggle Discussions hotness 는 일화 잡음이 커서 LLM 추출이 false signal 을 양산. 화이트리스트 — (i) 종료된 유사 fingerprint 대회 우승 writeup(ADR-010 fingerprint 매칭과 결합), (ii) 대회 pinned "Tips & Tricks", (iii) gold/silver solution 스레드. 양보다 질(주당 N=5 수준).
+  - **추출 LLM 분리**: 같은 모델이 가설/성찰/외부 추출 셋을 다 하면 다양성이 0. Strategist/Reflector 와 다른 호출. 빈도가 주 1회 수준이라 비용은 무시 가능.
+- 데이터 모델 (스키마 상세는 `spec.md`):
+  - `raw.external_ideas(idea_id, fetched_at, source_url, source_kind, idea_text, probable_action_type NULLABLE, applies_when_json, confidence, alpha float default 1.0, beta float default 1.0, archived, adopted_attempt_ids)`
+  - `probable_action_type` 은 추출 LLM 추정값(nullable). Strategist 가 채택 시 자기 `action_type` 을 자유 결정 — 외부 enum 강제 없음.
+  - `applies_when` 은 fingerprint 메타필터(task_type, metric_class, size_class). 톰슨 샘플링의 1차 필터.
+  - `alpha`/`beta` — 균일 Beta(1, 1) 시작. 채택+jump → α++, 채택+regression → β++, 미채택 무변화.
+  - `adopted_attempt_ids` — 채택 attempt 역추적(디버깅·사후 분석). 운영 결정은 α/β 가 dominant.
+  - `raw.attempts.adopted_external_idea_ids` 컬럼 신설 — attempt → reflection 으로 승격된 뒤에도 외부 출처 역추적 정합.
+  - 분석 뷰 `external_idea_bandit(idea_id, posterior_mean=α/(α+β), trials=α+β, last_adopted_at, ...)`.
+- Strategist 통합:
+  - **Stage 게이팅**: `bootstrap`/`exploitation` 은 `## External Ideas` 섹션 자체를 빼고 `reflexion` 단계만 포함.
+  - 기존 `## Retrieved Lessons` 와 분리된 `## External Ideas` 섹션.
+  - 후보 선택: `applies_when` 매치 + `archived=false` 풀 → 각 idea θᵢ ~ Beta(αᵢ, βᵢ) 샘플 → top-3 노출.
+  - 프롬프트 톤: **"영감용, 채택 안 해도 됨"** — 1변경 규율의 안정 학습이 외부 잡음에 끌려가지 않도록.
+  - Strategist 출력에 `external_idea_ids` 필드 신설(`reflection_ids` 와 같은 패턴 — `agents/strategist.py:70` 의 `valid_ids` 가드 재사용).
+- 한계/위험:
+  - **LLM 추출 노이즈**: hot 스레드도 일화 중심. confidence 라벨 + dedup + source 화이트리스트로 1차 방어. α/β 누적으로 사후 정제(나쁜 idea 자연 감쇠, 나쁜 source 는 수동 archive).
+  - **새 외부 의존**: Kaggle 스크래핑/API rate, scheduler 추가. ADR-017 daemon 운용에 단일 systemd timer 로 흡수.
+  - **큐레이션 부담 지속**: source 화이트리스트는 한 번 정한다고 끝이 아님 — 톰슨 샘플링이 idea 단위는 자동 정제하지만 source 단위는 사람이 평가.
+  - **승격 평가의 인과 한계**: external_ideas adoption → gain 의 인과 귀속도 `reflection_impact` 와 같은 상관 한계(ADR-015)를 갖는다. ablation 도입 시 같이 캘리브레이션.
+  - **톰슨 샘플링 staleness**: 시간 decay 없음 — 오래 누적된 좋은 idea 가 우위를 영구 유지. 트렌드 변화 시 새 cold-start(Beta(1,1)) 가 못 따라잡을 수 있음. 신호 보이면 weekly decay 도입.
+- 추적: Linear BON-XX 시리즈(스키마 / 스케줄러+추출 / 화이트리스트 / Strategist 통합 4단계 분리 예정).
+
 ---
 
 ## 미정 항목 (TBD)
@@ -129,3 +175,6 @@
 | 운용 호스트 | worker-vm + 단일 daemon(systemd) | 확정, ADR-017 (Phase 5) |
 | label 임계값 z | fold_std 배수(기본 1.0) | TBD (캘리브레이션 필요) |
 | fingerprint 거리 가중치 | task/metric 큼·size 중간·기타 작음 | TBD (대회 누적 후 캘리브레이션) |
+| 외부 아이디어 source 화이트리스트 | 우승 writeup / pinned tips / gold·silver solution | TBD, ADR-019 (큐레이션 필요) |
+| 외부 아이디어 추출 LLM | Strategist/Reflector 와 다른 호출 | TBD, ADR-019 |
+| 외부 아이디어 주입 빈도·수량 | 주 1회 N=5 (제안) | TBD, ADR-019 |
