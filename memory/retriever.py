@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import time
+
 import duckdb
 from ollama import Client
 
 from config import settings
 
 _EMBED_DIM = 1024
+_EMBED_RETRY_DELAYS = (1.0, 4.0, 16.0)  # 3회, exponential backoff
+
+
+class EmbeddingUnavailableError(RuntimeError):
+    """임베딩 엔드포인트 일시 장애 — 재시도 소진 후 raise."""
 
 
 def _client() -> Client:
@@ -13,8 +20,18 @@ def _client() -> Client:
 
 
 def embed(text: str) -> list[float]:
-    resp = _client().embed(model=settings.MODEL_EMBEDDING, input=text)
-    return resp.embeddings[0][:_EMBED_DIM]
+    last_exc: Exception | None = None
+    for delay in (0.0, *_EMBED_RETRY_DELAYS):
+        if delay:
+            time.sleep(delay)
+        try:
+            resp = _client().embed(model=settings.MODEL_EMBEDDING, input=text)
+            return resp.embeddings[0][:_EMBED_DIM]
+        except Exception as exc:
+            last_exc = exc
+    raise EmbeddingUnavailableError(
+        f"embedding failed after {1 + len(_EMBED_RETRY_DELAYS)} attempts: {last_exc}"
+    ) from last_exc
 
 
 def insert_reflection(

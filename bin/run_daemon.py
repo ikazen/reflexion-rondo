@@ -4,19 +4,27 @@ Usage:
     uv run python -m bin.run_daemon
 
 SIGTERM/SIGINT를 받으면 현재 사이클이 끝난 뒤 종료한다.
+
+환경변수 (페이싱 — 미설정 시 비활성):
+    OLLAMA_CLOUD_SESSION_HOURS   세션 윈도우 길이 (기본 5.0)
+    OLLAMA_CLOUD_SESSION_CYCLES  세션당 최대 사이클 수 (0=비활성)
+    OLLAMA_CLOUD_WEEKLY_CYCLES   주간 최대 사이클 수 (0=비활성)
 """
 from __future__ import annotations
 
 import importlib
+import math
+import os
 import signal
 import time
-import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
 
 from cycle.run import CycleConfig, run_cycle
+from memory.retriever import EmbeddingUnavailableError
 from store.db import connect, ensure_competition
 
 POLL_INTERVAL = 10  # 빈 큐 대기 간격 (초)
@@ -24,6 +32,88 @@ ROOT = Path(__file__).parent.parent
 
 _running = True
 
+
+# ---------------------------------------------------------------------------
+# Ollama Cloud 페이싱
+# ---------------------------------------------------------------------------
+
+@dataclass
+class OllamaPacer:
+    """세션(5h) + 주간 사이클 한도를 추적해 Ollama Cloud 과금/429를 방지한다.
+
+    session_cycles / weekly_cycles 중 하나라도 0이면 해당 한도는 비활성.
+    한도 초과 시 다음 윈도우 시작까지 sleep 후 반환한다 — 스킵이 아닌 대기.
+    """
+    session_hours: float
+    session_cycles: int
+    weekly_cycles: int
+
+    _session_start: float = field(default_factory=time.monotonic, init=False)
+    _session_count: int = field(default=0, init=False)
+    _week_start: float = field(default_factory=time.monotonic, init=False)
+    _week_count: int = field(default=0, init=False)
+
+    @classmethod
+    def from_env(cls) -> "OllamaPacer":
+        return cls(
+            session_hours=float(os.getenv("OLLAMA_CLOUD_SESSION_HOURS", "5.0")),
+            session_cycles=int(os.getenv("OLLAMA_CLOUD_SESSION_CYCLES", "0")),
+            weekly_cycles=int(os.getenv("OLLAMA_CLOUD_WEEKLY_CYCLES", "0")),
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return self.session_cycles > 0 or self.weekly_cycles > 0
+
+    def acquire(self) -> None:
+        """한도 초과 시 다음 윈도우까지 대기. 한도 내면 즉시 반환."""
+        if not self.enabled:
+            return
+
+        now = time.monotonic()
+        week_secs = 7 * 24 * 3600
+        session_secs = self.session_hours * 3600
+
+        # 주간 리셋
+        if now - self._week_start >= week_secs:
+            self._week_start = now
+            self._week_count = 0
+
+        # 세션 리셋
+        if now - self._session_start >= session_secs:
+            self._session_start = now
+            self._session_count = 0
+
+        # 주간 한도 체크
+        if self.weekly_cycles > 0 and self._week_count >= self.weekly_cycles:
+            wait = week_secs - (now - self._week_start)
+            print(
+                f"[pacer] weekly limit {self._week_count}/{self.weekly_cycles} reached"
+                f" — sleeping {wait/3600:.1f}h"
+            )
+            time.sleep(max(wait, 0))
+            self._week_start = time.monotonic()
+            self._week_count = 0
+
+        # 세션 한도 체크
+        if self.session_cycles > 0 and self._session_count >= self.session_cycles:
+            wait = session_secs - (time.monotonic() - self._session_start)
+            print(
+                f"[pacer] session limit {self._session_count}/{self.session_cycles} reached"
+                f" — sleeping {wait/60:.0f}min"
+            )
+            time.sleep(max(wait, 0))
+            self._session_start = time.monotonic()
+            self._session_count = 0
+
+    def record(self) -> None:
+        self._session_count += 1
+        self._week_count += 1
+
+
+# ---------------------------------------------------------------------------
+# 큐 헬퍼
+# ---------------------------------------------------------------------------
 
 def _handle_signal(sig, frame) -> None:
     global _running
@@ -68,7 +158,11 @@ def _is_cancelled(conn, queue_id: str) -> bool:
     return row is not None and row[0] == "cancelled"
 
 
-def _process(conn, item: dict) -> None:
+# ---------------------------------------------------------------------------
+# 큐 아이템 처리
+# ---------------------------------------------------------------------------
+
+def _process(conn, item: dict, pacer: OllamaPacer) -> None:
     qid = item["queue_id"]
     competition = item["competition"]
     stage = item["stage"]
@@ -95,13 +189,18 @@ def _process(conn, item: dict) -> None:
     )
 
     latest_score: float | None = None
+    cycles_done = 0
     failed = False
 
     for i in range(n_cycles):
         if not _running or _is_cancelled(conn, qid):
             print(f"[daemon] queue_id={qid} cancelled at cycle {i + 1}")
-            _set_status(conn, qid, "cancelled", ended_at=datetime.now(timezone.utc))
+            _set_status(conn, qid, "cancelled", ended_at=datetime.now(timezone.utc),
+                        cycles_done=cycles_done, latest_score=latest_score)
             return
+
+        # Ollama Cloud 페이싱 — 한도 초과 시 여기서 대기
+        pacer.acquire()
 
         config = CycleConfig(
             competition_id=comp.COMPETITION_ID,
@@ -120,17 +219,22 @@ def _process(conn, item: dict) -> None:
             result = run_cycle(conn, config)
             if result.cv_score is not None:
                 latest_score = result.cv_score
+            cycles_done += 1
+            pacer.record()
             print(
                 f"[daemon] cycle {i + 1}/{n_cycles} attempt={result.attempt_id[:8]}"
                 f" cv={result.cv_score} label={result.label}"
             )
+        except EmbeddingUnavailableError as exc:
+            # Mac Ollama 임베딩 일시 장애 — 이 사이클만 스킵, daemon 지속
+            print(f"[daemon] cycle {i + 1}/{n_cycles} skipped — embedding unavailable: {exc}")
         except Exception as exc:
             err_msg = str(exc)
             print(f"[daemon] cycle {i + 1}/{n_cycles} raised: {err_msg}")
             _set_status(
                 conn, qid, "failed",
                 ended_at=datetime.now(timezone.utc),
-                cycles_done=i,
+                cycles_done=cycles_done,
                 latest_score=latest_score,
                 error=err_msg[:2000],
             )
@@ -138,18 +242,30 @@ def _process(conn, item: dict) -> None:
             break
 
         _set_status(conn, qid, "running",
-                    cycles_done=i + 1, latest_score=latest_score)
+                    cycles_done=cycles_done, latest_score=latest_score)
 
     if not failed:
         _set_status(conn, qid, "done",
                     ended_at=datetime.now(timezone.utc),
-                    cycles_done=n_cycles, latest_score=latest_score)
+                    cycles_done=cycles_done, latest_score=latest_score)
         print(f"[daemon] queue_id={qid} done latest_score={latest_score}")
 
+
+# ---------------------------------------------------------------------------
+# 진입점
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
+
+    pacer = OllamaPacer.from_env()
+    if pacer.enabled:
+        print(
+            f"[daemon] Ollama Cloud pacing enabled — "
+            f"session={pacer.session_cycles} cycles/{pacer.session_hours}h, "
+            f"weekly={pacer.weekly_cycles} cycles"
+        )
 
     conn = connect()
     print("[daemon] started — polling raw.cycle_queue")
@@ -159,7 +275,7 @@ def main() -> None:
         if item is None:
             time.sleep(POLL_INTERVAL)
             continue
-        _process(conn, item)
+        _process(conn, item, pacer)
 
     conn.close()
     print("[daemon] stopped")
