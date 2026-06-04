@@ -77,6 +77,64 @@ def _last_hypothesis(conn: duckdb.DuckDBPyConnection, competition_id: str) -> st
     return row[0] if row else None
 
 
+def _dynamic_eda_context(
+    conn: duckdb.DuckDBPyConnection,
+    competition_id: str,
+    prev_best_cv: float | None,
+    window: int = 10,
+) -> str:
+    """매 사이클 DB를 조회해 EDA 카드 하단에 붙일 동적 컨텍스트를 생성한다."""
+    lines: list[str] = ["\n## Current State"]
+
+    best_str = f"{prev_best_cv:.5f}" if prev_best_cv is not None else "none yet"
+    lines.append(f"- best CV so far: {best_str}")
+
+    # 최근 window 개 attempt의 action_type 분포
+    dist_rows = conn.execute(
+        """
+        select action_type, count(*) as cnt
+        from (
+            select action_type from raw.attempts
+            where competition_id = ? and cv_score is not null
+            order by run_ts desc
+            limit ?
+        )
+        group by action_type
+        order by cnt desc
+        """,
+        [competition_id, window],
+    ).fetchall()
+    if dist_rows:
+        dist_str = ", ".join(f"{r[0]} x{r[1]}" for r in dist_rows)
+        lines.append(f"- recent {window} attempts: {dist_str}")
+
+    # 최근 실패 패턴: regression + error 합산, action_type별 횟수
+    fail_rows = conn.execute(
+        """
+        select action_type, count(*) as cnt,
+               any_value(hypothesis) as sample_hyp
+        from (
+            select action_type, hypothesis from raw.attempts
+            where competition_id = ?
+              and (label = 'regression' or error_trace is not null)
+            order by run_ts desc
+            limit ?
+        )
+        group by action_type
+        order by cnt desc
+        """,
+        [competition_id, window],
+    ).fetchall()
+    if fail_rows:
+        fail_parts = [
+            f"{r[0]} ({r[1]}x, e.g. {(r[2] or '')[:50]})"
+            for r in fail_rows
+        ]
+        lines.append(f"- recent failures: {'; '.join(fail_parts)}")
+
+    return "\n".join(lines)
+
+
 def _recent_failure_summary(
     conn: duckdb.DuckDBPyConnection,
     competition_id: str,
@@ -184,9 +242,11 @@ def run_cycle(
 
     # 2. Strategize
     prev_best_cv = _prev_best(conn, config.competition_id)
+    dynamic_ctx = _dynamic_eda_context(conn, config.competition_id, prev_best_cv)
+    enriched_eda = config.eda_card + dynamic_ctx
     stagnation = detect_stagnation(conn, config.competition_id)
     decision = strategize(
-        eda_card=config.eda_card,
+        eda_card=enriched_eda,
         lessons=lessons,
         stage=config.stage,
         prev_best_cv=prev_best_cv,
