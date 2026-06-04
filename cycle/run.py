@@ -16,7 +16,7 @@ from agents.strategist import strategize
 from config.settings import MODEL_CODER
 from cycle.stagnation import detect_stagnation
 from evaluator.contract import validate_code
-from memory.retriever import search
+from memory.retriever import EmbeddingUnavailableError, search
 from runtime.isolate import eval_isolated
 from store.db import insert_attempt, insert_pipeline
 
@@ -160,9 +160,9 @@ def _build_retrieval_query(
     conn: duckdb.DuckDBPyConnection,
     competition_id: str,
     eda_card: str,
+    fail_summary: str = "",
 ) -> str:
     last_hyp = _last_hypothesis(conn, competition_id) or ""
-    fail_summary = _recent_failure_summary(conn, competition_id)
     parts = [p for p in [last_hyp, f"avoid: {fail_summary}" if fail_summary else ""] if p]
     return "; ".join(parts) if parts else eda_card
 
@@ -237,7 +237,8 @@ def run_cycle(
     cycle_start = time.monotonic()
 
     # 1. Retrieve
-    query = _build_retrieval_query(conn, config.competition_id, config.eda_card)
+    fail_summary = _recent_failure_summary(conn, config.competition_id)
+    query = _build_retrieval_query(conn, config.competition_id, config.eda_card, fail_summary)
     lessons = search(conn, query, config.competition_id, k=config.k_retrieve)
 
     # 2. Strategize
@@ -370,7 +371,7 @@ def run_cycle(
             gain_vs_best=gain_vs_best,
         )
 
-    # 7. Reflect
+    # 7. Reflect — attempt는 이미 저장됨. 임베딩 장애 시 reflection만 스킵.
     reflection_id: str | None = None
     ctx = AttemptContext(
         hypothesis=decision.hypothesis,
@@ -383,8 +384,11 @@ def run_cycle(
         retrieved_ids=decision.reflection_ids,
         error_trace=error_trace,
     )
-    output = reflect(conn, attempt_id=attempt_id, competition_id=config.competition_id, context=ctx)
-    reflection_id = output.reflection_id
+    try:
+        output = reflect(conn, attempt_id=attempt_id, competition_id=config.competition_id, context=ctx)
+        reflection_id = output.reflection_id
+    except EmbeddingUnavailableError:
+        pass
 
     return CycleResult(
         attempt_id=attempt_id,

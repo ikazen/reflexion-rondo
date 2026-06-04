@@ -13,13 +13,12 @@ SIGTERM/SIGINT를 받으면 현재 사이클이 끝난 뒤 종료한다.
 from __future__ import annotations
 
 import importlib
-import math
 import os
 import signal
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import polars as pl
@@ -50,9 +49,9 @@ class OllamaPacer:
     session_cycles: int
     weekly_cycles: int
 
-    _session_start: float = field(default_factory=time.monotonic, init=False)
+    _session_start: float = field(default_factory=time.time, init=False)
     _session_count: int = field(default=0, init=False)
-    _week_start: float = field(default_factory=time.monotonic, init=False)
+    _week_start: float = field(default_factory=time.time, init=False)
     _week_count: int = field(default=0, init=False)
 
     @classmethod
@@ -61,6 +60,29 @@ class OllamaPacer:
             session_hours=float(os.getenv("OLLAMA_CLOUD_SESSION_HOURS", "5.0")),
             session_cycles=int(os.getenv("OLLAMA_CLOUD_SESSION_CYCLES", "0")),
             weekly_cycles=int(os.getenv("OLLAMA_CLOUD_WEEKLY_CYCLES", "0")),
+        )
+
+    def restore_from_db(self, conn) -> None:
+        """재시작 후 DB의 실제 attempt 수로 카운터를 복원한다."""
+        if not self.enabled:
+            return
+        now = datetime.now(timezone.utc)
+        session_cutoff = now - timedelta(hours=self.session_hours)
+        week_cutoff = now - timedelta(weeks=1)
+        row = conn.execute(
+            """
+            select
+                count(*) filter (where run_ts >= ?) as session_count,
+                count(*) filter (where run_ts >= ?) as week_count
+            from raw.attempts
+            """,
+            [session_cutoff, week_cutoff],
+        ).fetchone()
+        if row:
+            self._session_count = row[0]
+            self._week_count = row[1]
+        print(
+            f"[pacer] restored from DB — session={self._session_count}, week={self._week_count}"
         )
 
     @property
@@ -208,6 +230,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
 
     latest_score: float | None = None
     cycles_done = 0
+    skipped = 0
     failed = False
 
     for i in range(n_cycles):
@@ -250,6 +273,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
         except EmbeddingUnavailableError as exc:
             # Mac Ollama 임베딩 일시 장애 — 이 사이클만 스킵, daemon 지속
             print(f"[daemon] cycle {i + 1}/{n_cycles} skipped — embedding unavailable: {exc}")
+            skipped += 1
         except Exception as exc:
             err_msg = str(exc)
             print(f"[daemon] cycle {i + 1}/{n_cycles} raised: {err_msg}")
@@ -267,10 +291,21 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                     cycles_done=cycles_done, latest_score=latest_score)
 
     if not failed:
-        _set_status(conn, qid, "done",
-                    ended_at=datetime.now(timezone.utc),
-                    cycles_done=cycles_done, latest_score=latest_score)
-        print(f"[daemon] queue_id={qid} done latest_score={latest_score}")
+        if _is_cancelled(conn, qid):
+            # 사이클 실행 중 API로 취소 요청이 들어온 경우 — done으로 덮어쓰지 않는다
+            print(f"[daemon] queue_id={qid} cancelled (detected post-cycle)")
+        elif cycles_done == 0 and skipped > 0:
+            # 모든 사이클이 임베딩 장애로 스킵됨 — 거짓 done 방지
+            _set_status(conn, qid, "failed",
+                        ended_at=datetime.now(timezone.utc),
+                        cycles_done=0,
+                        error=f"all {skipped} cycles skipped — embedding unavailable")
+            print(f"[daemon] queue_id={qid} failed — all {skipped} cycles skipped (embedding)")
+        else:
+            _set_status(conn, qid, "done",
+                        ended_at=datetime.now(timezone.utc),
+                        cycles_done=cycles_done, latest_score=latest_score)
+            print(f"[daemon] queue_id={qid} done latest_score={latest_score}")
 
     state.update(current_queue_id=None, current_competition=None,
                  current_cycle=0, current_n_cycles=0)
@@ -297,6 +332,7 @@ def main() -> None:
     api_thread.start()
 
     conn = connect()
+    pacer.restore_from_db(conn)
     print("[daemon] started — polling raw.cycle_queue")
 
     while _running:
