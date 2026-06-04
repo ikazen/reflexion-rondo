@@ -1,6 +1,6 @@
 services:
   rondo-daemon:
-    image: registry.internal:80/reflexion-rondo:latest
+    image: registry.internal:80/reflexion-rondo/daemon:latest
     network_mode: host
     volumes:
       - /var/lib/rondo:/app/runs             # DuckDB + 제출 파일
@@ -11,7 +11,7 @@ services:
       - /var/lib/rondo/.env
     environment:
       RONDO_DB_PATH: /app/runs/reflexion.duckdb
-      EVAL_DOCKER_IMAGE: registry.internal:80/reflexion-eval:latest
+      EVAL_DOCKER_IMAGE: registry.internal:80/reflexion-rondo/eval:latest
       TMPDIR: /tmp/rondo-eval
       DAEMON_API_HOST: "0.0.0.0"
       PYTHONUNBUFFERED: "1"

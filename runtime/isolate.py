@@ -15,7 +15,7 @@ from pathlib import Path
 
 import polars as pl
 
-EVAL_IMAGE = os.environ.get("EVAL_DOCKER_IMAGE", "reflexion-eval:latest")
+EVAL_IMAGE = os.environ.get("EVAL_DOCKER_IMAGE", "registry.internal:80/reflexion-rondo/eval:latest")
 _MEMORY = "8g"
 _CPUS = "2"
 _PIDS = "512"

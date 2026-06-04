@@ -4,8 +4,8 @@
 set -euo pipefail
 
 REGISTRY=registry.internal
-DAEMON_IMAGE=$REGISTRY/reflexion-rondo:latest
-EVAL_IMAGE=$REGISTRY/reflexion-eval:latest
+DAEMON_IMAGE=$REGISTRY/reflexion-rondo/daemon:latest
+EVAL_IMAGE=$REGISTRY/reflexion-rondo/eval:latest
 
 docker buildx build --platform linux/arm64 \
     -t "$DAEMON_IMAGE" -f deploy/Dockerfile . --push
