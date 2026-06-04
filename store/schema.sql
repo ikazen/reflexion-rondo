@@ -28,8 +28,9 @@ create table if not exists raw.attempts (
     error_trace     text
 );
 
-create view if not exists score_progression as
+create or replace view score_progression as
 select
+    a.attempt_id,
     a.competition_id,
     row_number() over (
         partition by a.competition_id order by a.run_ts
@@ -87,7 +88,7 @@ create table if not exists raw.pipelines (
     gain_vs_best         double
 );
 
-create view if not exists cold_start_progression as
+create or replace view cold_start_progression as
 select
     a.competition_id,
     row_number() over (partition by a.competition_id order by a.run_ts) as attempt_no,
@@ -102,14 +103,14 @@ from raw.attempts a
 join raw.competitions c using (competition_id)
 where a.cv_score is not null;
 
-create view if not exists stg_attempts as
+create or replace view stg_attempts as
 select
     a.*,
     c.metric_sign
 from raw.attempts a
 join raw.competitions c using (competition_id);
 
-create view if not exists stg_attempts_reflexion_only as
+create or replace view stg_attempts_reflexion_only as
 select * from stg_attempts
 where stage = 'reflexion';
 
@@ -128,7 +129,7 @@ create table if not exists raw.cycle_queue (
     error        text
 );
 
-create view if not exists reflection_impact as
+create or replace view reflection_impact as
 with scored as (
     select
         competition_id,
