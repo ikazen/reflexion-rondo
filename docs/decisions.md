@@ -32,6 +32,7 @@
 - 대안: (a) Chroma 별도 + DuckDB dual-write (v2 초안), (b) pgvector로 전부 Postgres.
 - 근거: 이 프로젝트의 벡터 규모는 누적 1만~수만 건 수준이라 768차원 브루트포스 코사인이 수십 ms로 충분 — ANN 인덱스(Chroma/pgvector HNSW)는 조기 최적화. dual-write를 없애 검색·분석·기록의 정합성을 한 트랜잭션으로 보장하고, zero-server(ADR-011)와 DuckDB의 OLAP 강점(마트 window 쿼리)을 동시에 유지. pgvector는 분석까지 Postgres로 옮겨야 이득이 생겨 ADR-011과 충돌하므로 제외.
 - 승격 트리거: 벡터 수십만 건 초과로 브루트포스 지연이 체감되면 DuckDB `vss` 확장(HNSW)으로 인덱스만 추가. 그래도 부족하면 그때 전용 벡터DB 재검토.
+- **[2026-06-06 amend]** BON-98: DaemonAPI + main loop write-write 충돌(DuckDB 파일락, commit d9ad514) 발동으로 재고 트리거 발동. 대안 (b) pgvector 전환 확정. `store/schema.sql` Postgres 재작성, psycopg2 + pgvector 도입. ADR-011 수정: DuckDB 단일 서버 → ops-vm Postgres + pgvector. 데이터 마이그레이션 없음(새 스키마 시작).
 
 ## ADR-008 — 임베딩은 로컬 (qwen3-embedding:8b)
 - 결정: `qwen3-embedding:8b`(1024차원, MRL 32~1024 절단 가능)를 Mac Ollama 서버에서 로컬 실행. 스키마는 `reflections.embedding float[1024]`.
@@ -166,7 +167,7 @@
 | Strategist 모델 | deepseek-v4-pro (대안 kimi-k2.6) | 시작값, ADR-016 |
 | Reflector 모델 | glm-5 (Strategist와 다른 패밀리) | 시작값, ADR-016 |
 | Coder 모델 | qwen3-coder-next (대안 glm-4.7/devstral-small-2) | 시작값, ADR-016 |
-| 스토어 (검색+분석) | DuckDB 단일 (벡터 컬럼) | 권장(시작), ADR-007 |
+| 스토어 (검색+분석) | Postgres + pgvector (벡터 컬럼) | 확정, ADR-007 amend (BON-98) |
 | 벡터 인덱스 | 브루트포스 → 필요 시 vss(HNSW) | 승격 조건부 |
 | Ollama Cloud 요금제 | Pro($20, 동시 3) | 시작값 |
 | 시작 대회 | playground-series-s4e1 (Bank Churn, 이진/AUC, ~16.5만 행) | 확정 |

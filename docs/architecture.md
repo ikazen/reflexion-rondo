@@ -13,9 +13,9 @@
 | 임베딩 | Mac Ollama 서버 | qwen3-embedding:8b (1024d, MRL) — ADR-008 |
 | Evaluator (CV · 지표 · Optuna · label) | WSL2 로컬 | 결정적 코드 |
 | 생성 코드 실행 | WSL2 로컬 | **현재 in-process `exec`** (격리 미구현, §5는 계획) |
-| Memory (검색) | 로컬 | DuckDB (벡터 컬럼 + 브루트포스 코사인) |
+| Memory (검색) | ops-vm | Postgres + pgvector (vector(1024), <=> 코사인) |
 | Orchestrator | 로컬 | 단순 Python 러너 + cron |
-| Warehouse + 분석 뷰 | 로컬 | DuckDB (스토어·검색·분석 단일화, dbt 아닌 SQL view) |
+| Warehouse + 분석 뷰 | ops-vm | Postgres raw 스키마 (SQL view, psycopg2 경유) |
 
 설계 의도: **추론만 클라우드, 나머지는 로컬에서 시작.** 병목/비용이 데이터로 잡히면 그때 분산화.
 
@@ -23,12 +23,12 @@
 
 ```text
               (retrieve)                                   (CV score)
- DuckDB ------------------> [Strategize] -> [Generate] -> [Evaluate: k-fold]
- (벡터검색)                  (Cloud)        (Cloud)         (Local, 결정적)
+ Postgres -----------------> [Strategize] -> [Generate] -> [Evaluate: k-fold]
+ (pgvector검색)              (Cloud)        (Cloud)         (Local, 결정적)
      ^                                                            |
      | (lessons)                                                  v
  [Reflect] <------------ best 후보 --------------------- [Submit? <=5/day] -> LB
- (Cloud) ----> DuckDB(competitions/attempts/reflections[+embedding]) + 분석 뷰(SQL view)
+ (Cloud) ----> Postgres(competitions/attempts/reflections[+vector]) + 분석 뷰(SQL view)
      |
      +--------------- next attempt -----------------> [Strategize]
 ```
@@ -37,13 +37,13 @@
 
 ## 3. Reflexion 루프 (1 attempt = 1 cycle)
 
-1. **Retrieve**: 검색 키 = `(competition_fingerprint, last_attempt_summary 또는 seed_query)` → DuckDB 벡터 검색(브루트포스 코사인) + 메타필터로 교훈 top-k.
+1. **Retrieve**: 검색 키 = `(competition_fingerprint, last_attempt_summary 또는 seed_query)` → Postgres/pgvector 코사인 검색(`<=>`) + 메타필터로 교훈 top-k.
 2. **Strategize**: EDA 카드 + 검색 교훈 + 현재 stage → 다음 가설 1개 (`action_type` enum 강제). 실제 채택한 교훈 id를 함께 출력. **reflexion 단계 한정** 외부 아이디어 별도 섹션 노출 (ADR-019, 톰슨 샘플링 top-3 — §8).
 3. **Generate**: 가설 → `feature_fn` + `model_fn` (컨트랙트는 `spec.md`). 시드·k-fold·IO는 Evaluator가 주입. **bootstrap 외 단계는 직전 best 파이프라인을 `prev_code`로 받아 한 군데만 수정** — 1변경 규율을 코드로 강제(§4).
 4. **Evaluate**: k-fold CV + 지표 + (필요 시) Optuna. **결정적 코드. CV 델타·fold 분산으로 `label`도 여기서 계산** (LLM 아님).
 5. **Submit?**: 제출 예산 남았을 때만. best 후보 → LB.
 6. **Reflect**: (가설, 코드, retrieved_ids, CV 결과, best 대비 델타, feature_importance, fold variance, 에러 trace) → 교훈 본문 + `generality`. Reflector의 정성 판정(`reflector_label`)은 참고용으로만 기록.
-7. **Persist**: DuckDB 단일 스토어에 기록(임베딩은 벡터 컬럼). 분석 뷰(SQL view)는 자동 반영. 생성 코드는 `runs/code/`에 로컬 저장(사람 검토용).
+7. **Persist**: Postgres(ops-vm)에 기록(embedding은 `vector(1024)` 컬럼). 분석 뷰(SQL view)는 자동 반영. 생성 코드는 `runs/code/`에 로컬 저장(사람 검토용).
 
 피드백 신호 정책: **CV = 주 신호**(무제한·결정적), **LB = 확인용 희소 신호**(하루 예산 내, CV-LB 상관/shake 감지).
 
@@ -85,7 +85,7 @@ LLM 역할 3개:
 
 비-LLM 컴포넌트:
 - **Evaluator**: k-fold CV + 지표 + Optuna 캡슐화. 결정적 시드·budget. `label`·`gain_vs_best` 계산.
-- **Memory/Retriever**: DuckDB 벡터 컬럼 + 임베딩 + 메타필터 + 재순위 (브루트포스 코사인, ADR-007).
+- **Memory/Retriever**: Postgres/pgvector `vector(1024)` 컬럼 + 임베딩 + 메타필터 + MMR 재순위 (코사인 `<=>`, BON-98).
 - **Fingerprinter**: 결정적 메타피처 계산기.
 
 역할별 모델 배정은 ADR-016 참조 (세 역할을 처음부터 분리). Reflexion 관점에서 **Actor = Strategist(정책) + Coder(실행)**, **Reflector = self-reflection**, Evaluator = 결정적 코드.
@@ -97,7 +97,7 @@ LLM 역할 3개:
 사용자 목표의 핵심: *"다른 Playground Series 하나 넣으면 예전 경험에 기반해 빠르게 시작."* 이를 메커니즘으로 보장한다.
 
 - **Fingerprint** (`store/fingerprint.py`): Polars로 1회 계산하는 결정적 메타피처(스키마는 `spec.md`). 같은 데이터셋이면 항상 같은 값. 타깃 통계는 train fold 평균/분산만 사용해 누수 방지.
-- **유사 대회 검색** (`memory/transfer.py`): fingerprint 가중 유클리드 거리 top-k. DuckDB SQL로 충분(메타피처 수십 차원). 가중치 — `task_type`/`metric_class` 불일치 = 큰 페널티, `size_class` 차이 = 중간, missing/cardinality 차이 = 작게.
+- **유사 대회 검색** (`memory/transfer.py`): fingerprint 가중 유클리드 거리 top-k. Postgres SQL(메타피처 수십 차원). 가중치 — `task_type`/`metric_class` 불일치 = 큰 페널티, `size_class` 차이 = 중간, missing/cardinality 차이 = 작게.
 - **교훈 일반화 레벨** (`generality`): `L1_local`(이 대회 전용, transfer 제외) / `L2_class`(유사 fingerprint 부류) / `L3_general`(정형 대회 보편).
 - **Cold-start 검색**: 새 대회 N+1 →
   1. `similar = find_similar_competitions(fp_new, k=3)`
