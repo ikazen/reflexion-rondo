@@ -58,7 +58,7 @@ attempts_df = conn.execute(
         {_retries_col},
         error_trace is not null as has_error
     from raw.attempts
-    where competition_id = ?
+    where competition_id = %s
     order by run_ts
     """,
     [comp_id],
@@ -72,7 +72,7 @@ best_so_far = conn.execute(
     """
     select attempt_no, best_so_far
     from score_progression
-    where competition_id = ?
+    where competition_id = %s
     order by attempt_no
     """,
     [comp_id],
@@ -145,7 +145,7 @@ impact_df = conn.execute(
            r.embedded_text, r.generality
     from reflection_impact i
     join raw.reflections r using (reflection_id)
-    where r.competition_id = ? or r.generality in ('L2_class', 'L3_general')
+    where r.competition_id = %s or r.generality in ('L2_class', 'L3_general')
     order by i.avg_gain desc
     limit 10
     """,
