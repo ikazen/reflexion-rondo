@@ -27,6 +27,9 @@ def main() -> None:
 
     sys.path.insert(0, str(ROOT))
 
+    from dotenv import load_dotenv
+    load_dotenv("/app/.env", override=False)
+
     from store.db import connect, ensure_competition
     from cycle.run import CycleConfig, run_cycle
 
