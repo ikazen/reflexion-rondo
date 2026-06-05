@@ -18,8 +18,9 @@ from evaluator.contract import validate_code
 from memory.retriever import EmbeddingUnavailableError, search
 from runtime.isolate import eval_isolated
 from store.db import PgConn, insert_attempt, insert_pipeline
+from store.s3_code import download as _code_download
+from store.s3_code import upload as _code_upload
 
-RUNS_CODE_DIR = Path(__file__).parent.parent / "runs" / "code"
 _CODE_HEADER_SEP = "# " + "-" * 60  # 저장 헤더와 본문 경계 — _best_code가 이 줄로 헤더를 떼낸다
 
 
@@ -47,7 +48,7 @@ class CycleResult:
     retries: int
     reflection_id: str | None
     error_trace: str | None
-    code_path: Path
+    code_path: str
 
 
 def _prev_best(conn: PgConn, competition_id: str) -> float | None:
@@ -177,15 +178,10 @@ def _save_code(
     cv_score: float | None,
     gain_vs_best: float | None,
     error_trace: str | None,
-) -> Path:
-    """생성 코드를 로컬에 떨군다 — 사람이 품질 검토 후 reflection 반영 여부 판단용.
-
-    runs/ 는 gitignore. coder 모델 교체 전후 비교를 위해 헤더에 모델명·CV를 박는다.
-    """
-    out_dir = RUNS_CODE_DIR / competition_id
-    out_dir.mkdir(parents=True, exist_ok=True)
+) -> str:
+    """생성 코드를 저장하고 URI를 반환한다 (S3 또는 로컬 경로 fallback)."""
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    path = out_dir / f"{ts}_{attempt_id[:8]}.py"
+    filename = f"{ts}_{attempt_id[:8]}.py"
     header = (
         f"# attempt_id:   {attempt_id}\n"
         f"# coder_model:  {MODEL_CODER}\n"
@@ -195,8 +191,7 @@ def _save_code(
         f"# hypothesis:   {' '.join(hypothesis.split())}\n"
         f"{_CODE_HEADER_SEP}\n"
     )
-    path.write_text(header + source, encoding="utf-8")
-    return path
+    return _code_upload(competition_id, filename, header + source)
 
 
 def _best_code(conn: PgConn, competition_id: str) -> str | None:
@@ -217,12 +212,11 @@ def _best_code(conn: PgConn, competition_id: str) -> str | None:
     ).fetchone()
     if not row or not row[0]:
         return None
-    path = Path(row[0])
-    if not path.exists():
+    content = _code_download(row[0])
+    if not content:
         return None
-    content = path.read_text(encoding="utf-8")
     sep = _CODE_HEADER_SEP + "\n"
-    if sep in content:  # 저장 시 붙인 주석 헤더 제거 → 순수 소스만
+    if sep in content:
         content = content.split(sep, 1)[1]
     return content.strip() or None
 

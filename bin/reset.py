@@ -100,18 +100,17 @@ def reset_competition(competition_id: str, yes: bool) -> None:
         "select count(*) from raw.reflections where competition_id = %s",
         [competition_id],
     ).fetchone()[0]
-    code_paths = [
-        Path(row[0])
+    code_uris = [
+        row[0]
         for row in conn.execute(
             "select code_path from raw.attempts where competition_id = %s and code_path is not null",
             [competition_id],
         ).fetchall()
     ]
 
-    comp_code_dir = CODE_DIR / competition_id
     print(f"Competition '{competition_id}' reset — will delete:")
     print(f"  {attempt_count} attempt(s), {reflection_count} reflection(s)")
-    print(f"  {len(code_paths)} code file(s)")
+    print(f"  {len(code_uris)} code file(s)")
     print(f"  competition record + submission budget")
 
     if not yes and not _confirm("Proceed?"):
@@ -119,7 +118,10 @@ def reset_competition(competition_id: str, yes: bool) -> None:
         conn.close()
         sys.exit(0)
 
-    deleted_code = sum(1 for p in code_paths if p.exists() and not p.unlink())
+    from store.s3_code import delete as _code_delete
+    deleted_code = sum(1 for uri in code_uris if _code_delete(uri))
+    # 로컬 fallback 디렉토리도 정리
+    comp_code_dir = CODE_DIR / competition_id
     if comp_code_dir.exists():
         shutil.rmtree(comp_code_dir)
 

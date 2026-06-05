@@ -3,9 +3,7 @@ services:
     image: registry.internal:80/reflexion-rondo/daemon:latest
     network_mode: host
     volumes:
-      - /var/lib/rondo:/app/runs             # DuckDB + 제출 파일
-      - /var/lib/rondo/data:/app/data        # 대회 데이터셋
-      - /tmp/rondo-eval:/tmp/rondo-eval      # eval DinD tmpdir (호스트와 공유)
+      - /tmp/rondo-eval:/tmp/rondo-eval      # eval DooD tmpdir (호스트와 공유)
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - /var/lib/rondo/.env
@@ -14,8 +12,4 @@ services:
       TMPDIR: /tmp/rondo-eval
       DAEMON_API_HOST: "0.0.0.0"
       PYTHONUNBUFFERED: "1"
-      # Airflow dispatch 모드 — .env에 설정 시 활성화 (미설정이면 direct 모드 fallback)
-      # AIRFLOW_URL: http://<ops-tailnet-ip>:8080
-      # AIRFLOW_USER: admin
-      # AIRFLOW_PASSWORD: <password>
     restart: always

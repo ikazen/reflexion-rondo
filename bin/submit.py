@@ -52,7 +52,10 @@ def _load_best_code(competition_id: str, attempt_id: str | None) -> tuple[str, f
         raise ValueError(f"No valid attempt found for {competition_id}")
 
     code_path, cv_score, aid = row
-    content = Path(code_path).read_text(encoding="utf-8")
+    from store.s3_code import download as _code_download
+    content = _code_download(code_path)
+    if not content:
+        raise FileNotFoundError(f"code not found: {code_path}")
     sep = CODE_SEP + "\n"
     source = content.split(sep, 1)[1].strip() if sep in content else content.strip()
     return source, cv_score, aid
