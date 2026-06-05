@@ -40,12 +40,15 @@ Polars rules (do NOT use pandas-style API):
     train = train.with_columns(pl.col(col).replace_strict(mapping).cast(pl.Int32))
     valid = valid.with_columns(pl.col(col).replace_strict(mapping).cast(pl.Int32))
 - pl.concat requires identical schemas → align columns before concat
-- No inplace mutations (no fillna(inplace=True) or similar)"""
+- No inplace mutations (no fillna(inplace=True) or similar)
+- clip() takes positional args: expr.clip(lower_bound, upper_bound) — NOT clip(lower=..., upper=...)"""
 
 
 def _extract_code(text: str) -> str:
-    match = re.search(r"```(?:python)?\n(.*?)```", text, re.DOTALL)
-    return match.group(1).strip() if match else text.strip()
+    blocks = re.findall(r"```(?:python)?\n(.*?)```", text, re.DOTALL)
+    if blocks:
+        return "\n\n".join(b.strip() for b in blocks)
+    return text.strip()
 
 
 def _client() -> Client:
