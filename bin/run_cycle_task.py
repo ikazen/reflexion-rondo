@@ -78,6 +78,7 @@ def main() -> None:
         seed=42,
         k_retrieve=5,
         is_classification=comp.IS_CLASSIFICATION,
+        slug=args.competition,
     )
 
     result = run_cycle(conn, config)

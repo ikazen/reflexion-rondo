@@ -37,6 +37,7 @@ class CycleConfig:
     k_retrieve: int = 5
     is_classification: bool = True
     seed_code: str | None = None
+    slug: str | None = None  # S3 경로용 모듈명 (e.g. s4e1), 미설정 시 competition_id fallback
 
 
 @dataclass
@@ -315,7 +316,7 @@ def run_cycle(
     # 5b. 생성 코드 로컬 저장 (사람 검토용 — reflection 반영 여부는 사람이 판단)
     code_path = _save_code(
         source,
-        competition_id=config.competition_id,
+        competition_id=config.slug or config.competition_id,
         attempt_id=attempt_id,
         stage=config.stage,
         hypothesis=decision.hypothesis,
