@@ -20,13 +20,33 @@ _AIRFLOW_PASSWORD = os.getenv("AIRFLOW_PASSWORD", "")
 DAG_ID = "reflexion_rondo_cycle"
 _TERMINAL = {"success", "failed", "cancelled"}
 
+_token: str | None = None
+_token_expires: float = 0.0
+
 
 def available() -> bool:
     return bool(_AIRFLOW_URL)
 
 
-def _auth() -> tuple[str, str]:
-    return (_AIRFLOW_USER, _AIRFLOW_PASSWORD)
+def _bearer_token() -> str:
+    global _token, _token_expires
+    # 토큰이 없거나 5분 내 만료 예정이면 갱신
+    if _token is None or time.time() > _token_expires - 300:
+        resp = requests.post(
+            f"{_AIRFLOW_URL}/auth/token",
+            json={"username": _AIRFLOW_USER, "password": _AIRFLOW_PASSWORD},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        _token = data["access_token"]
+        # Airflow 기본 TTL 24h — 보수적으로 23h 캐시
+        _token_expires = time.time() + 23 * 3600
+    return _token
+
+
+def _headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {_bearer_token()}"}
 
 
 def trigger_dag_run(competition_id: str, stage: str, queue_id: str) -> str:
@@ -43,7 +63,7 @@ def trigger_dag_run(competition_id: str, stage: str, queue_id: str) -> str:
                 "queue_id": queue_id,
             },
         },
-        auth=_auth(),
+        headers=_headers(),
         timeout=15,
     )
     resp.raise_for_status()
@@ -53,7 +73,7 @@ def trigger_dag_run(competition_id: str, stage: str, queue_id: str) -> str:
 def get_dag_run_state(dag_run_id: str) -> str:
     resp = requests.get(
         f"{_AIRFLOW_URL}/api/v2/dags/{DAG_ID}/dagRuns/{dag_run_id}",
-        auth=_auth(),
+        headers=_headers(),
         timeout=15,
     )
     resp.raise_for_status()
