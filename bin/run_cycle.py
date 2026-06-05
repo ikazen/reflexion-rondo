@@ -74,7 +74,7 @@ def main() -> None:
     )
 
     prev_best = conn.execute(
-        "select max(metric_sign * cv_score) * any_value(metric_sign) from raw.attempts "
+        "select max(metric_sign * cv_score) * max(metric_sign) from raw.attempts "
         "join raw.competitions using (competition_id) "
         "where raw.attempts.competition_id = %s",
         [COMPETITION_ID],

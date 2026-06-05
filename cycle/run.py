@@ -111,7 +111,7 @@ def _dynamic_eda_context(
     fail_rows = conn.execute(
         """
         select action_type, count(*) as cnt,
-               any_value(hypothesis) as sample_hyp
+               max(hypothesis) as sample_hyp
         from (
             select action_type, hypothesis from raw.attempts
             where competition_id = %s
