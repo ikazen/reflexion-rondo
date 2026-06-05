@@ -51,12 +51,14 @@ def _headers() -> dict[str, str]:
 
 def trigger_dag_run(competition_id: str, stage: str, queue_id: str) -> str:
     """DAG run 1개 트리거. dag_run_id 반환."""
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    now = datetime.now(timezone.utc)
+    ts = now.strftime("%Y%m%dT%H%M%S")
     run_id = f"rondo_{queue_id[:8]}_{ts}"
     resp = requests.post(
         f"{_AIRFLOW_URL}/api/v2/dags/{DAG_ID}/dagRuns",
         json={
             "dag_run_id": run_id,
+            "logical_date": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "conf": {
                 "competition_id": competition_id,
                 "stage": stage,
