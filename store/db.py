@@ -8,10 +8,11 @@ _DB_PATH = Path(
 _SCHEMA = Path(__file__).parent / "schema.sql"
 
 
-def connect() -> duckdb.DuckDBPyConnection:
+def connect(apply_schema: bool = True) -> duckdb.DuckDBPyConnection:
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = duckdb.connect(str(_DB_PATH))
-    conn.execute(_SCHEMA.read_text())
+    if apply_schema:
+        conn.execute(_SCHEMA.read_text())
     return conn
 
 

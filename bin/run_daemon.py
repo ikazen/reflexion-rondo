@@ -188,7 +188,7 @@ def _is_cancelled(conn, queue_id: str) -> bool:
 
 def _run_api(state: DaemonState) -> None:
     import uvicorn
-    api_conn = connect()
+    api_conn = connect(apply_schema=False)
     app = create_app(api_conn, state)
     host = os.getenv("DAEMON_API_HOST", "127.0.0.1")
     port = int(os.getenv("DAEMON_API_PORT", "8000"))
