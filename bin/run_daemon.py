@@ -251,7 +251,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
         if mode == "airflow":
             try:
                 dag_run_id = airflow_client.trigger_dag_run(
-                    competition_id=comp.COMPETITION_ID,
+                    competition_id=competition,  # 모듈명 (e.g. s4e1), COMPETITION_ID 아님
                     stage=stage,
                     queue_id=qid,
                 )
