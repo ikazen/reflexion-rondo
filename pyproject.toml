@@ -5,7 +5,8 @@ description = "Self-improving Reflexion system for Kaggle tabular competitions"
 requires-python = ">=3.12"
 dependencies = [
     "catboost>=1.2.10",
-    "duckdb>=1.5.3",
+    "psycopg2-binary>=2.9",
+    "pgvector>=0.3",
     "kaggle>=2.2.0",
     "lightgbm>=4.6.0",
     "ollama>=0.6.2",

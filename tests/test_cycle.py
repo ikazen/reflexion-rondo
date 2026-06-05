@@ -161,7 +161,7 @@ def test_attempt_persisted(conn: duckdb.DuckDBPyConnection, train_df: pl.DataFra
         result = run_cycle(conn, config)
 
     count = conn.execute(
-        "select count(*) from raw.attempts where attempt_id = ?", [result.attempt_id]
+        "select count(*) from raw.attempts where attempt_id = %s", [result.attempt_id]
     ).fetchone()[0]
     assert count == 1
 

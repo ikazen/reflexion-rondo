@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import time
 
-import duckdb
 import numpy as np
 from ollama import Client
 
 from config import settings
+from store.db import PgConn
 
 _EMBED_DIM = 1024
-_EMBED_RETRY_DELAYS = (1.0, 4.0, 16.0)  # 3회, exponential backoff
-_MMR_LAMBDA = 0.5  # relevance vs. diversity 균형
+_EMBED_RETRY_DELAYS = (1.0, 4.0, 16.0)
+_MMR_LAMBDA = 0.5
 
 
 class EmbeddingUnavailableError(RuntimeError):
@@ -37,7 +37,7 @@ def embed(text: str) -> list[float]:
 
 
 def insert_reflection(
-    conn: duckdb.DuckDBPyConnection,
+    conn: PgConn,
     reflection_id: str,
     attempt_id: str,
     competition_id: str,
@@ -48,14 +48,14 @@ def insert_reflection(
     gain_vs_best: float,
     reflector_label: str | None = None,
 ) -> None:
-    vec = embed(embedded_text)
+    vec = np.array(embed(embedded_text), dtype=np.float32)
     conn.execute(
         """
-        insert into raw.reflections (
+        INSERT INTO raw.reflections (
             reflection_id, created_at, attempt_id, competition_id,
             embedded_text, embedding, full_lesson, generality,
             label, reflector_label, gain_vs_best, archived
-        ) values (?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, false)
+        ) VALUES (%s, now(), %s, %s, %s, %s, %s, %s, %s, %s, %s, false)
         """,
         [
             reflection_id, attempt_id, competition_id,
@@ -66,35 +66,35 @@ def insert_reflection(
 
 
 def search(
-    conn: duckdb.DuckDBPyConnection,
+    conn: PgConn,
     query_text: str,
     competition_id: str,
     k: int = 5,
 ) -> list[dict]:
-    query_vec = embed(query_text)
-    # MMR을 위해 2k 후보를 가져온 뒤 Python에서 greedy 재순위
+    query_vec = np.array(embed(query_text), dtype=np.float32)
     rows = conn.execute(
         """
-        select
+        SELECT
             r.reflection_id,
             r.embedded_text,
             r.full_lesson,
             r.generality,
             r.gain_vs_best,
             r.embedding,
-            array_cosine_similarity(r.embedding, $query_vec::float[1024]) as sim,
-            sim * (1 + greatest(-1.0, least(1.0, coalesce(i.avg_gain, 0.0)))) as score
-        from raw.reflections r
-        left join reflection_impact i using (reflection_id)
-        where r.archived = false
-          and (
-              r.generality in ('L2_class', 'L3_general')
-              or r.competition_id = $competition_id
+            1 - (r.embedding <=> %s::vector) AS sim,
+            (1 - (r.embedding <=> %s::vector))
+                * (1 + greatest(-1.0, least(1.0, coalesce(i.avg_gain, 0.0)::double precision))) AS score
+        FROM raw.reflections r
+        LEFT JOIN reflection_impact i USING (reflection_id)
+        WHERE r.archived = false
+          AND (
+              r.generality IN ('L2_class', 'L3_general')
+              OR r.competition_id = %s
           )
-        order by score desc
-        limit $candidate_k
+        ORDER BY score DESC
+        LIMIT %s
         """,
-        {"query_vec": query_vec, "competition_id": competition_id, "candidate_k": k * 2},
+        [query_vec, query_vec, competition_id, k * 2],
     ).fetchall()
 
     cols = ["reflection_id", "embedded_text", "full_lesson", "generality",
@@ -119,16 +119,14 @@ def _mmr_rerank(candidates: list[dict], k: int) -> list[dict]:
     selected: list[int] = []
     remaining = list(range(len(candidates)))
 
-    # 첫 번째: score 최고 항목
     best = int(np.argmax(scores))
     selected.append(best)
     remaining.remove(best)
 
     while len(selected) < k and remaining:
-        sel_mat = vecs_norm[selected]  # (n_sel, dim)
-        rem_vecs = vecs_norm[remaining]  # (n_rem, dim)
-        # 이미 선택된 문서와의 최대 코사인 유사도
-        redundancy = (rem_vecs @ sel_mat.T).max(axis=1)  # (n_rem,)
+        sel_mat = vecs_norm[selected]
+        rem_vecs = vecs_norm[remaining]
+        redundancy = (rem_vecs @ sel_mat.T).max(axis=1)
         rem_scores = scores[remaining]
         mmr = _MMR_LAMBDA * rem_scores - (1 - _MMR_LAMBDA) * redundancy
         pick = remaining[int(np.argmax(mmr))]

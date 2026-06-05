@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import math
 
-import duckdb
+from store.db import PgConn
 
 _METRIC_CLASS: dict[str, str] = {
     "auc": "binary_proba", "logloss": "binary_proba",
@@ -47,14 +47,14 @@ def _fp_distance(a: dict, b: dict) -> float:
 
 
 def find_similar_competitions(
-    conn: duckdb.DuckDBPyConnection,
+    conn: PgConn,
     fp_new: dict,
     exclude_id: str,
     k: int = 3,
 ) -> list[tuple[str, float]]:
     """fingerprint 가중 거리로 유사 대회 top-k 반환. [(competition_id, dist), ...]"""
     rows = conn.execute(
-        "select competition_id, fingerprint from raw.competitions where competition_id != ?",
+        "select competition_id, fingerprint from raw.competitions where competition_id != %s",
         [exclude_id],
     ).fetchall()
 
@@ -71,7 +71,7 @@ def find_similar_competitions(
 
 
 def cold_start_lessons(
-    conn: duckdb.DuckDBPyConnection,
+    conn: PgConn,
     similar: list[str],
     k: int = 10,
 ) -> list[dict]:
@@ -101,7 +101,7 @@ def cold_start_lessons(
         order by score desc
         limit ?
         """,
-        similar + [k],
+        [*similar, k],
     ).fetchall()
 
     cols = ["reflection_id", "embedded_text", "full_lesson", "generality", "gain_vs_best", "avg_gain", "score"]
@@ -109,7 +109,7 @@ def cold_start_lessons(
 
 
 def bootstrap_seeds(
-    conn: duckdb.DuckDBPyConnection,
+    conn: PgConn,
     similar: list[str],
     n: int = 2,
 ) -> list[dict]:
@@ -127,7 +127,7 @@ def bootstrap_seeds(
         order by cv_score desc
         limit ?
         """,
-        similar + [n],
+        [*similar, n],
     ).fetchall()
 
     return [

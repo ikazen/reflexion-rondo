@@ -91,7 +91,7 @@ def test_reflect_persists_to_db(conn: duckdb.DuckDBPyConnection) -> None:
         result = reflect(conn, attempt_id="a1", competition_id="comp1", context=_CTX)
 
     row = conn.execute(
-        "select reflection_id, generality, full_lesson from raw.reflections where reflection_id = ?",
+        "select reflection_id, generality, full_lesson from raw.reflections where reflection_id = %s",
         [result.reflection_id],
     ).fetchone()
 

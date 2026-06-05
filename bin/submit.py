@@ -14,21 +14,22 @@ import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
-import duckdb
 import polars as pl
 
 ROOT = Path(__file__).parent.parent
-DB_PATH = ROOT / "runs" / "reflexion.duckdb"
 RUNS_DIR = ROOT / "runs"
 CODE_SEP = "# " + "-" * 60
 
 
 def _load_best_code(competition_id: str, attempt_id: str | None) -> tuple[str, float, str]:
     """(code_source, cv_score, attempt_id) 반환."""
-    conn = duckdb.connect(str(DB_PATH), read_only=True)
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from store.db import connect
+    conn = connect(apply_schema=False)
     if attempt_id:
         row = conn.execute(
-            "select code_path, cv_score, attempt_id from raw.attempts where attempt_id like ?",
+            "select code_path, cv_score, attempt_id from raw.attempts where attempt_id like %s",
             [f"{attempt_id}%"],
         ).fetchone()
     else:
@@ -37,7 +38,7 @@ def _load_best_code(competition_id: str, attempt_id: str | None) -> tuple[str, f
             select a.code_path, a.cv_score, a.attempt_id
             from raw.attempts a
             join raw.competitions c using (competition_id)
-            where a.competition_id = ?
+            where a.competition_id = %s
               and a.cv_score is not null
               and a.error_trace is null
             order by c.metric_sign * a.cv_score desc

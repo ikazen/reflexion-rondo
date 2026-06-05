@@ -7,9 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import duckdb
-
 from config.settings import ACTION_TYPES
+from store.db import PgConn
 
 _STAGNANT_THRESHOLD = 3  # 이 횟수 이상 jump 없으면 is_stagnant=True
 
@@ -23,7 +22,7 @@ class StagnationSignal:
 
 
 def detect_stagnation(
-    conn: duckdb.DuckDBPyConnection,
+    conn: PgConn,
     competition_id: str,
     window: int = 5,
 ) -> StagnationSignal:
@@ -31,10 +30,10 @@ def detect_stagnation(
         """
         select label, action_type
         from raw.attempts
-        where competition_id = ?
+        where competition_id = %s
           and cv_score is not null
         order by run_ts desc
-        limit ?
+        limit %s
         """,
         [competition_id, window],
     ).fetchall()

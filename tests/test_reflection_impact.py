@@ -33,7 +33,7 @@ def _insert_attempt(
         f"""
         insert into raw.attempts
             (attempt_id, competition_id, run_ts, stage, cv_score, reflection_ids)
-        values (?, 'comp1', now() + interval '{ts_offset}', ?, ?, ?)
+        values (%s, 'comp1', now() + interval '{ts_offset}', %s, %s,  %s)
         """,
         [attempt_id, stage, cv_score, reflection_ids],
     )

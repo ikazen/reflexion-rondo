@@ -72,8 +72,8 @@ class OllamaPacer:
         row = conn.execute(
             """
             select
-                count(*) filter (where run_ts >= ?) as session_count,
-                count(*) filter (where run_ts >= ?) as week_count
+                count(*) filter (where run_ts >= %s) as session_count,
+                count(*) filter (where run_ts >= %s) as week_count
             from raw.attempts
             """,
             [session_cutoff, week_cutoff],
@@ -162,21 +162,21 @@ def _pop_pending(conn) -> dict | None:
 
 
 def _set_status(conn, queue_id: str, status: str, **extra) -> None:
-    sets = ["status = ?"]
+    sets = ["status = %s"]
     vals: list = [status]
     for k, v in extra.items():
-        sets.append(f"{k} = ?")
+        sets.append(f"{k} = %s")
         vals.append(v)
     vals.append(queue_id)
     conn.execute(
-        f"update raw.cycle_queue set {', '.join(sets)} where queue_id = ?",
+        f"update raw.cycle_queue set {', '.join(sets)} where queue_id = %s",
         vals,
     )
 
 
 def _is_cancelled(conn, queue_id: str) -> bool:
     row = conn.execute(
-        "select status from raw.cycle_queue where queue_id = ?",
+        "select status from raw.cycle_queue where queue_id = %s",
         [queue_id],
     ).fetchone()
     return row is not None and row[0] == "cancelled"

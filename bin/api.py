@@ -23,9 +23,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
 
-import duckdb
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+
+from store.db import PgConn
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +78,7 @@ class QueuePatchRequest(BaseModel):
 # 앱 팩토리
 # ---------------------------------------------------------------------------
 
-def create_app(conn: duckdb.DuckDBPyConnection, state: DaemonState) -> FastAPI:
+def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
     app = FastAPI(title="reflexion-rondo", version="v1")
 
     # ---- read endpoints -----------------------------------------------
@@ -99,7 +100,7 @@ def create_app(conn: duckdb.DuckDBPyConnection, state: DaemonState) -> FastAPI:
     @app.get("/api/attempts")
     def get_attempts(competition: str | None = None, limit: int = 50):
         limit = min(limit, 500)
-        where = "where a.competition_id = ?" if competition else ""
+        where = "where a.competition_id = %s" if competition else ""
         params = [competition] if competition else []
         rows = conn.execute(
             f"""
@@ -113,7 +114,7 @@ def create_app(conn: duckdb.DuckDBPyConnection, state: DaemonState) -> FastAPI:
             left join score_progression s using (attempt_id)
             {where}
             order by a.run_ts desc
-            limit ?
+            limit %s
             """,
             params + [limit],
         ).fetchall()
@@ -135,7 +136,7 @@ def create_app(conn: duckdb.DuckDBPyConnection, state: DaemonState) -> FastAPI:
                 label, gain_vs_best, error_trace, duration_sec,
                 retries, code_path, reflection_ids, retrieval_scores
             from raw.attempts
-            where attempt_id = ?
+            where attempt_id = %s
             """,
             [attempt_id],
         ).fetchone()
@@ -159,10 +160,10 @@ def create_app(conn: duckdb.DuckDBPyConnection, state: DaemonState) -> FastAPI:
         conditions = ["r.archived = false"]
         params: list = []
         if competition:
-            conditions.append("(r.competition_id = ? or r.generality in ('L2_class', 'L3_general'))")
+            conditions.append("(r.competition_id = %s or r.generality in ('L2_class', 'L3_general'))")
             params.append(competition)
         if generality:
-            conditions.append("r.generality = ?")
+            conditions.append("r.generality = %s")
             params.append(generality)
         where = "where " + " and ".join(conditions)
         rows = conn.execute(
@@ -177,7 +178,7 @@ def create_app(conn: duckdb.DuckDBPyConnection, state: DaemonState) -> FastAPI:
             left join reflection_impact i using (reflection_id)
             {where}
             order by r.created_at desc
-            limit ?
+            limit %s
             """,
             params + [limit],
         ).fetchall()
@@ -190,7 +191,7 @@ def create_app(conn: duckdb.DuckDBPyConnection, state: DaemonState) -> FastAPI:
 
     @app.get("/api/cold-start")
     def get_cold_start(competition: str | None = None):
-        where = "where competition_id = ?" if competition else ""
+        where = "where competition_id = %s" if competition else ""
         params = [competition] if competition else []
         rows = conn.execute(
             f"""
@@ -235,7 +236,7 @@ def create_app(conn: duckdb.DuckDBPyConnection, state: DaemonState) -> FastAPI:
             """
             insert into raw.cycle_queue
                 (queue_id, competition, stage, n_cycles, priority, status, created_at)
-            values (?, ?, ?, ?, ?, 'pending', ?)
+            values (%s, %s, %s, %s, %s, 'pending', %s)
             """,
             [qid, body.competition, body.stage, body.n_cycles,
              body.priority, datetime.now(timezone.utc)],
@@ -245,7 +246,7 @@ def create_app(conn: duckdb.DuckDBPyConnection, state: DaemonState) -> FastAPI:
     @app.patch("/api/queue/{queue_id}")
     def patch_queue(queue_id: str, body: QueuePatchRequest):
         row = conn.execute(
-            "select status from raw.cycle_queue where queue_id = ?",
+            "select status from raw.cycle_queue where queue_id = %s",
             [queue_id],
         ).fetchone()
         if not row:
@@ -254,7 +255,7 @@ def create_app(conn: duckdb.DuckDBPyConnection, state: DaemonState) -> FastAPI:
         sets: list[str] = []
         vals: list = []
         if body.priority is not None:
-            sets.append("priority = ?")
+            sets.append("priority = %s")
             vals.append(body.priority)
         if body.status == "cancelled":
             if row[0] not in ("pending", "running"):
@@ -262,7 +263,7 @@ def create_app(conn: duckdb.DuckDBPyConnection, state: DaemonState) -> FastAPI:
                     status_code=409,
                     detail=f"cannot cancel item with status '{row[0]}'",
                 )
-            sets.append("status = ?")
+            sets.append("status = %s")
             vals.append("cancelled")
 
         if not sets:
@@ -270,7 +271,7 @@ def create_app(conn: duckdb.DuckDBPyConnection, state: DaemonState) -> FastAPI:
 
         vals.append(queue_id)
         conn.execute(
-            f"update raw.cycle_queue set {', '.join(sets)} where queue_id = ?",
+            f"update raw.cycle_queue set {', '.join(sets)} where queue_id = %s",
             vals,
         )
         return {"queue_id": queue_id, "updated": True}

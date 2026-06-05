@@ -33,8 +33,8 @@ def main() -> None:
                r.generality, r.competition_id
         from reflection_impact i
         join raw.reflections r using (reflection_id)
-        where i.avg_gain <= ?
-          and i.times_applied >= ?
+        where i.avg_gain <= %s
+          and i.times_applied >= %s
           and r.archived = false
         order by i.avg_gain asc
         """,

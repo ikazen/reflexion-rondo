@@ -1,5 +1,5 @@
 """
-Run state reset — DuckDB, generated code, submission CSVs.
+Run state reset — Postgres tables, generated code, submission CSVs.
 
 Full reset (모든 대회):
   uv run python bin/reset.py
@@ -19,7 +19,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
-DB_PATH = ROOT / "runs" / "reflexion.duckdb"
 CODE_DIR = ROOT / "runs" / "code"
 RUNS_DIR = ROOT / "runs"
 
@@ -33,19 +32,17 @@ def _submission_csvs() -> list[Path]:
 
 
 def reset_full(yes: bool) -> None:
-    lines: list[str] = []
-    if DB_PATH.exists():
-        lines.append(f"  DB:          {DB_PATH.relative_to(ROOT)}")
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from store.db import connect
+
+    lines: list[str] = ["  DB:          all tables (TRUNCATE CASCADE)"]
     code_files = list(CODE_DIR.rglob("*.py")) if CODE_DIR.exists() else []
     if code_files:
         lines.append(f"  code:        {len(code_files)} file(s) in runs/code/")
     csvs = _submission_csvs()
     if csvs:
         lines.append(f"  submissions: {len(csvs)} CSV(s)")
-
-    if not lines:
-        print("Nothing to reset.")
-        return
 
     print("Full reset — will delete:")
     for l in lines:
@@ -55,9 +52,12 @@ def reset_full(yes: bool) -> None:
         print("Aborted.")
         sys.exit(0)
 
-    if DB_PATH.exists():
-        DB_PATH.unlink()
-        print(f"Deleted {DB_PATH.relative_to(ROOT)}")
+    conn = connect(apply_schema=False)
+    for table in ("raw.reflections", "raw.attempts", "raw.pipelines",
+                  "raw.submission_budget", "raw.cycle_queue", "raw.competitions"):
+        conn.execute(f"TRUNCATE {table}")
+    conn.close()
+    print("Truncated all tables.")
 
     if CODE_DIR.exists():
         shutil.rmtree(CODE_DIR)
@@ -84,7 +84,7 @@ def reset_competition(competition_id: str, yes: bool) -> None:
     conn = connect()
 
     exists = conn.execute(
-        "select count(*) from raw.competitions where competition_id = ?",
+        "select count(*) from raw.competitions where competition_id = %s",
         [competition_id],
     ).fetchone()
     if not exists or exists[0] == 0:
@@ -93,17 +93,17 @@ def reset_competition(competition_id: str, yes: bool) -> None:
         return
 
     attempt_count = conn.execute(
-        "select count(*) from raw.attempts where competition_id = ?",
+        "select count(*) from raw.attempts where competition_id = %s",
         [competition_id],
     ).fetchone()[0]
     reflection_count = conn.execute(
-        "select count(*) from raw.reflections where competition_id = ?",
+        "select count(*) from raw.reflections where competition_id = %s",
         [competition_id],
     ).fetchone()[0]
     code_paths = [
         Path(row[0])
         for row in conn.execute(
-            "select code_path from raw.attempts where competition_id = ? and code_path is not null",
+            "select code_path from raw.attempts where competition_id = %s and code_path is not null",
             [competition_id],
         ).fetchall()
     ]
@@ -123,10 +123,10 @@ def reset_competition(competition_id: str, yes: bool) -> None:
     if comp_code_dir.exists():
         shutil.rmtree(comp_code_dir)
 
-    conn.execute("delete from raw.reflections where competition_id = ?", [competition_id])
-    conn.execute("delete from raw.attempts where competition_id = ?", [competition_id])
-    conn.execute("delete from raw.submission_budget where competition_id = ?", [competition_id])
-    conn.execute("delete from raw.competitions where competition_id = ?", [competition_id])
+    conn.execute("delete from raw.reflections where competition_id = %s", [competition_id])
+    conn.execute("delete from raw.attempts where competition_id = %s", [competition_id])
+    conn.execute("delete from raw.submission_budget where competition_id = %s", [competition_id])
+    conn.execute("delete from raw.competitions where competition_id = %s", [competition_id])
     conn.close()
 
     print(f"Deleted {attempt_count} attempts, {reflection_count} reflections, {deleted_code} code files.")

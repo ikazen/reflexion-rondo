@@ -10,7 +10,7 @@ services:
     env_file:
       - /var/lib/rondo/.env
     environment:
-      RONDO_DB_PATH: /app/runs/reflexion.duckdb
+      RONDO_DB_URL: ${RONDO_DB_URL}
       EVAL_DOCKER_IMAGE: registry.internal:80/reflexion-rondo/eval:latest
       TMPDIR: /tmp/rondo-eval
       DAEMON_API_HOST: "0.0.0.0"

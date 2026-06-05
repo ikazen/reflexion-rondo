@@ -5,11 +5,11 @@ import re
 import uuid
 from dataclasses import dataclass, field
 
-import duckdb
 from ollama import Client
 
 from config import settings
 from memory.retriever import insert_reflection
+from store.db import PgConn
 
 GENERALITY_VALUES = ["L1_local", "L2_class", "L3_general"]
 LABEL_VALUES = ["jump", "neutral", "regression"]
@@ -99,7 +99,7 @@ def _format_context(ctx: AttemptContext) -> str:
 
 
 def reflect(
-    conn: duckdb.DuckDBPyConnection,
+    conn: PgConn,
     attempt_id: str,
     competition_id: str,
     context: AttemptContext,

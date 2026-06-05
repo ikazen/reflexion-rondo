@@ -53,7 +53,7 @@ def test_insert_and_search_returns_top_k(conn: duckdb.DuckDBPyConnection) -> Non
                     (reflection_id, created_at, attempt_id, competition_id,
                      embedded_text, embedding, full_lesson, generality,
                      label, gain_vs_best, archived)
-                values (?, now(), 'a1', 'comp1', ?, ?, 'lesson', 'L3_general',
+                values (%s, now(), 'a1', 'comp1', %s, %s, 'lesson', 'L3_general',
                         'neutral', 0.0, false)
                 """,
                 [rid, rid, vec],
@@ -77,7 +77,7 @@ def test_archived_excluded(conn: duckdb.DuckDBPyConnection) -> None:
                 (reflection_id, created_at, attempt_id, competition_id,
                  embedded_text, embedding, full_lesson, generality,
                  label, gain_vs_best, archived)
-            values ('archived_r', now(), 'a1', 'comp1', 'x', ?, 'lesson',
+            values ('archived_r', now(), 'a1', 'comp1', 'x', %s, 'lesson',
                     'L3_general', 'neutral', 0.0, true)
             """,
             [vec],
@@ -97,7 +97,7 @@ def test_meta_filter_l1_other_competition(conn: duckdb.DuckDBPyConnection) -> No
                 (reflection_id, created_at, attempt_id, competition_id,
                  embedded_text, embedding, full_lesson, generality,
                  label, gain_vs_best, archived)
-            values ('l1_other', now(), 'a1', 'other_comp', 'x', ?, 'lesson',
+            values ('l1_other', now(), 'a1', 'other_comp', 'x', %s, 'lesson',
                     'L1_local', 'neutral', 0.0, false)
             """,
             [vec],
@@ -117,7 +117,7 @@ def test_meta_filter_l1_same_competition(conn: duckdb.DuckDBPyConnection) -> Non
                 (reflection_id, created_at, attempt_id, competition_id,
                  embedded_text, embedding, full_lesson, generality,
                  label, gain_vs_best, archived)
-            values ('l1_same', now(), 'a1', 'comp1', 'x', ?, 'lesson',
+            values ('l1_same', now(), 'a1', 'comp1', 'x', %s, 'lesson',
                     'L1_local', 'neutral', 0.0, false)
             """,
             [vec],
@@ -146,8 +146,8 @@ def test_rerank_boosts_high_gain(conn: duckdb.DuckDBPyConnection) -> None:
                     (reflection_id, created_at, attempt_id, competition_id,
                      embedded_text, embedding, full_lesson, generality,
                      label, gain_vs_best, archived)
-                values (?, now(), 'a1', 'comp1', ?, ?, 'lesson',
-                        'L3_general', 'jump', ?, false)
+                values (%s, now(), 'a1', 'comp1', %s, %s, 'lesson',
+                        'L3_general', 'jump', %s, false)
                 """,
                 [rid, rid, vec, gain],
             )

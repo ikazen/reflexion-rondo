@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-import duckdb
 import polars as pl
 
 from agents.coder import generate_code
@@ -18,7 +17,7 @@ from cycle.stagnation import detect_stagnation
 from evaluator.contract import validate_code
 from memory.retriever import EmbeddingUnavailableError, search
 from runtime.isolate import eval_isolated
-from store.db import insert_attempt, insert_pipeline
+from store.db import PgConn, insert_attempt, insert_pipeline
 
 RUNS_CODE_DIR = Path(__file__).parent.parent / "runs" / "code"
 _CODE_HEADER_SEP = "# " + "-" * 60  # 저장 헤더와 본문 경계 — _best_code가 이 줄로 헤더를 떼낸다
@@ -51,13 +50,13 @@ class CycleResult:
     code_path: Path
 
 
-def _prev_best(conn: duckdb.DuckDBPyConnection, competition_id: str) -> float | None:
+def _prev_best(conn: PgConn, competition_id: str) -> float | None:
     row = conn.execute(
         """
-        select max(metric_sign * a.cv_score) * any_value(c.metric_sign)
+        select max(c.metric_sign * a.cv_score) * max(c.metric_sign)
         from raw.attempts a
         join raw.competitions c using (competition_id)
-        where a.competition_id = ?
+        where a.competition_id = %s
           and a.cv_score is not null
         """,
         [competition_id],
@@ -65,11 +64,11 @@ def _prev_best(conn: duckdb.DuckDBPyConnection, competition_id: str) -> float | 
     return row[0] if row else None
 
 
-def _last_hypothesis(conn: duckdb.DuckDBPyConnection, competition_id: str) -> str | None:
+def _last_hypothesis(conn: PgConn, competition_id: str) -> str | None:
     row = conn.execute(
         """
         select hypothesis from raw.attempts
-        where competition_id = ? and hypothesis is not null
+        where competition_id = %s and hypothesis is not null
         order by run_ts desc limit 1
         """,
         [competition_id],
@@ -78,7 +77,7 @@ def _last_hypothesis(conn: duckdb.DuckDBPyConnection, competition_id: str) -> st
 
 
 def _dynamic_eda_context(
-    conn: duckdb.DuckDBPyConnection,
+    conn: PgConn,
     competition_id: str,
     prev_best_cv: float | None,
     window: int = 10,
@@ -95,9 +94,9 @@ def _dynamic_eda_context(
         select action_type, count(*) as cnt
         from (
             select action_type from raw.attempts
-            where competition_id = ? and cv_score is not null
+            where competition_id = %s and cv_score is not null
             order by run_ts desc
-            limit ?
+            limit %s
         )
         group by action_type
         order by cnt desc
@@ -115,10 +114,10 @@ def _dynamic_eda_context(
                any_value(hypothesis) as sample_hyp
         from (
             select action_type, hypothesis from raw.attempts
-            where competition_id = ?
+            where competition_id = %s
               and (label = 'regression' or error_trace is not null)
             order by run_ts desc
-            limit ?
+            limit %s
         )
         group by action_type
         order by cnt desc
@@ -136,7 +135,7 @@ def _dynamic_eda_context(
 
 
 def _recent_failure_summary(
-    conn: duckdb.DuckDBPyConnection,
+    conn: PgConn,
     competition_id: str,
     window: int = 5,
 ) -> str:
@@ -144,10 +143,10 @@ def _recent_failure_summary(
         """
         select action_type, hypothesis
         from raw.attempts
-        where competition_id = ?
+        where competition_id = %s
           and (label = 'regression' or error_trace is not null)
         order by run_ts desc
-        limit ?
+        limit %s
         """,
         [competition_id, window],
     ).fetchall()
@@ -157,7 +156,7 @@ def _recent_failure_summary(
 
 
 def _build_retrieval_query(
-    conn: duckdb.DuckDBPyConnection,
+    conn: PgConn,
     competition_id: str,
     eda_card: str,
     fail_summary: str = "",
@@ -200,14 +199,14 @@ def _save_code(
     return path
 
 
-def _best_code(conn: duckdb.DuckDBPyConnection, competition_id: str) -> str | None:
+def _best_code(conn: PgConn, competition_id: str) -> str | None:
     """1변경 규율의 기준점: best(에러 없는) attempt의 저장 코드 본문. 없으면 None."""
     row = conn.execute(
         """
         select a.code_path
         from raw.attempts a
         join raw.competitions c using (competition_id)
-        where a.competition_id = ?
+        where a.competition_id = %s
           and a.cv_score is not null
           and a.error_trace is null
           and a.code_path is not null
@@ -230,7 +229,7 @@ def _best_code(conn: duckdb.DuckDBPyConnection, competition_id: str) -> str | No
 
 
 def run_cycle(
-    conn: duckdb.DuckDBPyConnection,
+    conn: PgConn,
     config: CycleConfig,
 ) -> CycleResult:
     attempt_id = str(uuid.uuid4())
@@ -356,7 +355,7 @@ def run_cycle(
     # 6b. gain_vs_best > 0 이면 raw.pipelines 저장 (cold-start 시드 후보)
     if gain_vs_best is not None and gain_vs_best > 0 and not error_trace:
         fp_row = conn.execute(
-            "select fingerprint from raw.competitions where competition_id = ?",
+            "select fingerprint from raw.competitions where competition_id = %s",
             [config.competition_id],
         ).fetchone()
         fp_dict = json.loads(fp_row[0]) if fp_row and fp_row[0] else {}

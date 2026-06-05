@@ -36,7 +36,7 @@ def _load_cold_start(competition_id: str, conn) -> tuple[list[dict], str | None]
     seed_code: str | None = None
     if seed_ids:
         row = conn.execute(
-            "select code from raw.pipelines where pipeline_id = ? limit 1",
+            "select code from raw.pipelines where pipeline_id = %s limit 1",
             [seed_ids[0]],
         ).fetchone()
         if row:

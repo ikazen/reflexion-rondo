@@ -1,40 +1,94 @@
-create schema if not exists raw;
+CREATE EXTENSION IF NOT EXISTS vector;
 
-create table if not exists raw.competitions (
-    competition_id  text primary key,
+CREATE SCHEMA IF NOT EXISTS raw;
+
+CREATE TABLE IF NOT EXISTS raw.competitions (
+    competition_id  text PRIMARY KEY,
     name            text,
     task_type       text,
     metric          text,
     metric_sign     int,
     start_ts        timestamp,
-    fingerprint     json
+    fingerprint     jsonb
 );
 
-create table if not exists raw.attempts (
-    attempt_id      text primary key,
+CREATE TABLE IF NOT EXISTS raw.attempts (
+    attempt_id       text PRIMARY KEY,
+    competition_id   text,
+    run_ts           timestamp,
+    stage            text,
+    hypothesis       text,
+    action_type      text,
+    model_type       text,
+    params           jsonb,
+    features         jsonb,
+    cv_score         double precision,
+    cv_fold_var      double precision,
+    lb_score         double precision,
+    label            text,
+    gain_vs_best     double precision,
+    error_trace      text,
+    reflection_ids   text[],
+    retrieval_scores double precision[],
+    duration_sec     double precision,
+    code_path        text,
+    retries          int DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS raw.submission_budget (
     competition_id  text,
-    run_ts          timestamp,
-    stage           text,
-    hypothesis      text,
-    action_type     text,
-    model_type      text,
-    params          json,
-    features        json,
-    cv_score        double,
-    cv_fold_var     double,
-    lb_score        double,
-    label           text,
-    gain_vs_best    double,
-    error_trace     text
+    day             date,
+    count           int,
+    PRIMARY KEY (competition_id, day)
 );
 
-create or replace view score_progression as
-select
+CREATE TABLE IF NOT EXISTS raw.reflections (
+    reflection_id   text PRIMARY KEY,
+    created_at      timestamp,
+    attempt_id      text,
+    competition_id  text,
+    embedded_text   text,
+    embedding       vector(1024),
+    full_lesson     text,
+    generality      text,
+    label           text,
+    reflector_label text,
+    gain_vs_best    double precision,
+    archived        boolean DEFAULT false
+);
+
+CREATE TABLE IF NOT EXISTS raw.pipelines (
+    pipeline_id          text PRIMARY KEY,
+    attempt_id           text,
+    competition_id       text,
+    fingerprint_snapshot jsonb,
+    code                 text,
+    cv_score             double precision,
+    gain_vs_best         double precision
+);
+
+CREATE TABLE IF NOT EXISTS raw.cycle_queue (
+    queue_id     text PRIMARY KEY,
+    competition  text NOT NULL,
+    stage        text NOT NULL,
+    n_cycles     int NOT NULL,
+    priority     int DEFAULT 0,
+    status       text NOT NULL DEFAULT 'pending',
+    created_at   timestamp DEFAULT now(),
+    started_at   timestamp,
+    ended_at     timestamp,
+    cycles_done  int DEFAULT 0,
+    latest_score double precision,
+    error        text
+);
+
+CREATE OR REPLACE VIEW score_progression AS
+SELECT
     a.attempt_id,
     a.competition_id,
-    row_number() over (
-        partition by a.competition_id order by a.run_ts
-    ) as attempt_no,
+    row_number() OVER (
+        PARTITION BY a.competition_id ORDER BY a.run_ts
+    ) AS attempt_no,
     a.run_ts,
     a.stage,
     a.action_type,
@@ -42,117 +96,64 @@ select
     a.lb_score,
     a.label,
     a.gain_vs_best,
-    max(c.metric_sign * a.cv_score) over (
-        partition by a.competition_id
-        order by a.run_ts
-        rows between unbounded preceding and current row
-    ) * c.metric_sign as best_so_far
-from raw.attempts a
-join raw.competitions c using (competition_id);
+    max(c.metric_sign * a.cv_score) OVER (
+        PARTITION BY a.competition_id
+        ORDER BY a.run_ts
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) * c.metric_sign AS best_so_far
+FROM raw.attempts a
+JOIN raw.competitions c USING (competition_id);
 
-create table if not exists raw.submission_budget (
-    competition_id  text,
-    day             date,
-    count           int,
-    primary key (competition_id, day)
-);
-
-create table if not exists raw.reflections (
-    reflection_id   text primary key,
-    created_at      timestamp,
-    attempt_id      text,
-    competition_id  text,
-    embedded_text   text,
-    embedding       float[1024],
-    full_lesson     text,
-    generality      text,
-    label           text,
-    reflector_label text,
-    gain_vs_best    double,
-    archived        boolean default false
-);
-
-alter table raw.attempts add column if not exists reflection_ids   text[];
-alter table raw.attempts add column if not exists retrieval_scores double[];
-alter table raw.attempts add column if not exists duration_sec     double;
-alter table raw.attempts add column if not exists code_path        text;
-alter table raw.attempts add column if not exists retries          int default 0;
-
-create table if not exists raw.pipelines (
-    pipeline_id          text primary key,
-    attempt_id           text,
-    competition_id       text,
-    fingerprint_snapshot json,
-    code                 text,
-    cv_score             double,
-    gain_vs_best         double
-);
-
-create or replace view cold_start_progression as
-select
-    a.competition_id,
-    row_number() over (partition by a.competition_id order by a.run_ts) as attempt_no,
-    a.run_ts,
-    a.stage,
-    a.cv_score,
-    max(c.metric_sign * a.cv_score) over (
-        partition by a.competition_id order by a.run_ts
-        rows between unbounded preceding and current row
-    ) * c.metric_sign as best_so_far
-from raw.attempts a
-join raw.competitions c using (competition_id)
-where a.cv_score is not null;
-
-create or replace view stg_attempts as
-select
+CREATE OR REPLACE VIEW stg_attempts AS
+SELECT
     a.*,
     c.metric_sign
-from raw.attempts a
-join raw.competitions c using (competition_id);
+FROM raw.attempts a
+JOIN raw.competitions c USING (competition_id);
 
-create or replace view stg_attempts_reflexion_only as
-select * from stg_attempts
-where stage = 'reflexion';
+CREATE OR REPLACE VIEW stg_attempts_reflexion_only AS
+SELECT * FROM stg_attempts
+WHERE stage = 'reflexion';
 
-create table if not exists raw.cycle_queue (
-    queue_id     text primary key,
-    competition  text not null,
-    stage        text not null,
-    n_cycles     int not null,
-    priority     int default 0,
-    status       text not null default 'pending',
-    created_at   timestamp default now(),
-    started_at   timestamp,
-    ended_at     timestamp,
-    cycles_done  int default 0,
-    latest_score double,
-    error        text
-);
-
-create or replace view reflection_impact as
-with scored as (
-    select
+CREATE OR REPLACE VIEW reflection_impact AS
+WITH scored AS (
+    SELECT
         competition_id,
         reflection_ids,
         metric_sign * cv_score
-        - max(metric_sign * cv_score) over (
-            partition by competition_id
-            order by run_ts rows between unbounded preceding and 1 preceding
-          ) as gain_vs_best
-    from stg_attempts_reflexion_only
+        - max(metric_sign * cv_score) OVER (
+            PARTITION BY competition_id
+            ORDER BY run_ts ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+          ) AS gain_vs_best
+    FROM stg_attempts_reflexion_only
 ),
-per_reflection as (
-    select unnest(reflection_ids) as reflection_id, gain_vs_best
-    from scored
-    where reflection_ids is not null
-      and gain_vs_best is not null
+per_reflection AS (
+    SELECT unnest(reflection_ids) AS reflection_id, gain_vs_best
+    FROM scored
+    WHERE reflection_ids IS NOT NULL
+      AND gain_vs_best IS NOT NULL
 )
-select
+SELECT
     reflection_id,
-    count(*)                                          as times_applied,
-    round(avg(gain_vs_best), 5)                       as avg_gain,
-    sum(case when gain_vs_best > 0 then 1 else 0 end) as jumps,
-    round(max(gain_vs_best), 5)                       as best_jump
-from per_reflection
-group by reflection_id
-order by avg_gain desc;
+    count(*)                                              AS times_applied,
+    round(avg(gain_vs_best)::numeric, 5)                  AS avg_gain,
+    sum(CASE WHEN gain_vs_best > 0 THEN 1 ELSE 0 END)    AS jumps,
+    round(max(gain_vs_best)::numeric, 5)                  AS best_jump
+FROM per_reflection
+GROUP BY reflection_id
+ORDER BY avg_gain DESC;
+
+CREATE OR REPLACE VIEW cold_start_progression AS
+SELECT
+    a.competition_id,
+    row_number() OVER (PARTITION BY a.competition_id ORDER BY a.run_ts) AS attempt_no,
+    a.run_ts,
+    a.stage,
+    a.cv_score,
+    max(c.metric_sign * a.cv_score) OVER (
+        PARTITION BY a.competition_id ORDER BY a.run_ts
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) * c.metric_sign AS best_so_far
+FROM raw.attempts a
+JOIN raw.competitions c USING (competition_id)
+WHERE a.cv_score IS NOT NULL;
