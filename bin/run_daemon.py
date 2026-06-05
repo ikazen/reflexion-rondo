@@ -23,6 +23,7 @@ from pathlib import Path
 
 import polars as pl
 
+import bin.airflow_client as airflow_client
 from bin.api import DaemonState, create_app
 from cycle.run import CycleConfig, run_cycle
 from memory.retriever import EmbeddingUnavailableError
@@ -202,7 +203,8 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
     stage = item["stage"]
     n_cycles = item["n_cycles"]
 
-    print(f"[daemon] starting queue_id={qid} competition={competition} stage={stage} n={n_cycles}")
+    mode = "airflow" if airflow_client.available() else "direct"
+    print(f"[daemon] starting queue_id={qid} competition={competition} stage={stage} n={n_cycles} mode={mode}")
     _set_status(conn, qid, "running", started_at=datetime.now(timezone.utc))
     state.update(
         current_queue_id=qid,
@@ -218,15 +220,18 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
         print(f"[daemon] failed to load competition config: {exc}")
         return
 
-    train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
-    ensure_competition(
-        conn,
-        competition_id=comp.COMPETITION_ID,
-        name=comp.NAME,
-        task_type=comp.TASK_TYPE,
-        metric=comp.METRIC,
-        metric_sign=comp.METRIC_SIGN,
-    )
+    # direct 모드에서만 train 데이터 사전 로드 (airflow 모드는 task 컨테이너 안에서 로드)
+    train: pl.DataFrame | None = None
+    if mode == "direct":
+        train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
+        ensure_competition(
+            conn,
+            competition_id=comp.COMPETITION_ID,
+            name=comp.NAME,
+            task_type=comp.TASK_TYPE,
+            metric=comp.METRIC,
+            metric_sign=comp.METRIC_SIGN,
+        )
 
     latest_score: float | None = None
     cycles_done = 0
@@ -243,59 +248,98 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
         # Ollama Cloud 페이싱 — 한도 초과 시 여기서 대기
         pacer.acquire()
 
-        config = CycleConfig(
-            competition_id=comp.COMPETITION_ID,
-            train=train,
-            target_col=comp.TARGET,
-            metric=comp.METRIC,
-            stage=stage,
-            eda_card=comp.EDA_CARD,
-            n_splits=getattr(comp, "N_SPLITS", 5),
-            seed=42,
-            k_retrieve=5,
-            is_classification=comp.IS_CLASSIFICATION,
-        )
+        if mode == "airflow":
+            try:
+                dag_run_id = airflow_client.trigger_dag_run(
+                    competition_id=comp.COMPETITION_ID,
+                    stage=stage,
+                    queue_id=qid,
+                )
+                print(f"[daemon] cycle {i + 1}/{n_cycles} dag_run={dag_run_id}")
+                final_state = airflow_client.wait_for_dag_run(dag_run_id)
+                if final_state == "success":
+                    row = conn.execute(
+                        """
+                        select attempt_id, cv_score, label from raw.attempts
+                        where competition_id = %s
+                        order by run_ts desc limit 1
+                        """,
+                        [comp.COMPETITION_ID],
+                    ).fetchone()
+                    if row:
+                        aid, cv, label = row
+                        if cv is not None:
+                            latest_score = cv
+                        print(f"[daemon] cycle {i + 1}/{n_cycles} attempt={aid[:8]} cv={cv} label={label}")
+                    cycles_done += 1
+                    pacer.record()
+                    state.update(current_cycle=cycles_done, last_cycle_at=datetime.now(timezone.utc))
+                else:
+                    err_msg = f"dag_run {dag_run_id} ended with state={final_state}"
+                    print(f"[daemon] cycle {i + 1}/{n_cycles} {err_msg}")
+                    _set_status(conn, qid, "failed",
+                                ended_at=datetime.now(timezone.utc),
+                                cycles_done=cycles_done,
+                                latest_score=latest_score,
+                                error=err_msg)
+                    failed = True
+                    break
+            except Exception as exc:
+                err_msg = str(exc)
+                print(f"[daemon] cycle {i + 1}/{n_cycles} airflow error: {err_msg}")
+                _set_status(conn, qid, "failed",
+                            ended_at=datetime.now(timezone.utc),
+                            cycles_done=cycles_done,
+                            latest_score=latest_score,
+                            error=err_msg[:2000])
+                failed = True
+                break
 
-        try:
-            result = run_cycle(conn, config)
-            if result.cv_score is not None:
-                latest_score = result.cv_score
-            cycles_done += 1
-            pacer.record()
-            state.update(
-                current_cycle=cycles_done,
-                last_cycle_at=datetime.now(timezone.utc),
+        else:
+            config = CycleConfig(
+                competition_id=comp.COMPETITION_ID,
+                train=train,
+                target_col=comp.TARGET,
+                metric=comp.METRIC,
+                stage=stage,
+                eda_card=comp.EDA_CARD,
+                n_splits=getattr(comp, "N_SPLITS", 5),
+                seed=42,
+                k_retrieve=5,
+                is_classification=comp.IS_CLASSIFICATION,
             )
-            print(
-                f"[daemon] cycle {i + 1}/{n_cycles} attempt={result.attempt_id[:8]}"
-                f" cv={result.cv_score} label={result.label}"
-            )
-        except EmbeddingUnavailableError as exc:
-            # Mac Ollama 임베딩 일시 장애 — 이 사이클만 스킵, daemon 지속
-            print(f"[daemon] cycle {i + 1}/{n_cycles} skipped — embedding unavailable: {exc}")
-            skipped += 1
-        except Exception as exc:
-            err_msg = str(exc)
-            print(f"[daemon] cycle {i + 1}/{n_cycles} raised: {err_msg}")
-            _set_status(
-                conn, qid, "failed",
-                ended_at=datetime.now(timezone.utc),
-                cycles_done=cycles_done,
-                latest_score=latest_score,
-                error=err_msg[:2000],
-            )
-            failed = True
-            break
+            try:
+                result = run_cycle(conn, config)
+                if result.cv_score is not None:
+                    latest_score = result.cv_score
+                cycles_done += 1
+                pacer.record()
+                state.update(current_cycle=cycles_done, last_cycle_at=datetime.now(timezone.utc))
+                print(
+                    f"[daemon] cycle {i + 1}/{n_cycles} attempt={result.attempt_id[:8]}"
+                    f" cv={result.cv_score} label={result.label}"
+                )
+            except EmbeddingUnavailableError as exc:
+                print(f"[daemon] cycle {i + 1}/{n_cycles} skipped — embedding unavailable: {exc}")
+                skipped += 1
+            except Exception as exc:
+                err_msg = str(exc)
+                print(f"[daemon] cycle {i + 1}/{n_cycles} raised: {err_msg}")
+                _set_status(conn, qid, "failed",
+                            ended_at=datetime.now(timezone.utc),
+                            cycles_done=cycles_done,
+                            latest_score=latest_score,
+                            error=err_msg[:2000])
+                failed = True
+                break
 
         _set_status(conn, qid, "running",
                     cycles_done=cycles_done, latest_score=latest_score)
 
     if not failed:
         if _is_cancelled(conn, qid):
-            # 사이클 실행 중 API로 취소 요청이 들어온 경우 — done으로 덮어쓰지 않는다
             print(f"[daemon] queue_id={qid} cancelled (detected post-cycle)")
         elif cycles_done == 0 and skipped > 0:
-            # 모든 사이클이 임베딩 장애로 스킵됨 — 거짓 done 방지
             _set_status(conn, qid, "failed",
                         ended_at=datetime.now(timezone.utc),
                         cycles_done=0,
@@ -326,6 +370,11 @@ def main() -> None:
             f"session={pacer.session_cycles} cycles/{pacer.session_hours}h, "
             f"weekly={pacer.weekly_cycles} cycles"
         )
+
+    if airflow_client.available():
+        print(f"[daemon] airflow mode — {airflow_client._AIRFLOW_URL} dag={airflow_client.DAG_ID}")
+    else:
+        print("[daemon] direct mode — AIRFLOW_URL not set, running cycles in-process")
 
     state = DaemonState()
     api_thread = threading.Thread(target=_run_api, args=(state,), daemon=True)

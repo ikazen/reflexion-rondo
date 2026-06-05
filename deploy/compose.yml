@@ -14,4 +14,8 @@ services:
       TMPDIR: /tmp/rondo-eval
       DAEMON_API_HOST: "0.0.0.0"
       PYTHONUNBUFFERED: "1"
+      # Airflow dispatch 모드 — .env에 설정 시 활성화 (미설정이면 direct 모드 fallback)
+      # AIRFLOW_URL: http://<ops-tailnet-ip>:8080
+      # AIRFLOW_USER: admin
+      # AIRFLOW_PASSWORD: <password>
     restart: always
