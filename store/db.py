@@ -50,6 +50,12 @@ class PgConn:
             cur.close()
         return _Result(rows)
 
+    def __enter__(self) -> "PgConn":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
     def close(self) -> None:
         _get_pool().putconn(self._conn)
 
