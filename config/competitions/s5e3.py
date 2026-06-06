@@ -10,6 +10,7 @@ IS_CLASSIFICATION = True
 DROP_COLS         = ["id"]
 N_SPLITS          = 10
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
+S3_DATA_PATH      = "s5e3/data/"
 
 EDA_CARD = """competition: playground-series-s5e3 (Rainfall Prediction in Australia)
 task: binary classification  metric: AUC  target: rainfall
