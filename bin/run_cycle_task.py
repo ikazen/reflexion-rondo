@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import sys
 from pathlib import Path
 
 import polars as pl
 
 ROOT = Path(__file__).parent.parent
+_MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 
 
 def main() -> None:
@@ -38,9 +40,9 @@ def main() -> None:
         print(f"[run_cycle_task] competition config not found: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    data_url = getattr(comp, "DATA_URL", None)
-    if data_url:
-        train = pl.read_csv(f"{data_url}train.csv").drop(comp.DROP_COLS)
+    s3_path = getattr(comp, "S3_DATA_PATH", None)
+    if s3_path and _MINIO_ENDPOINT:
+        train = pl.read_csv(f"{_MINIO_ENDPOINT}/kaggle/{s3_path}train.csv").drop(comp.DROP_COLS)
     else:
         train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
 

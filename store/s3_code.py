@@ -13,7 +13,7 @@ import requests
 
 _BUCKET = "kaggle"
 _S3_PREFIX = "runs/code"
-_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio.internal").rstrip("/")
+_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 
 
 def upload(competition_id: str, filename: str, content: str) -> str:
