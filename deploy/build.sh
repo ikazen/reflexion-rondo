@@ -4,14 +4,18 @@
 set -euo pipefail
 
 REGISTRY=registry.internal
-DAEMON_IMAGE=$REGISTRY/reflexion-rondo/daemon:latest
-EVAL_IMAGE=$REGISTRY/reflexion-rondo/eval:latest
+SHA=$(git rev-parse --short HEAD)
+
+DAEMON_BASE=$REGISTRY/reflexion-rondo/daemon
+EVAL_BASE=$REGISTRY/reflexion-rondo/eval
 
 docker buildx build --platform linux/arm64 \
-    -t "$DAEMON_IMAGE" -f deploy/Dockerfile . --push
+    -t "$DAEMON_BASE:$SHA" -t "$DAEMON_BASE:latest" \
+    -f deploy/Dockerfile . --push
 
 docker buildx build --platform linux/arm64 \
-    -t "$EVAL_IMAGE" -f runtime/Dockerfile . --push
+    -t "$EVAL_BASE:$SHA" -t "$EVAL_BASE:latest" \
+    -f runtime/Dockerfile . --push
 
-echo "pushed: $DAEMON_IMAGE"
-echo "pushed: $EVAL_IMAGE"
+echo "pushed: $DAEMON_BASE:$SHA (latest)"
+echo "pushed: $EVAL_BASE:$SHA (latest)"
