@@ -9,7 +9,7 @@ METRIC_SIGN      = 1
 IS_CLASSIFICATION = True
 DROP_COLS        = ["id", "CustomerId", "Surname"]
 DATA_DIR         = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
-S3_DATA_DIR      = "s3://kaggle/s4e1/data/"
+DATA_URL         = "http://minio.internal/kaggle/s4e1/data/"
 
 EDA_CARD = """competition: playground-series-s4e1 (Bank Churn)
 task: binary classification  metric: AUC  target: Exited

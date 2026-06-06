@@ -10,23 +10,12 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import os
 import sys
 from pathlib import Path
 
 import polars as pl
 
 ROOT = Path(__file__).parent.parent
-
-
-def _s3_storage_options() -> dict[str, str]:
-    return {
-        "aws_access_key_id": os.environ["MINIO_ACCESS_KEY_ID"],
-        "aws_secret_access_key": os.environ["MINIO_SECRET_ACCESS_KEY"],
-        "aws_endpoint_url": os.environ["MINIO_ENDPOINT"],
-        "aws_region": "us-east-1",
-        "aws_allow_http": "true",
-    }
 
 
 def main() -> None:
@@ -49,12 +38,9 @@ def main() -> None:
         print(f"[run_cycle_task] competition config not found: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    s3_data_dir = getattr(comp, "S3_DATA_DIR", None)
-    if s3_data_dir:
-        train = pl.read_csv(
-            f"{s3_data_dir}train.csv",
-            storage_options=_s3_storage_options(),
-        ).drop(comp.DROP_COLS)
+    data_url = getattr(comp, "DATA_URL", None)
+    if data_url:
+        train = pl.read_csv(f"{data_url}train.csv").drop(comp.DROP_COLS)
     else:
         train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
 
