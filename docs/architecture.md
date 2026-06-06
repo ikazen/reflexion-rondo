@@ -12,9 +12,9 @@
 | Coder (실행) | Ollama Cloud | qwen3-coder-next (ADR-016) |
 | 임베딩 | Mac Ollama 서버 | qwen3-embedding:8b (1024d, MRL) — ADR-008 |
 | Evaluator (CV · 지표 · Optuna · label) | WSL2 로컬 | 결정적 코드 |
-| 생성 코드 실행 | WSL2 로컬 | **현재 in-process `exec`** (격리 미구현, §5는 계획) |
+| 생성 코드 실행 | worker-vm | subprocess 격리 (`runtime/isolate.py`), tmpdir + 300s timeout |
 | Memory (검색) | ops-vm | Postgres + pgvector (vector(1024), <=> 코사인) |
-| Orchestrator | 로컬 | 단순 Python 러너 + cron |
+| Orchestrator | worker-vm | daemon + `raw.cycle_queue` 폴링, Airflow DockerOperator 연동 |
 | Warehouse + 분석 뷰 | ops-vm | Postgres raw 스키마 (SQL view, psycopg2 경유) |
 
 설계 의도: **추론만 클라우드, 나머지는 로컬에서 시작.** 병목/비용이 데이터로 잡히면 그때 분산화.
@@ -66,12 +66,10 @@
 
 ## 5. 생성 코드 격리 실행
 
-> **상태: 계획 (미구현).** 현재 `cycle/run.py`는 생성 코드를 in-process `exec`로 실행한다(`runtime/`은 스텁). 아래는 무인 cron 운용 전 도입할 목표 설계.
-
-Coder가 만든 `feature_fn`/`model_fn`은 cron에서 무인 실행되므로 **컨테이너/nsjail로 격리**한다 (ADR-013).
-- 시간/메모리 상한, 네트워크 차단, 파일시스템 화이트리스트.
-- 행/OOM/무한루프가 한 워커를 죽이지 않게 격리 경계에서 강제 종료.
-- 격리 위반·타임아웃은 `error_trace`로 기록되어 Reflector가 실패에서 교훈을 뽑는다.
+Coder가 만든 `feature_fn`/`model_fn`은 `runtime/isolate.py`가 subprocess로 실행한다 (ADR-013).
+- tmpdir에 source.py / input.json / train.parquet 기록 → `runtime/runner.py` subprocess 실행 → output.json 수거.
+- 타임아웃 300s. 에러·타임아웃은 `error_trace`로 기록되어 Reflector가 실패에서 교훈을 뽑는다.
+- 네트워크 격리(`unshare --net`)는 BON-104에서 추가 예정.
 
 ## 6. 컴포넌트와 역할
 

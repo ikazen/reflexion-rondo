@@ -5,22 +5,23 @@
 개발 중 모델 교체·스키마 변경 등으로 기존 이력을 버릴 때 사용한다.
 
 ```bash
-# 전체 초기화 (DB + 생성 코드 + 제출 CSV)
+# 전체 초기화 (Postgres 데이터 삭제, 스키마 유지)
 uv run python bin/reset.py
+
+# 스키마까지 drop 후 재생성 (스키마 변경 시)
+uv run python bin/reset.py --hard
 
 # 특정 대회만 초기화 (다른 대회 이력 보존)
 uv run python bin/reset.py --competition playground-series-s4e1
 
-# 확인 프롬프트 생략 (-y)
-uv run python bin/reset.py -c playground-series-s4e1 -y
+# 확인 프롬프트 생략
+uv run python bin/reset.py --yes
 ```
 
 초기화 대상:
-- `runs/reflexion.duckdb` — 전체 attempts / reflections / competitions 기록
+- Postgres `raw` 스키마 테이블 — attempts / reflections / competitions 등
 - `runs/code/{competition_id}/` — 생성된 Python 코드 파일
 - `runs/submission_*.csv` — 제출 파일 (전체 초기화 시)
-
-대회별 초기화는 DB 행만 삭제하고 다른 대회 데이터는 건드리지 않는다.
 
 ## 1. 새 대회 등록 절차
 
@@ -35,7 +36,7 @@ cd data/<competition-id> && unzip -q *.zip
 `config/competitions/s5e3.py` 참고. 필수 항목:
 - `COMPETITION_ID`, `NAME`, `TARGET`, `METRIC`, `TASK_TYPE`, `METRIC_SIGN`
 - `IS_CLASSIFICATION`, `DROP_COLS` (id 계열 컬럼)
-- `DATA_DIR`
+- `DATA_DIR`, `S3_DATA_PATH`
 - `EDA_CARD` — feature별 dtype 명시 필수 (pl.String 컬럼 인코딩 방법 포함)
 
 ### 1-3. cold-start 등록
@@ -47,16 +48,22 @@ uv run python -m bin.start_competition \
 # 출력: 유사 대회 목록, 교훈 수, 시드 파이프라인 수 확인
 ```
 
-### 1-4. cold-start bootstrap 실행
+### 1-4. 큐에 등록하고 daemon 실행
 ```bash
+# daemon이 떠있으면 API로 큐잉
+curl -X POST http://localhost:8000/api/queue \
+  -H 'Content-Type: application/json' \
+  -d '{"competition": "<slug>", "stage": "bootstrap", "n_cycles": 5}'
+
+# daemon 없이 직접 실행
 uv run python -m bin.run_reflexion \
     --competition <slug> --stage bootstrap --cycles 5 --cold-start
 ```
 
 ### 1-5. reflexion 루프
 ```bash
-uv run python -m bin.run_reflexion \
-    --competition <slug> --stage reflexion --cycles 30
+curl -X POST http://localhost:8000/api/queue \
+  -d '{"competition": "<slug>", "stage": "reflexion", "n_cycles": 30}'
 ```
 
 ### 1-6. 교훈 위생 (30사이클마다)
@@ -66,56 +73,88 @@ uv run python -m bin.archive_lessons
 
 ## 2. 오케스트레이션
 
-- `bin/run_cycle.py`: 1 사이클 (retrieve → strategize → generate → evaluate → submit? → reflect → persist).
-- `bin/start_competition.py`: 새 대회 cold-start (fingerprint → warm-start 시드 → bootstrap 큐잉).
-- cron이 `run_cycle.py`를 주기 호출.
+daemon(`bin/run_daemon.py`)이 `raw.cycle_queue`를 10초 간격으로 폴링해서 순차 실행한다.
 
-승격 트리거(언제 Prefect 도입): 워커 ≥ 3, 또는 단계별 재시도/타임아웃 로직이 복잡해질 때.
-그 전에는 Python + cron이 가장 적은 디버깅 비용.
+```bash
+# daemon 시작
+uv run python -m bin.run_daemon
 
-## 2. 페이싱 (Ollama Cloud)
+# 상태 확인
+curl http://localhost:8000/api/heartbeat
 
-- 5시간 세션 + 주간 한도를 cron schedule에 반영. 상한 도달 시 그날 스킵.
-- 동시 실행: 요금제별 상한(Pro 3)과 로컬 워커 수(시작 ≤ 2)를 균형 맞춤.
+# 큐 조회
+curl http://localhost:8000/api/queue
 
-## 3. 제출 예산 게이트
+# 큐 취소
+curl -X PATCH http://localhost:8000/api/queue/<queue_id> \
+  -d '{"status": "cancelled"}'
+```
+
+실행 모드:
+- **airflow 모드**: `AIRFLOW_URL` 환경변수가 있으면 DockerOperator DAG 트리거. 평가는 별도 컨테이너에서 실행.
+- **direct 모드**: `AIRFLOW_URL` 없으면 in-process 직접 실행.
+
+승격 트리거(Airflow → 상위 오케스트레이터): 워커 ≥ 3 또는 단계별 재시도/타임아웃 로직이 복잡해질 때.
+
+## 3. 페이싱 (Ollama Cloud)
+
+환경변수로 제어. 미설정 시 비활성.
+
+| 환경변수 | 설명 |
+|---|---|
+| `OLLAMA_CLOUD_SESSION_HOURS` | 세션 윈도우 길이 (기본 5.0h) |
+| `OLLAMA_CLOUD_SESSION_CYCLES` | 세션당 최대 사이클 수 (0=비활성) |
+| `OLLAMA_CLOUD_WEEKLY_CYCLES` | 주간 최대 사이클 수 (0=비활성) |
+
+한도 초과 시 다음 윈도우까지 sleep 후 재개 (스킵 아님). daemon 재시작 시 DB의 실제 attempt 수로 카운터 복원.
+
+## 4. 제출 예산 게이트
 
 - `submission_budget` 테이블에 일별 카운트.
 - `Submit` 단계가 SELECT-then-UPDATE로 일일 상한(보통 5) 초과 방지.
 - best 후보만 LB로. CV-LB 상관·shake를 함께 기록.
 
-## 4. 동시성
+## 5. 동시성
 
-- DuckDB는 단일 writer. cron 중첩 실행 시 충돌하므로 파일 락(또는 DuckDB row lock)으로 직렬화.
-- 워커 ≤ 2 규모에서는 파일 락으로 충분.
+Postgres가 concurrent read를 처리한다. daemon은 단일 프로세스로 순차 실행이므로 write 충돌이 없다. 여러 daemon을 띄우는 구성은 현재 미지원.
 
-## 5. 생성 코드 격리 실행
+## 6. 생성 코드 격리 실행
 
-- `runtime/`가 컨테이너/nsjail에서 `feature_fn`/`model_fn`을 실행 (ADR-013).
-- 시간/메모리 상한, 네트워크 차단, FS 화이트리스트.
-- 타임아웃·OOM·격리 위반 → 강제 종료 후 `error_trace` 기록 → Reflect 단계가 실패에서 교훈 추출.
+`runtime/isolate.py`가 tmpdir를 생성하고 `runner.py`를 subprocess로 실행한다.
 
-## 6. 모니터링 대시보드
+- 타임아웃: 300초 (기본값)
+- 타임아웃·에러 → `error_trace` 기록 → Reflect 단계가 실패에서 교훈 추출
+- 격리 수준: subprocess 분리. 네트워크 격리(`unshare --net`)는 BON-104에서 추가 예정.
 
+## 7. 모니터링
+
+**Streamlit 대시보드 (로컬)**
 ```bash
 uv run streamlit run dashboard.py
 # → http://localhost:8501
 ```
+CV score 진행 곡선, label/action_type 분포, reflection_impact 상위 교훈, 최근 attempt 테이블 제공.
 
-- CV score 진행 곡선, label/action_type 분포, reflection_impact 상위 교훈, 최근 attempt 테이블 제공
-- DB 마이그레이션을 자동 적용하므로 스키마 변경 후에도 별도 작업 불필요
-- 사이클 실행 중에도 새로고침으로 실시간 확인 가능
+**Daemon API**
+```bash
+curl http://localhost:8000/api/heartbeat   # 현재 상태
+curl http://localhost:8000/api/attempts    # 최근 attempt 목록
+curl http://localhost:8000/api/lessons     # 교훈 목록
+```
 
-## 7. 관측·디버깅
+**Prometheus (BON-90, 배포 후)**
+- `GET /metrics` — `rondo_cycles_total`, `rondo_daemon_last_cycle_timestamp_seconds`, `rondo_queue_pending`
+- Grafana alert: `time() - rondo_daemon_last_cycle_timestamp_seconds > 7200` → Discord
 
-- `reflections.embedded_text`/`full_lesson`을 함께 저장 → 검색 결과(`spec.md §1.6` 쿼리)를 사람이 SQL로 바로 읽음.
-- 기록·검색·분석이 한 DuckDB라 SQL 한 곳에서 디버깅.
-- `raw.attempts.reflection_ids` + `retrieval_scores`로 검색 단계까지 역추적 ("전략가가 왜 엉뚱한 조언을 받았나").
+## 8. 관측·디버깅
+
+- `reflections.embedded_text`/`full_lesson`을 함께 저장 → 검색 결과를 사람이 SQL로 바로 읽음.
+- `raw.attempts.reflection_ids` + `retrieval_scores`로 검색 단계까지 역추적.
 - 실패 attempt도 기록되어 분석 대상.
 - transfer 점검: `cold_start_progression`의 `warm_start_ratio` 추세. 우상향 아니면 fingerprint 가중치/generality 라벨링/검색 메타필터 점검.
-- 노이즈 점검: `cv_fold_var`가 큰 attempt의 label은 `neutral`로 빠지는지 확인 (spec §4).
+- 노이즈 점검: `cv_fold_var`가 큰 attempt의 label은 `neutral`로 빠지는지 확인.
 
-## 8. 교훈 위생 (메타 루프, Phase 4)
+## 9. 교훈 위생 (메타 루프)
 
 - `archived=true` 또는 `reflection_impact.avg_gain ≤ 0` 교훈은 검색 제외/가중치 하향.
 - `L1_local`은 transfer에서 자동 제외.
