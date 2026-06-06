@@ -4,6 +4,7 @@ from pathlib import Path
 
 import psycopg2
 import psycopg2.pool
+from psycopg2 import sql as pgsql
 from pgvector.psycopg2 import register_vector
 
 _DSN = os.getenv(
@@ -42,7 +43,7 @@ class PgConn:
         self._conn = raw
         self._lock = threading.RLock()
 
-    def execute(self, query: str, params=None) -> _Result:
+    def execute(self, query: str | pgsql.Composable, params=None) -> _Result:
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(query, params)
@@ -107,12 +108,12 @@ def ensure_competition(
 
 
 def insert_attempt(conn: PgConn, row: dict) -> None:
-    cols = ", ".join(row.keys())
-    placeholders = ", ".join("%s" for _ in row)
-    conn.execute(
-        f"INSERT INTO raw.attempts ({cols}) VALUES ({placeholders})",
-        list(row.values()),
+    columns = list(row.keys())
+    query = pgsql.SQL("INSERT INTO raw.attempts ({}) VALUES ({})").format(
+        pgsql.SQL(", ").join(map(pgsql.Identifier, columns)),
+        pgsql.SQL(", ").join(pgsql.Placeholder() * len(columns)),
     )
+    conn.execute(query, list(row.values()))
 
 
 def insert_pipeline(
