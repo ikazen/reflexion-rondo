@@ -2,14 +2,9 @@ services:
   rondo-daemon:
     image: registry.internal:80/reflexion-rondo/daemon:latest
     network_mode: host
-    volumes:
-      - /tmp/rondo-eval:/tmp/rondo-eval      # eval DooD tmpdir (호스트와 공유)
-      - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - /var/lib/rondo/.env
     environment:
-      EVAL_DOCKER_IMAGE: registry.internal:80/reflexion-rondo/eval:latest
-      TMPDIR: /tmp/rondo-eval
       DAEMON_API_HOST: "0.0.0.0"
       PYTHONUNBUFFERED: "1"
     restart: always

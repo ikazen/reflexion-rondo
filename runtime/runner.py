@@ -12,7 +12,7 @@ from pathlib import Path
 
 import polars as pl
 
-WS = Path("/workspace")
+WS = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/workspace")
 
 
 def _write(payload: dict) -> None:
