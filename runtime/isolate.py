@@ -53,7 +53,9 @@ def eval_isolated(
             "is_classification": is_classification,
         }))
 
-        env = {**os.environ, "PYTHONPATH": str(_RUNNER.parent.parent)}
+        _EVAL_ENV_ALLOWLIST = {"PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE"}
+        env = {k: v for k, v in os.environ.items() if k in _EVAL_ENV_ALLOWLIST}
+        env["PYTHONPATH"] = str(_RUNNER.parent.parent)
         try:
             proc = subprocess.run(
                 [sys.executable, str(_RUNNER), tmpdir],
