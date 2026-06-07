@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS raw.attempts (
     super_cycle_id   text,
     was_promoted     boolean
 );
+ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS super_cycle_id text;
+ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS was_promoted boolean;
 
 CREATE TABLE IF NOT EXISTS raw.submission_budget (
     competition_id  text,
@@ -106,18 +108,22 @@ SELECT
 FROM raw.attempts a
 JOIN raw.competitions c USING (competition_id);
 
-CREATE OR REPLACE VIEW stg_attempts AS
+DROP VIEW IF EXISTS reflection_impact;
+DROP VIEW IF EXISTS stg_attempts_reflexion_only;
+DROP VIEW IF EXISTS stg_attempts;
+
+CREATE VIEW stg_attempts AS
 SELECT
     a.*,
     c.metric_sign
 FROM raw.attempts a
 JOIN raw.competitions c USING (competition_id);
 
-CREATE OR REPLACE VIEW stg_attempts_reflexion_only AS
+CREATE VIEW stg_attempts_reflexion_only AS
 SELECT * FROM stg_attempts
 WHERE stage = 'reflexion';
 
-CREATE OR REPLACE VIEW reflection_impact AS
+CREATE VIEW reflection_impact AS
 WITH scored AS (
     SELECT
         competition_id,
