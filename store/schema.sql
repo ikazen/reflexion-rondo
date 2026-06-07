@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS raw.attempts (
     retrieval_scores double precision[],
     duration_sec     double precision,
     code_path        text,
-    retries          int DEFAULT 0
+    retries          int DEFAULT 0,
+    super_cycle_id   text,
+    was_promoted     boolean
 );
 
 CREATE TABLE IF NOT EXISTS raw.submission_budget (
@@ -126,6 +128,7 @@ WITH scored AS (
             ORDER BY run_ts ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
           ) AS gain_vs_best
     FROM stg_attempts_reflexion_only
+    WHERE was_promoted IS NOT FALSE  -- NULL=legacy (promoted), TRUE=winner, FALSE=super-cycle loser excluded
 ),
 per_reflection AS (
     SELECT unnest(reflection_ids) AS reflection_id, gain_vs_best

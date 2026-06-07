@@ -25,7 +25,8 @@ import polars as pl
 
 import bin.airflow_client as airflow_client
 from bin.api import DaemonState, create_app
-from cycle.run import CycleConfig, run_cycle
+from cycle.run import CycleConfig
+from cycle.super_cycle import run_super_cycle
 from memory.retriever import EmbeddingUnavailableError
 from store.db import connect, ensure_competition
 
@@ -309,15 +310,17 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                 is_classification=comp.IS_CLASSIFICATION,
             )
             try:
-                result = run_cycle(conn, config)
+                result = run_super_cycle(conn, config)
                 if result.cv_score is not None:
                     latest_score = result.cv_score
+                n_attempts = len(result.all_results)
                 cycles_done += 1
                 pacer.record()
                 state.update(current_cycle=cycles_done, last_cycle_at=datetime.now(timezone.utc))
                 print(
-                    f"[daemon] cycle {i + 1}/{n_cycles} attempt={result.attempt_id[:8]}"
-                    f" cv={result.cv_score} label={result.label}"
+                    f"[daemon] cycle {i + 1}/{n_cycles} super={result.super_cycle_id[:8]}"
+                    f" winner={result.attempt_id[:8]} cv={result.cv_score}"
+                    f" label={result.label} n_attempts={n_attempts}"
                 )
             except EmbeddingUnavailableError as exc:
                 print(f"[daemon] cycle {i + 1}/{n_cycles} skipped — embedding unavailable: {exc}")
