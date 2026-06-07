@@ -368,8 +368,20 @@ def run_cycle(
             gain_vs_best=gain_vs_best,
         )
 
-    # 7. Reflect — attempt는 이미 저장됨. 임베딩 장애 시 reflection만 스킵.
+    # 7. Reflect — jump/regression/error 일 때만. neutral은 비용 대비 가치 없음 (BON-96).
     reflection_id: str | None = None
+    if label not in ("jump", "regression") and error_trace is None:
+        return CycleResult(
+            attempt_id=attempt_id,
+            cv_score=cv_score,
+            label=label,
+            gain_vs_best=gain_vs_best,
+            retries=retries,
+            reflection_id=None,
+            error_trace=error_trace,
+            code_path=code_path,
+        )
+
     ctx = AttemptContext(
         hypothesis=decision.hypothesis,
         action_type=decision.action_type,
