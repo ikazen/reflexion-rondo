@@ -25,6 +25,7 @@ def main() -> None:
     parser.add_argument("--competition", "-c", required=True)
     parser.add_argument("--stage", "-s", required=True)
     parser.add_argument("--queue-id", required=True)
+    parser.add_argument("--attempt-index", type=int, default=None)
     args = parser.parse_args()
 
     sys.path.insert(0, str(ROOT))
@@ -78,6 +79,7 @@ def main() -> None:
     data = run_attempt_core(
         conn, config, lessons, prev_best_cv,
         super_cycle_id=super_cycle_id,
+        attempt_index=args.attempt_index,
     )
     conn.close()
 
