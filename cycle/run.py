@@ -284,6 +284,7 @@ def run_cycle(
     cv_fold_var = 0.0
     label = "regression"
     gain_vs_best = None
+    _feature_importance: dict | None = None
 
     if not error_trace:
         for _eval_i in range(2):
@@ -296,12 +297,14 @@ def run_cycle(
                 n_splits=config.n_splits,
                 seed=config.seed,
                 is_classification=config.is_classification,
+                action_type=decision.action_type,
             )
             if not iso.error_trace:
                 cv_score = iso.cv_score
                 cv_fold_var = iso.cv_fold_var or 0.0
                 label = iso.label or "regression"
                 gain_vs_best = iso.gain_vs_best
+                _feature_importance = iso.feature_importance
                 break
             if _eval_i == 0:
                 source = generate_code(**gen_kwargs, error_feedback=iso.error_trace)
@@ -376,6 +379,7 @@ def run_cycle(
         gain_vs_best=gain_vs_best,
         label=label,
         retrieved_ids=decision.reflection_ids,
+        feature_importance=_feature_importance,
         error_trace=error_trace,
     )
     try:

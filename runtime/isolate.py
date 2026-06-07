@@ -27,6 +27,7 @@ class IsolatedResult:
     label: str | None
     gain_vs_best: float | None
     error_trace: str | None
+    feature_importance: dict | None = None
 
 
 def eval_isolated(
@@ -38,6 +39,7 @@ def eval_isolated(
     n_splits: int,
     seed: int,
     is_classification: bool,
+    action_type: str = "",
     timeout_sec: int = DEFAULT_TIMEOUT,
 ) -> IsolatedResult:
     with tempfile.TemporaryDirectory(prefix="rondo-eval-") as tmpdir:
@@ -51,6 +53,7 @@ def eval_isolated(
             "n_splits": n_splits,
             "seed": seed,
             "is_classification": is_classification,
+            "action_type": action_type,
         }))
 
         _EVAL_ENV_ALLOWLIST = {"PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE"}
@@ -89,6 +92,7 @@ def eval_isolated(
             label=out.get("label"),
             gain_vs_best=out.get("gain_vs_best"),
             error_trace=None,
+            feature_importance=out.get("feature_importance"),
         )
 
 
