@@ -43,6 +43,9 @@ def main() -> None:
     feature_fn = ns["feature_fn"]
     model_fn = ns["model_fn"]
 
+    _IMPORTANCE_ACTIONS = {"feature_engineering", "preprocessing"}
+    action_type = inp.get("action_type", "")
+
     from evaluator.harness import run as eval_run
     try:
         result = eval_run(
@@ -56,6 +59,7 @@ def main() -> None:
             n_splits=inp["n_splits"],
             seed=inp["seed"],
             is_classification=inp["is_classification"],
+            compute_importance=action_type in _IMPORTANCE_ACTIONS,
         )
         _write({
             "cv_score": result.cv_score,
@@ -63,6 +67,7 @@ def main() -> None:
             "fold_scores": result.fold_scores,
             "label": result.label,
             "gain_vs_best": result.gain_vs_best,
+            "feature_importance": result.feature_importance,
             "error_trace": None,
         })
     except Exception:
