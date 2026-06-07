@@ -10,7 +10,7 @@ from store.db import PgConn
 
 _EMBED_DIM = 1024
 _EMBED_RETRY_DELAYS = (1.0, 4.0, 16.0)
-_MMR_LAMBDA = 0.5
+_MMR_LAMBDA = 0.3  # BON-96: 다양성 가중치↑ (coverage 손실 보완)
 
 
 class EmbeddingUnavailableError(RuntimeError):
@@ -94,7 +94,7 @@ def search(
         ORDER BY score DESC
         LIMIT %s
         """,
-        [query_vec, query_vec, competition_id, k * 2],
+        [query_vec, query_vec, competition_id, k * 4],  # BON-96: 후보 풀 확장
     ).fetchall()
 
     cols = ["reflection_id", "embedded_text", "full_lesson", "generality",
