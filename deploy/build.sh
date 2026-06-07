@@ -3,7 +3,7 @@
 # 실행 위치: repo 루트
 set -euo pipefail
 
-REGISTRY=registry.internal
+REGISTRY=registry.internal:80
 SHA=$(git rev-parse --short HEAD)
 
 DAEMON_BASE=$REGISTRY/reflexion-rondo/daemon
