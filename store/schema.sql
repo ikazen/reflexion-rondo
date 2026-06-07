@@ -143,6 +143,30 @@ FROM per_reflection
 GROUP BY reflection_id
 ORDER BY avg_gain DESC;
 
+-- BON-109: action_type별 Beta-Bernoulli 밴딧 (advise용, stagnation 승격)
+CREATE TABLE IF NOT EXISTS raw.action_bandit (
+    scope       text NOT NULL,
+    scope_key   text NOT NULL,
+    action_type text NOT NULL,
+    alpha       double precision NOT NULL DEFAULT 1.0,
+    beta        double precision NOT NULL DEFAULT 1.0,
+    updated_at  timestamp DEFAULT now(),
+    PRIMARY KEY (scope, scope_key, action_type)
+);
+
+CREATE OR REPLACE VIEW action_bandit_posterior AS
+SELECT
+    scope,
+    scope_key,
+    action_type,
+    alpha / (alpha + beta)                    AS posterior_mean,
+    alpha + beta                              AS trials,
+    alpha,
+    beta,
+    updated_at
+FROM raw.action_bandit
+ORDER BY scope, scope_key, posterior_mean DESC;
+
 CREATE OR REPLACE VIEW cold_start_progression AS
 SELECT
     a.competition_id,
