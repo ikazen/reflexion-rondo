@@ -146,6 +146,16 @@ FROM per_reflection
 GROUP BY reflection_id
 ORDER BY avg_gain DESC;
 
+-- BON-110: super-cycle 공유 retrieve 컨텍스트 (retrieve task → attempt tasks)
+CREATE TABLE IF NOT EXISTS raw.super_cycle_context (
+    queue_id        text PRIMARY KEY,
+    super_cycle_id  text NOT NULL,
+    competition_id  text NOT NULL,
+    prev_best_cv    double precision,
+    lessons         jsonb NOT NULL,
+    created_at      timestamp DEFAULT now()
+);
+
 -- BON-109: action_type별 Beta-Bernoulli 밴딧 (advise용, stagnation 승격)
 CREATE TABLE IF NOT EXISTS raw.action_bandit (
     scope       text NOT NULL,

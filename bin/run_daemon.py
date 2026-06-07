@@ -263,6 +263,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                         """
                         select attempt_id, cv_score, label from raw.attempts
                         where competition_id = %s
+                          and was_promoted is not false
                         order by run_ts desc limit 1
                         """,
                         [comp.COMPETITION_ID],
@@ -271,7 +272,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                         aid, cv, label = row
                         if cv is not None:
                             latest_score = cv
-                        print(f"[daemon] cycle {i + 1}/{n_cycles} attempt={aid[:8]} cv={cv} label={label}")
+                        print(f"[daemon] cycle {i + 1}/{n_cycles} winner={aid[:8]} cv={cv} label={label}")
                     cycles_done += 1
                     pacer.record()
                     state.update(current_cycle=cycles_done, last_cycle_at=datetime.now(timezone.utc))
