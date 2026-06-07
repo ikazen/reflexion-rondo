@@ -9,13 +9,15 @@ SHA=$(git rev-parse --short HEAD)
 DAEMON_BASE=$REGISTRY/reflexion-rondo/daemon
 EVAL_BASE=$REGISTRY/reflexion-rondo/eval
 
-docker buildx build --platform linux/arm64 \
+docker build \
     -t "$DAEMON_BASE:$SHA" -t "$DAEMON_BASE:latest" \
-    -f deploy/Dockerfile . --push
+    -f deploy/Dockerfile . && \
+docker push "$DAEMON_BASE:$SHA" && docker push "$DAEMON_BASE:latest"
 
-docker buildx build --platform linux/arm64 \
+docker build \
     -t "$EVAL_BASE:$SHA" -t "$EVAL_BASE:latest" \
-    -f runtime/Dockerfile . --push
+    -f runtime/Dockerfile . && \
+docker push "$EVAL_BASE:$SHA" && docker push "$EVAL_BASE:latest"
 
 echo "pushed: $DAEMON_BASE:$SHA (latest)"
 echo "pushed: $EVAL_BASE:$SHA (latest)"
