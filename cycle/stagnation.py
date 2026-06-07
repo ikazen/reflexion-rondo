@@ -32,6 +32,7 @@ def detect_stagnation(
         from raw.attempts
         where competition_id = %s
           and cv_score is not null
+          and was_promoted is not false
         order by run_ts desc
         limit %s
         """,

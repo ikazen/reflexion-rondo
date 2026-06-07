@@ -11,7 +11,7 @@ import polars as pl
 
 from agents.coder import generate_code
 from agents.reflector import AttemptContext, reflect
-from agents.strategist import strategize
+from agents.strategist import StrategyDecision, strategize
 from config.settings import MODEL_CODER
 from cycle.action_optimizer import get_action_prior, update_bandit
 from cycle.stagnation import detect_stagnation
@@ -51,6 +51,22 @@ class CycleResult:
     reflection_id: str | None
     error_trace: str | None
     code_path: str
+
+
+@dataclass
+class _AttemptData:
+    """Internal: complete data from one attempt, before reflect."""
+    attempt_id: str
+    decision: StrategyDecision
+    source: str
+    cv_score: float | None
+    cv_fold_var: float
+    label: str
+    gain_vs_best: float | None
+    retries: int
+    error_trace: str | None
+    code_path: str
+    feature_importance: dict | None
 
 
 def _prev_best(conn: PgConn, competition_id: str) -> float | None:
@@ -224,20 +240,19 @@ def _best_code(conn: PgConn, competition_id: str) -> str | None:
 
 
 
-def run_cycle(
+def run_attempt_core(
     conn: PgConn,
     config: CycleConfig,
-) -> CycleResult:
+    lessons: list[dict],
+    prev_best_cv: float | None,
+    super_cycle_id: str | None = None,
+    was_promoted: bool | None = None,
+) -> _AttemptData:
+    """Strategize → Generate → Evaluate → Persist one attempt. Returns data needed for reflect."""
     attempt_id = str(uuid.uuid4())
-    cycle_start = time.monotonic()
+    attempt_start = time.monotonic()
 
-    # 1. Retrieve
-    fail_summary = _recent_failure_summary(conn, config.competition_id)
-    query = _build_retrieval_query(conn, config.competition_id, config.eda_card, fail_summary)
-    lessons = search(conn, query, config.competition_id, k=config.k_retrieve)
-
-    # 2. Strategize
-    prev_best_cv = _prev_best(conn, config.competition_id)
+    # Strategize
     dynamic_ctx = _dynamic_eda_context(conn, config.competition_id, prev_best_cv)
     enriched_eda = config.eda_card + dynamic_ctx
     stagnation = detect_stagnation(conn, config.competition_id)
@@ -251,8 +266,7 @@ def run_cycle(
         action_prior=action_prior,
     )
 
-    # 3. Generate code + validate (정적 검사) + Docker 격리 실행 (최대 2회 재시도)
-    # bootstrap은 1변경 규율 면제(§4) → from-scratch. 그 외엔 best 파이프라인을 한 군데만 수정.
+    # Generate + validate
     _MAX_CODE_RETRIES = 2
     if config.stage == "bootstrap" and config.seed_code:
         prev_code: str | None = config.seed_code
@@ -270,7 +284,6 @@ def run_cycle(
     retries = 0
     error_trace: str | None = None
 
-    # Phase 1: AST 정적 검사 — Docker 실행 전 구문/금지 패턴 차단
     for _i in range(_MAX_CODE_RETRIES + 1):
         errors = validate_code(source)
         if not errors:
@@ -282,12 +295,12 @@ def run_cycle(
         else:
             error_trace = feedback
 
-    # 5. Evaluate — Docker 격리 실행 (exec + CV 평가 전부 컨테이너 안)
+    # Evaluate
     cv_score = None
     cv_fold_var = 0.0
     label = "regression"
     gain_vs_best = None
-    _feature_importance: dict | None = None
+    feature_importance: dict | None = None
 
     if not error_trace:
         for _eval_i in range(2):
@@ -307,7 +320,7 @@ def run_cycle(
                 cv_fold_var = iso.cv_fold_var or 0.0
                 label = iso.label or "regression"
                 gain_vs_best = iso.gain_vs_best
-                _feature_importance = iso.feature_importance
+                feature_importance = iso.feature_importance
                 break
             if _eval_i == 0:
                 source = generate_code(**gen_kwargs, error_feedback=iso.error_trace)
@@ -319,7 +332,7 @@ def run_cycle(
             else:
                 error_trace = iso.error_trace
 
-    # 5b. 생성 코드 로컬 저장 (사람 검토용 — reflection 반영 여부는 사람이 판단)
+    # Save code
     code_path = _save_code(
         source,
         competition_id=config.slug or config.competition_id,
@@ -332,9 +345,9 @@ def run_cycle(
         error_trace=error_trace,
     )
 
-    # 6. Persist attempt
-    duration_sec = time.monotonic() - cycle_start
-    insert_attempt(conn, {
+    # Persist attempt
+    duration_sec = time.monotonic() - attempt_start
+    row: dict = {
         "attempt_id":       attempt_id,
         "competition_id":   config.competition_id,
         "run_ts":           datetime.now(timezone.utc),
@@ -351,9 +364,14 @@ def run_cycle(
         "duration_sec":     round(duration_sec, 1),
         "code_path":        str(code_path),
         "retries":          retries,
-    })
+    }
+    if super_cycle_id is not None:
+        row["super_cycle_id"] = super_cycle_id
+    if was_promoted is not None:
+        row["was_promoted"] = was_promoted
+    insert_attempt(conn, row)
 
-    # 6b. gain_vs_best > 0 이면 raw.pipelines 저장 (cold-start 시드 후보)
+    # Save pipeline if improved
     if gain_vs_best is not None and gain_vs_best > 0 and not error_trace:
         fp_row = conn.execute(
             "select fingerprint from raw.competitions where competition_id = %s",
@@ -371,7 +389,7 @@ def run_cycle(
             gain_vs_best=gain_vs_best,
         )
 
-    # 6c. Action bandit 업데이트 — reflexion 단계만, 결정적 LLM 없음 (BON-109)
+    # Action bandit update — reflexion stage only (BON-109)
     if config.stage == "reflexion":
         update_bandit(
             conn,
@@ -382,45 +400,67 @@ def run_cycle(
             error_trace=error_trace,
         )
 
-    # 7. Reflect — jump/regression/error 일 때만. neutral은 비용 대비 가치 없음 (BON-96).
-    reflection_id: str | None = None
-    if label not in ("jump", "regression") and error_trace is None:
-        return CycleResult(
-            attempt_id=attempt_id,
-            cv_score=cv_score,
-            label=label,
-            gain_vs_best=gain_vs_best,
-            retries=retries,
-            reflection_id=None,
-            error_trace=error_trace,
-            code_path=code_path,
-        )
-
-    ctx = AttemptContext(
-        hypothesis=decision.hypothesis,
-        action_type=decision.action_type,
-        code=source,
-        cv_score=cv_score or 0.0,
-        cv_fold_var=cv_fold_var,
-        gain_vs_best=gain_vs_best,
-        label=label,
-        retrieved_ids=decision.reflection_ids,
-        feature_importance=_feature_importance,
-        error_trace=error_trace,
-    )
-    try:
-        output = reflect(conn, attempt_id=attempt_id, competition_id=config.competition_id, context=ctx)
-        reflection_id = output.reflection_id
-    except EmbeddingUnavailableError:
-        pass
-
-    return CycleResult(
+    return _AttemptData(
         attempt_id=attempt_id,
+        decision=decision,
+        source=source,
         cv_score=cv_score,
+        cv_fold_var=cv_fold_var,
         label=label,
         gain_vs_best=gain_vs_best,
         retries=retries,
-        reflection_id=reflection_id,
         error_trace=error_trace,
         code_path=code_path,
+        feature_importance=feature_importance,
+    )
+
+
+def _do_reflect(conn: PgConn, competition_id: str, data: _AttemptData) -> str | None:
+    """Reflect if label warrants it (BON-96 gate). Returns reflection_id or None."""
+    if data.label not in ("jump", "regression") and data.error_trace is None:
+        return None
+    ctx = AttemptContext(
+        hypothesis=data.decision.hypothesis,
+        action_type=data.decision.action_type,
+        code=data.source,
+        cv_score=data.cv_score or 0.0,
+        cv_fold_var=data.cv_fold_var,
+        gain_vs_best=data.gain_vs_best,
+        label=data.label,
+        retrieved_ids=data.decision.reflection_ids,
+        feature_importance=data.feature_importance,
+        error_trace=data.error_trace,
+    )
+    try:
+        output = reflect(conn, attempt_id=data.attempt_id, competition_id=competition_id, context=ctx)
+        return output.reflection_id
+    except EmbeddingUnavailableError:
+        return None
+
+
+def run_cycle(
+    conn: PgConn,
+    config: CycleConfig,
+) -> CycleResult:
+    # 1. Retrieve
+    fail_summary = _recent_failure_summary(conn, config.competition_id)
+    query = _build_retrieval_query(conn, config.competition_id, config.eda_card, fail_summary)
+    lessons = search(conn, query, config.competition_id, k=config.k_retrieve)
+    prev_best_cv = _prev_best(conn, config.competition_id)
+
+    # 2-6. Strategize → Generate → Evaluate → Persist
+    data = run_attempt_core(conn, config, lessons, prev_best_cv)
+
+    # 7. Reflect (BON-96 gate inside _do_reflect)
+    reflection_id = _do_reflect(conn, config.competition_id, data)
+
+    return CycleResult(
+        attempt_id=data.attempt_id,
+        cv_score=data.cv_score,
+        label=data.label,
+        gain_vs_best=data.gain_vs_best,
+        retries=data.retries,
+        reflection_id=reflection_id,
+        error_trace=data.error_trace,
+        code_path=data.code_path,
     )
