@@ -68,12 +68,21 @@ def _format_stagnation(sig: StagnationSignal) -> str:
     return "\n".join(lines)
 
 
+def _format_action_prior(prior: dict[str, float]) -> str:
+    lines = ["Estimated success probability per action_type (Thompson sample from this competition's history):"]
+    for action, p in sorted(prior.items(), key=lambda x: x[1], reverse=True):
+        lines.append(f"  {action}: {p:.3f}")
+    lines.append("Use this as a soft prior — you may override if you have strong reasoning.")
+    return "\n".join(lines)
+
+
 def strategize(
     eda_card: str,
     lessons: list[dict],
     stage: str,
     prev_best_cv: float | None = None,
     stagnation: StagnationSignal | None = None,
+    action_prior: dict[str, float] | None = None,
 ) -> StrategyDecision:
     lessons_text = _format_lessons(lessons)
     valid_ids = {l["reflection_id"] for l in lessons}
@@ -84,6 +93,10 @@ def strategize(
     if stagnation is not None and stagnation.is_stagnant:
         exploration_section = f"\n## Exploration Signal\n{_format_stagnation(stagnation)}\n"
 
+    prior_section = ""
+    if action_prior:
+        prior_section = f"\n## Action Prior\n{_format_action_prior(action_prior)}\n"
+
     user_prompt = f"""## EDA Card
 {eda_card}
 
@@ -93,7 +106,7 @@ def strategize(
 ## Context
 - Stage: {stage}
 - Previous best CV: {prev_best_str}
-{exploration_section}
+{exploration_section}{prior_section}
 ## Task
 Propose exactly one change to improve the CV score.
 Select which retrieved lessons (if any) directly informed your hypothesis and list their IDs in reflection_ids.

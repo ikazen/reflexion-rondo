@@ -13,6 +13,7 @@ from agents.coder import generate_code
 from agents.reflector import AttemptContext, reflect
 from agents.strategist import strategize
 from config.settings import MODEL_CODER
+from cycle.action_optimizer import get_action_prior, update_bandit
 from cycle.stagnation import detect_stagnation
 from evaluator.contract import validate_code
 from memory.retriever import EmbeddingUnavailableError, search
@@ -240,12 +241,14 @@ def run_cycle(
     dynamic_ctx = _dynamic_eda_context(conn, config.competition_id, prev_best_cv)
     enriched_eda = config.eda_card + dynamic_ctx
     stagnation = detect_stagnation(conn, config.competition_id)
+    action_prior = get_action_prior(conn, config.competition_id)
     decision = strategize(
         eda_card=enriched_eda,
         lessons=lessons,
         stage=config.stage,
         prev_best_cv=prev_best_cv,
         stagnation=stagnation,
+        action_prior=action_prior,
     )
 
     # 3. Generate code + validate (정적 검사) + Docker 격리 실행 (최대 2회 재시도)
@@ -366,6 +369,17 @@ def run_cycle(
             code=source,
             cv_score=cv_score,
             gain_vs_best=gain_vs_best,
+        )
+
+    # 6c. Action bandit 업데이트 — reflexion 단계만, 결정적 LLM 없음 (BON-109)
+    if config.stage == "reflexion":
+        update_bandit(
+            conn,
+            competition_id=config.competition_id,
+            action_type=decision.action_type,
+            label=label,
+            gain_vs_best=gain_vs_best,
+            error_trace=error_trace,
         )
 
     # 7. Reflect — jump/regression/error 일 때만. neutral은 비용 대비 가치 없음 (BON-96).
