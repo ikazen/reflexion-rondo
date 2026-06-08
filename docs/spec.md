@@ -2,7 +2,7 @@
 
 스토어: ops-vm Postgres + pgvector (`raw` 스키마). ADR-007 2026-06 amend로 DuckDB → Postgres 전환. 임베딩은 `vector(1024)` 컬럼, 검색은 코사인 `<=>` 연산자. 분석 뷰는 SQL view.
 
-## 1. DB 스키마 (DuckDB `raw`)
+## 1. DB 스키마 (Postgres `raw`)
 
 ### 1.1 `raw.competitions`
 
@@ -28,11 +28,10 @@ stage             text,        -- bootstrap / reflexion / exploitation
 hypothesis        text,
 action_type       text,        -- §3 enum
 reflection_ids    text[],      -- Strategist가 실제 채택한 교훈 id
-adopted_external_idea_ids text[],  -- ADR-019 외부 아이디어 채택 역추적
 retrieval_scores  double[],
 model_type        text,
-params            json,
-features          json,
+params            jsonb,
+features          jsonb,
 cv_score          double,
 cv_fold_var       double,      -- fold별 분산 (overfit·노이즈 감지)
 lb_score          double,      -- 미제출 시 null
@@ -53,7 +52,7 @@ created_at      timestamp,
 attempt_id      text,
 competition_id  text,
 embedded_text   text,           -- 검색 결과를 사람이 읽는 원문
-embedding       float[1024],    -- qwen3-embedding:0.6b(embedded_text). 검색용 벡터 컬럼 (MRL로 차원 절단 가능)
+embedding       vector(1024),   -- qwen3-embedding:8b(embedded_text). 검색용 pgvector 컬럼
 full_lesson     text,
 generality      text,           -- L1_local / L2_class / L3_general (Reflector)
 label           text,           -- 결정적 진실값 (attempts.label 복제, 마트·검색용)
@@ -70,7 +69,7 @@ task_type, metric, metric_sign,
 n_numeric, n_categorical, n_datetime, n_text_ish,
 missing_ratio_overall,
 cardinality_max, cardinality_mean,
-target_balance (분류: minority class ratio) or target_skew (회귀),
+target_stat (분류: minority class ratio, 회귀: 현재 skew proxy),
 size_class ('tiny' <10k / 'small' <100k / 'mid' <1M / 'large')
 ```
 
@@ -127,9 +126,10 @@ cold-start 시 유사 fingerprint에서 검색해 그대로 baseline으로 재�
 ```sql
 -- 메타필터로 후보를 좁힌 뒤 브루트포스 코사인 + 재순위
 select r.reflection_id, r.full_lesson, r.generality,
-       array_cosine_similarity(r.embedding, $query_vec) as sim,
+       1 - (r.embedding <=> $query_vec::vector) as sim,
        -- 재순위: 효과 좋은 교훈 가중 (reflection_impact 마트 LEFT JOIN)
-       sim * (1 + greatest(-$k, least($k, coalesce(i.avg_gain, 0)))) as score
+       (1 - (r.embedding <=> $query_vec::vector))
+         * (1 + greatest(-1.0, least(1.0, coalesce(i.avg_gain, 0)))) as score
 from raw.reflections r
 left join reflection_impact i using (reflection_id)
 where r.archived = false
@@ -140,17 +140,38 @@ limit $k;
 ```
 
 검색 결과의 `full_lesson`/`embedded_text`를 사람이 그대로 읽어 디버깅한다(`runbook.md §6`).
-규모가 커져 브루트포스가 느려지면 `vss` 확장으로 HNSW 인덱스만 추가 (ADR-007 승격 트리거).
+규모가 커져 브루트포스가 느려지면 pgvector HNSW 인덱스만 추가 (ADR-007 승격 트리거).
 
-### 1.7 `submission_budget`
+### 1.9 `submission_budget`
 
 ```sql
 competition_id  text,
 day             date,
-count           int          -- 일별 제출 수. Submit 단계가 SELECT-then-UPDATE
+count           int          -- 일별 제출 수. 현재 submit.py enforcement는 미구현
 ```
 
-### 1.8 `raw.external_ideas` (외부 아이디어 게이트웨이) — ADR-019, BON-86
+### 1.10 `raw.cycle_queue`
+
+daemon API가 사용하는 큐 테이블.
+
+```sql
+queue_id     text primary key,
+competition  text not null,     -- config/competitions 모듈명
+stage        text not null,
+n_cycles     int not null,
+priority     int default 0,
+status       text default 'pending',
+created_at   timestamp,
+started_at   timestamp,
+ended_at     timestamp,
+cycles_done  int default 0,
+latest_score double precision,
+error        text
+```
+
+### 1.11 `raw.external_ideas` (계획, 미구현) — ADR-019, BON-86
+
+현재 `store/schema.sql`에는 아직 없다. 아래는 ADR-019의 목표 스키마다.
 
 ```sql
 idea_id                text primary key,
@@ -178,7 +199,6 @@ adopted_attempt_ids    text[]          -- 채택 attempt 역추적 (디버깅·�
 - `feature_engineering` (target encoding, interaction, binning, …)
 - `model_swap` (lgbm ↔ catboost ↔ xgboost ↔ tabpfn)
 - `hyperparam_search` (Optuna 트라이얼 수/공간 지정)
-- `cv_strategy` (kfold ↔ stratified ↔ group ↔ time)
 - `preprocessing` (결측 처리, 스케일, 인코딩)
 - `ensemble` (averaging, stacking)
 
@@ -189,12 +209,12 @@ adopted_attempt_ids    text[]          -- 채택 attempt 역추적 (디버깅·�
 
 `label` (Evaluator 결정, §4): `jump` / `neutral` / `regression`.
 
-`source_kind` (`raw.external_ideas`, §1.8, ADR-019):
+`source_kind` (`raw.external_ideas`, §1.11, ADR-019 계획):
 - `writeup`: 종료된 유사 fingerprint 대회 우승 writeup
 - `tips`: 대회 pinned "Tips & Tricks" 스레드
 - `solution`: gold/silver solution 스레드
 
-`confidence` (`raw.external_ideas`, 추출 LLM 추정): `low` / `medium` / `high`. 현재는 추출 가드 통과 후 메타데이터로만 사용 (prior 초기화엔 영향 없음, ADR-019).
+`confidence` (`raw.external_ideas`, 추출 LLM 추정, 계획): `low` / `medium` / `high`. 추출 가드 통과 후 메타데이터로만 사용한다.
 
 ## 3. 지표 레지스트리
 
@@ -209,6 +229,7 @@ Evaluator는 `metric` 텍스트를 `(callable, sign)`으로 매핑하는 레지�
 | mcc | classification | +1 | TBD |
 | rmse | regression_error | -1 | 구현 |
 | mae | regression_error | -1 | 구현 |
+| rmsle | regression_error | -1 | 구현 |
 | qwk (quadratic weighted kappa) | ordinal | +1 | TBD |
 | map@k | ranking | +1 | TBD |
 
@@ -240,7 +261,7 @@ Coder는 두 함수만 생성한다. IO·k-fold 분할·시드·CV 루프는 Eva
 ```python
 # 누수 방지: 통계는 train에서만 학습하고 valid엔 적용만 한다.
 # Evaluator가 매 fold마다 (train_fold, valid_fold)로 호출한다.
-def build_features(
+def feature_fn(
     train: pl.DataFrame,
     valid: pl.DataFrame,
     target: str,
@@ -248,7 +269,7 @@ def build_features(
     ...
 
 # sklearn 호환 estimator(fit / predict[ _proba ]) 반환.
-def build_model(params: dict) -> Estimator:
+def model_fn(params: dict) -> Estimator:
     ...
 ```
 
@@ -256,19 +277,19 @@ Evaluator 실행 골격(개념):
 
 ```text
 for tr_idx, va_idx in folds(seed):
-    Xtr, Xva = build_features(train[tr_idx], train[va_idx], target)
-    m = build_model(params); m.fit(Xtr, ytr)
+    Xtr, Xva = feature_fn(train[tr_idx], train[va_idx], target)
+    m = model_fn(params); m.fit(Xtr, ytr)
     preds = m.predict(Xva); score = metric(yva, preds)
 cv_score = mean(scores); cv_fold_var = var(scores)
 ```
 
 검증 게이트(실행 전): 시그니처 일치, 허용 import만, 금지 호출(파일/네트워크/`eval`) 없음. 위반 시 재생성 1회, 실패면 `error_trace` 기록 후 Reflect로 진행.
 
-격리 실행: `runtime/`가 컨테이너/nsjail에서 위 골격을 돌린다 (ADR-013, `runbook.md`). **계획 — 현재는 in-process `exec`, `runtime/`는 스텁** (architecture.md §5).
+격리 실행: `runtime/isolate.py`가 tmpdir에 source/input/train 파일을 쓰고 `runtime/runner.py`를 subprocess로 실행한다. runner 내부에서는 생성 코드를 `exec`로 로드한다. 현재 격리 수준은 subprocess 분리 + env allowlist이며, 네트워크/파일시스템 sandbox는 미구현이다.
 
 ## 6. 분석 뷰 (dbt 아님 — `store/schema.sql` 내 SQL view)
 
-별도 dbt 프로젝트 없이 DuckDB SQL view로 둔다. 정의는 `store/schema.sql`이 진실 — 여기선 목록·용도만(중복 금지).
+별도 dbt 프로젝트 없이 Postgres SQL view로 둔다. 정의는 `store/schema.sql`이 진실 — 여기선 목록·용도만(중복 금지).
 
 | view | 용도 |
 |---|---|
@@ -276,9 +297,10 @@ cv_score = mean(scores); cv_fold_var = var(scores)
 | `stg_attempts_reflexion_only` | `stage='reflexion'` 필터 (인과 귀속용) |
 | `score_progression` | 대회 내 진보 — `attempt_no` vs `cv_score`·`best_so_far` |
 | `reflection_impact` | 교훈별 평균 gain·점프 수 (reflexion 단계만 집계) |
-| `external_idea_bandit` | 외부 아이디어 톰슨 샘플링 사후 상태 — `posterior_mean=α/(α+β)`, `trials=α+β`, `archived` (ADR-019, BON-86) |
+| `action_bandit_posterior` | action_type별 Beta-Bernoulli 사후 상태 |
+| `cold_start_progression` | 대회별 attempt progression과 best_so_far |
 
-**계획 (Phase 3, BON-18):** `cold_start_progression` — 대회별 bootstrap 첫 시도의 "최종 best 대비 비율"(`warm_start_ratio`)이 누적 경험과 함께 우상향하는지로 transfer 효과 측정. 미구현.
+**계획 (ADR-019):** `external_idea_bandit` — 외부 아이디어 채널 구현 시 추가할 사후 상태 뷰.
 
 디버깅: 효과 좋은 교훈 전문은 `reflection_impact` ⨝ `raw.reflections`(`archived=false`)로 조회.
 
@@ -327,7 +349,7 @@ resp = cloud.chat(
 
 # 임베딩은 로컬 (클라우드 키가 /api/embed 미인가일 수 있음)
 local = Client(host="http://localhost:11434")
-local.embed(model="qwen3-embedding:0.6b", input=note_text)   # 1024d
+local.embed(model="qwen3-embedding:8b", input=note_text)   # 1024d
 ```
 
 비용 통제 레버:

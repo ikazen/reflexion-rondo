@@ -116,9 +116,9 @@ ssh mac-server "cd ~/Projects/reflexion-rondo && git pull && bash deploy/build.s
 
 ## 4. 제출 예산 게이트
 
-- `submission_budget` 테이블에 일별 카운트.
-- `Submit` 단계가 SELECT-then-UPDATE로 일일 상한(보통 5) 초과 방지.
-- best 후보만 LB로. CV-LB 상관·shake를 함께 기록.
+- `submission_budget` 테이블은 스키마에 존재한다.
+- 현재 `bin/submit.py`는 CSV 생성과 Kaggle 제출 호출을 수행하지만, 일일 제출 상한 자동 enforcement와 `lb_score` 업데이트는 아직 구현하지 않았다.
+- 운영 시에는 best 후보만 수동 제출하고, LB score는 별도 기록 절차가 추가될 때까지 수동 관리한다.
 
 ## 5. 동시성
 

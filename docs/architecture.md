@@ -27,7 +27,7 @@
  (pgvector검색)              (Cloud)        (Cloud)         (Local, 결정적)
      ^                                                            |
      | (lessons)                                                  v
- [Reflect] <------------ best 후보 --------------------- [Submit? <=5/day] -> LB
+ [Reflect] <------------ best 후보 --------------------- [Submit script] -> LB
  (Cloud) ----> Postgres(competitions/attempts/reflections[+vector]) + 분석 뷰(SQL view)
      |
      +--------------- next attempt -----------------> [Strategize]
@@ -52,13 +52,11 @@ Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
 3. **Promote** (`bin/run_promote_task.py`): 3개 attempt 중 `gain_vs_best` 최대값 → winner. `was_promoted=true/false` 플래그 업데이트. Reflect 호출:
    - **winner**: jump/regression/error일 때만 reflect.
    - **loser**: neutral 포함 전부 reflect ("이 시도는 효과 없었다"도 학습 신호).
-4. **Submit?**: (별도 스텝, 예산 내에서만) best 후보 → LB.
+4. **Submit?**: (별도 스크립트) best 후보 → submission CSV/Kaggle. `submission_budget` 스키마는 있으나 `bin/submit.py`의 자동 예산 enforcement와 `lb_score` 기록은 아직 미구현이다.
 
 `action_bandit`(BON-109): `reflexion` 단계 attempt 완료 시 action_type별 α/β 업데이트. jump/gain>0 → α++, regression/error → β++, neutral → 소량 양방향.
 
-피드백 신호 정책: **CV = 주 신호**(무제한·결정적), **LB = 확인용 희소 신호**.
-
-피드백 신호 정책: **CV = 주 신호**(무제한·결정적), **LB = 확인용 희소 신호**(하루 예산 내, CV-LB 상관/shake 감지).
+피드백 신호 정책: **CV = 주 신호**(무제한·결정적), **LB = 확인용 희소 신호**. 일일 제출 예산 게이트와 CV-LB 상관/shake 기록은 운영 목표이며, 현재 submit 경로에는 자동화되어 있지 않다.
 
 ## 4. Stage 라벨과 1변경 규율
 
@@ -104,19 +102,23 @@ LLM 역할 3개:
 
 ## 7. Cross-Competition Transfer
 
-> **상태: 설계만 (Phase 3 미구현).** `memory/transfer.py`·`cold_start_progression` 뷰·`start_competition.py`의 cold-start 절차가 아직 없다. 시드용 코드 소스도 미정(생성 코드는 `runs/code/`에 사람 검토용으로만 저장 — 시드 풀 승격 다리 필요). 아래는 목표 메커니즘.
+> **상태: 부분 구현.** `store/fingerprint.py`, `memory/transfer.py`,
+> `bin/start_competition.py`, `raw.pipelines`, `cold_start_progression` 뷰는 구현되어 있다.
+> 새 대회 등록 시 유사 대회/교훈/seed pipeline id를 `runs/cold_start/{competition_id}.json`에 저장하고,
+> `bin/run_reflexion.py --cold-start`가 이를 읽어 첫 bootstrap 컨텍스트와 seed code로 사용한다.
+> 자동 품질 검증/가중치 캘리브레이션은 아직 운영 데이터가 더 필요하다.
 
 사용자 목표의 핵심: *"다른 Playground Series 하나 넣으면 예전 경험에 기반해 빠르게 시작."* 이를 메커니즘으로 보장한다.
 
 - **Fingerprint** (`store/fingerprint.py`): Polars로 1회 계산하는 결정적 메타피처(스키마는 `spec.md`). 같은 데이터셋이면 항상 같은 값. 타깃 통계는 train fold 평균/분산만 사용해 누수 방지.
-- **유사 대회 검색** (`memory/transfer.py`): fingerprint 가중 유클리드 거리 top-k. Postgres SQL(메타피처 수십 차원). 가중치 — `task_type`/`metric_class` 불일치 = 큰 페널티, `size_class` 차이 = 중간, missing/cardinality 차이 = 작게.
+- **유사 대회 검색** (`memory/transfer.py`): Postgres에서 competition fingerprint를 읽어 Python에서 가중 거리 top-k를 계산한다. 가중치 — `task_type`/`metric_class` 불일치 = 큰 페널티, `size_class` 차이 = 중간, missing/cardinality 차이 = 작게.
 - **교훈 일반화 레벨** (`generality`): `L1_local`(이 대회 전용, transfer 제외) / `L2_class`(유사 fingerprint 부류) / `L3_general`(정형 대회 보편).
 - **Cold-start 검색**: 새 대회 N+1 →
   1. `similar = find_similar_competitions(fp_new, k=3)`
   2. 벡터 메타필터: `(competition_id IN similar AND generality='L2_class') OR generality='L3_general'`, `archived=false`
   3. Top-K 교훈 → Strategist 첫 컨텍스트
-  4. `raw.pipelines`에서 `competition_id IN similar AND gain_vs_best > 0` 코드 1~2개를 시드 후보로 큐잉
-  5. Bootstrap에서 시드 실행 → 베이스라인 CV 확보
+  4. `raw.pipelines`에서 `competition_id IN similar AND gain_vs_best > 0` 코드 1~2개를 seed 후보로 저장
+  5. `bin/run_reflexion.py --cold-start` 첫 bootstrap에서 seed code를 `prev_code`로 주입
 - **측정**: `cold_start_progression` 마트 — 누적 경험량 vs 새 대회 첫 시도의 best 대비 비율(`warm_start_ratio`). 우상향하면 transfer 작동. 아니면 fingerprint 가중치/generality 라벨링/검색 메타필터 점검.
 
 ### Cold-start 절차 (새 대회 시작)
@@ -140,7 +142,7 @@ LLM 역할 3개:
 
 목적: Strategist+Coder prior 의 천장을 외부 ML 지식으로 들어 올린다 (ADR-019). 누적 시도가 같은 모델 prior 안에 갇히지 않도록 외부 자극을 별도 채널로 주입하되, earned knowledge 풀(`raw.reflections`)을 오염시키지 않는다.
 
-- **격리된 게이트웨이**: `raw.external_ideas` 가 `raw.reflections` 와 완전 분리(스키마는 `spec.md` §1.8). retrieval / `reflection_impact` 마트 / 검색 score 가중치에 안 섞임.
+- **격리된 게이트웨이**: `raw.external_ideas` 가 `raw.reflections` 와 완전 분리(목표 스키마는 `spec.md` §1.11). retrieval / `reflection_impact` 마트 / 검색 score 가중치에 안 섞임.
 - **소스 → 추출 → 게이트웨이**: 주간 systemd timer(ADR-017 daemon 흡수) 가 화이트리스트 소스(우승 writeup / pinned tips / gold·silver solution) 조회 → 추출 LLM(Strategist/Reflector 와 다른 호출) → 가드 4개(실측 수치 인용 / 다수 동의 / 조건부 진술만 / 500자 상한 + 코드 블록 분리) → `raw.external_ideas` insert (Beta(1, 1) 균일 prior).
 - **노출 = stage 게이팅 + 톰슨 샘플링**: `reflexion` Strategist 만, `applies_when` fingerprint 1차 필터 → 각 후보 θ ~ Beta(α, β) 샘플 → top-3. `bootstrap`/`exploitation` 은 외부 idea 차단 (cold-start lessons + seed_code 가 이미 외부 신호, exploitation 은 안정화 우선).
 - **승격 = 시스템 기본 루프**: 외부 idea 채택 → Coder 실행 → Evaluator 결정적 신호 → Reflector 정상 reflection. 검증된 부분만 자연히 lessons 풀로 진입. 외부 idea 자체는 `verified` 마킹 없이 영구 게이트웨이.
