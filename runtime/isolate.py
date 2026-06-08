@@ -56,7 +56,10 @@ def eval_isolated(
             "action_type": action_type,
         }))
 
-        _EVAL_ENV_ALLOWLIST = {"PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE"}
+        _EVAL_ENV_ALLOWLIST = {
+            "PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE",
+            "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+        }
         env = {k: v for k, v in os.environ.items() if k in _EVAL_ENV_ALLOWLIST}
         env["PYTHONPATH"] = str(_RUNNER.parent.parent)
         try:
