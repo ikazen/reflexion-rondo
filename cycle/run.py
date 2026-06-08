@@ -257,6 +257,7 @@ def run_attempt_core(
     dynamic_ctx = _dynamic_eda_context(conn, config.competition_id, prev_best_cv)
     enriched_eda = config.eda_card + dynamic_ctx
     stagnation = detect_stagnation(conn, config.competition_id)
+    print(f"[attempt] strategizing... stagnation={stagnation}")
     action_prior = get_action_prior(conn, config.competition_id, seed=attempt_index)
     decision = strategize(
         eda_card=enriched_eda,
@@ -266,8 +267,10 @@ def run_attempt_core(
         stagnation=stagnation,
         action_prior=action_prior,
     )
+    print(f"[attempt] action={decision.action_type} hypothesis={decision.hypothesis[:80]}")
 
     # Generate + validate
+    print("[attempt] generating code...")
     _MAX_CODE_RETRIES = 2
     if config.stage == "bootstrap" and config.seed_code:
         prev_code: str | None = config.seed_code
@@ -291,12 +294,14 @@ def run_attempt_core(
             break
         feedback = "\n".join(errors)
         if _i < _MAX_CODE_RETRIES:
+            print(f"[attempt] static error → regenerating (retry {_i + 1})")
             source = generate_code(**gen_kwargs, error_feedback=feedback)
             retries += 1
         else:
             error_trace = feedback
 
     # Evaluate
+    print("[attempt] evaluating...")
     cv_score = None
     cv_fold_var = 0.0
     label = "regression"
@@ -322,7 +327,9 @@ def run_attempt_core(
                 label = iso.label or "regression"
                 gain_vs_best = iso.gain_vs_best
                 feature_importance = iso.feature_importance
+                print(f"[attempt] eval ok — cv={cv_score:.6f} gain={gain_vs_best} label={label}")
                 break
+            print(f"[attempt] eval error (try {_eval_i + 1}) → regenerating")
             if _eval_i == 0:
                 source = generate_code(**gen_kwargs, error_feedback=iso.error_trace)
                 retries += 1
@@ -332,6 +339,9 @@ def run_attempt_core(
                     break
             else:
                 error_trace = iso.error_trace
+
+    if error_trace:
+        print(f"[attempt] failed — {error_trace[:120]}")
 
     # Save code
     code_path = _save_code(
