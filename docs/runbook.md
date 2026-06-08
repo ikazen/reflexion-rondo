@@ -91,10 +91,15 @@ curl -X PATCH http://localhost:8000/api/queue/<queue_id> \
 ```
 
 실행 모드:
-- **airflow 모드**: `AIRFLOW_URL` 환경변수가 있으면 DockerOperator DAG 트리거. 평가는 별도 컨테이너에서 실행.
+- **airflow 모드**: `AIRFLOW_URL` 환경변수가 있으면 Airflow DAG `reflexion_rondo_cycle` 트리거. 1 DAG run = 1 슈퍼사이클 (retrieve → attempt_0/1/2 병렬 → promote). retrieve/promote는 default 큐, attempt는 big 큐.
 - **direct 모드**: `AIRFLOW_URL` 없으면 in-process 직접 실행.
 
-승격 트리거(Airflow → 상위 오케스트레이터): 워커 ≥ 3 또는 단계별 재시도/타임아웃 로직이 복잡해질 때.
+**이미지 업데이트 절차:**
+```bash
+# mac-server에서 빌드 및 push
+ssh mac-server "cd ~/Projects/reflexion-rondo && git pull && bash deploy/build.sh"
+# airflow-stack DAG의 IMAGE SHA 업데이트 후 push
+```
 
 ## 3. 페이싱 (Ollama Cloud)
 
@@ -122,9 +127,10 @@ Postgres가 concurrent read를 처리한다. daemon은 단일 프로세스로 �
 
 `runtime/isolate.py`가 tmpdir를 생성하고 `runner.py`를 subprocess로 실행한다.
 
-- 타임아웃: 300초 (기본값)
+- 타임아웃: 600초 (기본값, `DEFAULT_TIMEOUT`)
 - 타임아웃·에러 → `error_trace` 기록 → Reflect 단계가 실패에서 교훈 추출
-- 격리 수준: subprocess 분리. 네트워크 격리(`unshare --net`)는 BON-104에서 추가 예정.
+- 격리 수준: subprocess 분리 + env allowlist 필터링 (BON-104). 네트워크 격리 미구현.
+- `OMP_NUM_THREADS=2` 등 스레드 제한은 Dockerfile ENV + subprocess allowlist 양쪽에 설정.
 
 ## 7. 모니터링
 

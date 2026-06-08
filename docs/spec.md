@@ -1,6 +1,6 @@
 # 명세 (스키마·분석 뷰·API·컨트랙트)
 
-단일 스토어 원칙: DuckDB 하나가 기록·검색·분석을 모두 맡는다 (임베딩은 벡터 컬럼, 검색은 브루트포스 코사인). 결정 근거는 `decisions.md` ADR-007.
+스토어: ops-vm Postgres + pgvector (`raw` 스키마). ADR-007 2026-06 amend로 DuckDB → Postgres 전환. 임베딩은 `vector(1024)` 컬럼, 검색은 코사인 `<=>` 연산자. 분석 뷰는 SQL view.
 
 ## 1. DB 스키마 (DuckDB `raw`)
 
@@ -39,7 +39,10 @@ lb_score          double,      -- 미제출 시 null
 label             text,        -- jump / neutral / regression (Evaluator 결정, §4)
 error_trace       text,        -- 실패 시
 duration_sec      double,      -- 사이클 소요 시간
-code_path         text         -- 생성 코드 로컬 경로(runs/code/, 사람 검토 + prev_code 소스). 코드 본문은 DB에 두지 않음
+code_path         text,        -- S3(MinIO) 경로. 코드 본문은 DB에 두지 않음
+retries           int,         -- 코드 재생성 횟수
+super_cycle_id    text,        -- 슈퍼사이클 묶음 id (raw.super_cycle_context 참조)
+was_promoted      boolean      -- NULL=legacy, TRUE=winner, FALSE=loser (promote 단계에서 설정)
 ```
 
 ### 1.3 `raw.reflections`
@@ -73,9 +76,37 @@ size_class ('tiny' <10k / 'small' <100k / 'mid' <1M / 'large')
 
 타깃 통계는 train fold 평균/분산으로만 계산 (test 누수 방지).
 
-### 1.5 `raw.pipelines` (코드 메모리) — 계획 (Phase 3, BON-17)
+### 1.5 `raw.super_cycle_context`
 
-> 미구현. 현재 생성 코드는 `runs/code/`에 로컬 저장하고 `attempts.code_path`로 가리킨다(§1.2). cold-start 시드 재사용을 위한 DB 테이블은 Phase 3에서 도입.
+retrieve 태스크가 attempt 태스크 3개에 상태를 전달하는 임시 테이블. queue_id를 키로 upsert.
+
+```sql
+queue_id          text primary key,
+super_cycle_id    text not null,
+competition_id    text not null,
+prev_best_cv      double precision,
+lessons           jsonb not null,
+assigned_actions  jsonb,           -- ["feature_engineering", "model_swap", "preprocessing"] 등
+created_at        timestamp
+```
+
+### 1.6 `raw.action_bandit` (BON-109)
+
+action_type별 Beta-Bernoulli 밴딧. `reflexion` 단계 완료 시마다 갱신.
+
+```sql
+scope       text,           -- 'local'
+scope_key   text,           -- competition_id
+action_type text,
+alpha       double precision default 1.0,
+beta        double precision default 1.0,
+updated_at  timestamp,
+primary key (scope, scope_key, action_type)
+```
+
+### 1.7 `raw.pipelines` (코드 메모리) — 구현됨
+
+> 생성 코드는 MinIO(S3)에 저장하고 `attempts.code_path`로 가리킨다. `raw.pipelines`는 gain_vs_best > 0인 attempt의 코드를 cold-start 시드용으로 보관.
 
 ```sql
 pipeline_id          text primary key,
@@ -89,7 +120,7 @@ gain_vs_best         double
 
 cold-start 시 유사 fingerprint에서 검색해 그대로 baseline으로 재사용.
 
-### 1.6 벡터 검색 (DuckDB, 별도 스토어 없음)
+### 1.8 벡터 검색 (Postgres + pgvector)
 
 별도 벡터DB 없이 `raw.reflections.embedding`(§1.3) 컬럼을 직접 검색한다 (ADR-007).
 

@@ -12,7 +12,7 @@
 | Coder (실행) | Ollama Cloud | qwen3-coder-next (ADR-016) |
 | 임베딩 | Mac Ollama 서버 | qwen3-embedding:8b (1024d, MRL) — ADR-008 |
 | Evaluator (CV · 지표 · Optuna · label) | WSL2 로컬 | 결정적 코드 |
-| 생성 코드 실행 | worker-vm | subprocess 격리 (`runtime/isolate.py`), tmpdir + 300s timeout |
+| 생성 코드 실행 | worker-vm | subprocess 격리 (`runtime/isolate.py`), tmpdir + 600s timeout |
 | Memory (검색) | ops-vm | Postgres + pgvector (vector(1024), <=> 코사인) |
 | Orchestrator | worker-vm | daemon + `raw.cycle_queue` 폴링, Airflow DockerOperator 연동 |
 | Warehouse + 분석 뷰 | ops-vm | Postgres raw 스키마 (SQL view, psycopg2 경유) |
@@ -35,15 +35,24 @@
 
 외부 채널(§8, ADR-019, 미구현): Kaggle 화이트리스트 source → 주간 추출 LLM → `raw.external_ideas` 별도 게이트웨이. Strategize 가 **reflexion 단계만** 톰슨 샘플링으로 노출. reflections 풀과 검색·마트·가중치 모두 분리.
 
-## 3. Reflexion 루프 (1 attempt = 1 cycle)
+## 3. Reflexion 슈퍼사이클 (1 super-cycle = 1 retrieve + 3 parallel attempts + 1 promote)
 
-1. **Retrieve**: 검색 키 = `(competition_fingerprint, last_attempt_summary 또는 seed_query)` → Postgres/pgvector 코사인 검색(`<=>`) + 메타필터로 교훈 top-k.
-2. **Strategize**: EDA 카드 + 검색 교훈 + 현재 stage → 다음 가설 1개 (`action_type` enum 강제). 실제 채택한 교훈 id를 함께 출력. **reflexion 단계 한정** 외부 아이디어 별도 섹션 노출 (ADR-019, 톰슨 샘플링 top-3 — §8).
-3. **Generate**: 가설 → `feature_fn` + `model_fn` (컨트랙트는 `spec.md`). 시드·k-fold·IO는 Evaluator가 주입. **bootstrap 외 단계는 직전 best 파이프라인을 `prev_code`로 받아 한 군데만 수정** — 1변경 규율을 코드로 강제(§4).
-4. **Evaluate**: k-fold CV + 지표 + (필요 시) Optuna. **결정적 코드. CV 델타·fold 분산으로 `label`도 여기서 계산** (LLM 아님).
-5. **Submit?**: 제출 예산 남았을 때만. best 후보 → LB.
-6. **Reflect**: (가설, 코드, retrieved_ids, CV 결과, best 대비 델타, feature_importance, fold variance, 에러 trace) → 교훈 본문 + `generality`. Reflector의 정성 판정(`reflector_label`)은 참고용으로만 기록.
-7. **Persist**: Postgres(ops-vm)에 기록(embedding은 `vector(1024)` 컬럼). 분석 뷰(SQL view)는 자동 반영. 생성 코드는 `runs/code/`에 로컬 저장(사람 검토용).
+Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
+
+1. **Retrieve** (`bin/run_retrieve_task.py`): 검색 키 → Postgres/pgvector 코사인 검색으로 교훈 top-k. 동시에 `action_bandit`(Beta-Bernoulli)에서 Thompson sample 1회로 3개 attempt에 서로 다른 `action_type`을 배정(`assign_super_cycle_actions`). 결과를 `raw.super_cycle_context`에 upsert.
+2. **Attempt × 3** (병렬, `bin/run_attempt_task.py`): 각 attempt는 배정받은 `action_type`으로 강제 실행.
+   - **Strategize**: EDA 카드 + 검색 교훈 + forced_action_type → 가설 1개. 실제 채택 교훈 id 출력.
+   - **Generate**: 가설 → `feature_fn` + `model_fn`. **bootstrap 외 단계는 best 코드를 `prev_code`로 받아 한 군데만 수정** (1변경 규율, §4).
+   - **Evaluate**: k-fold CV + 지표 + Optuna. 결정적 코드. `label`·`gain_vs_best` 계산.
+   - **Persist**: `raw.attempts`에 기록 (`super_cycle_id`, `was_promoted=NULL`).
+3. **Promote** (`bin/run_promote_task.py`): 3개 attempt 중 `gain_vs_best` 최대값 → winner. `was_promoted=true/false` 플래그 업데이트. Reflect 호출:
+   - **winner**: jump/regression/error일 때만 reflect.
+   - **loser**: neutral 포함 전부 reflect ("이 시도는 효과 없었다"도 학습 신호).
+4. **Submit?**: (별도 스텝, 예산 내에서만) best 후보 → LB.
+
+`action_bandit`(BON-109): `reflexion` 단계 attempt 완료 시 action_type별 α/β 업데이트. jump/gain>0 → α++, regression/error → β++, neutral → 소량 양방향.
+
+피드백 신호 정책: **CV = 주 신호**(무제한·결정적), **LB = 확인용 희소 신호**.
 
 피드백 신호 정책: **CV = 주 신호**(무제한·결정적), **LB = 확인용 희소 신호**(하루 예산 내, CV-LB 상관/shake 감지).
 
@@ -68,8 +77,9 @@
 
 Coder가 만든 `feature_fn`/`model_fn`은 `runtime/isolate.py`가 subprocess로 실행한다 (ADR-013).
 - tmpdir에 source.py / input.json / train.parquet 기록 → `runtime/runner.py` subprocess 실행 → output.json 수거.
-- 타임아웃 300s. 에러·타임아웃은 `error_trace`로 기록되어 Reflector가 실패에서 교훈을 뽑는다.
-- 네트워크 격리(`unshare --net`)는 BON-104에서 추가 예정.
+- 타임아웃 600s. 에러·타임아웃은 `error_trace`로 기록되어 Reflector가 실패에서 교훈을 뽑는다.
+- subprocess 환경변수는 allowlist 필터링 (`OMP_NUM_THREADS` 등 포함, BON-104).
+- `OMP_NUM_THREADS=2` / `OPENBLAS_NUM_THREADS=2` / `MKL_NUM_THREADS=2` — worker-vm 2코어에서 CPU 포화 방지.
 
 ## 6. 컴포넌트와 역할
 
