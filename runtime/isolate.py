@@ -16,7 +16,7 @@ from pathlib import Path
 import polars as pl
 
 _RUNNER = Path(__file__).parent / "runner.py"
-DEFAULT_TIMEOUT = 300
+DEFAULT_TIMEOUT = 600
 
 
 @dataclass(frozen=True, slots=True)
