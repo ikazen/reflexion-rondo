@@ -1,24 +1,27 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-import duckdb
 import streamlit as st
 import polars as pl
 
-DB_PATH = __import__("pathlib").Path(__file__).parent / "runs" / "reflexion.duckdb"
+from store.db import PgConn, connect
+
+
+def _rows_df(rows: list[tuple], columns: list[str]) -> pl.DataFrame:
+    if not rows:
+        return pl.DataFrame({c: [] for c in columns})
+    return pl.DataFrame(rows, schema=columns, orient="row")
+
+
+def _query_df(conn: PgConn, query: str, columns: list[str], params: list | None = None) -> pl.DataFrame:
+    return _rows_df(conn.execute(query, params or []).fetchall(), columns)
 
 st.set_page_config(page_title="Reflexion Monitor", layout="wide")
 st.title("Reflexion Monitor")
 
-if not DB_PATH.exists():
-    st.error(f"DB not found: {DB_PATH}")
-    st.stop()
-
 try:
-    conn = duckdb.connect(str(DB_PATH), read_only=True)
-except duckdb.IOException:
-    st.warning("사이클 실행 중입니다. 잠시 후 새로고침 하세요.")
+    conn = connect(apply_schema=False)
+except Exception as exc:
+    st.error(f"DB connection failed: {exc}")
     st.stop()
 
 # --- Competition selector ---
@@ -43,7 +46,8 @@ _duration_col = "duration_sec" if has_duration else "null as duration_sec"
 _retries_col  = "retries"       if "retries"      in cols else "0 as retries"
 
 # --- Attempts ---
-attempts_df = conn.execute(
+attempts_df = _query_df(
+    conn,
     f"""
     select
         row_number() over (order by run_ts) as attempt_no,
@@ -61,28 +65,36 @@ attempts_df = conn.execute(
     where competition_id = %s
     order by run_ts
     """,
+    [
+        "attempt_no", "run_ts", "stage", "action_type", "hypothesis",
+        "cv_score", "label", "gain_vs_best", "duration_sec", "retries",
+        "has_error",
+    ],
     [comp_id],
-).pl()
+)
 
 if attempts_df.is_empty():
     st.info("No attempts yet for this competition.")
     st.stop()
 
-best_so_far = conn.execute(
+best_so_far = _query_df(
+    conn,
     """
     select attempt_no, best_so_far
     from score_progression
     where competition_id = %s
     order by attempt_no
     """,
+    ["attempt_no", "best_so_far"],
     [comp_id],
-).pl()
+)
 
 # --- KPIs ---
 total = len(attempts_df)
 errors = attempts_df["has_error"].sum()
 jumps = (attempts_df["label"] == "jump").sum()
-best_cv = best_so_far["best_so_far"].max() if not best_so_far.is_empty() else None
+best_values = best_so_far["best_so_far"].drop_nulls() if not best_so_far.is_empty() else []
+best_cv = best_values[-1] if len(best_values) else None
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Total attempts", total)
@@ -139,7 +151,8 @@ st.divider()
 # --- reflection_impact ---
 st.subheader("Top Lessons by Impact")
 
-impact_df = conn.execute(
+impact_df = _query_df(
+    conn,
     """
     select i.reflection_id, i.times_applied, i.avg_gain, i.jumps, i.best_jump,
            r.embedded_text, r.generality
@@ -149,8 +162,9 @@ impact_df = conn.execute(
     order by i.avg_gain desc
     limit 10
     """,
+    ["reflection_id", "times_applied", "avg_gain", "jumps", "best_jump", "embedded_text", "generality"],
     [comp_id],
-).pl()
+)
 
 if impact_df.is_empty():
     st.info("No reflection impact data yet (need reflexion stage attempts).")
@@ -165,35 +179,43 @@ st.divider()
 # --- Cold-start Progression (전 대회 비교) ---
 st.subheader("Cold-start Progression")
 
-csp_df = conn.execute(
+csp_df = _query_df(
+    conn,
     """
     select competition_id, attempt_no, stage, cv_score, best_so_far
     from cold_start_progression
     order by competition_id, attempt_no
-    """
-).pl()
+    """,
+    ["competition_id", "attempt_no", "stage", "cv_score", "best_so_far"],
+)
 
 if csp_df.is_empty():
     st.info("No cold_start_progression data yet.")
 else:
     # warm_start_ratio: bootstrap_best / overall_best per competition
-    summary = conn.execute(
+    summary = _query_df(
+        conn,
         """
         select
             c.competition_id,
             c.name,
-            round(max(case when p.stage = 'bootstrap' then p.best_so_far else null end), 5) as bootstrap_best,
-            round(max(p.best_so_far), 5) as overall_best,
-            round(
-                max(case when p.stage = 'bootstrap' then p.best_so_far else null end)
-                / nullif(max(p.best_so_far), 0)
-            , 4) as warm_start_ratio
+            max(case when p.stage = 'bootstrap' then p.best_so_far else null end) as bootstrap_best,
+            max(p.best_so_far) as overall_best
         from cold_start_progression p
         join raw.competitions c using (competition_id)
         group by c.competition_id, c.name
         order by c.competition_id
-        """
-    ).pl()
+        """,
+        ["competition_id", "name", "bootstrap_best", "overall_best"],
+    )
+    summary = summary.with_columns(
+        pl.col("bootstrap_best").round(5),
+        pl.col("overall_best").round(5),
+        pl.when(pl.col("overall_best") != 0)
+        .then((pl.col("bootstrap_best") / pl.col("overall_best")).round(4))
+        .otherwise(None)
+        .alias("warm_start_ratio"),
+    )
     st.dataframe(summary, use_container_width=True)
 
     st.caption("warm_start_ratio = bootstrap_best / overall_best (높을수록 cold-start 효과 좋음)")

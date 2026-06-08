@@ -76,13 +76,8 @@ def cold_start_lessons(
     k: int = 10,
 ) -> list[dict]:
     """유사 대회의 L2_class 교훈 + 전체 L3_general 교훈 (reflection_impact 재순위)."""
-    if not similar:
-        placeholders = "('__none__')"
-    else:
-        placeholders = "(" + ", ".join("?" * len(similar)) + ")"
-
     rows = conn.execute(
-        f"""
+        """
         select
             r.reflection_id,
             r.embedded_text,
@@ -95,13 +90,13 @@ def cold_start_lessons(
         left join reflection_impact i using (reflection_id)
         where r.archived = false
           and (
-              (r.competition_id in {placeholders} and r.generality = 'L2_class')
+              (r.competition_id = any(%s::text[]) and r.generality = 'L2_class')
               or r.generality = 'L3_general'
           )
         order by score desc
-        limit ?
+        limit %s
         """,
-        [*similar, k],
+        [similar, k],
     ).fetchall()
 
     cols = ["reflection_id", "embedded_text", "full_lesson", "generality", "gain_vs_best", "avg_gain", "score"]
@@ -117,17 +112,16 @@ def bootstrap_seeds(
     if not similar:
         return []
 
-    placeholders = "(" + ", ".join("?" * len(similar)) + ")"
     rows = conn.execute(
-        f"""
+        """
         select pipeline_id, code, cv_score, competition_id
         from raw.pipelines
-        where competition_id in {placeholders}
+        where competition_id = any(%s::text[])
           and gain_vs_best > 0
         order by cv_score desc
-        limit ?
+        limit %s
         """,
-        [*similar, n],
+        [similar, n],
     ).fetchall()
 
     return [

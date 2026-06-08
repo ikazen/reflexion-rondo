@@ -58,8 +58,8 @@ def main() -> None:
 
     ids = [c[0] for c in candidates]
     conn.execute(
-        f"update raw.reflections set archived = true where reflection_id in ({','.join('?' * len(ids))})",
-        ids,
+        "update raw.reflections set archived = true where reflection_id = any(%s::text[])",
+        [ids],
     )
     print(f"\n{len(ids)}개 교훈 archived.")
     conn.close()
