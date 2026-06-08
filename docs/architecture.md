@@ -37,6 +37,10 @@
 
 ## 3. Reflexion 슈퍼사이클 (1 super-cycle = 1 retrieve + 3 parallel attempts + 1 promote)
 
+운영 경로는 Airflow DAG `reflexion_rondo_cycle`이다. `bin/run_daemon.py`의 direct 모드는
+`AIRFLOW_URL`이 없을 때 쓰는 로컬 smoke/test fallback이며, 슈퍼사이클이 아니라 단일 `run_cycle()`
+attempt만 실행한다.
+
 Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
 
 1. **Retrieve** (`bin/run_retrieve_task.py`): 검색 키 → Postgres/pgvector 코사인 검색으로 교훈 top-k. 동시에 `action_bandit`(Beta-Bernoulli)에서 Thompson sample 1회로 3개 attempt에 서로 다른 `action_type`을 배정(`assign_super_cycle_actions`). 결과를 `raw.super_cycle_context`에 upsert.

@@ -52,7 +52,7 @@
 - 결정: Airflow/MLflow 미사용. cron + Python + DuckDB.
 - 대안: Airflow + MLflow 풀스택.
 - 근거: 1~2 워커 규모에 과체급. 복잡도 증가 시 Prefect로 승격.
-- **[2026-06 amend]** BON-110: 3 attempt 병렬 실행 필요로 Airflow 채택. daemon이 `raw.cycle_queue` 폴링 후 Airflow DAG `reflexion_rondo_cycle`을 트리거. DAG는 retrieve → attempt_0/1/2 (병렬) → promote 4태스크 구조. MLflow는 여전히 미사용.
+- **[2026-06 amend]** BON-110: 3 attempt 병렬 실행 필요로 Airflow 채택. daemon이 `raw.cycle_queue` 폴링 후 Airflow DAG `reflexion_rondo_cycle`을 트리거. DAG는 retrieve → attempt_0/1/2 (병렬) → promote 4태스크 구조. `AIRFLOW_URL` 없는 direct daemon mode는 운영 대체 경로가 아니라 로컬 smoke/test용 단일 attempt fallback이다. MLflow는 여전히 미사용.
 
 ## ADR-012 — label은 결정적 임계값으로 계산, Reflector 판정은 참고용
 - 결정: `label`(jump/neutral/regression)·`gain_vs_best`는 **Evaluator가 CV 델타와 fold 분산으로 결정적 계산**한다. Reflector(LLM)의 정성 판정은 `reflector_label`로 별도 기록하되, 마트·검색의 진실값으로는 쓰지 않는다.
