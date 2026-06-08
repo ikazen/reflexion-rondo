@@ -77,39 +77,42 @@ def main() -> None:
         conn.close()
         return
 
-    (attempt_id, gain_vs_best, cv_score, label, error_trace,
-     hypothesis, action_type, reflection_ids, cv_fold_var, code_path) = rows[winner_idx]
+    print(f"  -> promoted {rows[winner_idx][0][:8]} (gain={rows[winner_idx][1]})")
 
-    print(f"  -> promoted {attempt_id[:8]} (gain={gain_vs_best})")
+    for i, r in enumerate(rows):
+        (attempt_id, gain_vs_best, cv_score, label, error_trace,
+         hypothesis, action_type, reflection_ids, cv_fold_var, code_path) = r
 
-    # BON-96 gate: reflect only for jump/regression/error
-    if label not in ("jump", "regression") and error_trace is None:
-        conn.close()
-        return
+        is_winner = (i == winner_idx)
+        # winner: jump/regression/error만 reflect (neutral은 교훈 불명확)
+        # loser: neutral 포함 전부 reflect ("이 시도는 효과 없었다"도 학습 신호)
+        if is_winner and label not in ("jump", "regression") and error_trace is None:
+            continue
 
-    source = ""
-    if code_path:
-        content = _code_download(code_path) or ""
-        sep = _CODE_HEADER_SEP + "\n"
-        source = content.split(sep, 1)[1].strip() if sep in content else content
+        source = ""
+        if code_path:
+            content = _code_download(code_path) or ""
+            sep = _CODE_HEADER_SEP + "\n"
+            source = content.split(sep, 1)[1].strip() if sep in content else content
 
-    ctx = AttemptContext(
-        hypothesis=hypothesis or "",
-        action_type=action_type or "",
-        code=source,
-        cv_score=cv_score or 0.0,
-        cv_fold_var=cv_fold_var or 0.0,
-        gain_vs_best=gain_vs_best,
-        label=label or "regression",
-        retrieved_ids=reflection_ids or [],
-        feature_importance=None,
-        error_trace=error_trace,
-    )
-    try:
-        output = reflect(conn, attempt_id=attempt_id, competition_id=competition_id, context=ctx)
-        print(f"[run_promote_task] reflection_id={output.reflection_id}")
-    except EmbeddingUnavailableError as exc:
-        print(f"[run_promote_task] reflect skipped — embedding unavailable: {exc}")
+        ctx = AttemptContext(
+            hypothesis=hypothesis or "",
+            action_type=action_type or "",
+            code=source,
+            cv_score=cv_score or 0.0,
+            cv_fold_var=cv_fold_var or 0.0,
+            gain_vs_best=gain_vs_best,
+            label=label or "regression",
+            retrieved_ids=reflection_ids or [],
+            feature_importance=None,
+            error_trace=error_trace,
+        )
+        role = "winner" if is_winner else "loser"
+        try:
+            output = reflect(conn, attempt_id=attempt_id, competition_id=competition_id, context=ctx)
+            print(f"[run_promote_task] reflect {role} {attempt_id[:8]} → reflection_id={output.reflection_id}")
+        except EmbeddingUnavailableError as exc:
+            print(f"[run_promote_task] reflect {role} {attempt_id[:8]} skipped — embedding unavailable: {exc}")
 
     conn.close()
 
