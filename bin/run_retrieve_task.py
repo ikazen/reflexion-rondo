@@ -70,10 +70,13 @@ def main() -> None:
 
     conn.close()
     print(
-        f"[run_retrieve_task] queue_id={args.queue_id}"
-        f" super_cycle_id={super_cycle_id[:8]}"
-        f" n_lessons={len(lessons)} prev_best_cv={prev_best_cv}"
+        f"[run_retrieve_task] competition={args.competition} stage={args.stage}"
+        f" queue_id={args.queue_id[:8]} super_cycle_id={super_cycle_id[:8]}"
+        f" prev_best_cv={prev_best_cv} n_lessons={len(lessons)}"
     )
+    for i, l in enumerate(lessons):
+        snippet = (l.get("embedded_text") or "")[:80].replace("\n", " ")
+        print(f"  lesson[{i}] score={l.get('score', ''):.3f} {snippet}")
 
 
 if __name__ == "__main__":

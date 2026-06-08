@@ -83,12 +83,14 @@ def main() -> None:
     )
     conn.close()
 
+    idx = args.attempt_index if args.attempt_index is not None else "?"
     print(
-        f"[run_attempt_task] queue_id={args.queue_id}"
-        f" attempt={data.attempt_id[:8]}"
-        f" cv={data.cv_score} label={data.label}"
-        f" gain={data.gain_vs_best}"
+        f"[run_attempt_task] [{idx}] attempt={data.attempt_id[:8]}"
+        f" action={data.decision.action_type}"
+        f" cv={data.cv_score} gain={data.gain_vs_best} label={data.label}"
+        f" retries={data.retries}"
     )
+    print(f"  hypothesis: {data.decision.hypothesis[:100]}")
 
 
 if __name__ == "__main__":

@@ -67,19 +67,20 @@ def main() -> None:
             [i == winner_idx, r[0]],
         )
 
+    print(f"[run_promote_task] super_cycle={super_cycle_id[:8]} n_attempts={len(rows)}")
+    for i, r in enumerate(rows):
+        winner_mark = "*" if i == winner_idx else " "
+        print(f"  [{winner_mark}{i}] {r[0][:8]} action={r[9]} cv={r[2]} gain={r[1]} label={r[3]}")
+
     if winner_idx is None:
-        print(f"[run_promote_task] super_cycle={super_cycle_id[:8]} — all errored, no winner")
+        print("  -> all errored, no winner")
         conn.close()
         return
 
     (attempt_id, gain_vs_best, cv_score, label, error_trace,
      hypothesis, action_type, reflection_ids, cv_fold_var, code_path) = rows[winner_idx]
 
-    print(
-        f"[run_promote_task] super_cycle={super_cycle_id[:8]}"
-        f" winner={attempt_id[:8]} cv={cv_score} label={label}"
-        f" n_attempts={len(rows)}"
-    )
+    print(f"  -> promoted {attempt_id[:8]} (gain={gain_vs_best})")
 
     # BON-96 gate: reflect only for jump/regression/error
     if label not in ("jump", "regression") and error_trace is None:
