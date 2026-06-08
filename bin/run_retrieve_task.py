@@ -63,9 +63,14 @@ def main() -> None:
     conn.execute(
         """
         INSERT INTO raw.super_cycle_context
-            (queue_id, super_cycle_id, competition_id, prev_best_cv, lessons, assigned_actions)
-        VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb)
-        ON CONFLICT (queue_id) DO NOTHING
+            (queue_id, super_cycle_id, competition_id, prev_best_cv, lessons, assigned_actions, created_at)
+        VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, now())
+        ON CONFLICT (queue_id) DO UPDATE SET
+            super_cycle_id   = EXCLUDED.super_cycle_id,
+            prev_best_cv     = EXCLUDED.prev_best_cv,
+            lessons          = EXCLUDED.lessons,
+            assigned_actions = EXCLUDED.assigned_actions,
+            created_at       = EXCLUDED.created_at
         """,
         [args.queue_id, super_cycle_id, competition_id, prev_best_cv,
          json.dumps(lessons), json.dumps(assigned_actions)],
