@@ -37,7 +37,7 @@ def main() -> None:
 
     ctx_row = conn.execute(
         """
-        SELECT super_cycle_id, competition_id, prev_best_cv, lessons
+        SELECT super_cycle_id, competition_id, prev_best_cv, lessons, assigned_actions
         FROM raw.super_cycle_context
         WHERE queue_id = %s
         """,
@@ -47,8 +47,17 @@ def main() -> None:
         print(f"[run_attempt_task] no context for queue_id={args.queue_id}", file=sys.stderr)
         sys.exit(1)
 
-    super_cycle_id, competition_id, prev_best_cv, lessons_raw = ctx_row
+    super_cycle_id, competition_id, prev_best_cv, lessons_raw, assigned_actions_raw = ctx_row
     lessons = json.loads(lessons_raw) if isinstance(lessons_raw, str) else lessons_raw
+    assigned_actions = (
+        json.loads(assigned_actions_raw) if isinstance(assigned_actions_raw, str)
+        else (assigned_actions_raw or [])
+    )
+    forced_action = (
+        assigned_actions[args.attempt_index]
+        if args.attempt_index is not None and args.attempt_index < len(assigned_actions)
+        else None
+    )
 
     try:
         comp = importlib.import_module(f"config.competitions.{args.competition}")
@@ -80,6 +89,7 @@ def main() -> None:
         conn, config, lessons, prev_best_cv,
         super_cycle_id=super_cycle_id,
         attempt_index=args.attempt_index,
+        forced_action=forced_action,
     )
     conn.close()
 

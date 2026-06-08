@@ -248,6 +248,7 @@ def run_attempt_core(
     super_cycle_id: str | None = None,
     was_promoted: bool | None = None,
     attempt_index: int | None = None,
+    forced_action: str | None = None,
 ) -> _AttemptData:
     """Strategize → Generate → Evaluate → Persist one attempt. Returns data needed for reflect."""
     attempt_id = str(uuid.uuid4())
@@ -258,7 +259,7 @@ def run_attempt_core(
     enriched_eda = config.eda_card + dynamic_ctx
     stagnation = detect_stagnation(conn, config.competition_id)
     print(f"[attempt] strategizing... stagnation={stagnation}")
-    action_prior = get_action_prior(conn, config.competition_id, seed=attempt_index)
+    action_prior = get_action_prior(conn, config.competition_id)
     decision = strategize(
         eda_card=enriched_eda,
         lessons=lessons,
@@ -266,6 +267,7 @@ def run_attempt_core(
         prev_best_cv=prev_best_cv,
         stagnation=stagnation,
         action_prior=action_prior,
+        forced_action_type=forced_action,
     )
     print(f"[attempt] action={decision.action_type} hypothesis={decision.hypothesis[:80]}")
 

@@ -83,6 +83,7 @@ def strategize(
     prev_best_cv: float | None = None,
     stagnation: StagnationSignal | None = None,
     action_prior: dict[str, float] | None = None,
+    forced_action_type: str | None = None,
 ) -> StrategyDecision:
     lessons_text = _format_lessons(lessons)
     valid_ids = {l["reflection_id"] for l in lessons}
@@ -94,8 +95,12 @@ def strategize(
         exploration_section = f"\n## Exploration Signal\n{_format_stagnation(stagnation)}\n"
 
     prior_section = ""
-    if action_prior:
+    if action_prior and not forced_action_type:
         prior_section = f"\n## Action Prior\n{_format_action_prior(action_prior)}\n"
+
+    forced_section = ""
+    if forced_action_type:
+        forced_section = f"\n## Assigned Action\nYou MUST use action_type: {forced_action_type}. Do not choose any other action_type.\n"
 
     user_prompt = f"""## EDA Card
 {eda_card}
@@ -106,7 +111,7 @@ def strategize(
 ## Context
 - Stage: {stage}
 - Previous best CV: {prev_best_str}
-{exploration_section}{prior_section}
+{exploration_section}{prior_section}{forced_section}
 ## Task
 Propose exactly one change to improve the CV score.
 Select which retrieved lessons (if any) directly informed your hypothesis and list their IDs in reflection_ids.
@@ -127,7 +132,6 @@ Respond with ONLY a JSON object using exactly these keys:
     content = resp.message.content.strip()
     if not content:
         raise ValueError("Strategist returned empty response")
-    # strip markdown code block if model ignores format param
     m = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
     if m:
         content = m.group(1).strip()
@@ -136,10 +140,11 @@ Respond with ONLY a JSON object using exactly these keys:
     except json.JSONDecodeError as e:
         raise ValueError(f"Strategist JSON parse failed: {e}\nraw: {content[:300]}") from e
 
-    if data.get("action_type") not in ACTION_TYPES:
+    if forced_action_type:
+        data["action_type"] = forced_action_type
+    elif data.get("action_type") not in ACTION_TYPES:
         data["action_type"] = "feature_engineering"
 
-    # keep only IDs that were actually provided (guard against hallucination)
     adopted = [rid for rid in data.get("reflection_ids", []) if rid in valid_ids]
 
     return StrategyDecision(

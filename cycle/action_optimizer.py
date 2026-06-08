@@ -51,6 +51,42 @@ def update_bandit(
     )
 
 
+def assign_super_cycle_actions(
+    conn: PgConn,
+    competition_id: str,
+    n_attempts: int = 3,
+) -> list[str]:
+    """병렬 attempt마다 서로 다른 action_type을 배정한다.
+
+    각 슬롯에 대해 독립적인 Thompson sample을 뽑아 아직 배정되지 않은 action 중
+    최고점을 선택한다 — bandit 선호도를 존중하면서 다양성을 보장한다.
+    """
+    rows = conn.execute(
+        """
+        SELECT action_type, alpha, beta
+        FROM raw.action_bandit
+        WHERE scope = %s AND scope_key = %s
+        """,
+        [_SCOPE_LOCAL, competition_id],
+    ).fetchall()
+
+    bandit: dict[str, tuple[float, float]] = {r[0]: (r[1], r[2]) for r in rows}
+    remaining = list(ACTION_TYPES)
+    assigned: list[str] = []
+
+    for i in range(min(n_attempts, len(ACTION_TYPES))):
+        rng = np.random.default_rng(i)
+        scores = {
+            action: float(rng.beta(*bandit.get(action, (1.0, 1.0))))
+            for action in remaining
+        }
+        best = max(scores, key=scores.__getitem__)
+        assigned.append(best)
+        remaining.remove(best)
+
+    return assigned
+
+
 def get_action_prior(
     conn: PgConn,
     competition_id: str,
