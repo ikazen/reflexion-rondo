@@ -35,6 +35,7 @@ cd data/<competition-id> && unzip -q *.zip
 ### 1-2. config/competitions/<slug>.py 작성
 `config/competitions/s5e3.py` 참고. 필수 항목:
 - `COMPETITION_ID`, `NAME`, `TARGET`, `METRIC`, `TASK_TYPE`, `METRIC_SIGN`
+- `TASK_TYPE` 값은 `binary` / `multiclass` / `regression` 중 하나
 - `IS_CLASSIFICATION`, `DROP_COLS` (id 계열 컬럼)
 - `DATA_DIR`, `S3_DATA_PATH`
 - `EDA_CARD` — feature별 dtype 명시 필수 (pl.String 컬럼 인코딩 방법 포함)
