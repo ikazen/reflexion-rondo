@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import polars as pl
 from sklearn.inspection import permutation_importance as _permutation_importance
-from sklearn.model_selection import StratifiedKFold, KFold
+from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit, KFold, ShuffleSplit
 
 from evaluator.metrics import get as get_metric
 
@@ -98,6 +98,55 @@ def _make_folds(y: np.ndarray, ctx: PipelineContext) -> list:
     return list(kf.split(np.zeros(len(y))))
 
 
+def preselect_params(
+    pipeline: BasePipeline | PatchedPipeline,
+    train: pl.DataFrame,
+    ctx: PipelineContext,
+) -> dict:
+    """Select best params via a single 80/20 inner holdout to avoid CV leakage."""
+    candidates = pipeline.param_candidates(ctx)
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else {}
+
+    fn, metric_sign, metric_class = get_metric(ctx.metric)
+    y = train[ctx.target_col].to_numpy()
+
+    if ctx.is_classification:
+        sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=ctx.seed)
+        tr_idx, va_idx = next(sss.split(np.zeros(len(y)), y))
+    else:
+        ss = ShuffleSplit(n_splits=1, test_size=0.2, random_state=ctx.seed)
+        tr_idx, va_idx = next(ss.split(np.zeros(len(y))))
+
+    tr = train[list(tr_idx)]
+    va = train[list(va_idx)]
+    tr2, va2 = pipeline.preprocess(tr, va, ctx.target_col, ctx)
+    Xtr, Xva = pipeline.feature_transform(tr2, va2, ctx.target_col, ctx)
+    ytr = tr2[ctx.target_col].to_numpy()
+    yva = va2[ctx.target_col].to_numpy()
+    Xtr_np = Xtr.to_numpy()
+    Xva_np = Xva.to_numpy()
+
+    best_score: float | None = None
+    best_params: dict = candidates[0]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        for params in candidates:
+            model = pipeline.build_model(params, ctx)
+            model.fit(Xtr_np, ytr)
+            if metric_class == "binary_proba":
+                raw_preds = model.predict_proba(Xva_np)[:, 1]
+            else:
+                raw_preds = model.predict(Xva_np)
+            preds = pipeline.postprocess_predictions(raw_preds, ctx)
+            score = float(fn(yva, preds))
+            if best_score is None or metric_sign * score > metric_sign * best_score:
+                best_score = score
+                best_params = params
+
+    return best_params
+
+
 def evaluate_pipeline(
     pipeline: BasePipeline | PatchedPipeline,
     train: pl.DataFrame,
@@ -106,6 +155,8 @@ def evaluate_pipeline(
     fn, metric_sign, metric_class = get_metric(ctx.metric)
     y = train[ctx.target_col].to_numpy()
     compute_importance = ctx.action_type in _IMPORTANCE_ACTIONS
+
+    selected_params = preselect_params(pipeline, train, ctx)
 
     fold_scores: list[float] = []
     fold_pi_means: list[np.ndarray] = []
@@ -123,24 +174,17 @@ def evaluate_pipeline(
         Xtr_np = Xtr.to_numpy()
         Xva_np = Xva.to_numpy()
 
-        best_fold_score: float | None = None
-        best_model = None
-        for params in pipeline.param_candidates(ctx):
-            model = pipeline.build_model(params, ctx)
-            model.fit(Xtr_np, ytr)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", UserWarning)
-                if metric_class == "binary_proba":
-                    raw_preds = model.predict_proba(Xva_np)[:, 1]
-                else:
-                    raw_preds = model.predict(Xva_np)
-            preds = pipeline.postprocess_predictions(raw_preds, ctx)
-            score = float(fn(yva, preds))
-            if best_fold_score is None or metric_sign * score > metric_sign * best_fold_score:
-                best_fold_score = score
-                best_model = model
-
-        fold_scores.append(best_fold_score)  # type: ignore[arg-type]
+        model = pipeline.build_model(selected_params, ctx)
+        model.fit(Xtr_np, ytr)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            if metric_class == "binary_proba":
+                raw_preds = model.predict_proba(Xva_np)[:, 1]
+            else:
+                raw_preds = model.predict(Xva_np)
+        preds = pipeline.postprocess_predictions(raw_preds, ctx)
+        best_model = model
+        fold_scores.append(float(fn(yva, preds)))
 
         if compute_importance and best_model is not None:
             if not feature_names:

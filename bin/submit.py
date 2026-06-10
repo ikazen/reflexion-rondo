@@ -103,7 +103,7 @@ def main() -> None:
     source, cv_score, attempt_id = _load_best_code(comp.COMPETITION_ID, args.attempt_id)
     print(f"best attempt: {attempt_id[:8]}  cv={cv_score:.5f}")
 
-    from evaluator.harness import PipelineContext
+    from evaluator.harness import PipelineContext, preselect_params
     pipeline = _load_pipeline(comp.COMPETITION_ID)
     ctx = PipelineContext(
         target_col=comp.TARGET,
@@ -124,11 +124,11 @@ def main() -> None:
     # dummy target in test so preprocess/feature_transform work
     test_with_dummy = test_feat.with_columns(pl.lit(0).cast(train[comp.TARGET].dtype).alias(comp.TARGET))
 
+    params = preselect_params(pipeline, train, ctx)
     train_proc, test_proc = pipeline.preprocess(train, test_with_dummy, comp.TARGET, ctx)
     X_train, X_test = pipeline.feature_transform(train_proc, test_proc, comp.TARGET, ctx)
     y_train = train_proc[comp.TARGET].to_numpy()
 
-    params = pipeline.param_candidates(ctx)[0]
     model = pipeline.build_model(params, ctx)
     model.fit(X_train.to_numpy(), y_train)
 
