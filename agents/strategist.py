@@ -50,12 +50,28 @@ def _client() -> Client:
 def _format_lessons(lessons: list[dict]) -> str:
     if not lessons:
         return "(no relevant lessons retrieved)"
-    parts = []
-    for i, l in enumerate(lessons, 1):
-        parts.append(
-            f"{i}. [id={l['reflection_id']}] [{l['generality']}] {l['full_lesson']}"
-        )
-    return "\n".join(parts)
+
+    buckets: dict[str, list[dict]] = {"recommend": [], "avoid": [], "failure": [], "no_op": []}
+    for l in lessons:
+        lt = l.get("lesson_type") or "no_op"
+        buckets.setdefault(lt, buckets["no_op"]).append(l)
+
+    sections: list[str] = []
+    _header = {
+        "recommend": "### Helpful Lessons (apply these)",
+        "avoid":     "### Avoid These Patterns",
+        "failure":   "### Known Failure Patterns",
+        "no_op":     "### Low-impact Findings (for awareness only)",
+    }
+    for key in ("recommend", "avoid", "failure", "no_op"):
+        group = buckets[key]
+        if not group:
+            continue
+        sections.append(_header[key])
+        for i, l in enumerate(group, 1):
+            sections.append(f"{i}. [id={l['reflection_id']}] [{l['generality']}] {l['full_lesson']}")
+
+    return "\n".join(sections)
 
 
 def _format_stagnation(sig: StagnationSignal) -> str:

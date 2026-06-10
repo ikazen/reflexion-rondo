@@ -47,6 +47,7 @@ def insert_reflection(
     label: str,
     gain_vs_best: float,
     reflector_label: str | None = None,
+    lesson_type: str | None = None,
 ) -> None:
     vec = np.array(embed(embedded_text), dtype=np.float32)
     conn.execute(
@@ -54,13 +55,13 @@ def insert_reflection(
         INSERT INTO raw.reflections (
             reflection_id, created_at, attempt_id, competition_id,
             embedded_text, embedding, full_lesson, generality,
-            label, reflector_label, gain_vs_best, archived
-        ) VALUES (%s, now(), %s, %s, %s, %s, %s, %s, %s, %s, %s, false)
+            label, reflector_label, lesson_type, gain_vs_best, archived
+        ) VALUES (%s, now(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, false)
         """,
         [
             reflection_id, attempt_id, competition_id,
             embedded_text, vec, full_lesson, generality,
-            label, reflector_label, gain_vs_best,
+            label, reflector_label, lesson_type, gain_vs_best,
         ],
     )
 
@@ -80,10 +81,12 @@ def search(
             r.full_lesson,
             r.generality,
             r.gain_vs_best,
+            r.lesson_type,
             r.embedding,
             1 - (r.embedding <=> %s::vector) AS sim,
             (1 - (r.embedding <=> %s::vector))
-                * (1 + greatest(-1.0, least(1.0, coalesce(i.avg_gain, 0.0)::double precision))) AS score
+                * (1 + greatest(-1.0, least(1.0, coalesce(i.avg_gain, 0.0)::double precision)))
+                * CASE WHEN r.lesson_type = 'no_op' THEN 0.5 ELSE 1.0 END AS score
         FROM raw.reflections r
         LEFT JOIN reflection_impact i USING (reflection_id)
         WHERE r.archived = false
@@ -98,7 +101,7 @@ def search(
     ).fetchall()
 
     cols = ["reflection_id", "embedded_text", "full_lesson", "generality",
-            "gain_vs_best", "embedding", "sim", "score"]
+            "gain_vs_best", "lesson_type", "embedding", "sim", "score"]
     candidates = [dict(zip(cols, row)) for row in rows]
     selected = _mmr_rerank(candidates, k)
     for item in selected:

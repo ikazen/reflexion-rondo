@@ -61,6 +61,17 @@ class ReflectionOutput:
     full_lesson: str
     generality: str
     reflector_label: str
+    lesson_type: str
+
+
+def _derive_lesson_type(label: str, error_trace: str | None) -> str:
+    if error_trace:
+        return "failure"
+    if label == "jump":
+        return "recommend"
+    if label == "regression":
+        return "avoid"
+    return "no_op"
 
 
 def _client() -> Client:
@@ -144,6 +155,7 @@ Respond with ONLY a JSON object using exactly these keys:
         data["reflector_label"] = "neutral"
 
     reflection_id = str(uuid.uuid4())
+    lesson_type = _derive_lesson_type(context.label, context.error_trace)
 
     insert_reflection(
         conn=conn,
@@ -156,6 +168,7 @@ Respond with ONLY a JSON object using exactly these keys:
         label=context.label,
         gain_vs_best=context.gain_vs_best if context.gain_vs_best is not None else 0.0,
         reflector_label=data["reflector_label"],
+        lesson_type=lesson_type,
     )
 
     return ReflectionOutput(
@@ -164,4 +177,5 @@ Respond with ONLY a JSON object using exactly these keys:
         full_lesson=data["full_lesson"],
         generality=data["generality"],
         reflector_label=data["reflector_label"],
+        lesson_type=lesson_type,
     )

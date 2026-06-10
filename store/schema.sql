@@ -57,9 +57,11 @@ CREATE TABLE IF NOT EXISTS raw.reflections (
     generality      text,
     label           text,
     reflector_label text,
+    lesson_type     text,
     gain_vs_best    double precision,
     archived        boolean DEFAULT false
 );
+ALTER TABLE raw.reflections ADD COLUMN IF NOT EXISTS lesson_type text;
 
 CREATE TABLE IF NOT EXISTS raw.pipelines (
     pipeline_id          text PRIMARY KEY,
