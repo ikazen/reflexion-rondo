@@ -15,12 +15,15 @@ from agents.strategist import StrategyDecision, strategize
 from config.settings import MODEL_CODER
 from cycle.action_optimizer import get_action_prior, update_bandit
 from cycle.stagnation import detect_stagnation
-from evaluator.contract import validate_code
+from cycle.materialize import materialize_best_pipeline
+from evaluator.contract import validate_patch
 from memory.retriever import EmbeddingUnavailableError, search
 from runtime.isolate import eval_isolated
 from store.db import PgConn, insert_attempt, insert_pipeline
 from store.s3_code import download as _code_download
+from store.s3_code import download_best_pipeline as _best_pipeline_download
 from store.s3_code import upload as _code_upload
+from store.s3_code import upload_best_pipeline as _best_pipeline_upload
 
 _CODE_HEADER_SEP = "# " + "-" * 60  # 저장 헤더와 본문 경계 — _best_code가 이 줄로 헤더를 떼낸다
 
@@ -212,31 +215,9 @@ def _save_code(
     return _code_upload(competition_id, filename, header + source)
 
 
-def _best_code(conn: PgConn, competition_id: str) -> str | None:
-    """1변경 규율의 기준점: best(에러 없는) attempt의 저장 코드 본문. 없으면 None."""
-    row = conn.execute(
-        """
-        select a.code_path
-        from raw.attempts a
-        join raw.competitions c using (competition_id)
-        where a.competition_id = %s
-          and a.cv_score is not null
-          and a.error_trace is null
-          and a.code_path is not null
-        order by c.metric_sign * a.cv_score desc
-        limit 1
-        """,
-        [competition_id],
-    ).fetchone()
-    if not row or not row[0]:
-        return None
-    content = _code_download(row[0])
-    if not content:
-        return None
-    sep = _CODE_HEADER_SEP + "\n"
-    if sep in content:
-        content = content.split(sep, 1)[1]
-    return content.strip() or None
+def _load_best_pipeline(competition_id: str) -> str | None:
+    """Materialized best pipeline source. None if not yet stored."""
+    return _best_pipeline_download(competition_id)
 
 
 
@@ -276,10 +257,8 @@ def run_attempt_core(
     _MAX_CODE_RETRIES = 2
     if config.stage == "bootstrap" and config.seed_code:
         prev_code: str | None = config.seed_code
-    elif config.stage == "bootstrap":
-        prev_code = None
     else:
-        prev_code = _best_code(conn, config.competition_id)
+        prev_code = _load_best_pipeline(config.competition_id)
     gen_kwargs: dict = dict(
         hypothesis=decision.hypothesis,
         action_type=decision.action_type,
@@ -291,7 +270,7 @@ def run_attempt_core(
     error_trace: str | None = None
 
     for _i in range(_MAX_CODE_RETRIES + 1):
-        errors = validate_code(source)
+        errors = validate_patch(source, decision.action_type)
         if not errors:
             break
         feedback = "\n".join(errors)
@@ -322,6 +301,7 @@ def run_attempt_core(
                 seed=config.seed,
                 is_classification=config.is_classification,
                 action_type=decision.action_type,
+                best_source=prev_code,
             )
             if not iso.error_trace:
                 cv_score = iso.cv_score
@@ -335,7 +315,7 @@ def run_attempt_core(
             if _eval_i == 0:
                 source = generate_code(**gen_kwargs, error_feedback=iso.error_trace)
                 retries += 1
-                static_errs = validate_code(source)
+                static_errs = validate_patch(source, decision.action_type)
                 if static_errs:
                     error_trace = "\n".join(static_errs)
                     break
@@ -384,7 +364,7 @@ def run_attempt_core(
         row["was_promoted"] = was_promoted
     insert_attempt(conn, row)
 
-    # Save pipeline if improved
+    # Save pipeline if improved — also materialize as new best baseline
     if gain_vs_best is not None and gain_vs_best > 0 and not error_trace:
         fp_row = conn.execute(
             "select fingerprint from raw.competitions where competition_id = %s",
@@ -401,6 +381,9 @@ def run_attempt_core(
             cv_score=cv_score,
             gain_vs_best=gain_vs_best,
         )
+        materialized = materialize_best_pipeline(prev_code, source)
+        _best_pipeline_upload(config.competition_id, materialized)
+        print(f"[attempt] best pipeline materialized (gain={gain_vs_best:+.5f})")
 
     # Action bandit update — reflexion stage only (BON-109)
     if config.stage == "reflexion":

@@ -11,48 +11,49 @@ def _mock_resp(content: str) -> MagicMock:
     return m
 
 
-_VALID_CODE = """
+_VALID_PATCH = """
 import polars as pl
-from lightgbm import LGBMClassifier
 
-def feature_fn(train, valid, target):
-    drop = [target]
-    return train.drop(drop), valid.drop(drop)
+class Patch:
+    action_type = "feature_engineering"
+    changed_stages = ["feature"]
+    rationale = "Drop low-variance columns."
 
-def model_fn(params):
-    return LGBMClassifier(**params)
+    def feature_transform(self, train, valid, target, ctx):
+        cols = [c for c in train.columns if c != target]
+        return train.select(cols), valid.select(cols)
 """.strip()
 
 
 def test_extract_code_from_markdown() -> None:
-    text = f"Here is the code:\n```python\n{_VALID_CODE}\n```\nDone."
-    assert _extract_code(text) == _VALID_CODE
+    text = f"Here is the code:\n```python\n{_VALID_PATCH}\n```\nDone."
+    assert _extract_code(text) == _VALID_PATCH
 
 
 def test_extract_code_plain() -> None:
-    assert _extract_code(_VALID_CODE) == _VALID_CODE
+    assert _extract_code(_VALID_PATCH) == _VALID_PATCH
 
 
 def test_generate_code_returns_string() -> None:
     with patch("agents.coder._client") as mock_client:
-        mock_client.return_value.chat.return_value = _mock_resp(_VALID_CODE)
+        mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)
         result = generate_code(
-            hypothesis="Use LightGBM baseline",
-            action_type="model_swap",
+            hypothesis="Drop low-variance columns",
+            action_type="feature_engineering",
             eda_card="n_rows=165034, task=binary",
         )
-    assert "feature_fn" in result
-    assert "model_fn" in result
+    assert "Patch" in result
+    assert "feature_transform" in result
 
 
 def test_generate_code_with_error_feedback() -> None:
     with patch("agents.coder._client") as mock_client:
-        mock_client.return_value.chat.return_value = _mock_resp(_VALID_CODE)
+        mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)
         generate_code(
-            hypothesis="Fix missing function",
+            hypothesis="Fix missing class",
             action_type="feature_engineering",
             eda_card="x",
-            error_feedback="missing function definition: model_fn",
+            error_feedback="missing class definition: Patch",
         )
         prompt = mock_client.return_value.chat.call_args.kwargs["messages"][0]["content"]
-    assert "missing function definition" in prompt
+    assert "missing class definition" in prompt
