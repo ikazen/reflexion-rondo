@@ -51,6 +51,43 @@ def download(uri: str) -> str | None:
     return path.read_text(encoding="utf-8") if path.exists() else None
 
 
+_BEST_KEY = "best_pipeline.py"
+
+
+def upload_best_pipeline(competition_id: str, content: str) -> str:
+    """Materialized best pipeline 저장 → URI 반환."""
+    key = f"{competition_id}/{_BEST_KEY}"
+    try:
+        resp = requests.put(
+            f"{_ENDPOINT}/{_BUCKET}/{key}",
+            data=content.encode(),
+            headers={"Content-Type": "text/plain"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return f"s3://{_BUCKET}/{key}"
+    except Exception:
+        pass
+    local_dir = Path(__file__).parent.parent / "runs" / "best"
+    local_dir.mkdir(parents=True, exist_ok=True)
+    path = local_dir / f"{competition_id}_best_pipeline.py"
+    path.write_text(content, encoding="utf-8")
+    return str(path)
+
+
+def download_best_pipeline(competition_id: str) -> str | None:
+    """Materialized best pipeline 읽기. 없으면 None."""
+    key = f"{competition_id}/{_BEST_KEY}"
+    try:
+        resp = requests.get(f"{_ENDPOINT}/{_BUCKET}/{key}", timeout=30)
+        resp.raise_for_status()
+        return resp.text
+    except Exception:
+        pass
+    path = Path(__file__).parent.parent / "runs" / "best" / f"{competition_id}_best_pipeline.py"
+    return path.read_text(encoding="utf-8") if path.exists() else None
+
+
 def delete(uri: str) -> bool:
     """URI가 가리키는 파일 삭제. 성공 여부 반환."""
     if uri.startswith("s3://"):

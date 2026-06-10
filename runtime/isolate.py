@@ -40,6 +40,7 @@ def eval_isolated(
     seed: int,
     is_classification: bool,
     action_type: str = "",
+    best_source: str | None = None,
     timeout_sec: int = DEFAULT_TIMEOUT,
 ) -> IsolatedResult:
     with tempfile.TemporaryDirectory(prefix="rondo-eval-") as tmpdir:
@@ -55,6 +56,8 @@ def eval_isolated(
             "is_classification": is_classification,
             "action_type": action_type,
         }))
+        if best_source:
+            (ws / "best_pipeline.py").write_text(best_source)
 
         _EVAL_ENV_ALLOWLIST = {
             "PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE",

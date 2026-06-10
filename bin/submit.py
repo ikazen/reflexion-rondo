@@ -61,45 +61,75 @@ def _load_best_code(competition_id: str, attempt_id: str | None) -> tuple[str, f
     return source, cv_score, aid
 
 
-def _exec_code(source: str) -> tuple:
+_HOOK_NAMES = (
+    "preprocess", "feature_transform", "param_candidates",
+    "build_model", "postprocess_predictions",
+)
+
+
+def _load_pipeline(competition_id: str) -> object:
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from store.s3_code import download_best_pipeline
+    from evaluator.harness import BasePipeline, PipelineContext
+
+    best_source = download_best_pipeline(competition_id)
+    if not best_source:
+        return BasePipeline()
+
     ns: dict = {}
-    exec(compile(source, "<best_code>", "exec"), ns)  # noqa: S102
-    return ns["feature_fn"], ns["model_fn"]
+    exec(compile(best_source, "<best_pipeline>", "exec"), ns)  # noqa: S102
+    patch_cls = ns.get("Patch")
+    if not patch_cls:
+        return BasePipeline()
+    methods = {h: getattr(patch_cls, h) for h in _HOOK_NAMES if hasattr(patch_cls, h)}
+    BestPipelineCls = type("BestPipeline", (BasePipeline,), methods)
+    return BestPipelineCls()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--competition", "-c", required=True)
-    parser.add_argument("--attempt-id", default=None, help="특정 attempt ID 앞 8자리")
+    parser.add_argument("--attempt-id", default=None, help="특정 attempt ID 앞 8자리 (참고용)")
     parser.add_argument("--submit", action="store_true", help="Kaggle에 바로 제출")
     parser.add_argument("--message", "-m", default=None, help="제출 메시지")
     args = parser.parse_args()
+
+    import sys
+    sys.path.insert(0, str(ROOT))
 
     comp = importlib.import_module(f"config.competitions.{args.competition}")
 
     source, cv_score, attempt_id = _load_best_code(comp.COMPETITION_ID, args.attempt_id)
     print(f"best attempt: {attempt_id[:8]}  cv={cv_score:.5f}")
 
+    from evaluator.harness import PipelineContext
+    pipeline = _load_pipeline(comp.COMPETITION_ID)
+    ctx = PipelineContext(
+        target_col=comp.TARGET,
+        metric=comp.METRIC,
+        n_splits=5,
+        seed=42,
+        is_classification=comp.IS_CLASSIFICATION,
+    )
+
     train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
     test  = pl.read_csv(comp.DATA_DIR / "test.csv")
 
-    # test에 있는 id 계열 컬럼 보존 (sample_submission 형식 맞추기)
     sample = pl.read_csv(comp.DATA_DIR / "sample_submission.csv")
     id_col = sample.columns[0]
     test_ids = test[id_col]
     test_feat = test.drop([c for c in comp.DROP_COLS if c in test.columns])
 
-    # feature_fn은 (train_fold, valid_fold, target) 시그니처
-    # 제출 시: train 전체로 fit, test에 apply
-    # target이 test에 없으므로 dummy 추가
+    # dummy target in test so preprocess/feature_transform work
     test_with_dummy = test_feat.with_columns(pl.lit(0).cast(train[comp.TARGET].dtype).alias(comp.TARGET))
 
-    feature_fn, model_fn = _exec_code(source)
+    train_proc, test_proc = pipeline.preprocess(train, test_with_dummy, comp.TARGET, ctx)
+    X_train, X_test = pipeline.feature_transform(train_proc, test_proc, comp.TARGET, ctx)
+    y_train = train_proc[comp.TARGET].to_numpy()
 
-    X_train, X_test = feature_fn(train, test_with_dummy, comp.TARGET)
-    y_train = train[comp.TARGET].to_numpy()
-
-    model = model_fn({})
+    params = pipeline.param_candidates(ctx)[0]
+    model = pipeline.build_model(params, ctx)
     model.fit(X_train.to_numpy(), y_train)
 
     import numpy as np
@@ -113,9 +143,10 @@ def main() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         if comp.IS_CLASSIFICATION:
-            preds = model.predict_proba(X_test_np)[:, 1]
+            raw_preds = model.predict_proba(X_test_np)[:, 1]
         else:
-            preds = model.predict(X_test_np)
+            raw_preds = model.predict(X_test_np)
+    preds = pipeline.postprocess_predictions(raw_preds, ctx)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out = RUNS_DIR / f"submission_{comp.competition_id if hasattr(comp, 'competition_id') else args.competition}_{ts}.csv"

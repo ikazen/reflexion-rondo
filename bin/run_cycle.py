@@ -7,7 +7,7 @@ from pathlib import Path
 import polars as pl
 from lightgbm import LGBMClassifier
 
-from evaluator.harness import run as eval_run
+from evaluator.harness import BasePipeline, PipelineContext, evaluate_pipeline
 from store.db import connect, ensure_competition, insert_attempt
 
 COMPETITION_ID = "playground-series-s4e1"
@@ -80,18 +80,18 @@ def main() -> None:
         [COMPETITION_ID],
     ).fetchone()[0]
 
-    result = eval_run(
-        train=train,
-        target_col=TARGET,
-        metric=METRIC,
-        feature_fn=feature_fn,
-        model_fn=model_fn,
-        params=PARAMS,
-        prev_best=prev_best,
-        n_splits=5,
-        seed=42,
-        is_classification=True,
+    class _BaselinePatch(BasePipeline):
+        def feature_transform(self, train, valid, target, ctx):
+            return feature_fn(train, valid, target)
+
+        def build_model(self, params, ctx):
+            return model_fn(params or PARAMS)
+
+    ctx = PipelineContext(
+        target_col=TARGET, metric=METRIC, n_splits=5, seed=42,
+        is_classification=True, prev_best=prev_best,
     )
+    result = evaluate_pipeline(_BaselinePatch(), train, ctx)
 
     print(f"CV AUC:   {result.cv_score:.5f}")
     print(f"fold scores: {[f'{s:.5f}' for s in result.fold_scores]}")

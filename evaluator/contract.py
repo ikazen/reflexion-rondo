@@ -1,21 +1,7 @@
-"""Coder contract: type aliases and pre-execution validation gate.
+"""Coder contract: AST-level validation for Patch class."""
+from __future__ import annotations
 
-Two functions the Coder must produce:
-  feature_fn(train, valid, target) -> (train_feats, valid_feats)
-  model_fn(params) -> sklearn-compatible estimator
-
-validate_code() does AST-level static checks before any execution.
-smoke_test() does a tiny runtime check (10 rows) before the full CV loop.
-"""
 import ast
-import inspect
-import traceback
-from typing import Callable
-
-import polars as pl
-
-FeatureFn = Callable[[pl.DataFrame, pl.DataFrame, str], tuple[pl.DataFrame, pl.DataFrame]]
-ModelFn = Callable[[dict], object]
 
 _FORBIDDEN_IMPORTS = frozenset({
     "os", "subprocess", "socket", "urllib", "urllib2", "urllib3",
@@ -26,6 +12,27 @@ _FORBIDDEN_IMPORTS = frozenset({
 _FORBIDDEN_CALLS = frozenset({
     "eval", "exec", "open", "compile", "__import__",
 })
+
+_ALL_HOOKS = frozenset({
+    "preprocess", "feature_transform", "param_candidates",
+    "build_model", "postprocess_predictions",
+})
+
+_ALLOWED_HOOKS: dict[str, frozenset[str]] = {
+    "feature_engineering": frozenset({"feature_transform"}),
+    "model_swap":          frozenset({"build_model"}),
+    "preprocessing":       frozenset({"preprocess"}),
+    "hyperparam_search":   frozenset({"param_candidates"}),
+    "compound":            _ALL_HOOKS,
+}
+
+_HOOK_ARITY = {
+    "preprocess":               5,
+    "feature_transform":        5,
+    "param_candidates":         2,
+    "build_model":              3,
+    "postprocess_predictions":  3,
+}
 
 
 def _collect_imports(tree: ast.AST) -> list[str]:
@@ -51,23 +58,15 @@ def _collect_calls(tree: ast.AST) -> list[str]:
     return names
 
 
-def _find_function(tree: ast.AST, name: str) -> ast.FunctionDef | None:
+def _find_patch_class(tree: ast.AST) -> ast.ClassDef | None:
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == name:
+        if isinstance(node, ast.ClassDef) and node.name == "Patch":
             return node
     return None
 
 
-def _check_signature(fn_node: ast.FunctionDef, expected_arity: int) -> str | None:
-    args = fn_node.args
-    n = len(args.args)
-    if n != expected_arity:
-        return f"{fn_node.name}: expected {expected_arity} positional args, got {n}"
-    return None
-
-
-def validate_code(source: str) -> list[str]:
-    """AST-level static validation. Returns list of error strings (empty = OK)."""
+def validate_patch(source: str, action_type: str) -> list[str]:
+    """AST-level validation for Patch class. Returns list of error strings (empty = OK)."""
     errors: list[str] = []
 
     try:
@@ -75,62 +74,53 @@ def validate_code(source: str) -> list[str]:
     except SyntaxError as e:
         return [f"SyntaxError: {e}"]
 
-    # required function definitions
-    feature_node = _find_function(tree, "feature_fn")
-    model_node = _find_function(tree, "model_fn")
-    if feature_node is None:
-        errors.append("missing function definition: feature_fn")
-    if model_node is None:
-        errors.append("missing function definition: model_fn")
-
-    # signature arity
-    if feature_node is not None:
-        err = _check_signature(feature_node, 3)
-        if err:
-            errors.append(err)
-    if model_node is not None:
-        err = _check_signature(model_node, 1)
-        if err:
-            errors.append(err)
-
-    # forbidden imports
     for imp in _collect_imports(tree):
         if imp in _FORBIDDEN_IMPORTS:
             errors.append(f"forbidden import: {imp}")
-
-    # forbidden calls
     for call in _collect_calls(tree):
         if call in _FORBIDDEN_CALLS:
             errors.append(f"forbidden call: {call}()")
 
+    patch_cls = _find_patch_class(tree)
+    if patch_cls is None:
+        errors.append("missing class definition: Patch")
+        return errors
+
+    # Collect hook method names and check arity
+    hook_methods: set[str] = set()
+    for item in patch_cls.body:
+        if not isinstance(item, ast.FunctionDef) or item.name not in _ALL_HOOKS:
+            continue
+        hook_methods.add(item.name)
+        expected = _HOOK_ARITY[item.name]
+        actual = len(item.args.args)
+        if actual != expected:
+            errors.append(
+                f"Patch.{item.name}: expected {expected} args (incl. self), got {actual}"
+            )
+
+    # action_type class attribute must match
+    actual_at: str | None = None
+    for item in patch_cls.body:
+        if isinstance(item, ast.Assign):
+            for tgt in item.targets:
+                if isinstance(tgt, ast.Name) and tgt.id == "action_type":
+                    if isinstance(item.value, ast.Constant) and isinstance(item.value.value, str):
+                        actual_at = item.value.value
+    if actual_at != action_type:
+        errors.append(f"Patch.action_type={actual_at!r}, expected {action_type!r}")
+
+    # No disallowed hooks
+    allowed = _ALLOWED_HOOKS.get(action_type, _ALL_HOOKS)
+    disallowed = hook_methods - allowed
+    if disallowed:
+        errors.append(
+            f"action_type={action_type!r} may not implement hooks: {sorted(disallowed)}"
+        )
+
+    if action_type == "compound" and len(hook_methods) > 2:
+        errors.append(
+            f"compound may implement at most 2 hooks, got {len(hook_methods)}: {sorted(hook_methods)}"
+        )
+
     return errors
-
-
-def smoke_test(
-    feature_fn: FeatureFn,
-    model_fn: ModelFn,
-    sample: pl.DataFrame,
-    target: str,
-) -> str | None:
-    """Runtime check on a tiny sample. Returns error string or None."""
-    probe = sample.head(10)
-    try:
-        result = feature_fn(probe, probe, target)
-    except Exception:
-        return f"feature_fn raised on smoke sample:\n{traceback.format_exc()}"
-
-    if not (isinstance(result, tuple) and len(result) == 2):
-        return f"feature_fn must return tuple[DataFrame, DataFrame], got {type(result)}"
-    for i, df in enumerate(result):
-        if not isinstance(df, pl.DataFrame):
-            return f"feature_fn return[{i}] is {type(df)}, expected polars.DataFrame"
-
-    try:
-        model = model_fn({})
-    except Exception:
-        return f"model_fn raised on smoke sample:\n{traceback.format_exc()}"
-
-    if not (hasattr(model, "fit") and hasattr(model, "predict")):
-        return "model_fn return value must have fit() and predict() methods"
-
-    return None
