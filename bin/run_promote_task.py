@@ -81,9 +81,10 @@ def main() -> None:
 
     print(f"  -> promoted {rows[winner_idx][0][:8]} (gain={rows[winner_idx][1]})")
 
-    # Materialize winner patch into new best pipeline
+    winner_gain = rows[winner_idx][1]
+    winner_error = rows[winner_idx][4]
     winner_code_path = rows[winner_idx][9]
-    if winner_code_path:
+    if winner_gain is not None and winner_gain > 0 and not winner_error and winner_code_path:
         winner_content = _code_download(winner_code_path) or ""
         sep = _CODE_HEADER_SEP + "\n"
         winner_source = winner_content.split(sep, 1)[1].strip() if sep in winner_content else winner_content
