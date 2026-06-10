@@ -35,6 +35,7 @@ cd data/<competition-id> && unzip -q *.zip
 ### 1-2. config/competitions/<slug>.py 작성
 `config/competitions/s5e3.py` 참고. 필수 항목:
 - `COMPETITION_ID`, `NAME`, `TARGET`, `METRIC`, `TASK_TYPE`, `METRIC_SIGN`
+- `TASK_TYPE` 값은 `binary` / `multiclass` / `regression` 중 하나
 - `IS_CLASSIFICATION`, `DROP_COLS` (id 계열 컬럼)
 - `DATA_DIR`, `S3_DATA_PATH`
 - `EDA_CARD` — feature별 dtype 명시 필수 (pl.String 컬럼 인코딩 방법 포함)
@@ -91,8 +92,8 @@ curl -X PATCH http://localhost:8000/api/queue/<queue_id> \
 ```
 
 실행 모드:
-- **airflow 모드**: `AIRFLOW_URL` 환경변수가 있으면 Airflow DAG `reflexion_rondo_cycle` 트리거. 1 DAG run = 1 슈퍼사이클 (retrieve → attempt_0/1/2 병렬 → promote). retrieve/promote는 default 큐, attempt는 big 큐.
-- **direct 모드**: `AIRFLOW_URL` 없으면 in-process 직접 실행.
+- **airflow 모드 (운영)**: `AIRFLOW_URL` 환경변수가 있으면 Airflow DAG `reflexion_rondo_cycle` 트리거. 1 DAG run = 1 슈퍼사이클 (retrieve → attempt_0/1/2 병렬 → promote). retrieve/promote는 default 큐, attempt는 big 큐.
+- **direct 모드 (로컬 테스트)**: `AIRFLOW_URL` 없으면 daemon 프로세스 안에서 단일 `run_cycle()` attempt만 실행한다. forced action 배정, 3-way 병렬 attempt, promote/loser reflection은 실행하지 않는다.
 
 **이미지 업데이트 절차:**
 ```bash
@@ -115,9 +116,9 @@ ssh mac-server "cd ~/Projects/reflexion-rondo && git pull && bash deploy/build.s
 
 ## 4. 제출 예산 게이트
 
-- `submission_budget` 테이블에 일별 카운트.
-- `Submit` 단계가 SELECT-then-UPDATE로 일일 상한(보통 5) 초과 방지.
-- best 후보만 LB로. CV-LB 상관·shake를 함께 기록.
+- `submission_budget` 테이블은 스키마에 존재한다.
+- 현재 `bin/submit.py`는 CSV 생성과 Kaggle 제출 호출을 수행하지만, 일일 제출 상한 자동 enforcement와 `lb_score` 업데이트는 아직 구현하지 않았다.
+- 운영 시에는 best 후보만 수동 제출하고, LB score는 별도 기록 절차가 추가될 때까지 수동 관리한다.
 
 ## 5. 동시성
 

@@ -1,6 +1,6 @@
 # 초기 셋업
 
-Mac(M1 Pro) = Ollama 추론 서버, WSL2 = 저장·실행 환경 기준.
+Mac(M1 Pro) = 로컬 임베딩 Ollama 서버, worker/WSL2 = 실행 환경, ops-vm Postgres = 저장소 기준.
 
 ---
 
@@ -42,22 +42,17 @@ launchctl setenv OLLAMA_MODELS "/Users/<your-username>/mnt/ollama-model"
 ## 3. Mac — 모델 pull
 
 ```bash
-# 임베딩 (필수)
-ollama pull qwen3-embedding:0.6b
-
-# Strategist / Reflector (테스트용 임시 공용 — ADR-016 참고)
-ollama pull qwen3.5:9b-mlx   # Apple Silicon 최적화 (M1/M2/M3)
-
-# Coder (테스트용 기본값)
-ollama pull devstral-small-2
+# 임베딩 (필수, 로컬 Mac Ollama)
+ollama pull qwen3-embedding:8b
 ```
 
-> **Strategist와 Reflector를 같은 모델로 쓰는 건 로컬 테스트 한계 때문에 임시다.**
-> ADR-016에서 두 역할은 서로 다른 패밀리여야 한다고 결정했다 (자기편향 완화).
-> 프로덕션 전환 시 Strategist=deepseek-v4-pro, Reflector=glm-5로 분리된다.
+> 현재 코드의 기본 역할 모델은 Strategist=`deepseek-v4-pro`, Reflector=`glm-5`,
+> Coder=`qwen3-coder-next`, Embedding=`qwen3-embedding:8b`다.
+> Strategist/Reflector/Coder는 Ollama Cloud를 사용하고, 임베딩만 `OLLAMA_BASE_URL`의
+> 로컬 Ollama 서버를 사용한다.
 >
 > 모델 태그는 바뀔 수 있다. 설치 전 [ollama.com/library](https://ollama.com/library) 에서 현재 태그 확인.
-> 프로덕션 모델은 Ollama Cloud 전환 시 `.env`만 수정하면 된다 (ADR-004).
+> 모델 ID를 바꾸려면 현재는 `config/settings.py`의 상수를 수정해야 한다.
 
 ---
 
@@ -84,11 +79,12 @@ OLLAMA_BASE_URL=http://mac-server.<tailnet>.ts.net:11434
 # 또는 Tailscale IP 직접 사용
 # OLLAMA_BASE_URL=http://100.x.x.x:11434
 
-# 모델 (기본값과 동일하면 생략 가능)
-MODEL_STRATEGIST=qwen3.5:9b-mlx
-MODEL_REFLECTOR=qwen3.5:9b-mlx   # 임시 공용 — 프로덕션에서 glm-5로 분리 (ADR-016)
-MODEL_CODER=devstral-small-2
-MODEL_EMBEDDING=qwen3-embedding:0.6b
+# Ollama Cloud
+OLLAMA_CLOUD_BASE_URL=https://ollama.com
+OLLAMA_API_KEY=<your-ollama-cloud-key>
+
+# 참고: 현재 config/settings.py의 모델 기본값은 코드 상수다.
+# MODEL_STRATEGIST / MODEL_REFLECTOR / MODEL_CODER / MODEL_EMBEDDING 환경변수는 현재 코드에서 읽지 않는다.
 ```
 
 `.env`는 `.gitignore`에 포함되어 있으므로 커밋되지 않는다. 실제 tailnet 이름과 IP는 `.env`에만 보관한다.
@@ -124,19 +120,27 @@ EOF
 # ~/.kaggle/kaggle.json 없으면 먼저 발급 (kaggle.com → Account → API)
 mkdir -p data/playground-series-s4e1
 cd data/playground-series-s4e1
-kaggle competitions download -c playground-series-s4e4
+kaggle competitions download -c playground-series-s4e1
 unzip "*.zip"
 ```
 
 ---
 
-## 8. DuckDB 초기화 확인
+## 8. Postgres 초기화 확인
+
+`RONDO_DB_URL` 미설정 시 기본값은 `postgresql://rondo:rondo@localhost:5432/rondo`다.
 
 ```bash
 uv run python - <<'EOF'
 from store.db import connect
 conn = connect()
-print(conn.execute("show tables").fetchall())
+print(conn.execute("""
+    select table_name
+    from information_schema.tables
+    where table_schema = 'raw'
+    order by table_name
+""").fetchall())
+conn.close()
 EOF
 ```
 
@@ -149,7 +153,18 @@ EOF
 대회를 먼저 등록한 뒤 사이클을 돌린다.
 
 ```bash
-uv run python bin/start_competition.py
+uv run python bin/start_competition.py \
+    --id playground-series-s4e1 \
+    --name "Bank Customer Churn Prediction" \
+    --task binary --metric auc --target Exited
 ```
 
-이후 `cycle/run.py`를 직접 호출하는 스크립트를 만들거나 `bin/run_cycle.py`를 업데이트해서 사용한다 (현재 `bin/run_cycle.py`는 Phase 0 PoC — LLM 없이 고정 코드 실행).
+이후 운영 daemon을 실행하거나, 로컬 smoke/test 용도로 단일 사이클을 실행한다.
+
+```bash
+# 운영 daemon. AIRFLOW_URL이 있으면 Airflow super-cycle을 트리거한다.
+uv run python -m bin.run_daemon
+
+# daemon 없이 수동 단일 사이클 실행
+uv run python -m bin.run_reflexion --competition s4e1 --stage bootstrap --cycles 1
+```

@@ -15,8 +15,9 @@
 
 ## 진입점
 
-- `bin/run_reflexion.py` — Reflexion 1 사이클 (`cycle/run.py` 호출: retrieve → strategize → generate → evaluate → reflect → persist + 생성 코드를 `runs/code/`에 저장). cron이 주기 호출.
-- `bin/start_competition.py` — 대회 등록 (fingerprint 계산 → `raw.competitions` insert). 유사 대회 검색·warm-start 시드는 Phase 3 계획.
+- `bin/run_daemon.py` — 운영 daemon. `raw.cycle_queue`를 폴링하고, `AIRFLOW_URL`이 있으면 Airflow super-cycle DAG를 트리거한다. `AIRFLOW_URL`이 없으면 로컬 smoke/test용 단일 attempt만 실행한다.
+- `bin/run_reflexion.py` — 로컬/수동 Reflexion 사이클 러너 (`cycle/run.py` 호출: retrieve → strategize → generate → evaluate → reflect → persist + 생성 코드를 `runs/code/`에 저장).
+- `bin/start_competition.py` — 대회 등록 (fingerprint 계산 → `raw.competitions` insert). 유사 대회 검색·cold-start lessons/seed pipeline 정보를 `runs/cold_start/`에 저장한다.
 - `bin/run_cycle.py` — Phase 0 PoC (LLM 없는 LightGBM 베이스라인, 참고용).
 - `bin/submit.py` — Kaggle 제출.  `dashboard.py` — Streamlit 모니터링.
 
@@ -34,27 +35,33 @@ reflexion-rondo/
     harness.py            # 결정적 k-fold CV + label 계산
     metrics.py            # 지표 + metric_sign
     contract.py           # 생성 코드 검증 + smoke test
-  memory/retriever.py     # DuckDB 벡터 검색(브루트포스 코사인) + embed() + 메타필터
+  memory/retriever.py     # Postgres/pgvector 검색 + embed() + 메타필터 + MMR
+  memory/transfer.py      # fingerprint 거리 · 유사 대회 검색 · cold-start lessons/seed 추출
   store/
     schema.sql            # competitions, attempts, reflections, submission_budget + 분석 뷰
     db.py                 # connect / ensure_competition / insert_attempt
     fingerprint.py        # 결정적 메타피처(14개) 계산기
   bin/
-    run_reflexion.py      # Reflexion 사이클 러너 (cron 호출 대상)
+    run_daemon.py         # queue daemon + FastAPI + Airflow trigger
+    run_reflexion.py      # 로컬/수동 Reflexion 사이클 러너
+    run_retrieve_task.py  # Airflow super-cycle retrieve task
+    run_attempt_task.py   # Airflow super-cycle attempt task
+    run_promote_task.py   # Airflow super-cycle promote task
     start_competition.py  # 대회 등록 (fingerprint → competitions insert)
     run_cycle.py          # Phase 0 PoC (LLM 없는 베이스라인, 참고용)
     submit.py             # Kaggle 제출
   dashboard.py            # Streamlit 모니터링
-  runs/                   # DuckDB 파일 · 생성 코드(runs/code/) · 제출 CSV  (gitignore)
+  runs/                   # 생성 코드(runs/code/) · cold-start JSON · 제출 CSV  (gitignore)
   docs/                   # 아래 문서
 
 분석 뷰(dbt 아님, schema.sql 내 SQL view): score_progression, stg_attempts,
-stg_attempts_reflexion_only, reflection_impact
+stg_attempts_reflexion_only, reflection_impact, action_bandit_posterior,
+cold_start_progression
 
 계획(미구현):
-  runtime/                # 생성 코드 격리 실행 (컨테이너/nsjail, ADR-013) — 현재 in-process exec. Phase 2 잔여
-  memory/transfer.py      # fingerprint 거리 · 유사 대회 검색 · warm-start 시드 — Phase 3
-  cold_start_progression  # 전이 효과 측정 뷰 — Phase 3
+  external ideas 채널      # raw.external_ideas / Strategist 노출 / 사후 bandit — ADR-019 설계만
+  제출 예산 자동 게이트    # submission_budget 스키마는 있으나 submit.py enforcement는 미구현
+  강화된 생성 코드 sandbox # 현재 subprocess + env allowlist, 네트워크 격리 미구현
 ```
 
 ## 문서

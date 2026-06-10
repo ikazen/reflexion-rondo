@@ -25,8 +25,7 @@ import polars as pl
 
 import bin.airflow_client as airflow_client
 from bin.api import DaemonState, create_app
-from cycle.run import CycleConfig
-from cycle.super_cycle import run_super_cycle
+from cycle.run import CycleConfig, run_cycle
 from memory.retriever import EmbeddingUnavailableError
 from store.db import connect, ensure_competition
 
@@ -221,7 +220,8 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
         print(f"[daemon] failed to load competition config: {exc}")
         return
 
-    # direct 모드에서만 train 데이터 사전 로드 (airflow 모드는 task 컨테이너 안에서 로드)
+    # direct 모드는 로컬 smoke/test용 단일 attempt 경로다.
+    # airflow 모드는 task 컨테이너 안에서 데이터를 로드하고 super-cycle을 실행한다.
     train: pl.DataFrame | None = None
     if mode == "direct":
         train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
@@ -298,6 +298,8 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                 break
 
         else:
+            if train is None:
+                raise RuntimeError("direct mode requires train data to be loaded")
             config = CycleConfig(
                 competition_id=comp.COMPETITION_ID,
                 train=train,
@@ -311,17 +313,15 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                 is_classification=comp.IS_CLASSIFICATION,
             )
             try:
-                result = run_super_cycle(conn, config)
+                result = run_cycle(conn, config)
                 if result.cv_score is not None:
                     latest_score = result.cv_score
-                n_attempts = len(result.all_results)
                 cycles_done += 1
                 pacer.record()
                 state.update(current_cycle=cycles_done, last_cycle_at=datetime.now(timezone.utc))
                 print(
-                    f"[daemon] cycle {i + 1}/{n_cycles} super={result.super_cycle_id[:8]}"
-                    f" winner={result.attempt_id[:8]} cv={result.cv_score}"
-                    f" label={result.label} n_attempts={n_attempts}"
+                    f"[daemon] cycle {i + 1}/{n_cycles} attempt={result.attempt_id[:8]}"
+                    f" cv={result.cv_score} label={result.label}"
                 )
             except EmbeddingUnavailableError as exc:
                 print(f"[daemon] cycle {i + 1}/{n_cycles} skipped — embedding unavailable: {exc}")
@@ -378,7 +378,7 @@ def main() -> None:
     if airflow_client.available():
         print(f"[daemon] airflow mode — {airflow_client._AIRFLOW_URL} dag={airflow_client.DAG_ID}")
     else:
-        print("[daemon] direct mode — AIRFLOW_URL not set, running cycles in-process")
+        print("[daemon] direct mode — AIRFLOW_URL not set, running single-attempt test cycles in-process")
 
     state = DaemonState()
     api_thread = threading.Thread(target=_run_api, args=(state,), daemon=True)

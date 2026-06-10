@@ -52,7 +52,8 @@
 - 결정: Airflow/MLflow 미사용. cron + Python + DuckDB.
 - 대안: Airflow + MLflow 풀스택.
 - 근거: 1~2 워커 규모에 과체급. 복잡도 증가 시 Prefect로 승격.
-- **[2026-06 amend]** BON-110: 3 attempt 병렬 실행 필요로 Airflow 채택. daemon이 `raw.cycle_queue` 폴링 후 Airflow DAG `reflexion_rondo_cycle`을 트리거. DAG는 retrieve → attempt_0/1/2 (병렬) → promote 4태스크 구조. MLflow는 여전히 미사용.
+- **[2026-06 amend]** BON-110: 3 attempt 병렬 실행 필요로 Airflow 채택. daemon이 `raw.cycle_queue` 폴링 후 Airflow DAG `reflexion_rondo_cycle`을 트리거. DAG는 retrieve → attempt_0/1/2 (병렬) → promote 4태스크 구조. `AIRFLOW_URL` 없는 direct daemon mode는 운영 대체 경로가 아니라 로컬 smoke/test용 단일 attempt fallback이다. MLflow는 여전히 미사용.
+- **현재 상태:** 운영 store는 DuckDB가 아니라 ops-vm Postgres + pgvector다(ADR-007 amend). daemon은 큐/API/페이싱을 맡고, 운영 attempt 병렬화는 Airflow가 맡는다.
 
 ## ADR-012 — label은 결정적 임계값으로 계산, Reflector 판정은 참고용
 - 결정: `label`(jump/neutral/regression)·`gain_vs_best`는 **Evaluator가 CV 델타와 fold 분산으로 결정적 계산**한다. Reflector(LLM)의 정성 판정은 `reflector_label`로 별도 기록하되, 마트·검색의 진실값으로는 쓰지 않는다.
@@ -63,6 +64,7 @@
 - 결정: Coder가 생성한 `feature_fn`/`model_fn`은 격리 런타임에서 실행. 시간/메모리 상한, 네트워크 차단, FS 화이트리스트.
 - 대안: timeout만 적용 / 신뢰 후 직접 실행.
 - 근거: cron 무인 루프에서 LLM 생성 코드를 실행하므로 OOM·행·우발적 네트워크 접근이 워커를 죽이거나 환경을 오염시킬 수 있다. 격리 경계가 안정성과 재현성을 보장한다.
+- **현재 구현:** `runtime/isolate.py`가 `runtime/runner.py`를 subprocess로 실행하고 env allowlist/timeout을 적용한다. Docker `--network none` 수준의 네트워크/FS sandbox는 아직 미구현이다.
 
 ## ADR-014 — Coder 컨트랙트는 feature_fn + model_fn 분리
 - 결정: 산출물을 단일 스크립트가 아닌 두 컨트랙트로 분리. `feature_fn(train, valid, target) -> (Xtr, Xval)`, `model_fn(params) -> estimator`. IO/k-fold 하니스는 Evaluator가 소유.
@@ -92,18 +94,18 @@
   - **daemon > cron** (ADR-011 정련): 단일 24/7 워커에선 데몬이 cron 중첩/DuckDB 파일락(runbook §4) 문제를 제거하고, Ollama 페이싱 상태를 메모리에 들고 self-throttle 한다. ADR-011의 "Prefect 승격은 워커 ≥3"은 유지(BON-24) — 데몬화는 승격이 아니라 단일 워커의 단순화.
   - **임베딩 Mac 유지**: 임베딩은 매 사이클 retrieve+persist 2회로 빈번하다. Cloud로 보내면 추론 3역할에 써야 할 한도/과금을 갉아먹어 사이클 처리량 자체가 준다. Mac이 사실상 always-on이므로 ADR-004/008 분리를 그대로 둔다. 단 Mac 일시 불통(슬립)에 대비해 daemon은 임베딩 호출에 retry/backoff, 실패 시 해당 사이클만 스킵(크래시 금지).
   - **격리 = Docker `--network none`** (ADR-013의 "컨테이너 vs nsjail" TBD 확정): nexus-prime이 Docker는 제공하나 nsjail 표준은 없다. 생성 코드는 순수 compute라 네트워크 차단이 깔끔히 맞고, mem/cpu/timeout 상한으로 12GB ARM의 OOM 리스크를 흡수한다. OOM·타임아웃은 워커 사망이 아니라 `error_trace`→교훈이 된다.
-  - **DuckDB 영속 + 백업**: DuckDB 파일 = 누적 교훈 = transfer의 가치. nexus-prime L7("백업 안 함")의 재고 트리거("stateful 신규 서비스 추가")에 정확히 해당하므로, worker-vm 로컬 디스크 + MinIO 야간 스냅샷(systemd timer)으로 백업한다. nexus-prime decisions.md L7에 BON-70 cross-reference.
+  - **Postgres 영속 + 백업**: Postgres raw 스키마의 competitions/attempts/reflections/pipelines가 누적 교훈이자 transfer 자산이다. 백업 대상은 DuckDB 파일이 아니라 ops-vm Postgres 데이터와 MinIO/로컬 code artifact다.
 - 한계: 12GB는 대형 데이터셋에서 빠듯 — 격리 컨테이너 mem-limit로 OOM을 lesson화해 흡수하되, 빈발하면 mac-server 디스패치(하이브리드)를 재고한다.
 
 ## ADR-018 — 통합 웹은 aggregator 패턴 (각 워크로드 자체 API + ops-vm 통합 UI)
-- 결정: kaggle.<your-domain> 공개 웹은 각 워크로드가 read/admin API를 자체 제공하고, ops-vm의 별도 aggregator 웹(신규 repo `aggregator-web`(이름 미정), 신규 Linear 프로젝트)이 두 API를 호출해 단일 UI로 렌더한다. 공유 store(Postgres publish layer) 없음. rondo daemon은 자기 DuckDB 위에 FastAPI 라우터를 추가하고, droid controller는 이미 FastAPI 예정이라 endpoint만 합의. 추적: BON-75~77 (rondo 측) + droid BON-72 재정의 + 신규 aggregator 프로젝트.
+- 결정: kaggle.<your-domain> 공개 웹은 각 워크로드가 read/admin API를 자체 제공하고, ops-vm의 별도 aggregator 웹(신규 repo `aggregator-web`(이름 미정), 신규 Linear 프로젝트)이 두 API를 호출해 단일 UI로 렌더한다. 공유 publish layer는 두지 않는다. rondo daemon은 Postgres raw 스키마 위에 FastAPI 라우터를 제공하고, droid controller는 자체 API endpoint만 합의한다. 추적: BON-75~77 (rondo 측) + droid BON-72 재정의 + 신규 aggregator 프로젝트.
 - 대안:
   - (a) **공유 Postgres publish layer + 통합 웹**: daemon이 attempt 요약을 Postgres에 push → ops-vm 웹이 직접 read. dual-write 일관성·schema 강제 결합·pgvector 등 새 컴포넌트 부담.
   - (b) **별개 웹 ×2, 같은 Postgres**: 도메인 단절을 인스턴스 단절로 표현. publish layer 부담은 (a)와 동일.
-  - (c) **각 워크로드 API + aggregator** (선택): publish layer 폐기, DuckDB가 그대로 truth.
+  - (c) **각 워크로드 API + aggregator** (선택): publish layer 폐기, 각 워크로드의 자체 store가 그대로 truth.
 - 근거:
   - **도메인 단절 결정과 일관** (2026-06-04): lesson/work_unit을 두 시스템에 분리하기로 한 시점에 "공유 store"의 의미가 약해졌다. transfer가 불가능한 두 도메인(kaggle 노하우 ↛ 게임 조작)을 한 스키마에 묶을 이유 없음. API contract만 공통.
-  - **DuckDB truth 유지**: ADR-017의 "DuckDB가 시스템의 전부"가 그대로. publish hook·마이그레이션 도구·pgvector·dual-write 일관성 검증 모두 불필요. 가장 큰 단순화.
+  - **자체 store truth 유지**: rondo는 Postgres raw 스키마를 truth로 유지한다. 별도 publish hook·마이그레이션 도구·dual-write 일관성 검증이 불필요한 것이 가장 큰 단순화.
   - **repo 자율성**: 각 워크로드가 스키마/저장 방식을 자유롭게 진화. contract 변경 시에만 aggregator 동기 업데이트.
   - **보안 모델 자연**: daemon API는 tailnet only, public 노출은 ops-vm aggregator 하나로 집중. worker-vm은 공인 IP 없음(infra-lookup 결과)이라 외부 노출 자체가 불가능하므로 이 분할이 강제이자 이득.
   - **자랑 의도 달성**: 한 페이지에서 두 시스템 표시.
@@ -114,6 +116,8 @@
   - **인증 라우팅**: viewer 무인증 / admin path는 별도 internal 도메인 또는 Caddy의 path matcher로 tailnet only 분리. SSO 미도입(nexus-prime R6 트리거 미발동) 가정.
 
 ## ADR-019 — 외부 아이디어 채널: 분리된 게이트웨이 + 톰슨 샘플링 노출
+
+> 현재 코드에는 `raw.external_ideas`, `external_idea_bandit`, Strategist 프롬프트 통합이 아직 없다. 아래는 채택된 설계 방향이다.
 
 - 결정:
   - Kaggle 우승 writeup / pinned tips / 유사 fingerprint 대회 솔루션 스레드 등 외부 소스에서 추출한 ML 아이디어를 별도 테이블 `raw.external_ideas` 에 보관하고 Strategist 프롬프트에만 별도 섹션으로 노출. **reflections 풀 / `reflection_impact` 마트 / 검색 score 가중치에 일절 섞지 않는다.**
@@ -169,7 +173,7 @@
 | Reflector 모델 | glm-5 (Strategist와 다른 패밀리) | 시작값, ADR-016 |
 | Coder 모델 | qwen3-coder-next (대안 glm-4.7/devstral-small-2) | 시작값, ADR-016 |
 | 스토어 (검색+분석) | Postgres + pgvector (벡터 컬럼) | 확정, ADR-007 amend (BON-98) |
-| 벡터 인덱스 | 브루트포스 → 필요 시 vss(HNSW) | 승격 조건부 |
+| 벡터 인덱스 | 브루트포스 → 필요 시 pgvector HNSW | 승격 조건부 |
 | Ollama Cloud 요금제 | Pro($20, 동시 3) | 시작값 |
 | 시작 대회 | playground-series-s4e1 (Bank Churn, 이진/AUC, ~16.5만 행) | 확정 |
 | 임베딩 모델 | qwen3-embedding:8b(로컬, 1024d) | 확정, ADR-008 |
