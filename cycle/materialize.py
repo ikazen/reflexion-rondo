@@ -3,22 +3,7 @@ from __future__ import annotations
 import ast
 import textwrap
 
-_HOOKS = frozenset({
-    "preprocess", "feature_transform", "param_candidates",
-    "build_model", "postprocess_predictions",
-})
-
-
-def _extract_hooks(source: str) -> dict[str, ast.FunctionDef]:
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == "Patch":
-            return {
-                item.name: item
-                for item in node.body
-                if isinstance(item, ast.FunctionDef) and item.name in _HOOKS
-            }
-    return {}
+_META_ATTRS = frozenset({"action_type", "changed_stages", "rationale"})
 
 
 def _extract_imports(source: str) -> list[str]:
@@ -34,24 +19,73 @@ def _extract_imports(source: str) -> list[str]:
     return lines
 
 
+def _extract_toplevel_helpers(source: str) -> dict[str, ast.stmt]:
+    tree = ast.parse(source)
+    result: dict[str, ast.stmt] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if isinstance(node, ast.ClassDef) and node.name == "Patch":
+            continue
+        if isinstance(node, ast.FunctionDef):
+            result[node.name] = node
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    result[target.id] = node
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name):
+                result[node.target.id] = node
+    return result
+
+
+def _extract_class_members(source: str) -> dict[str, ast.stmt]:
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "Patch":
+            result: dict[str, ast.stmt] = {}
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef):
+                    result[item.name] = item
+                elif isinstance(item, ast.Assign):
+                    for target in item.targets:
+                        if isinstance(target, ast.Name) and target.id not in _META_ATTRS:
+                            result[target.id] = item
+                elif isinstance(item, ast.AnnAssign):
+                    if isinstance(item.target, ast.Name) and item.target.id not in _META_ATTRS:
+                        result[item.target.id] = item
+            return result
+    return {}
+
+
 def materialize_best_pipeline(base_source: str | None, patch_source: str) -> str:
-    """Merge patch into base, returning a new materialized Patch source.
+    base_helpers = _extract_toplevel_helpers(base_source) if base_source else {}
+    patch_helpers = _extract_toplevel_helpers(patch_source)
+    merged_helpers: dict[str, ast.stmt] = {**base_helpers, **patch_helpers}
 
-    Hooks from base are preserved; patch hooks override base hooks.
-    """
-    base_hooks = _extract_hooks(base_source) if base_source else {}
-    patch_hooks = _extract_hooks(patch_source)
-    merged: dict[str, ast.FunctionDef] = {**base_hooks, **patch_hooks}
+    base_members = _extract_class_members(base_source) if base_source else {}
+    patch_members = _extract_class_members(patch_source)
+    merged_members: dict[str, ast.stmt] = {**base_members, **patch_members}
 
-    seen: set[str] = set()
+    seen_imports: set[str] = set()
     imports: list[str] = []
     for line in (_extract_imports(base_source) if base_source else []) + _extract_imports(patch_source):
-        if line not in seen:
-            seen.add(line)
+        if line not in seen_imports:
+            seen_imports.add(line)
             imports.append(line)
 
-    parts: list[str] = imports + [
-        "",
+    parts: list[str] = imports + ["", ""]
+
+    seen_nodes: set[int] = set()
+    for node in merged_helpers.values():
+        nid = id(node)
+        if nid in seen_nodes:
+            continue
+        seen_nodes.add(nid)
+        parts.append(ast.unparse(node))
+        parts.append("")
+
+    parts += [
         "",
         "class Patch:",
         '    action_type = "materialized"',
@@ -59,9 +93,14 @@ def materialize_best_pipeline(base_source: str | None, patch_source: str) -> str
         '    rationale = "Accumulated materialized pipeline"',
         "",
     ]
-    for fn_node in merged.values():
-        fn_src = ast.unparse(fn_node)
-        parts.append(textwrap.indent(fn_src, "    "))
+
+    seen_nodes = set()
+    for member in merged_members.values():
+        nid = id(member)
+        if nid in seen_nodes:
+            continue
+        seen_nodes.add(nid)
+        parts.append(textwrap.indent(ast.unparse(member), "    "))
         parts.append("")
 
     return "\n".join(parts)
