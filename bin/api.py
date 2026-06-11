@@ -3,6 +3,7 @@
 엔드포인트:
   GET  /api/heartbeat
   GET  /api/competitions
+  POST /api/competitions
   GET  /api/attempts
   GET  /api/attempts/{id}
   GET  /api/lessons
@@ -17,16 +18,20 @@ DaemonState는 daemon 메인 루프가 갱신하고 API가 읽는 공유 객체.
 from __future__ import annotations
 
 import importlib
+import os
 import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
 
+import polars as pl
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from store.db import PgConn
+
+_MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +67,10 @@ class DaemonState:
 # Pydantic 모델
 # ---------------------------------------------------------------------------
 
+class RegisterRequest(BaseModel):
+    competition: str
+
+
 class EnqueueRequest(BaseModel):
     competition: str
     stage: str = "reflexion"
@@ -96,6 +105,55 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         ).fetchall()
         cols = ["competition_id", "name", "task_type", "metric", "metric_sign", "start_ts"]
         return [dict(zip(cols, r)) for r in rows]
+
+    @app.post("/api/competitions", status_code=201)
+    def register_competition(body: RegisterRequest):
+        try:
+            comp = importlib.import_module(f"config.competitions.{body.competition}")
+        except ModuleNotFoundError:
+            raise HTTPException(status_code=422, detail=f"unknown competition: {body.competition}")
+
+        s3_path = getattr(comp, "S3_DATA_PATH", None)
+        if s3_path and _MINIO_ENDPOINT:
+            url = f"{_MINIO_ENDPOINT}/kaggle/{s3_path}train.csv"
+            try:
+                train = pl.read_csv(url).drop(comp.DROP_COLS)
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"MinIO read failed: {e}")
+        else:
+            csv_path = comp.DATA_DIR / "train.csv"
+            if not csv_path.exists():
+                raise HTTPException(status_code=422, detail=f"train.csv not found: {csv_path}")
+            train = pl.read_csv(csv_path).drop(comp.DROP_COLS)
+
+        from evaluator.metrics import get as get_metric
+        from store.db import ensure_competition
+        from store.fingerprint import compute as compute_fingerprint
+        from memory.transfer import find_similar_competitions, cold_start_lessons, bootstrap_seeds
+
+        _, metric_sign, _ = get_metric(comp.METRIC)
+        fp = compute_fingerprint(train, comp.TARGET, comp.TASK_TYPE, comp.METRIC, metric_sign)
+        ensure_competition(
+            conn,
+            competition_id=comp.COMPETITION_ID,
+            name=comp.NAME,
+            task_type=comp.TASK_TYPE,
+            metric=comp.METRIC,
+            metric_sign=metric_sign,
+            fingerprint=fp,
+        )
+
+        similar_with_dist = find_similar_competitions(conn, fp, exclude_id=comp.COMPETITION_ID, k=3)
+        similar = [c for c, _ in similar_with_dist]
+        lessons = cold_start_lessons(conn, similar, k=10)
+        seeds = bootstrap_seeds(conn, similar, n=2)
+
+        return {
+            "competition_id": comp.COMPETITION_ID,
+            "similar_competitions": similar,
+            "lessons": len(lessons),
+            "seeds": len(seeds),
+        }
 
     @app.get("/api/attempts")
     def get_attempts(competition: str | None = None, limit: int = 50):
