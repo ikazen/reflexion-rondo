@@ -148,7 +148,39 @@ EOF
 
 ---
 
-## 9. 한 사이클 실행 (연결 전체 테스트)
+## 9. SOPS + age secrets (ops-vm 배포용)
+
+ops-vm에 daemon을 배포할 때는 평문 `.env` 대신 암호화된 `secrets/rondo.enc.env`를 git에 보관한다.
+
+### 최초 키 생성 (ops-vm)
+```bash
+mkdir -p ~/.config/sops/age
+age-keygen -o ~/.config/sops/age/keys.txt
+# 출력된 공개키를 .sops.yaml의 age: 필드에 붙여넣는다
+# 비밀키 파일 내용을 Bitwarden에 백업한다
+```
+
+### secrets 암호화
+```bash
+cp secrets/rondo.env.template secrets/rondo.env
+# 실제 값을 채운다
+sops --encrypt secrets/rondo.env > secrets/rondo.enc.env
+rm secrets/rondo.env          # 평문은 즉시 삭제
+git add secrets/rondo.enc.env .sops.yaml
+git commit -m "chore: update encrypted env"
+```
+
+### 복호화 확인
+```bash
+sops --decrypt secrets/rondo.enc.env | grep RONDO_DB_URL
+```
+
+### 다른 머신에서 복원
+Bitwarden에서 age 비밀키를 꺼내 `~/.config/sops/age/keys.txt`에 저장하면 동일하게 복호화된다.
+
+---
+
+## 10. 한 사이클 실행 (연결 전체 테스트)
 
 대회를 먼저 등록한 뒤 사이클을 돌린다.
 

@@ -100,6 +100,22 @@ curl -X PATCH http://localhost:8000/api/queue/<queue_id> \
 # mac-server에서 빌드 및 push
 ssh mac-server "cd ~/Projects/reflexion-rondo && git pull && bash deploy/build.sh"
 # airflow-stack DAG의 IMAGE SHA 업데이트 후 push
+
+# ops-vm에서 daemon 재시작 (sops 복호화 포함)
+ssh ops-vm "cd ~/reflexion-rondo && bash deploy/start.sh"
+```
+
+**secrets 업데이트 절차:**
+```bash
+# 로컬에서 enc.env 갱신
+sops --decrypt secrets/rondo.enc.env > secrets/rondo.env
+# 필요한 값 수정
+sops --encrypt secrets/rondo.env > secrets/rondo.enc.env && rm secrets/rondo.env
+git add secrets/rondo.enc.env && git commit -m "chore: update encrypted env"
+git push
+
+# ops-vm에서 재시작 (deploy/start.sh가 최신 enc.env를 복호화해서 적용)
+ssh ops-vm "cd ~/reflexion-rondo && git pull && bash deploy/start.sh"
 ```
 
 ## 3. 페이싱 (Ollama Cloud)
