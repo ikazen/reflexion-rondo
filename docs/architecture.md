@@ -11,7 +11,7 @@
 | Reflector (성찰) | Ollama Cloud | glm-5 (ADR-016) |
 | Coder (실행) | Ollama Cloud | qwen3-coder-next (ADR-016) |
 | 임베딩 | Mac Ollama 서버 | qwen3-embedding:8b (1024d, MRL) — ADR-008 |
-| Evaluator (CV · 지표 · Optuna · label) | WSL2 로컬 | 결정적 코드 |
+| Evaluator (CV · 지표 · param selection · label) | WSL2 로컬 | 결정적 코드 |
 | 생성 코드 실행 | worker-vm | subprocess 격리 (`runtime/isolate.py`), tmpdir + 600s timeout |
 | Memory (검색) | ops-vm | Postgres + pgvector (vector(1024), <=> 코사인) |
 | Orchestrator | worker-vm | daemon + `raw.cycle_queue` 폴링, Airflow DockerOperator 연동 |
@@ -46,8 +46,8 @@ Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
 1. **Retrieve** (`bin/run_retrieve_task.py`): 검색 키 → Postgres/pgvector 코사인 검색으로 교훈 top-k. 동시에 `action_bandit`(Beta-Bernoulli)에서 Thompson sample 1회로 3개 attempt에 서로 다른 `action_type`을 배정(`assign_super_cycle_actions`). 결과를 `raw.super_cycle_context`에 upsert.
 2. **Attempt × 3** (병렬, `bin/run_attempt_task.py`): 각 attempt는 배정받은 `action_type`으로 강제 실행.
    - **Strategize**: EDA 카드 + 검색 교훈 + forced_action_type → 가설 1개. 실제 채택 교훈 id 출력.
-   - **Generate**: 가설 → `feature_fn` + `model_fn`. **bootstrap 외 단계는 best 코드를 `prev_code`로 받아 한 군데만 수정** (1변경 규율, §4).
-   - **Evaluate**: k-fold CV + 지표 + Optuna. 결정적 코드. `label`·`gain_vs_best` 계산.
+   - **Generate**: 가설 → `class Patch` (action_type별 허용 훅만 구현). **bootstrap 외 단계는 best 코드를 `prev_code`로 받아 한 군데만 수정** (1변경 규율, §4).
+   - **Evaluate**: k-fold CV + 지표 (inner holdout으로 param 사전 선정). 결정적 코드. `label`·`gain_vs_best` 계산.
    - **Persist**: `raw.attempts`에 기록 (`super_cycle_id`, `was_promoted=NULL`).
 3. **Promote** (`bin/run_promote_task.py`): 3개 attempt 중 `gain_vs_best` 최대값 → winner. `was_promoted=true/false` 플래그 업데이트. Reflect 호출:
    - **winner**: jump/regression/error일 때만 reflect.
@@ -77,7 +77,7 @@ Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
 
 ## 5. 생성 코드 격리 실행
 
-Coder가 만든 `feature_fn`/`model_fn`은 `runtime/isolate.py`가 subprocess로 실행한다 (ADR-013).
+Coder가 만든 `class Patch`는 `runtime/isolate.py`가 subprocess로 실행한다 (ADR-013).
 - tmpdir에 source.py / input.json / train.parquet 기록 → `runtime/runner.py` subprocess 실행 → output.json 수거.
 - 타임아웃 600s. 에러·타임아웃은 `error_trace`로 기록되어 Reflector가 실패에서 교훈을 뽑는다.
 - subprocess 환경변수는 allowlist 필터링 (`OMP_NUM_THREADS` 등 포함, BON-104).
@@ -90,11 +90,11 @@ LLM 역할 3개:
 | 역할 | 입력 → 출력 |
 |---|---|
 | Strategist | EDA 카드 + 검색 교훈 + stage → 가설 1개 + `action_type` + 채택 교훈 id |
-| Coder | 가설 + 파이프라인 컨트랙트 → `feature_fn` + `model_fn` |
+| Coder | 가설 + 파이프라인 컨트랙트 → `class Patch` (action_type별 허용 훅) |
 | Reflector | (가설, 코드, retrieved_ids, CV 결과, best 대비 델타, feature_importance, fold var, 에러 trace) → 교훈 본문 + `generality` + (참고) `reflector_label` |
 
 비-LLM 컴포넌트:
-- **Evaluator**: k-fold CV + 지표 + Optuna 캡슐화. 결정적 시드·budget. `label`·`gain_vs_best` 계산.
+- **Evaluator**: k-fold CV + 지표 + inner holdout param selection 캡슐화. 결정적 시드. `label`·`gain_vs_best` 계산.
 - **Memory/Retriever**: Postgres/pgvector `vector(1024)` 컬럼 + 임베딩 + 메타필터 + MMR 재순위 (코사인 `<=>`, BON-98).
 - **Fingerprinter**: 결정적 메타피처 계산기.
 

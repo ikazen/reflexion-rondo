@@ -61,15 +61,16 @@
 - 근거: jump/regression 판정은 점수 움직임에 대한 채점이므로 ADR-005(LLM-as-judge 금지)에 귀속된다. Playground는 fold 노이즈 수준의 델타 싸움이라 "노이즈 vs 진짜 점프" 경계를 임계값으로 명시해야 한다. 정성 판정은 디버깅 참고로 가치가 있어 폐기하지 않고 분리 보관.
 
 ## ADR-013 — 생성 코드는 컨테이너/nsjail로 격리 실행
-- 결정: Coder가 생성한 `feature_fn`/`model_fn`은 격리 런타임에서 실행. 시간/메모리 상한, 네트워크 차단, FS 화이트리스트.
+- 결정: Coder가 생성한 `class Patch`는 격리 런타임에서 실행. 시간/메모리 상한, 네트워크 차단, FS 화이트리스트.
 - 대안: timeout만 적용 / 신뢰 후 직접 실행.
 - 근거: cron 무인 루프에서 LLM 생성 코드를 실행하므로 OOM·행·우발적 네트워크 접근이 워커를 죽이거나 환경을 오염시킬 수 있다. 격리 경계가 안정성과 재현성을 보장한다.
 - **현재 구현:** `runtime/isolate.py`가 `runtime/runner.py`를 subprocess로 실행하고 env allowlist/timeout을 적용한다. Docker `--network none` 수준의 네트워크/FS sandbox는 아직 미구현이다.
 
-## ADR-014 — Coder 컨트랙트는 feature_fn + model_fn 분리
-- 결정: 산출물을 단일 스크립트가 아닌 두 컨트랙트로 분리. `feature_fn(train, valid, target) -> (Xtr, Xval)`, `model_fn(params) -> estimator`. IO/k-fold 하니스는 Evaluator가 소유.
-- 대안: 전체 스크립트 자유 생성 / 단일 `fit_predict`.
-- 근거: 누수 방지(폴드 내 feature fit)를 컨트랙트로 강제하고, `action_type` 귀속을 깔끔히 하며(피처 변경 vs 모델 변경 분리), cold-start에서 `raw.pipelines` 코드를 안전하게 재사용한다.
+## ADR-014 — Coder 컨트랙트는 class Patch + hook 분리
+- 결정: 산출물은 `class Patch` 하나. action_type에 허용된 훅(hook)만 구현하고, 나머지는 현재 best pipeline이 fallback으로 제공한다. 훅은 `preprocess` / `feature_transform` / `param_candidates` / `build_model` / `postprocess_predictions` 5종. IO/k-fold 하니스/파라미터 선정은 Evaluator가 소유.
+- 대안: 전체 스크립트 자유 생성 / `feature_fn`+`model_fn` 두 함수 분리 (이전 방식).
+- 근거: hook 분리는 action_type 귀속을 코드 레벨로 강제하고(feature_transform만 바꾸는 게 feature_engineering), 1변경 규율을 컨트랙트로 보장한다. best pipeline을 base class로 두고 patch가 단일 훅만 override하면 cold-start seed 코드도 안전하게 재사용 가능. `validate_patch()` (AST 레벨)가 실행 전 위반을 차단한다.
+- **[2026-06 BON-113]**: `feature_fn`+`model_fn` → `class Patch` with hooks로 전환. `materialize_best_pipeline()`이 이전 best와 신규 patch를 AST 레벨에서 병합해 누적 pipeline을 유지한다.
 
 ## ADR-015 — 인과 귀속은 상관 기반으로 시작, ablation 보류
 - 결정: 자가 개선 효과는 `reflection_impact` 상관 + 1변경 규율 + 실제 채택 교훈 id로 추정. retrieval ON/OFF ablation은 도입하지 않는다.
@@ -128,7 +129,7 @@
   - **추출 LLM 가드 4개 모두 적용**: (i) 실측 수치 인용 있는 글만, (ii) upvote/다수 동의 임계값 통과, (iii) 조건부 진술만(절대 추천 차단), (iv) `idea_text` 500자 상한 + 코드 블록 분리. 추출 단계 시스템 프롬프트에 포함.
 - 대안:
   - (a) **lessons 풀에 `source='external'` + L3_general 직접 삽입**: 검색 단일 채널이라 우아하지만 earned knowledge 오염. `gain_vs_best` 가 null 이라 `reflection_impact` 계산 분기 필요. Strategist 가 "측정된 교훈"과 "남의 주장"을 구분 못함.
-  - (b) **시드 코드/큐로 변환** (cold-start path 연장): LLM 이 아이디어를 `feature_fn`/`model_fn` 까지 만들어 큐잉. 검증 안 된 코드가 Coder/Evaluator 비용 부담. cold-start 는 유사 대회 `gain_vs_best > 0` 검증 코드라 외부 아이디어와 신뢰 수준이 다름.
+  - (b) **시드 코드/큐로 변환** (cold-start path 연장): LLM 이 아이디어를 `class Patch` 까지 만들어 큐잉. 검증 안 된 코드가 Coder/Evaluator 비용 부담. cold-start 는 유사 대회 `gain_vs_best > 0` 검증 코드라 외부 아이디어와 신뢰 수준이 다름.
   - (c) **분리된 게이트웨이 + Strategist 프롬프트 힌트** (선택).
   - 노출 정책 대안: **정적 top-K (최근 N일 + score 정렬)** — 외부 source 수가 주 N=5 수준이라 빈번한 후보 중복. 톰슨 샘플링이 적은 풀에서 exploration/exploitation 균형을 자동 학습.
 - 근거:

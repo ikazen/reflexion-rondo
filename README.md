@@ -28,7 +28,7 @@ reflexion-rondo/
   config/settings.py      # 모델/엔드포인트/자격증명 로딩
   agents/                 # 평면 모듈 (서브디렉토리 아님)
     strategist.py         # 프롬프트 + StrategyDecision (action_type enum)
-    coder.py              # feature_fn / model_fn 생성
+    coder.py              # class Patch 생성 (action_type별 hook)
     reflector.py          # 성찰 → 교훈 + generality enum (참고 판정 포함)
   cycle/run.py            # Reflexion 1 사이클 오케스트레이션 (7단계)
   evaluator/

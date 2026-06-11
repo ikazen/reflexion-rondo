@@ -13,7 +13,7 @@ task_type       text,        -- binary / multiclass / regression
 metric          text,        -- auc / logloss / rmse / ...
 metric_sign     int,         -- +1 높을수록 좋음, -1 낮을수록 좋음
 start_ts        timestamp,
-fingerprint     json         -- §1.4
+fingerprint     jsonb        -- §1.4
 ```
 
 `metric_sign`은 대회당 1회 결정. attempts에 중복 저장하지 않는다.
@@ -27,21 +27,22 @@ run_ts            timestamp,
 stage             text,        -- bootstrap / reflexion / exploitation
 hypothesis        text,
 action_type       text,        -- §3 enum
-reflection_ids    text[],      -- Strategist가 실제 채택한 교훈 id
-retrieval_scores  double[],
 model_type        text,
 params            jsonb,
 features          jsonb,
-cv_score          double,
-cv_fold_var       double,      -- fold별 분산 (overfit·노이즈 감지)
-lb_score          double,      -- 미제출 시 null
-label             text,        -- jump / neutral / regression (Evaluator 결정, §4)
-error_trace       text,        -- 실패 시
-duration_sec      double,      -- 사이클 소요 시간
-code_path         text,        -- S3(MinIO) 경로. 코드 본문은 DB에 두지 않음
-retries           int,         -- 코드 재생성 횟수
-super_cycle_id    text,        -- 슈퍼사이클 묶음 id (raw.super_cycle_context 참조)
-was_promoted      boolean      -- NULL=legacy, TRUE=winner, FALSE=loser (promote 단계에서 설정)
+cv_score          double precision,
+cv_fold_var       double precision,  -- fold별 분산 (overfit·노이즈 감지)
+lb_score          double precision,  -- 미제출 시 null
+label             text,              -- jump / neutral / regression (Evaluator 결정, §4)
+gain_vs_best      double precision,  -- metric_sign * (cv_score - prev_best_cv), null이면 첫 attempt
+error_trace       text,              -- 실패 시
+reflection_ids    text[],            -- Strategist가 실제 채택한 교훈 id
+retrieval_scores  double precision[],
+duration_sec      double precision,  -- 사이클 소요 시간
+code_path         text,              -- S3(MinIO) 경로. 코드 본문은 DB에 두지 않음
+retries           int,               -- 코드 재생성 횟수
+super_cycle_id    text,              -- 슈퍼사이클 묶음 id (raw.super_cycle_context 참조)
+was_promoted      boolean            -- NULL=legacy, TRUE=winner, FALSE=loser (promote 단계에서 설정)
 ```
 
 ### 1.3 `raw.reflections`
@@ -51,13 +52,14 @@ reflection_id   text primary key,
 created_at      timestamp,
 attempt_id      text,
 competition_id  text,
-embedded_text   text,           -- 검색 결과를 사람이 읽는 원문
-embedding       vector(1024),   -- qwen3-embedding:8b(embedded_text). 검색용 pgvector 컬럼
+embedded_text   text,               -- 검색 결과를 사람이 읽는 원문
+embedding       vector(1024),       -- qwen3-embedding:8b(embedded_text). 검색용 pgvector 컬럼
 full_lesson     text,
-generality      text,           -- L1_local / L2_class / L3_general (Reflector)
-label           text,           -- 결정적 진실값 (attempts.label 복제, 마트·검색용)
-reflector_label text,           -- LLM 정성 판정 (참고용, 진실값 아님) — ADR-012
-gain_vs_best    double,         -- Evaluator 계산
+generality      text,               -- L1_local / L2_class / L3_general (Reflector)
+label           text,               -- 결정적 진실값 (attempts.label 복제, 마트·검색용)
+reflector_label text,               -- LLM 정성 판정 (참고용, 진실값 아님) — ADR-012
+lesson_type     text,               -- recommend / avoid / failure / no_op (Reflector 분류)
+gain_vs_best    double precision,   -- Evaluator 계산
 archived        boolean default false
 ```
 
@@ -112,7 +114,7 @@ pipeline_id          text primary key,
 attempt_id           text,
 competition_id       text,
 fingerprint_snapshot json,
-code                 text,        -- feature_fn + model_fn 소스 (§5)
+code                 text,        -- Patch class 소스 (§5)
 cv_score             double,
 gain_vs_best         double
 ```
@@ -195,12 +197,13 @@ adopted_attempt_ids    text[]          -- 채택 attempt 역추적 (디버깅·�
 
 ## 2. enum 정의
 
-`action_type` (Strategist 출력 강제):
+`action_type` (Strategist 출력 강제, `config/settings.py:ACTION_TYPES`):
 - `feature_engineering` (target encoding, interaction, binning, …)
 - `model_swap` (lgbm ↔ catboost ↔ xgboost ↔ tabpfn)
-- `hyperparam_search` (Optuna 트라이얼 수/공간 지정)
+- `hyperparam_search` (param_candidates 훅으로 후보 목록 제공, inner holdout에서 선택)
 - `preprocessing` (결측 처리, 스케일, 인코딩)
-- `ensemble` (averaging, stacking)
+- `ensemble` (averaging, stacking — contract에서 모든 훅 허용)
+- `compound` (`evaluator/contract.py` 정의, ACTION_TYPES 미포함 — Strategist 미노출. 최대 2개 훅 허용)
 
 `generality` (Reflector 출력):
 - `L1_local`: 이 대회 칼럼명/특이값 의존. transfer 대상 아님.
@@ -254,36 +257,64 @@ neutral     otherwise
 
 Reflector는 이 숫자를 보고 **왜 그런 결과가 나왔는지**(교훈 본문)만 쓴다. 정성 판정은 `reflector_label`로 분리.
 
-## 5. Coder 컨트랙트 (feature_fn + model_fn)
+## 5. Coder 컨트랙트 (class Patch)
 
-Coder는 두 함수만 생성한다. IO·k-fold 분할·시드·CV 루프는 Evaluator가 소유하므로 Coder 코드에 등장하지 않는다.
+Coder는 `class Patch`를 생성한다. action_type에 따라 허용된 훅(hook)만 구현하고, 나머지는 현재 best pipeline이 제공한다. IO·k-fold 분할·시드·CV 루프·파라미터 선정은 Evaluator가 소유하므로 Coder 코드에 등장하지 않는다.
 
 ```python
-# 누수 방지: 통계는 train에서만 학습하고 valid엔 적용만 한다.
-# Evaluator가 매 fold마다 (train_fold, valid_fold)로 호출한다.
-def feature_fn(
-    train: pl.DataFrame,
-    valid: pl.DataFrame,
-    target: str,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
-    ...
+import polars as pl
 
-# sklearn 호환 estimator(fit / predict[ _proba ]) 반환.
-def model_fn(params: dict) -> Estimator:
-    ...
+class Patch:
+    action_type = "<assigned action_type>"       # validate_patch()가 배정값과 일치 확인
+    changed_stages = ["<stage>"]
+    rationale = "<한 줄: 무엇을 왜 바꾸는지>"
+
+    # action_type에 허용된 훅만 구현. 나머지는 best pipeline 훅으로 fallback.
+    def <hook>(self, ...):
+        ...
 ```
+
+훅 시그니처 (Evaluator가 매 fold마다 순서대로 호출):
+
+```python
+def preprocess(self, train: pl.DataFrame, valid: pl.DataFrame, target: str, ctx) -> tuple[pl.DataFrame, pl.DataFrame]
+def feature_transform(self, train: pl.DataFrame, valid: pl.DataFrame, target: str, ctx) -> tuple[pl.DataFrame, pl.DataFrame]
+def param_candidates(self, ctx) -> list[dict]           # 후보 파라미터 dict 목록
+def build_model(self, params: dict, ctx) -> sklearn_estimator
+def postprocess_predictions(self, preds, ctx) -> preds
+```
+
+`ctx` 주요 속성: `target_col`, `metric`, `seed`, `is_classification`.  
+`feature_transform`은 반환 전 target 컬럼을 drop해야 한다.  
+통계는 train에서만 학습하고 valid엔 적용만 한다 (누수 방지).
+
+action_type별 허용 훅 (`evaluator/contract.py:_ALLOWED_HOOKS`):
+
+| action_type | 허용 훅 |
+|---|---|
+| `feature_engineering` | `feature_transform` |
+| `preprocessing` | `preprocess` |
+| `model_swap` | `build_model` |
+| `hyperparam_search` | `param_candidates` |
+| `ensemble` | (제한 없음 — 모든 훅 허용) |
+| `compound` | 최대 2개 훅 (ACTION_TYPES 미포함 — Strategist 미노출) |
 
 Evaluator 실행 골격(개념):
 
 ```text
+selected_params = preselect_params(pipeline, train, ctx)  # inner 80/20 holdout으로 후보 중 선정
+
 for tr_idx, va_idx in folds(seed):
-    Xtr, Xva = feature_fn(train[tr_idx], train[va_idx], target)
-    m = model_fn(params); m.fit(Xtr, ytr)
-    preds = m.predict(Xva); score = metric(yva, preds)
+    tr, va = preprocess(train[tr_idx], train[va_idx], target, ctx)
+    Xtr, Xva = feature_transform(tr, va, target, ctx)
+    m = build_model(selected_params, ctx); m.fit(Xtr, ytr)
+    raw_preds = m.predict_proba(Xva)[:,1] or m.predict(Xva)
+    preds = postprocess_predictions(raw_preds, ctx)
+    score = metric(yva, preds)
 cv_score = mean(scores); cv_fold_var = var(scores)
 ```
 
-검증 게이트(실행 전): 시그니처 일치, 허용 import만, 금지 호출(파일/네트워크/`eval`) 없음. 위반 시 재생성 1회, 실패면 `error_trace` 기록 후 Reflect로 진행.
+검증 게이트(실행 전): `class Patch` 존재 여부, 허용 import만, 금지 호출(`eval`/`exec`/`open`) 없음, 구현 훅의 인자 수(arity) 일치, `Patch.action_type == 배정 action_type`. 위반 시 재생성 1회, 실패면 `error_trace` 기록 후 Reflect로 진행.
 
 격리 실행: `runtime/isolate.py`가 tmpdir에 source/input/train 파일을 쓰고 `runtime/runner.py`를 subprocess로 실행한다. runner 내부에서는 생성 코드를 `exec`로 로드한다. 현재 격리 수준은 subprocess 분리 + env allowlist이며, 네트워크/파일시스템 sandbox는 미구현이다.
 
