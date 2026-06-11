@@ -9,3 +9,4 @@ runs/
 .kaggle/
 catboost_info/
 secrets/*.env
+!secrets/*.enc.env
