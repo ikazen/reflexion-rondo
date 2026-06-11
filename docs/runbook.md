@@ -107,10 +107,8 @@ ssh ops-vm "cd ~/reflexion-rondo && bash deploy/start.sh"
 
 **secrets 업데이트 절차:**
 ```bash
-# 로컬에서 enc.env 갱신
-sops --decrypt secrets/rondo.enc.env > secrets/rondo.env
-# 필요한 값 수정
-sops --encrypt secrets/rondo.env > secrets/rondo.enc.env && rm secrets/rondo.env
+# ops-vm에서 직접 편집 (sops가 복호화 → 에디터 → 저장 시 자동 재암호화)
+ssh ops-vm "cd ~/projects/reflexion-rondo && sops secrets/rondo.enc.env"
 git add secrets/rondo.enc.env && git commit -m "chore: update encrypted env"
 git push
 
