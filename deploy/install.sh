@@ -17,13 +17,15 @@ echo "[install] directories created"
 # 3. age + sops 설치
 if ! command -v age &>/dev/null; then
     AGE_VER=1.2.1
-    curl -fsSL "https://github.com/FiloSottile/age/releases/download/v${AGE_VER}/age-v${AGE_VER}-linux-amd64.tar.gz" \
+    ARCH=$(uname -m); [[ "$ARCH" == "aarch64" ]] && ARCH=arm64 || ARCH=amd64
+    curl -fsSL "https://github.com/FiloSottile/age/releases/download/v${AGE_VER}/age-v${AGE_VER}-linux-${ARCH}.tar.gz" \
         | sudo tar -xz -C /usr/local/bin --strip-components=1 age/age age/age-keygen
     echo "[install] age 설치 완료"
 fi
 if ! command -v sops &>/dev/null; then
     SOPS_VER=3.9.4
-    sudo curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VER}/sops-v${SOPS_VER}.linux.amd64" \
+    ARCH=$(uname -m); [[ "$ARCH" == "aarch64" ]] && ARCH=arm64 || ARCH=amd64
+    sudo curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VER}/sops-v${SOPS_VER}.linux.${ARCH}" \
         -o /usr/local/bin/sops && sudo chmod +x /usr/local/bin/sops
     echo "[install] sops 설치 완료"
 fi
