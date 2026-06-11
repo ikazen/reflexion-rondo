@@ -8,7 +8,7 @@ services:
     environment:
       DAEMON_API_HOST: "0.0.0.0"
       PYTHONUNBUFFERED: "1"
-      AIRFLOW_URL: "http://ops-vm-api-server-1:8080"
+      AIRFLOW_URL: "http://airflow-api-server-1:8080"
     restart: always
 
   rondo-dashboard:
