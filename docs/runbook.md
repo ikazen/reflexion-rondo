@@ -149,18 +149,20 @@ Postgres가 concurrent read를 처리한다. daemon은 단일 프로세스로 �
 
 ## 7. 모니터링
 
-**Streamlit 대시보드 (로컬)**
-```bash
-uv run streamlit run dashboard.py
-# → http://localhost:8501
-```
+**Streamlit 대시보드**
+- 운영: `http://rondo.internal:8501` (ops-vm Docker, compose.yml `rondo-dashboard` 서비스)
+- 로컬 개발: `uv run streamlit run dashboard.py`
+
 CV score 진행 곡선, label/action_type 분포, reflection_impact 상위 교훈, 최근 attempt 테이블 제공.
 
 **Daemon API**
+- 베이스: `http://rondo.internal:8000`
+- Swagger: `http://rondo.internal:8000/docs`
+
 ```bash
-curl http://localhost:8000/api/heartbeat   # 현재 상태
-curl http://localhost:8000/api/attempts    # 최근 attempt 목록
-curl http://localhost:8000/api/lessons     # 교훈 목록
+curl http://rondo.internal:8000/api/heartbeat   # 현재 상태
+curl http://rondo.internal:8000/api/attempts    # 최근 attempt 목록
+curl http://rondo.internal:8000/api/lessons     # 교훈 목록
 ```
 
 **Prometheus (BON-90, 배포 후)**
