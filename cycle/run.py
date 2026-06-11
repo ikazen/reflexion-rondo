@@ -370,7 +370,8 @@ def run_attempt_core(
             "select fingerprint from raw.competitions where competition_id = %s",
             [config.competition_id],
         ).fetchone()
-        fp_dict = json.loads(fp_row[0]) if fp_row and fp_row[0] else {}
+        fp_val = fp_row[0] if fp_row and fp_row[0] else {}
+        fp_dict = fp_val if isinstance(fp_val, dict) else json.loads(fp_val)
         insert_pipeline(
             conn,
             pipeline_id=str(uuid.uuid4()),
