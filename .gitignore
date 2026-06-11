@@ -8,3 +8,4 @@ runs/
 .env
 .kaggle/
 catboost_info/
+secrets/*.env
