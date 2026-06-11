@@ -100,6 +100,9 @@ curl -X PATCH http://localhost:8000/api/queue/<queue_id> \
 # mac-server에서 빌드 및 push
 ssh mac-server "cd ~/Projects/reflexion-rondo && git pull && bash deploy/build.sh"
 # airflow-stack DAG의 IMAGE SHA 업데이트 후 push
+
+# ops-vm에서 daemon 재시작
+ssh ops-vm "cd /opt/rondo && sudo docker compose pull && sudo docker compose up -d"
 ```
 
 ## 3. 페이싱 (Ollama Cloud)

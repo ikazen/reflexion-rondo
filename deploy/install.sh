@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# worker-vm 최초 1회 설치 — deploy/ 디렉토리 안에서 실행
+# ops-vm 최초 1회 설치 — deploy/ 디렉토리 안에서 실행
 set -euo pipefail
 
 # 1. registry.internal insecure-registries 등록
 if ! sudo grep -q registry.internal /etc/docker/daemon.json 2>/dev/null; then
-    echo '{"insecure-registries": ["registry.internal"]}' | sudo tee /etc/docker/daemon.json
+    echo '{"insecure-registries": ["registry.internal:80"]}' | sudo tee /etc/docker/daemon.json
     sudo systemctl restart docker
     echo "[install] docker restarted with insecure-registries"
 fi
@@ -17,8 +17,7 @@ echo "[install] directories created"
 # 3. .env 파일 확인
 if [[ ! -f /var/lib/rondo/.env ]]; then
     echo "[install] WARNING: /var/lib/rondo/.env 없음. 배포 전 작성 필요."
-    echo "  필수 키: OLLAMA_BASE_URL, OLLAMA_CLOUD_BASE_URL, OLLAMA_API_KEY,"
-    echo "           MODEL_STRATEGIST, MODEL_REFLECTOR, MODEL_CODER, MODEL_EMBEDDING"
+    echo "  템플릿: secrets/rondo.env.template 참조"
 fi
 
 # 4. Tailscale (이미 가입된 경우 건너뜀)
@@ -28,9 +27,9 @@ if ! command -v tailscale &>/dev/null || ! tailscale status &>/dev/null; then
     echo "  (가입 후 admin 콘솔에서 승인)"
 fi
 
-# 5. eval 이미지 pull (daemon 첫 실행 전 캐싱)
-docker pull registry.internal/reflexion-eval:latest || \
-    echo "[install] WARNING: eval 이미지 pull 실패 — 첫 사이클에서 자동 시도"
+# 5. task 이미지 pull (Airflow DockerOperator 첫 실행 전 캐싱)
+docker pull registry.internal:80/reflexion-rondo/task:latest || \
+    echo "[install] WARNING: task 이미지 pull 실패 — 첫 사이클에서 자동 시도"
 
 # 6. compose.yml 설치 및 시작 (Docker restart: always 로 재부팅 생존)
 sudo mkdir -p /opt/rondo

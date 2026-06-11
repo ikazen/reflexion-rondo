@@ -12,9 +12,9 @@
 | Coder (실행) | Ollama Cloud | qwen3-coder-next (ADR-016) |
 | 임베딩 | Mac Ollama 서버 | qwen3-embedding:8b (1024d, MRL) — ADR-008 |
 | Evaluator (CV · 지표 · param selection · label) | WSL2 로컬 | 결정적 코드 |
-| 생성 코드 실행 | worker-vm | subprocess 격리 (`runtime/isolate.py`), tmpdir + 600s timeout |
+| 생성 코드 실행 | ops-vm | subprocess 격리 (`runtime/isolate.py`), tmpdir + 600s timeout |
 | Memory (검색) | ops-vm | Postgres + pgvector (vector(1024), <=> 코사인) |
-| Orchestrator | worker-vm | daemon + `raw.cycle_queue` 폴링, Airflow DockerOperator 연동 |
+| Orchestrator | ops-vm | daemon + `raw.cycle_queue` 폴링, Airflow DockerOperator 연동 |
 | Warehouse + 분석 뷰 | ops-vm | Postgres raw 스키마 (SQL view, psycopg2 경유) |
 
 설계 의도: **추론만 클라우드, 나머지는 로컬에서 시작.** 병목/비용이 데이터로 잡히면 그때 분산화.
