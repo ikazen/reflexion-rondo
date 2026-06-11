@@ -61,6 +61,7 @@ class _AttemptData:
     """Internal: complete data from one attempt, before reflect."""
     attempt_id: str
     decision: StrategyDecision
+    action_type: str
     source: str
     cv_score: float | None
     cv_fold_var: float
@@ -250,18 +251,21 @@ def run_attempt_core(
         action_prior=action_prior,
         forced_action_type=forced_action,
     )
-    print(f"[attempt] action={decision.action_type} hypothesis={decision.hypothesis[:80]}")
-
-    # Generate + validate
-    print("[attempt] generating code...")
-    _MAX_CODE_RETRIES = 2
+    # bootstrap with no established pipeline → generate full pipeline from scratch
     if config.stage == "bootstrap" and config.seed_code:
         prev_code: str | None = config.seed_code
     else:
         prev_code = _load_best_pipeline(config.competition_id)
+    action_type = "bootstrap" if (config.stage == "bootstrap" and not prev_code) else decision.action_type
+
+    print(f"[attempt] action={action_type} hypothesis={decision.hypothesis[:80]}")
+
+    # Generate + validate
+    print("[attempt] generating code...")
+    _MAX_CODE_RETRIES = 2
     gen_kwargs: dict = dict(
         hypothesis=decision.hypothesis,
-        action_type=decision.action_type,
+        action_type=action_type,
         eda_card=config.eda_card,
         prev_code=prev_code,
     )
@@ -270,7 +274,7 @@ def run_attempt_core(
     error_trace: str | None = None
 
     for _i in range(_MAX_CODE_RETRIES + 1):
-        errors = validate_patch(source, decision.action_type)
+        errors = validate_patch(source, action_type)
         if not errors:
             break
         feedback = "\n".join(errors)
@@ -300,7 +304,7 @@ def run_attempt_core(
                 n_splits=config.n_splits,
                 seed=config.seed,
                 is_classification=config.is_classification,
-                action_type=decision.action_type,
+                action_type=action_type,
                 best_source=prev_code,
             )
             if not iso.error_trace:
@@ -315,7 +319,7 @@ def run_attempt_core(
             if _eval_i == 0:
                 source = generate_code(**gen_kwargs, error_feedback=iso.error_trace)
                 retries += 1
-                static_errs = validate_patch(source, decision.action_type)
+                static_errs = validate_patch(source, action_type)
                 if static_errs:
                     error_trace = "\n".join(static_errs)
                     break
@@ -332,7 +336,7 @@ def run_attempt_core(
         attempt_id=attempt_id,
         stage=config.stage,
         hypothesis=decision.hypothesis,
-        action_type=decision.action_type,
+        action_type=action_type,
         cv_score=cv_score,
         gain_vs_best=gain_vs_best,
         error_trace=error_trace,
@@ -346,7 +350,7 @@ def run_attempt_core(
         "run_ts":           datetime.now(timezone.utc),
         "stage":            config.stage,
         "hypothesis":       decision.hypothesis,
-        "action_type":      decision.action_type,
+        "action_type":      action_type,
         "reflection_ids":   decision.reflection_ids or None,
         "retrieval_scores": [l["score"] for l in lessons] or None,
         "cv_score":         cv_score,
@@ -391,7 +395,7 @@ def run_attempt_core(
         update_bandit(
             conn,
             competition_id=config.competition_id,
-            action_type=decision.action_type,
+            action_type=action_type,
             label=label,
             gain_vs_best=gain_vs_best,
             error_trace=error_trace,
@@ -400,6 +404,7 @@ def run_attempt_core(
     return _AttemptData(
         attempt_id=attempt_id,
         decision=decision,
+        action_type=action_type,
         source=source,
         cv_score=cv_score,
         cv_fold_var=cv_fold_var,
@@ -418,7 +423,7 @@ def _do_reflect(conn: PgConn, competition_id: str, data: _AttemptData) -> str | 
         return None
     ctx = AttemptContext(
         hypothesis=data.decision.hypothesis,
-        action_type=data.decision.action_type,
+        action_type=data.action_type,
         code=data.source,
         cv_score=data.cv_score or 0.0,
         cv_fold_var=data.cv_fold_var,

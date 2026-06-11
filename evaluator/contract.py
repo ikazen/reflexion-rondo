@@ -24,6 +24,7 @@ _ALLOWED_HOOKS: dict[str, frozenset[str]] = {
     "preprocessing":       frozenset({"preprocess"}),
     "hyperparam_search":   frozenset({"param_candidates"}),
     "compound":            _ALL_HOOKS,
+    "bootstrap":           _ALL_HOOKS,
 }
 
 _HOOK_ARITY = {
