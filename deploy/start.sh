@@ -16,5 +16,7 @@ sops --decrypt "$ENC_ENV" > "$PLAIN_ENV"
 chmod 600 "$PLAIN_ENV"
 echo "[start] .env 복호화 완료"
 
-sudo docker compose up -d
+sudo mkdir -p /opt/rondo
+sudo cp "$REPO_DIR/deploy/compose.yml" /opt/rondo/compose.yml
+sudo docker compose -f /opt/rondo/compose.yml up -d
 echo "[start] rondo-daemon 시작 완료"
