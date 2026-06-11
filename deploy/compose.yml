@@ -8,3 +8,13 @@ services:
       DAEMON_API_HOST: "0.0.0.0"
       PYTHONUNBUFFERED: "1"
     restart: always
+
+  rondo-dashboard:
+    image: registry.internal:80/reflexion-rondo/daemon:latest
+    network_mode: host
+    env_file:
+      - /var/lib/rondo/.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+    command: ["uv", "run", "streamlit", "run", "dashboard.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
+    restart: always
