@@ -12,6 +12,13 @@ if TYPE_CHECKING:
 
 from config.settings import ACTION_TYPES
 
+_ACTION_CATALOG = """\
+- feature_engineering: derive/transform features (target encoding, interactions, binning, aggregations)
+- model_swap: change the estimator (e.g. lgbm <-> catboost <-> xgboost <-> tabpfn)
+- hyperparam_search: propose alternative hyperparameter candidates for the current model
+- preprocessing: missing-value handling, scaling, encoding before feature engineering
+- ensemble: combine models (weighted averaging, stacking)"""
+
 _OUTPUT_SCHEMA: dict = {
     "type": "object",
     "properties": {
@@ -128,8 +135,12 @@ def strategize(
 - Stage: {stage}
 - Previous best CV: {prev_best_str}
 {exploration_section}{prior_section}{forced_section}
+## Action Types
+{_ACTION_CATALOG}
+
 ## Task
 Propose exactly one change to improve the CV score.
+Pick the action_type that best matches your hypothesis from the catalog above.
 Select which retrieved lessons (if any) directly informed your hypothesis and list their IDs in reflection_ids.
 Only include IDs from the list above — omit any that did not influence your reasoning.
 
@@ -142,7 +153,7 @@ Respond with ONLY a JSON object using exactly these keys:
     resp = _client().chat(
         model=settings.MODEL_STRATEGIST,
         messages=[{"role": "user", "content": user_prompt}],
-        format="json",
+        format=_OUTPUT_SCHEMA,
     )
 
     content = resp.message.content.strip()

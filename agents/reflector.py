@@ -131,7 +131,7 @@ Respond with ONLY a JSON object using exactly these keys:
     resp = _client().chat(
         model=settings.MODEL_REFLECTOR,
         messages=[{"role": "user", "content": user_prompt}],
-        format="json",
+        format=_OUTPUT_SCHEMA,
     )
 
     content = resp.message.content.strip()
