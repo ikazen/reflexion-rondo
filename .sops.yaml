@@ -1,4 +1,4 @@
 creation_rules:
-  - path_regex: secrets/.*\.enc\.env$
+  - path_regex: secrets/.*\.env
     age: >-
-      <your-age-public-key>
+      age1rz8tsv5l25qu2cq9szzfweg6q3ezv6wqssz3qfqm9t30dkr4muzqf8fhx4
