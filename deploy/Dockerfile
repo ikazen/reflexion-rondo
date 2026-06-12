@@ -19,4 +19,4 @@ RUN uv sync --frozen --no-dev --no-install-project
 # Layer: source
 COPY . .
 
-CMD ["uv", "run", "python", "-m", "bin.run_daemon"]
+CMD ["uv", "run", "--no-sync", "python", "-m", "bin.run_daemon"]

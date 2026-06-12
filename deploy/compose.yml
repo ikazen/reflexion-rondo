@@ -19,7 +19,7 @@ services:
       - /var/lib/rondo/.env
     environment:
       PYTHONUNBUFFERED: "1"
-    command: ["uv", "run", "streamlit", "run", "dashboard.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
+    command: ["uv", "run", "--no-sync", "streamlit", "run", "dashboard.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
     restart: always
 
 networks:
