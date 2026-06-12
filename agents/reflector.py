@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -10,6 +11,9 @@ from ollama import Client
 from config import settings
 from memory.retriever import insert_reflection
 from store.db import PgConn
+
+_LOG = logging.getLogger(__name__)
+_REFLECT_RETRIES = 3
 
 GENERALITY_VALUES = ["L1_local", "L2_class", "L3_general"]
 LABEL_VALUES = ["jump", "neutral", "regression"]
@@ -128,22 +132,30 @@ For generality:
 Respond with ONLY a JSON object using exactly these keys:
 {{"embedded_text": "one-paragraph summary for search", "full_lesson": "detailed lesson", "generality": "<L1_local|L2_class|L3_general>", "reflector_label": "<jump|neutral|regression>"}}"""
 
-    resp = _client().chat(
-        model=settings.MODEL_REFLECTOR,
-        messages=[{"role": "user", "content": user_prompt}],
-        format=_OUTPUT_SCHEMA,
-    )
-
-    content = resp.message.content.strip()
-    if not content:
-        raise ValueError("Reflector returned empty response")
-    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
-    if m:
-        content = m.group(1).strip()
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Reflector JSON parse failed: {e}\nraw: {content[:300]}") from e
+    last_err: Exception | None = None
+    for attempt in range(_REFLECT_RETRIES):
+        resp = _client().chat(
+            model=settings.MODEL_REFLECTOR,
+            messages=[{"role": "user", "content": user_prompt}],
+            format=_OUTPUT_SCHEMA,
+            options={"num_predict": 2048},
+        )
+        content = resp.message.content.strip()
+        if not content:
+            last_err = ValueError("Reflector returned empty response")
+            _LOG.warning("reflect attempt %d/%d: empty response", attempt + 1, _REFLECT_RETRIES)
+            continue
+        m = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
+        if m:
+            content = m.group(1).strip()
+        try:
+            data = json.loads(content)
+            break
+        except json.JSONDecodeError as e:
+            last_err = ValueError(f"Reflector JSON parse failed: {e}\nraw: {content[:300]}")
+            _LOG.warning("reflect attempt %d/%d: %s", attempt + 1, _REFLECT_RETRIES, last_err)
+    else:
+        raise last_err  # type: ignore[misc]
 
     if not data.get("embedded_text"):
         data["embedded_text"] = (data.get("full_lesson") or "")[:500]
