@@ -13,6 +13,7 @@ from evaluator.metrics import get as get_metric
 LABEL_Z = 1.0
 _PI_REPEATS = 3
 _PI_TOP_N = 20
+_MAX_PARAM_CANDIDATES = 12
 
 _IMPORTANCE_ACTIONS = frozenset({"feature_engineering", "preprocessing"})
 
@@ -104,7 +105,7 @@ def preselect_params(
     ctx: PipelineContext,
 ) -> dict:
     """Select best params via a single 80/20 inner holdout to avoid CV leakage."""
-    candidates = pipeline.param_candidates(ctx)
+    candidates = pipeline.param_candidates(ctx)[:_MAX_PARAM_CANDIDATES]
     if len(candidates) <= 1:
         return candidates[0] if candidates else {}
 

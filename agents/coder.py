@@ -42,7 +42,7 @@ class Patch:
 ## Hook signatures
   def preprocess(self, train: pl.DataFrame, valid: pl.DataFrame, target: str, ctx) -> tuple[pl.DataFrame, pl.DataFrame]
   def feature_transform(self, train: pl.DataFrame, valid: pl.DataFrame, target: str, ctx) -> tuple[pl.DataFrame, pl.DataFrame]
-  def param_candidates(self, ctx) -> list[dict]
+  def param_candidates(self, ctx) -> list[dict]  # MUST return 3–12 dicts — Cartesian grid forbidden
   def build_model(self, params: dict, ctx) -> sklearn_estimator
   def postprocess_predictions(self, preds, ctx) -> preds
 
@@ -58,6 +58,7 @@ class Patch:
 - feature_transform must drop the target column before returning
 - Fit all transformations on train only, apply to valid (no leakage)
 - No file I/O, no network calls, no eval/exec/open
+- param_candidates MUST return between 3 and 12 dicts — never build a Cartesian product grid
 
 ## Polars rules (do NOT use pandas-style API)
 - String columns have dtype pl.String (NOT pl.Categorical)
@@ -106,7 +107,7 @@ class Patch:
 ## Hook signatures
   def preprocess(self, train: pl.DataFrame, valid: pl.DataFrame, target: str, ctx) -> tuple[pl.DataFrame, pl.DataFrame]
   def feature_transform(self, train: pl.DataFrame, valid: pl.DataFrame, target: str, ctx) -> tuple[pl.DataFrame, pl.DataFrame]
-  def param_candidates(self, ctx) -> list[dict]
+  def param_candidates(self, ctx) -> list[dict]  # MUST return 3–12 dicts — Cartesian grid forbidden
   def build_model(self, params: dict, ctx) -> sklearn_estimator
   def postprocess_predictions(self, preds, ctx) -> preds
 
