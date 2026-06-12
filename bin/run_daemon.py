@@ -385,6 +385,13 @@ def main() -> None:
     api_thread.start()
 
     conn = connect()
+    stuck = conn.execute(
+        "UPDATE raw.cycle_queue SET status = 'pending', started_at = NULL "
+        "WHERE status = 'running' RETURNING queue_id"
+    ).fetchall()
+    if stuck:
+        ids = [r[0] for r in stuck]
+        print(f"[daemon] reset {len(ids)} stuck 'running' → 'pending': {ids}")
     pacer.restore_from_db(conn)
     print("[daemon] started — polling raw.cycle_queue")
 
