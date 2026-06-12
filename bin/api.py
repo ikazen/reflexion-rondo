@@ -12,6 +12,7 @@
   POST /api/queue
   PATCH /api/queue/{id}
   POST /api/submissions
+  POST /api/submissions/auto
   GET  /api/submissions
   GET  /api/submissions/{id}
 
@@ -127,6 +128,10 @@ class SubmitRequest(BaseModel):
     message: str | None = None
 
 
+class AutoSubmitRequest(BaseModel):
+    window_hours: int = 24
+
+
 # ---------------------------------------------------------------------------
 # Kaggle 제출 백그라운드 워커
 # ---------------------------------------------------------------------------
@@ -225,6 +230,86 @@ def _kaggle_submit_and_poll(
             continue
 
     _update({"status": "timeout", "checked_at": datetime.now(timezone.utc)})
+
+
+# ---------------------------------------------------------------------------
+# 자동 제출 헬퍼 (create_app 밖 — 공유 가능)
+# ---------------------------------------------------------------------------
+
+def _start_submission(
+    conn: PgConn,
+    competition_slug: str,
+    competition_id: str,
+    attempt_id: str | None,
+    message: str,
+) -> str:
+    sid = str(uuid.uuid4())
+    conn.execute(
+        """
+        insert into raw.kaggle_submissions
+            (submission_id, competition_id, attempt_id, submitted_at, message, status)
+        values (%s, %s, %s, %s, %s, 'queued')
+        """,
+        [sid, competition_id, attempt_id, datetime.now(timezone.utc), message],
+    )
+    threading.Thread(
+        target=_kaggle_submit_and_poll,
+        args=(sid, competition_id, competition_slug, attempt_id, message),
+        daemon=True,
+    ).start()
+    return sid
+
+
+def _competition_id_to_slug() -> dict[str, str]:
+    """config/competitions/*.py 스캔 → {competition_id: module_slug} 맵."""
+    cached, hit = _cache.get("_comp_slug_map", ttl=3600)
+    if hit:
+        return cached  # type: ignore[return-value]
+    result: dict[str, str] = {}
+    comp_dir = ROOT / "config" / "competitions"
+    for path in comp_dir.glob("*.py"):
+        if path.stem.startswith("_"):
+            continue
+        try:
+            mod = importlib.import_module(f"config.competitions.{path.stem}")
+            cid = getattr(mod, "COMPETITION_ID", None)
+            if cid:
+                result[cid] = path.stem
+        except Exception:
+            continue
+    _cache.set("_comp_slug_map", result)
+    return result
+
+
+def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None:
+    row = conn.execute(
+        """
+        select a.attempt_id, a.cv_score
+        from raw.attempts a
+        join raw.competitions c using (competition_id)
+        where a.competition_id = %s
+          and a.cv_score is not null
+          and a.error_trace is null
+        order by c.metric_sign * a.cv_score desc
+        limit 1
+        """,
+        [competition_id],
+    ).fetchone()
+    return (row[0], row[1]) if row else None
+
+
+def _last_submitted_attempt(conn: PgConn, competition_id: str) -> str | None:
+    row = conn.execute(
+        """
+        select attempt_id from raw.kaggle_submissions
+        where competition_id = %s
+          and status not in ('error', 'invalid', 'timeout')
+        order by submitted_at desc
+        limit 1
+        """,
+        [competition_id],
+    ).fetchone()
+    return row[0] if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -468,22 +553,54 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         except ModuleNotFoundError:
             raise HTTPException(status_code=422, detail=f"unknown competition: {body.competition}")
 
-        sid = str(uuid.uuid4())
         msg = body.message or f"rondo attempt={body.attempt_id or 'best'}"
-        conn.execute(
-            """
-            insert into raw.kaggle_submissions
-                (submission_id, competition_id, attempt_id, submitted_at, message, status)
-            values (%s, %s, %s, %s, %s, 'queued')
-            """,
-            [sid, comp.COMPETITION_ID, body.attempt_id, datetime.now(timezone.utc), msg],
-        )
-        threading.Thread(
-            target=_kaggle_submit_and_poll,
-            args=(sid, comp.COMPETITION_ID, body.competition, body.attempt_id, msg),
-            daemon=True,
-        ).start()
+        sid = _start_submission(conn, body.competition, comp.COMPETITION_ID, body.attempt_id, msg)
         return {"submission_id": sid, "status": "queued"}
+
+    @app.post("/api/submissions/auto", status_code=200)
+    def auto_submit(body: AutoSubmitRequest):
+        slug_map = _competition_id_to_slug()
+
+        active_rows = conn.execute(
+            """
+            select distinct competition_id from raw.attempts
+            where run_ts >= now() - make_interval(hours => %s)
+              and cv_score is not null
+              and error_trace is null
+            """,
+            [body.window_hours],
+        ).fetchall()
+
+        submitted = []
+        skipped = []
+
+        for (competition_id,) in active_rows:
+            slug = slug_map.get(competition_id)
+            if not slug:
+                skipped.append({"competition": competition_id, "reason": "no config"})
+                continue
+
+            best = _best_attempt(conn, competition_id)
+            if not best:
+                skipped.append({"competition": competition_id, "reason": "no valid attempt"})
+                continue
+            best_attempt_id, best_cv = best
+
+            last = _last_submitted_attempt(conn, competition_id)
+            if last == best_attempt_id:
+                skipped.append({"competition": competition_id, "reason": "best unchanged"})
+                continue
+
+            msg = f"auto cv={best_cv:.5f} attempt={best_attempt_id[:8]}"
+            sid = _start_submission(conn, slug, competition_id, best_attempt_id, msg)
+            submitted.append({
+                "competition": competition_id,
+                "slug": slug,
+                "attempt_id": best_attempt_id,
+                "submission_id": sid,
+            })
+
+        return {"submitted": submitted, "skipped": skipped}
 
     @app.get("/api/submissions")
     def get_submissions(competition: str | None = None, limit: int = 50):
