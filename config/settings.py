@@ -9,7 +9,7 @@ OLLAMA_CLOUD_BASE_URL = os.getenv("OLLAMA_CLOUD_BASE_URL", "https://ollama.com")
 OLLAMA_API_KEY        = os.getenv("OLLAMA_API_KEY", "")
 
 MODEL_STRATEGIST  = "deepseek-v4-pro"
-MODEL_REFLECTOR   = "glm-5"
+MODEL_REFLECTOR   = "kimi-k2.6"
 MODEL_CODER       = "qwen3-coder-next"
 MODEL_EMBEDDING   = "qwen3-embedding:8b"
 

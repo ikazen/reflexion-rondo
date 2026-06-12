@@ -145,20 +145,27 @@ For generality:
 - L3_general if it is a universal principle for tabular ML
 
 Respond with ONLY a JSON object using exactly these keys:
-{{"embedded_text": "one-paragraph summary for search", "full_lesson": "detailed lesson", "generality": "<L1_local|L2_class|L3_general>", "reflector_label": "<jump|neutral|regression>"}}"""
+{{"embedded_text": "one-paragraph summary for search (2-3 sentences max)", "full_lesson": "detailed lesson (4-5 sentences max)", "generality": "<L1_local|L2_class|L3_general>", "reflector_label": "<jump|neutral|regression>"}}"""
 
+    import time as _time
+
+    gain_str = f"{context.gain_vs_best:+.5f}" if context.gain_vs_best is not None else "N/A"
+    print(f"[reflector] model={settings.MODEL_REFLECTOR}"
+          f" label={context.label} cv={context.cv_score:.5f} gain={gain_str}")
+    _t0 = _time.monotonic()
     last_err: Exception | None = None
     for attempt in range(_REFLECT_RETRIES):
         resp = _client().chat(
             model=settings.MODEL_REFLECTOR,
             messages=[{"role": "user", "content": user_prompt}],
             format=_OUTPUT_SCHEMA,
-            options={"num_predict": 2048},
+            options={"num_predict": 4096},
         )
         content = resp.message.content.strip()
         if not content:
             last_err = ValueError("Reflector returned empty response")
             _LOG.warning("reflect attempt %d/%d: empty response", attempt + 1, _REFLECT_RETRIES)
+            _time.sleep(2)
             continue
         m = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
         if m:
@@ -180,6 +187,10 @@ Respond with ONLY a JSON object using exactly these keys:
         data["generality"] = "L3_general"
     if data.get("reflector_label") not in LABEL_VALUES:
         data["reflector_label"] = "neutral"
+
+    print(f"[reflector] done in {_time.monotonic() - _t0:.1f}s"
+          f" generality={data['generality']} reflector_label={data['reflector_label']}"
+          f" lesson_type={_derive_lesson_type(context.label, context.error_trace)}")
 
     reflection_id = str(uuid.uuid4())
     lesson_type = _derive_lesson_type(context.label, context.error_trace)
