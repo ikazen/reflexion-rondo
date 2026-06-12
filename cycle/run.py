@@ -240,8 +240,13 @@ def run_attempt_core(
     dynamic_ctx = _dynamic_eda_context(conn, config.competition_id, prev_best_cv)
     enriched_eda = config.eda_card + dynamic_ctx
     stagnation = detect_stagnation(conn, config.competition_id)
-    print(f"[attempt] strategizing... stagnation={stagnation}")
+    print(f"[attempt] start attempt_id={attempt_id[:8]}"
+          f" super_cycle={super_cycle_id[:8] if super_cycle_id else '-'}"
+          f" idx={attempt_index if attempt_index is not None else '-'}"
+          f" stage={config.stage} prev_best={prev_best_cv} n_lessons={len(lessons)}"
+          f" stagnant={stagnation.is_stagnant if stagnation else False}")
     action_prior = get_action_prior(conn, config.competition_id)
+    _t_strategize = time.monotonic()
     decision = strategize(
         eda_card=enriched_eda,
         lessons=lessons,
@@ -251,6 +256,7 @@ def run_attempt_core(
         action_prior=action_prior,
         forced_action_type=forced_action,
     )
+    print(f"[attempt] strategize done in {time.monotonic() - _t_strategize:.1f}s")
     # bootstrap with no established pipeline → generate full pipeline from scratch
     if config.stage == "bootstrap" and config.seed_code:
         prev_code: str | None = config.seed_code
@@ -258,10 +264,8 @@ def run_attempt_core(
         prev_code = _load_best_pipeline(config.competition_id)
     action_type = "bootstrap" if (config.stage == "bootstrap" and not prev_code) else decision.action_type
 
-    print(f"[attempt] action={action_type} hypothesis={decision.hypothesis[:80]}")
-
     # Generate + validate
-    print("[attempt] generating code...")
+    _t_codegen = time.monotonic()
     _MAX_CODE_RETRIES = 2
     gen_kwargs: dict = dict(
         hypothesis=decision.hypothesis,
@@ -279,14 +283,17 @@ def run_attempt_core(
             break
         feedback = "\n".join(errors)
         if _i < _MAX_CODE_RETRIES:
-            print(f"[attempt] static error → regenerating (retry {_i + 1})")
+            print(f"[attempt] static error ({len(errors)} violation(s)) → regenerating (retry {_i + 1})")
             source = generate_code(**gen_kwargs, error_feedback=feedback)
             retries += 1
         else:
             error_trace = feedback
 
+    print(f"[attempt] codegen done in {time.monotonic() - _t_codegen:.1f}s retries={retries}")
+
     # Evaluate
-    print("[attempt] evaluating...")
+    print(f"[attempt] evaluating (n_splits={config.n_splits} metric={config.metric})...")
+    _t_eval = time.monotonic()
     cv_score = None
     cv_fold_var = 0.0
     label = "regression"
@@ -313,9 +320,13 @@ def run_attempt_core(
                 label = iso.label or "regression"
                 gain_vs_best = iso.gain_vs_best
                 feature_importance = iso.feature_importance
-                print(f"[attempt] eval ok — cv={cv_score:.6f} gain={gain_vs_best} label={label}")
+                gain_str = f"{gain_vs_best:+.6f}" if gain_vs_best is not None else "N/A"
+                print(f"[attempt] eval ok in {time.monotonic() - _t_eval:.1f}s"
+                      f" cv={cv_score:.6f} fold_var={cv_fold_var:.6f}"
+                      f" gain={gain_str} label={label}")
                 break
-            print(f"[attempt] eval error (try {_eval_i + 1}) → regenerating")
+            print(f"[attempt] eval error (try {_eval_i + 1}) → regenerating"
+                  f": {(iso.error_trace or '')[:120]}")
             if _eval_i == 0:
                 source = generate_code(**gen_kwargs, error_feedback=iso.error_trace)
                 retries += 1
@@ -327,7 +338,7 @@ def run_attempt_core(
                 error_trace = iso.error_trace
 
     if error_trace:
-        print(f"[attempt] failed — {error_trace[:120]}")
+        print(f"[attempt] failed — {error_trace[:200]}")
 
     # Save code
     code_path = _save_code(
@@ -389,6 +400,10 @@ def run_attempt_core(
         materialized = materialize_best_pipeline(prev_code, source)
         _best_pipeline_upload(config.competition_id, materialized)
         print(f"[attempt] best pipeline materialized (gain={gain_vs_best:+.5f})")
+
+    print(f"[attempt] persist done — total {round(duration_sec, 1)}s"
+          f" attempt_id={attempt_id[:8]} action={action_type}"
+          f" label={label} retries={retries}")
 
     # Action bandit update — reflexion stage only (BON-109)
     if config.stage == "reflexion":

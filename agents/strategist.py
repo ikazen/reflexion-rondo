@@ -149,12 +149,17 @@ Respond with ONLY a JSON object using exactly these keys:
 
     import json
     import re
+    import time
 
+    print(f"[strategist] model={settings.MODEL_STRATEGIST} n_lessons={len(lessons)}"
+          f" stage={stage} forced={forced_action_type or '-'}")
+    _t0 = time.monotonic()
     resp = _client().chat(
         model=settings.MODEL_STRATEGIST,
         messages=[{"role": "user", "content": user_prompt}],
         format=_OUTPUT_SCHEMA,
     )
+    print(f"[strategist] done in {time.monotonic() - _t0:.1f}s")
 
     content = resp.message.content.strip()
     if not content:
@@ -174,8 +179,11 @@ Respond with ONLY a JSON object using exactly these keys:
 
     adopted = [rid for rid in data.get("reflection_ids", []) if rid in valid_ids]
 
-    return StrategyDecision(
+    decision = StrategyDecision(
         hypothesis=data["hypothesis"],
         action_type=data["action_type"],
         reflection_ids=adopted,
     )
+    print(f"[strategist] action={decision.action_type} used_lessons={len(adopted)}"
+          f" hypothesis={decision.hypothesis[:120]}")
+    return decision

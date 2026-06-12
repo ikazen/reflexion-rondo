@@ -177,8 +177,16 @@ def generate_code(
 
     parts.append("Write the Patch class now.")
 
+    import time
+
+    retry_tag = " [retry/feedback]" if error_feedback else ""
+    print(f"[coder] model={settings.MODEL_CODER} action={action_type}"
+          f" prev_code={'yes' if prev_code else 'no'}{retry_tag}")
+    _t0 = time.monotonic()
     resp = _client().chat(
         model=settings.MODEL_CODER,
         messages=[{"role": "user", "content": "\n\n".join(parts)}],
     )
-    return _extract_code(resp.message.content)
+    source = _extract_code(resp.message.content)
+    print(f"[coder] done in {time.monotonic() - _t0:.1f}s  code_chars={len(source)}")
+    return source
