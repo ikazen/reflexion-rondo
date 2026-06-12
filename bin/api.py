@@ -11,18 +11,26 @@
   GET  /api/queue
   POST /api/queue
   PATCH /api/queue/{id}
+  POST /api/submissions
+  GET  /api/submissions
+  GET  /api/submissions/{id}
 
 DuckDB 연결은 호출 측(daemon)이 주입한다.
 DaemonState는 daemon 메인 루프가 갱신하고 API가 읽는 공유 객체.
 """
 from __future__ import annotations
 
+import csv as csv_module
 import importlib
+import io
 import os
+import subprocess
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 
 import polars as pl
@@ -31,7 +39,37 @@ from pydantic import BaseModel
 
 from store.db import PgConn
 
+ROOT = Path(__file__).resolve().parent.parent
 _MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
+
+
+# ---------------------------------------------------------------------------
+# TTL 캐시 (read-only GET 엔드포인트용)
+# ---------------------------------------------------------------------------
+
+class _TTLCache:
+    def __init__(self) -> None:
+        self._store: dict[str, tuple[float, object]] = {}
+        self._lock = threading.Lock()
+
+    def get(self, key: str, ttl: float) -> tuple[object, bool]:
+        with self._lock:
+            entry = self._store.get(key)
+            if entry and time.monotonic() - entry[0] < ttl:
+                return entry[1], True
+        return None, False
+
+    def set(self, key: str, val: object) -> None:
+        with self._lock:
+            self._store[key] = (time.monotonic(), val)
+
+    def drop(self, prefix: str) -> None:
+        with self._lock:
+            for k in [k for k in self._store if k.startswith(prefix)]:
+                del self._store[k]
+
+
+_cache = _TTLCache()
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +121,112 @@ class QueuePatchRequest(BaseModel):
     status: Literal["cancelled"] | None = None
 
 
+class SubmitRequest(BaseModel):
+    competition: str
+    attempt_id: str | None = None
+    message: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Kaggle 제출 백그라운드 워커
+# ---------------------------------------------------------------------------
+
+def _kaggle_submit_and_poll(
+    submission_id: str,
+    competition_id: str,
+    competition_slug: str,
+    attempt_id: str | None,
+    message: str,
+) -> None:
+    from store.db import connect
+
+    def _update(fields: dict) -> None:
+        c = connect(apply_schema=False)
+        sets = ", ".join(f"{k} = %s" for k in fields)
+        c.execute(
+            f"update raw.kaggle_submissions set {sets} where submission_id = %s",
+            list(fields.values()) + [submission_id],
+        )
+        c.close()
+
+    # Step 1: CSV 생성 + kaggle 제출
+    cmd = [
+        "uv", "run", "python", "-m", "bin.submit",
+        "--competition", competition_slug,
+        "--submit", "--message", message,
+    ]
+    if attempt_id:
+        cmd += ["--attempt-id", attempt_id]
+
+    _update({"status": "submitting", "checked_at": datetime.now(timezone.utc)})
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=600, cwd=str(ROOT)
+        )
+    except subprocess.TimeoutExpired:
+        _update({"status": "error", "error": "submit timed out (600s)", "checked_at": datetime.now(timezone.utc)})
+        return
+
+    if result.returncode != 0:
+        _update({"status": "error", "error": result.stderr[:2000], "checked_at": datetime.now(timezone.utc)})
+        return
+
+    csv_path: str | None = None
+    for line in result.stdout.splitlines():
+        if "submission saved:" in line:
+            csv_path = line.split("submission saved:", 1)[1].strip()
+            break
+
+    fields: dict = {"status": "polling", "checked_at": datetime.now(timezone.utc)}
+    if csv_path:
+        fields["csv_path"] = csv_path
+    _update(fields)
+
+    # Step 2: 10초 간격, 5분 polling
+    deadline = time.monotonic() + 300
+    while time.monotonic() < deadline:
+        time.sleep(10)
+        try:
+            poll = subprocess.run(
+                ["uv", "run", "kaggle", "competitions", "submissions",
+                 "-c", competition_id, "--csv"],
+                capture_output=True, text=True, timeout=30, cwd=str(ROOT),
+            )
+            if poll.returncode != 0:
+                continue
+
+            reader = csv_module.DictReader(io.StringIO(poll.stdout))
+            for row in reader:
+                if (row.get("description") or "").strip() != message:
+                    continue
+                status = (row.get("status") or "").lower()
+                if status == "complete":
+                    raw_score = row.get("publicScore") or row.get("public score") or ""
+                    lb_score: float | None = None
+                    try:
+                        lb_score = float(raw_score)
+                    except (ValueError, TypeError):
+                        pass
+                    _update({"status": "complete", "lb_score": lb_score, "checked_at": datetime.now(timezone.utc)})
+                    if attempt_id and lb_score is not None:
+                        c = connect(apply_schema=False)
+                        c.execute(
+                            "update raw.attempts set lb_score = %s where attempt_id like %s and lb_score is null",
+                            [lb_score, f"{attempt_id}%"],
+                        )
+                        c.close()
+                    return
+                elif status in ("error", "invalid"):
+                    _update({"status": status, "error": f"kaggle: {status}", "checked_at": datetime.now(timezone.utc)})
+                    return
+                break  # 아직 pending — 다음 interval 대기
+        except Exception:
+            continue
+
+    _update({"status": "timeout", "checked_at": datetime.now(timezone.utc)})
+
+
 # ---------------------------------------------------------------------------
 # 앱 팩토리
 # ---------------------------------------------------------------------------
@@ -95,69 +239,28 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
     @app.get("/api/heartbeat")
     def heartbeat():
         snap = state.snapshot()
-        status = "running" if snap["current_queue_id"] else "idle"
-        return {"status": status, **snap}
+        return {"status": "running" if snap["current_queue_id"] else "idle", **snap}
 
     @app.get("/api/competitions")
     def get_competitions():
+        cached, hit = _cache.get("competitions", ttl=60)
+        if hit:
+            return cached
         rows = conn.execute(
             "select competition_id, name, task_type, metric, metric_sign, start_ts from raw.competitions"
         ).fetchall()
         cols = ["competition_id", "name", "task_type", "metric", "metric_sign", "start_ts"]
-        return [dict(zip(cols, r)) for r in rows]
-
-    @app.post("/api/competitions", status_code=201)
-    def register_competition(body: RegisterRequest):
-        try:
-            comp = importlib.import_module(f"config.competitions.{body.competition}")
-        except ModuleNotFoundError:
-            raise HTTPException(status_code=422, detail=f"unknown competition: {body.competition}")
-
-        s3_path = getattr(comp, "S3_DATA_PATH", None)
-        if s3_path and _MINIO_ENDPOINT:
-            url = f"{_MINIO_ENDPOINT}/kaggle/{s3_path}train.csv"
-            try:
-                train = pl.read_csv(url).drop(comp.DROP_COLS)
-            except Exception as e:
-                raise HTTPException(status_code=502, detail=f"MinIO read failed: {e}")
-        else:
-            csv_path = comp.DATA_DIR / "train.csv"
-            if not csv_path.exists():
-                raise HTTPException(status_code=422, detail=f"train.csv not found: {csv_path}")
-            train = pl.read_csv(csv_path).drop(comp.DROP_COLS)
-
-        from evaluator.metrics import get as get_metric
-        from store.db import ensure_competition
-        from store.fingerprint import compute as compute_fingerprint
-        from memory.transfer import find_similar_competitions, cold_start_lessons, bootstrap_seeds
-
-        _, metric_sign, _ = get_metric(comp.METRIC)
-        fp = compute_fingerprint(train, comp.TARGET, comp.TASK_TYPE, comp.METRIC, metric_sign)
-        ensure_competition(
-            conn,
-            competition_id=comp.COMPETITION_ID,
-            name=comp.NAME,
-            task_type=comp.TASK_TYPE,
-            metric=comp.METRIC,
-            metric_sign=metric_sign,
-            fingerprint=fp,
-        )
-
-        similar_with_dist = find_similar_competitions(conn, fp, exclude_id=comp.COMPETITION_ID, k=3)
-        similar = [c for c, _ in similar_with_dist]
-        lessons = cold_start_lessons(conn, similar, k=10)
-        seeds = bootstrap_seeds(conn, similar, n=2)
-
-        return {
-            "competition_id": comp.COMPETITION_ID,
-            "similar_competitions": similar,
-            "lessons": len(lessons),
-            "seeds": len(seeds),
-        }
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set("competitions", result)
+        return result
 
     @app.get("/api/attempts")
     def get_attempts(competition: str | None = None, limit: int = 50):
         limit = min(limit, 500)
+        cache_key = f"attempts:{competition}:{limit}"
+        cached, hit = _cache.get(cache_key, ttl=30)
+        if hit:
+            return cached
         where = "where a.competition_id = %s" if competition else ""
         params = [competition] if competition else []
         rows = conn.execute(
@@ -182,7 +285,9 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
             "label", "gain_vs_best", "error_trace", "duration_sec",
             "retries", "code_path", "best_so_far",
         ]
-        return [dict(zip(cols, r)) for r in rows]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set(cache_key, result)
+        return result
 
     @app.get("/api/attempts/{attempt_id}")
     def get_attempt(attempt_id: str):
@@ -215,6 +320,10 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         limit: int = 50,
     ):
         limit = min(limit, 500)
+        cache_key = f"lessons:{competition}:{generality}:{limit}"
+        cached, hit = _cache.get(cache_key, ttl=30)
+        if hit:
+            return cached
         conditions = ["r.archived = false"]
         params: list = []
         if competition:
@@ -245,10 +354,17 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
             "embedded_text", "full_lesson", "generality",
             "label", "gain_vs_best", "times_applied", "avg_gain",
         ]
-        return [dict(zip(cols, r)) for r in rows]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set(cache_key, result)
+        return result
 
     @app.get("/api/cold-start")
-    def get_cold_start(competition: str | None = None):
+    def get_cold_start(competition: str | None = None, limit: int = 200):
+        limit = min(limit, 1000)
+        cache_key = f"cold_start:{competition}:{limit}"
+        cached, hit = _cache.get(cache_key, ttl=30)
+        if hit:
+            return cached
         where = "where competition_id = %s" if competition else ""
         params = [competition] if competition else []
         rows = conn.execute(
@@ -257,24 +373,33 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
             from cold_start_progression
             {where}
             order by competition_id, attempt_no
+            limit %s
             """,
-            params,
+            params + [limit],
         ).fetchall()
         cols = ["competition_id", "attempt_no", "run_ts", "stage", "cv_score", "best_so_far"]
-        return [dict(zip(cols, r)) for r in rows]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set(cache_key, result)
+        return result
 
     # ---- admin endpoints -----------------------------------------------
 
     @app.get("/api/queue")
-    def get_queue():
+    def get_queue(status: str | None = None, limit: int = 100):
+        limit = min(limit, 500)
+        where = "where status = %s" if status else ""
+        params = [status] if status else []
         rows = conn.execute(
-            """
+            f"""
             select queue_id, competition, stage, n_cycles, priority,
                    status, created_at, started_at, ended_at,
                    cycles_done, latest_score, error
             from raw.cycle_queue
+            {where}
             order by priority desc, created_at asc
-            """
+            limit %s
+            """,
+            params + [limit],
         ).fetchall()
         cols = [
             "queue_id", "competition", "stage", "n_cycles", "priority",
@@ -333,5 +458,72 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
             vals,
         )
         return {"queue_id": queue_id, "updated": True}
+
+    # ---- submission endpoints -----------------------------------------
+
+    @app.post("/api/submissions", status_code=201)
+    def submit(body: SubmitRequest):
+        try:
+            comp = importlib.import_module(f"config.competitions.{body.competition}")
+        except ModuleNotFoundError:
+            raise HTTPException(status_code=422, detail=f"unknown competition: {body.competition}")
+
+        sid = str(uuid.uuid4())
+        msg = body.message or f"rondo attempt={body.attempt_id or 'best'}"
+        conn.execute(
+            """
+            insert into raw.kaggle_submissions
+                (submission_id, competition_id, attempt_id, submitted_at, message, status)
+            values (%s, %s, %s, %s, %s, 'queued')
+            """,
+            [sid, comp.COMPETITION_ID, body.attempt_id, datetime.now(timezone.utc), msg],
+        )
+        threading.Thread(
+            target=_kaggle_submit_and_poll,
+            args=(sid, comp.COMPETITION_ID, body.competition, body.attempt_id, msg),
+            daemon=True,
+        ).start()
+        return {"submission_id": sid, "status": "queued"}
+
+    @app.get("/api/submissions")
+    def get_submissions(competition: str | None = None, limit: int = 50):
+        limit = min(limit, 200)
+        where = "where competition_id = %s" if competition else ""
+        params = [competition] if competition else []
+        rows = conn.execute(
+            f"""
+            select submission_id, competition_id, attempt_id, submitted_at,
+                   message, csv_path, status, lb_score, error, checked_at
+            from raw.kaggle_submissions
+            {where}
+            order by submitted_at desc
+            limit %s
+            """,
+            params + [limit],
+        ).fetchall()
+        cols = [
+            "submission_id", "competition_id", "attempt_id", "submitted_at",
+            "message", "csv_path", "status", "lb_score", "error", "checked_at",
+        ]
+        return [dict(zip(cols, r)) for r in rows]
+
+    @app.get("/api/submissions/{submission_id}")
+    def get_submission(submission_id: str):
+        row = conn.execute(
+            """
+            select submission_id, competition_id, attempt_id, submitted_at,
+                   message, csv_path, status, lb_score, error, checked_at
+            from raw.kaggle_submissions
+            where submission_id = %s
+            """,
+            [submission_id],
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="submission not found")
+        cols = [
+            "submission_id", "competition_id", "attempt_id", "submitted_at",
+            "message", "csv_path", "status", "lb_score", "error", "checked_at",
+        ]
+        return dict(zip(cols, row))
 
     return app

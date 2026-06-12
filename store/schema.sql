@@ -204,3 +204,16 @@ SELECT
 FROM raw.attempts a
 JOIN raw.competitions c USING (competition_id)
 WHERE a.cv_score IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS raw.kaggle_submissions (
+    submission_id  text PRIMARY KEY,
+    competition_id text NOT NULL,
+    attempt_id     text,
+    submitted_at   timestamp,
+    message        text,
+    csv_path       text,
+    status         text DEFAULT 'queued',
+    lb_score       double precision,
+    error          text,
+    checked_at     timestamp
+);
