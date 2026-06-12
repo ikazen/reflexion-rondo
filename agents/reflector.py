@@ -85,10 +85,25 @@ def _client() -> Client:
     return Client(**kwargs)
 
 
+def _tail_error(trace: str, max_chars: int = 1000) -> str:
+    if len(trace) <= max_chars:
+        return trace
+    lines = trace.splitlines()
+    kept: list[str] = []
+    budget = max_chars
+    for line in reversed(lines):
+        cost = len(line) + 1
+        if cost > budget:
+            break
+        kept.append(line)
+        budget -= cost
+    return "[...]\n" + "\n".join(reversed(kept))
+
+
 def _format_context(ctx: AttemptContext) -> str:
     fi_text = json.dumps(ctx.feature_importance, indent=2) if ctx.feature_importance else "N/A"
     gain_text = f"{ctx.gain_vs_best:+.5f}" if ctx.gain_vs_best is not None else "N/A (first attempt)"
-    error_text = ctx.error_trace or "none"
+    error_text = _tail_error(ctx.error_trace) if ctx.error_trace else "none"
 
     return f"""## Attempt Summary
 - Hypothesis: {ctx.hypothesis}
