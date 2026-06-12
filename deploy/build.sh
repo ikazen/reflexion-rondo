@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
-# mac-server(ARM64) 배포용 이미지 빌드 및 registry.internal push
-# 실행 위치: repo 루트
+# mac-server(ARM64) 이미지 빌드 및 registry.internal push
+#
+# Usage:
+#   bash deploy/build.sh v1.1.0-dev   # dev 빌드
+#   bash deploy/build.sh v1.0.0       # stable 빌드 (promote.sh 경유 권장)
 set -euo pipefail
 
-REGISTRY=registry.internal:80
-SHA=$(git rev-parse --short HEAD)
+VERSION=${1:?"Usage: bash deploy/build.sh <version>  (e.g. v1.1.0-dev)"}
 
+REGISTRY=registry.internal:80
 DAEMON_BASE=$REGISTRY/reflexion-rondo/daemon
 TASK_BASE=$REGISTRY/reflexion-rondo/task
 
 docker build \
-    -t "$DAEMON_BASE:$SHA" -t "$DAEMON_BASE:latest" \
+    -t "$DAEMON_BASE:$VERSION" \
     -f deploy/Dockerfile . && \
-docker push "$DAEMON_BASE:$SHA" && docker push "$DAEMON_BASE:latest"
+docker push "$DAEMON_BASE:$VERSION"
 
 docker build \
-    -t "$TASK_BASE:$SHA" -t "$TASK_BASE:latest" \
+    -t "$TASK_BASE:$VERSION" \
     -f deploy/Dockerfile.task . && \
-docker push "$TASK_BASE:$SHA" && docker push "$TASK_BASE:latest"
+docker push "$TASK_BASE:$VERSION"
 
-echo "pushed: $DAEMON_BASE:$SHA (latest)"
-echo "pushed: $TASK_BASE:$SHA (latest)"
+echo "pushed: $DAEMON_BASE:$VERSION"
+echo "pushed: $TASK_BASE:$VERSION"
