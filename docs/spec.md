@@ -337,7 +337,7 @@ cv_score = mean(scores); cv_fold_var = var(scores)
 
 ## 7. Daemon API
 
-worker-vm의 daemon이 제공하는 HTTP API. 기본 포트 8000, tailnet-only.
+ops-vm의 daemon이 제공하는 HTTP API. `http://rondo-api.internal` (Caddy proxy → rondo-daemon:8000).
 
 상세 스펙: `GET /docs` (Swagger UI) 또는 `GET /openapi.json`.
 

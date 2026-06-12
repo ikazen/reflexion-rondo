@@ -156,13 +156,13 @@ Postgres가 concurrent read를 처리한다. daemon은 단일 프로세스로 �
 CV score 진행 곡선, label/action_type 분포, reflection_impact 상위 교훈, 최근 attempt 테이블 제공.
 
 **Daemon API**
-- 베이스: `http://rondo.internal:8000`
-- Swagger: `http://rondo.internal:8000/docs`
+- 베이스: `http://rondo-api.internal`
+- Swagger: `http://rondo-api.internal/docs`
 
 ```bash
-curl http://rondo.internal:8000/api/heartbeat   # 현재 상태
-curl http://rondo.internal:8000/api/attempts    # 최근 attempt 목록
-curl http://rondo.internal:8000/api/lessons     # 교훈 목록
+curl http://rondo-api.internal/api/heartbeat   # 현재 상태
+curl http://rondo-api.internal/api/attempts    # 최근 attempt 목록
+curl http://rondo-api.internal/api/lessons     # 교훈 목록
 ```
 
 **Prometheus (BON-90, 배포 후)**
