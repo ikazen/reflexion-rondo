@@ -128,6 +128,8 @@ def main() -> None:
             print(f"[run_promote_task] reflect {role} {attempt_id[:8]} → reflection_id={output.reflection_id}")
         except EmbeddingUnavailableError as exc:
             print(f"[run_promote_task] reflect {role} {attempt_id[:8]} skipped — embedding unavailable: {exc}")
+        except ValueError as exc:
+            print(f"[run_promote_task] reflect {role} {attempt_id[:8]} skipped — LLM error: {exc}")
 
     conn.close()
 
