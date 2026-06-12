@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# dev 이미지를 stable로 retag 후 push. airflow-stack DAG의 IMAGE 태그도 자동 교체.
+# dev 이미지를 stable로 retag 후 push.
+# task: airflow-stack DAG IMAGE 태그 자동 교체
+# daemon: deploy/compose.yml 태그 자동 교체
 #
 # Usage:
 #   bash deploy/promote.sh v1.1.0-dev v1.1.0
@@ -13,6 +15,7 @@ STABLE_VERSION=${2:?"Usage: bash deploy/promote.sh <dev-version> <stable-version
 REGISTRY=registry.internal:80
 DAEMON_BASE=$REGISTRY/reflexion-rondo/daemon
 TASK_BASE=$REGISTRY/reflexion-rondo/task
+RONDO_DIR=$(cd "$(dirname "$0")/.." && pwd)
 
 echo "promoting $DEV_VERSION -> $STABLE_VERSION"
 
@@ -23,7 +26,16 @@ for BASE in "$DAEMON_BASE" "$TASK_BASE"; do
     echo "pushed: $BASE:$STABLE_VERSION"
 done
 
-# airflow-stack DAG IMAGE 태그 교체
+# deploy/compose.yml — daemon 태그 교체
+COMPOSE_FILE=$RONDO_DIR/deploy/compose.yml
+sed -i '' "s|/daemon:$DEV_VERSION|/daemon:$STABLE_VERSION|g" "$COMPOSE_FILE"
+cd "$RONDO_DIR"
+git add deploy/compose.yml
+git commit -m "chore: daemon image $DEV_VERSION -> $STABLE_VERSION"
+git push
+echo "compose.yml updated and pushed"
+
+# airflow-stack — task DAG IMAGE 태그 교체
 DAG_FILE=~/Projects/airflow-stack/dags/reflexion_rondo_cycle.py
 if [ -f "$DAG_FILE" ]; then
     sed -i '' "s|/task:$DEV_VERSION|/task:$STABLE_VERSION|g" "$DAG_FILE"
