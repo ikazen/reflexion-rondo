@@ -14,6 +14,12 @@ LABEL_Z = 1.0
 _PI_REPEATS = 3
 _PI_TOP_N = 20
 _MAX_PARAM_CANDIDATES = 12
+_LEAK_PERFECT_HIGH = 0.9999
+_LEAK_PERFECT_LOW = 1e-9
+
+
+def _strip_target(df: pl.DataFrame, target: str) -> pl.DataFrame:
+    return df.drop(target) if target in df.columns else df
 
 _IMPORTANCE_ACTIONS = frozenset({"feature_engineering", "preprocessing"})
 
@@ -123,6 +129,8 @@ def preselect_params(
     va = train[list(va_idx)]
     tr2, va2 = pipeline.preprocess(tr, va, ctx.target_col, ctx)
     Xtr, Xva = pipeline.feature_transform(tr2, va2, ctx.target_col, ctx)
+    Xtr = _strip_target(Xtr, ctx.target_col)
+    Xva = _strip_target(Xva, ctx.target_col)
     ytr = tr2[ctx.target_col].to_numpy()
     yva = va2[ctx.target_col].to_numpy()
     Xtr_np = Xtr.to_numpy()
@@ -169,6 +177,8 @@ def evaluate_pipeline(
 
         tr2, va2 = pipeline.preprocess(tr, va, ctx.target_col, ctx)
         Xtr, Xva = pipeline.feature_transform(tr2, va2, ctx.target_col, ctx)
+        Xtr = _strip_target(Xtr, ctx.target_col)
+        Xva = _strip_target(Xva, ctx.target_col)
         ytr = tr2[ctx.target_col].to_numpy()
         yva = va2[ctx.target_col].to_numpy()
 
@@ -210,6 +220,13 @@ def evaluate_pipeline(
     cv_score = float(np.mean(fold_scores))
     cv_fold_var = float(np.var(fold_scores))
     fold_std = float(np.std(fold_scores))
+
+    if metric_class in ("binary_proba", "classification") and metric_sign > 0:
+        if cv_score >= _LEAK_PERFECT_HIGH:
+            raise ValueError(f"suspected target leakage: perfect cv_score={cv_score:.6f} (threshold={_LEAK_PERFECT_HIGH})")
+    elif metric_class == "regression_error":
+        if cv_score <= _LEAK_PERFECT_LOW:
+            raise ValueError(f"suspected target leakage: perfect cv_score={cv_score:.2e} (threshold={_LEAK_PERFECT_LOW})")
 
     if ctx.prev_best is None:
         label = "neutral"

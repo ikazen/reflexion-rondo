@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import pytest
 import numpy as np
 import polars as pl
 
-from evaluator.harness import BasePipeline, PipelineContext, preselect_params
+from evaluator.harness import (
+    BasePipeline, PatchedPipeline, PipelineContext,
+    evaluate_pipeline, preselect_params,
+    _LEAK_PERFECT_HIGH,
+)
 
 
 def _ctx(is_classification: bool = True) -> PipelineContext:
@@ -84,3 +89,54 @@ def test_preselect_evaluates_all_candidates():
     preselect_params(_TrackingPipeline(), _make_df(), _ctx())
     assert len(evaluated) == 3
     assert {p["tag"] for p in evaluated} == {"a", "b", "c"}
+
+
+# --- target leakage guard tests ---
+
+class _LeakyPatch:
+    """feature_transform이 target 컬럼을 drop하지 않는 패치."""
+    action_type = "feature_engineering"
+
+    def feature_transform(self, train, valid, target, ctx):
+        # target을 포함한 채 반환 — 누수 시뮬레이션
+        return train, valid
+
+
+def test_harness_strips_target_from_leaky_patch():
+    """harness가 leaky patch의 target을 강제 drop해 정상 점수를 낸다."""
+    df = _make_df(n=200)
+    ctx = _ctx()
+    base = BasePipeline()
+    patch = _LeakyPatch()
+    pipeline = PatchedPipeline(base, patch)
+    result = evaluate_pipeline(pipeline, df, ctx)
+    # target leakage 없이 정상 범위의 AUC 반환돼야 함
+    assert result.cv_score < _LEAK_PERFECT_HIGH
+
+
+def test_tripwire_rejects_perfect_classification_score():
+    """target을 직접 feature로 넘기는 극단 케이스에서 tripwire가 ValueError를 raise한다."""
+
+    class _DirectLeakPatch:
+        """preprocess가 valid의 target을 feature 컬럼으로 복제해 모델에 주입."""
+        action_type = "preprocessing"
+
+        def preprocess(self, train, valid, target, ctx):
+            # target을 'leaked' 라는 별도 컬럼으로 복제해 leakage 우회 시뮬레이션
+            train2 = train.with_columns(pl.col(target).alias("leaked"))
+            valid2 = valid.with_columns(pl.col(target).alias("leaked"))
+            return train2, valid2
+
+    df = _make_df(n=200)
+    # y와 완전히 동일한 컬럼을 추가하면 AUC=1.0 → tripwire
+    ctx = PipelineContext(
+        target_col="y",
+        metric="auc",
+        n_splits=3,
+        seed=42,
+        is_classification=True,
+    )
+    base = BasePipeline()
+    pipeline = PatchedPipeline(base, _DirectLeakPatch())
+    with pytest.raises(ValueError, match="suspected target leakage"):
+        evaluate_pipeline(pipeline, df, ctx)
