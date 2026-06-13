@@ -122,7 +122,7 @@ def reset_full(yes: bool) -> None:
 def reset_competition(competition_id: str, yes: bool) -> None:
     sys.path.insert(0, str(ROOT))
     from store.db import connect
-    from store.s3_code import delete as _code_delete
+    from store.s3_code import delete as _code_delete, delete_best_pipeline as _best_delete
 
     conn = connect(apply_schema=False)
 
@@ -162,6 +162,7 @@ def reset_competition(competition_id: str, yes: bool) -> None:
         sys.exit(0)
 
     deleted_code = sum(1 for uri in code_uris if _code_delete(uri))
+    _best_delete(competition_id)
     comp_code_dir = CODE_DIR / competition_id
     if comp_code_dir.exists():
         shutil.rmtree(comp_code_dir)

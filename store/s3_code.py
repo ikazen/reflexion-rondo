@@ -88,6 +88,22 @@ def download_best_pipeline(competition_id: str) -> str | None:
     return path.read_text(encoding="utf-8") if path.exists() else None
 
 
+def delete_best_pipeline(competition_id: str) -> bool:
+    """competition_id에 귀속된 best_pipeline.py 블롭 삭제. MinIO + 로컬 폴백 모두 처리."""
+    key = f"{competition_id}/{_BEST_KEY}"
+    deleted = False
+    try:
+        requests.delete(f"{_ENDPOINT}/{_BUCKET}/{key}", timeout=30).raise_for_status()
+        deleted = True
+    except Exception:
+        pass
+    local = Path(__file__).parent.parent / "runs" / "best" / f"{competition_id}_best_pipeline.py"
+    if local.exists():
+        local.unlink()
+        deleted = True
+    return deleted
+
+
 def delete(uri: str) -> bool:
     """URI가 가리키는 파일 삭제. 성공 여부 반환."""
     if uri.startswith("s3://"):
