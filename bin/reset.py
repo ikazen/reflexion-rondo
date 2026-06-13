@@ -171,6 +171,8 @@ def reset_competition(competition_id: str, yes: bool) -> None:
     conn.execute("delete from raw.attempts where competition_id = %s", [competition_id])
     conn.execute("delete from raw.pipelines where competition_id = %s", [competition_id])
     conn.execute("delete from raw.submission_budget where competition_id = %s", [competition_id])
+    conn.execute("delete from raw.action_bandit where scope_key = %s", [competition_id])
+    conn.execute("delete from raw.super_cycle_context where competition_id = %s", [competition_id])
     conn.execute("delete from raw.competitions where competition_id = %s", [competition_id])
     conn.close()
 
