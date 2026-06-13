@@ -8,7 +8,7 @@ set -euo pipefail
 
 VERSION=${1:?"Usage: bash deploy/build.sh <version>  (e.g. v1.1.0-dev)"}
 
-REGISTRY=registry.internal:80
+REGISTRY=registry.internal:5000
 DAEMON_BASE=$REGISTRY/reflexion-rondo/daemon
 TASK_BASE=$REGISTRY/reflexion-rondo/task
 

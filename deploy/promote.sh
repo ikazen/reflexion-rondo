@@ -12,7 +12,7 @@ set -euo pipefail
 DEV_VERSION=${1:?"Usage: bash deploy/promote.sh <dev-version> <stable-version>"}
 STABLE_VERSION=${2:?"Usage: bash deploy/promote.sh <dev-version> <stable-version>"}
 
-REGISTRY=registry.internal:80
+REGISTRY=registry.internal:5000
 DAEMON_BASE=$REGISTRY/reflexion-rondo/daemon
 TASK_BASE=$REGISTRY/reflexion-rondo/task
 RONDO_DIR=$(cd "$(dirname "$0")/.." && pwd)

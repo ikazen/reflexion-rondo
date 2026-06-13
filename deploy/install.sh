@@ -4,7 +4,7 @@ set -euo pipefail
 
 # 1. registry.internal insecure-registries 등록
 if ! sudo grep -q registry.internal /etc/docker/daemon.json 2>/dev/null; then
-    echo '{"insecure-registries": ["registry.internal:80"]}' | sudo tee /etc/docker/daemon.json
+    echo '{"insecure-registries": ["registry.internal:5000"]}' | sudo tee /etc/docker/daemon.json
     sudo systemctl restart docker
     echo "[install] docker restarted with insecure-registries"
 fi
@@ -57,7 +57,7 @@ if ! command -v tailscale &>/dev/null || ! tailscale status &>/dev/null; then
 fi
 
 # 7. task 이미지 pull (Airflow DockerOperator 첫 실행 전 캐싱)
-docker pull registry.internal:80/reflexion-rondo/task:latest || \
+docker pull registry.internal:5000/reflexion-rondo/task:latest || \
     echo "[install] WARNING: task 이미지 pull 실패 — 첫 사이클에서 자동 시도"
 
 # 8. compose.yml 설치 및 시작 (Docker restart: always 로 재부팅 생존)
