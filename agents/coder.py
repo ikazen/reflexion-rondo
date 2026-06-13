@@ -156,6 +156,7 @@ def generate_code(
     eda_card: str,
     prev_code: str | None = None,
     error_feedback: str | None = None,
+    known_errors: list[str] | None = None,
 ) -> str:
     is_bootstrap = action_type == "bootstrap"
     contract = _BOOTSTRAP_CONTRACT if is_bootstrap else _REFLEXION_CONTRACT
@@ -164,6 +165,10 @@ def generate_code(
         f"## EDA Card\n{eda_card}",
         f"## Hypothesis\nAction type: {action_type}\n{hypothesis}",
     ]
+    if known_errors:
+        pitfall_block = "## Known failure modes (past errors on this task + action — avoid these)\n"
+        pitfall_block += "\n".join(f"- {e}" for e in known_errors)
+        parts.insert(1, pitfall_block)
     if prev_code and not is_bootstrap:
         parts.append(
             "## Current Best Pipeline\n"

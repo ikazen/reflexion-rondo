@@ -14,6 +14,7 @@ from agents.reflector import AttemptContext, reflect
 from agents.strategist import StrategyDecision, strategize
 from config.settings import MODEL_CODER
 from cycle.action_optimizer import get_action_prior, update_bandit
+from cycle.error_pitfalls import top_error_pitfalls
 from cycle.stagnation import detect_stagnation
 from cycle.materialize import materialize_best_pipeline
 from evaluator.contract import validate_patch
@@ -267,11 +268,17 @@ def run_attempt_core(
     # Generate + validate
     _t_codegen = time.monotonic()
     _MAX_CODE_RETRIES = 2
+    pitfalls = top_error_pitfalls(conn, config.competition_id, action_type)
+    known_errors = [f"{sig} (seen {cnt}x)" for sig, cnt in pitfalls] or None
+    if known_errors:
+        print(f"[attempt] pitfalls injected ({len(known_errors)}): "
+              + "; ".join(known_errors))
     gen_kwargs: dict = dict(
         hypothesis=decision.hypothesis,
         action_type=action_type,
         eda_card=config.eda_card,
         prev_code=prev_code,
+        known_errors=known_errors,
     )
     source = generate_code(**gen_kwargs)
     retries = 0
