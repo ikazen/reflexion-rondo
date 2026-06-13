@@ -72,6 +72,9 @@ def validate_patch(source: str, action_type: str) -> list[str]:
 
     try:
         tree = ast.parse(source)
+        # ast.parse passes return/break/yield-outside-context and duplicate args;
+        # compile() catches those at the bytecode level.
+        compile(source, "<patch>", "exec")
     except SyntaxError as e:
         return [f"SyntaxError: {e}"]
 
