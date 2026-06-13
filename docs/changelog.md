@@ -9,7 +9,7 @@
 
 ## LLM/임베딩 모델 배정 (2026-05-31)
 - ADR-016 신설: 역할별 모델 배정. Reflexion Actor = Strategist(정책) + Coder(실행), Reflector = self-reflection.
-  - 처음부터 3모델 분리: Strategist `deepseek-v4-pro` / Reflector `glm-5`(다른 패밀리) / Coder `qwen3-coder-next` 시작값.
+  - 처음부터 3모델 분리: Strategist `deepseek-v4-pro` / Reflector `kimi-k2.6`(다른 패밀리, glm-5에서 변경) / Coder `qwen3-coder-next`.
   - Reflector를 Strategist와 다른 패밀리로 고정 — 근거: 상관된 맹점 완화(자기 가설을 스스로 합리화하는 편향).
 - ADR-008 개정: 임베딩 `nomic-embed-text`(768d) → `qwen3-embedding:0.6b`(1024d, MRL). 2026 MTEB v2 오픈웨이트 최상위. 스키마 `reflections.embedding` → `float[1024]`.
 - 모델 ID 변동성 주의: 확정 전 ollama.com/search?c=cloud 재확인.

@@ -23,6 +23,7 @@ _ALLOWED_HOOKS: dict[str, frozenset[str]] = {
     "model_swap":          frozenset({"build_model"}),
     "preprocessing":       frozenset({"preprocess"}),
     "hyperparam_search":   frozenset({"param_candidates"}),
+    "ensemble":            _ALL_HOOKS,
     "compound":            _ALL_HOOKS,
     "bootstrap":           _ALL_HOOKS,
 }

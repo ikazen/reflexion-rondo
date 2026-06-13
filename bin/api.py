@@ -17,7 +17,7 @@
   GET  /api/submissions
   GET  /api/submissions/{id}
 
-DuckDB 연결은 호출 측(daemon)이 주입한다.
+Postgres 연결은 호출 측(daemon)이 주입한다.
 DaemonState는 daemon 메인 루프가 갱신하고 API가 읽는 공유 객체.
 """
 from __future__ import annotations
