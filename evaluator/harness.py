@@ -21,6 +21,17 @@ _LEAK_PERFECT_LOW = 1e-9
 def _strip_target(df: pl.DataFrame, target: str) -> pl.DataFrame:
     return df.drop(target) if target in df.columns else df
 
+
+def _encode_residual_categoricals(
+    Xtr: pl.DataFrame, Xva: pl.DataFrame
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    str_cols = [c for c, dt in zip(Xtr.columns, Xtr.dtypes) if dt == pl.String]
+    for c in str_cols:
+        mapping = {v: i for i, v in enumerate(sorted(Xtr[c].unique().to_list()))}
+        Xtr = Xtr.with_columns(pl.col(c).replace_strict(mapping, default=-1).cast(pl.Int32))
+        Xva = Xva.with_columns(pl.col(c).replace_strict(mapping, default=-1).cast(pl.Int32))
+    return Xtr, Xva
+
 _IMPORTANCE_ACTIONS = frozenset({"feature_engineering", "preprocessing"})
 
 
@@ -131,6 +142,7 @@ def preselect_params(
     Xtr, Xva = pipeline.feature_transform(tr2, va2, ctx.target_col, ctx)
     Xtr = _strip_target(Xtr, ctx.target_col)
     Xva = _strip_target(Xva, ctx.target_col)
+    Xtr, Xva = _encode_residual_categoricals(Xtr, Xva)
     ytr = tr2[ctx.target_col].to_numpy()
     yva = va2[ctx.target_col].to_numpy()
     Xtr_np = Xtr.to_numpy()
@@ -179,6 +191,7 @@ def evaluate_pipeline(
         Xtr, Xva = pipeline.feature_transform(tr2, va2, ctx.target_col, ctx)
         Xtr = _strip_target(Xtr, ctx.target_col)
         Xva = _strip_target(Xva, ctx.target_col)
+        Xtr, Xva = _encode_residual_categoricals(Xtr, Xva)
         ytr = tr2[ctx.target_col].to_numpy()
         yva = va2[ctx.target_col].to_numpy()
 

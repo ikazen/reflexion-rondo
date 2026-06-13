@@ -114,6 +114,55 @@ def test_harness_strips_target_from_leaky_patch():
     assert result.cv_score < _LEAK_PERFECT_HIGH
 
 
+class _StringColumnPatch:
+    """feature_transform이 pl.String 컬럼을 인코딩하지 않고 남긴다."""
+    action_type = "feature_engineering"
+
+    def feature_transform(self, train, valid, target, ctx):
+        cols = [c for c in train.columns if c != target]
+        return train.select(cols), valid.select(cols)
+
+
+def _make_df_with_strings(n: int = 120) -> pl.DataFrame:
+    import numpy as np
+    rng = np.random.default_rng(1)
+    x = rng.standard_normal((n, 2))
+    cats = ["France", "Spain", "Germany"]
+    geo = [cats[i % 3] for i in range(n)]
+    # 노이즈를 충분히 섞어 AUC가 leakage tripwire(0.9999) 아래에 머물도록 함
+    y = ((x[:, 0] + rng.standard_normal(n) * 3.0) > 0).astype(float)
+    return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "geo": geo, "y": y})
+
+
+def test_harness_encodes_residual_string_columns():
+    """harness가 pl.String 컬럼을 자동 ordinal 인코딩해 ValueError 없이 cv를 산출한다."""
+    df = _make_df_with_strings()
+    ctx = _ctx()
+    base = BasePipeline()
+    patch = _StringColumnPatch()
+    pipeline = PatchedPipeline(base, patch)
+    result = evaluate_pipeline(pipeline, df, ctx)
+    assert 0.0 <= result.cv_score <= 1.0
+
+
+def test_harness_encodes_unknown_category_as_minus_one():
+    """valid에만 있는 미지 카테고리가 -1로 인코딩돼 에러 없이 처리된다."""
+    import numpy as np
+    rng = np.random.default_rng(2)
+    n = 120
+    x = rng.standard_normal((n, 2))
+    geo = ["France" if i % 2 == 0 else "Spain" for i in range(n)]
+    geo[1] = "Germany"  # valid fold에 반드시 포함될 위치
+    y = ((x[:, 0] + rng.standard_normal(n) * 3.0) > 0).astype(float)
+    df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "geo": geo, "y": y})
+
+    base = BasePipeline()
+    patch = _StringColumnPatch()
+    pipeline = PatchedPipeline(base, patch)
+    result = evaluate_pipeline(pipeline, df, _ctx())
+    assert result.cv_score is not None
+
+
 def test_tripwire_rejects_perfect_classification_score():
     """target을 직접 feature로 넘기는 극단 케이스에서 tripwire가 ValueError를 raise한다."""
 
