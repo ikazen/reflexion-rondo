@@ -2,6 +2,7 @@
 
 엔드포인트:
   GET  /api/heartbeat
+  GET  /api/health
   GET  /api/competitions
   POST /api/competitions
   GET  /api/attempts
@@ -325,6 +326,13 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
     def heartbeat():
         snap = state.snapshot()
         return {"status": "running" if snap["current_queue_id"] else "idle", **snap}
+
+    @app.get("/api/health")
+    def health():
+        from bin.healthcheck import run_checks
+        checks = run_checks()
+        overall = "ok" if all(v["status"] != "fail" for v in checks.values()) else "degraded"
+        return {"overall": overall, "checks": checks}
 
     @app.get("/api/competitions")
     def get_competitions():

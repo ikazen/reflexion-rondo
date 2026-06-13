@@ -95,27 +95,27 @@ curl -X PATCH http://localhost:8000/api/queue/<queue_id> \
 - **airflow 모드 (운영)**: `AIRFLOW_URL` 환경변수가 있으면 Airflow DAG `reflexion_rondo_cycle` 트리거. 1 DAG run = 1 슈퍼사이클 (retrieve → attempt_0/1/2 병렬 → promote). retrieve/promote는 default 큐, attempt는 big 큐.
 - **direct 모드 (로컬 테스트)**: `AIRFLOW_URL` 없으면 daemon 프로세스 안에서 단일 `run_cycle()` attempt만 실행한다. forced action 배정, 3-way 병렬 attempt, promote/loser reflection은 실행하지 않는다.
 
-**이미지 태그 관리 (semver)**
+**이미지 배포 (semver)**
 
-현재 stable: `v1.0.0`. `latest` 태그는 사용하지 않는다.
-
-dev 테스트 → stable 승격 흐름:
+빌드 호스트: **ops-vm** (aarch64). WSL에서 `release.sh` 하나로 전 단계를 수행한다.
 
 ```bash
-# 1. dev 빌드 (mac-server에서)
-ssh mac-server "cd ~/Projects/reflexion-rondo && git pull && bash deploy/build.sh v1.1.0-dev"
-
-# 2. airflow-stack DAG IMAGE 태그를 v1.1.0-dev로 변경 후 push → Airflow에서 테스트
-
-# 3. 테스트 통과 후 promote (retag + DAG 자동 교체 + push, mac-server에서)
-ssh mac-server "cd ~/Projects/reflexion-rondo && bash deploy/promote.sh v1.1.0-dev v1.1.0"
-
-# 4. ops-vm daemon 재시작
-ssh ops-vm "docker compose -f ~/projects/reflexion-rondo/deploy/compose.yml pull rondo-daemon && \
-            docker compose -f ~/projects/reflexion-rondo/deploy/compose.yml up -d rondo-daemon"
+# WSL에서 실행
+bash deploy/release.sh v1.2.0
 ```
 
-`promote.sh`가 하는 일: daemon/task 이미지 retag → `reflexion_rondo_cycle.py` IMAGE 태그 교체 → airflow-stack push. 재빌드 없이 테스트한 이미지 그대로 승격.
+흐름: ops-vm 빌드+registry push → 스모크(`bin/healthcheck.py`) → compose.yml+DAG 태그 bump+push → ops-vm 재시작 → heartbeat 확인.
+
+스모크 결과 실패 시 태그 bump 없이 중단된다.
+
+**의존성 health 수동 확인:**
+```bash
+# 로컬 (AIRFLOW_URL 없으면 airflow SKIP)
+uv run python -m bin.healthcheck
+
+# 운영 컨테이너 안
+ssh ops-vm "curl -sf http://localhost:8000/api/health | python3 -m json.tool"
+```
 
 **secrets 업데이트 절차:**
 ```bash
