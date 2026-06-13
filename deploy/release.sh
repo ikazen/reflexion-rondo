@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # WSL에서 실행: bash deploy/release.sh <version>
 #
-# 흐름: 가드 → ops-vm 빌드+push → 스모크 → compose/DAG 태그 bump → ops-vm 재시작 → 사후 확인
+# 흐름: 가드 → ops-vm 빌드+push → compose/DAG 태그 bump → ops-vm 재시작 → 스모크 → 사후 확인
 #
 # 전제:
 #   - WSL에 ~/projects/reflexion-rondo, ~/projects/airflow-stack checkout
@@ -55,18 +55,7 @@ ssh ops-vm "
 echo "[release] pushed $DAEMON_IMG"
 echo "[release] pushed $TASK_IMG"
 
-# ---- 3. 스모크 (새 이미지 컨테이너 안에서) ----------------------------------
-
-echo "[release] smoke test ..."
-ssh ops-vm "
-    docker run --rm \
-        --env-file /var/lib/rondo/.env \
-        --network nexus \
-        $DAEMON_IMG \
-        uv run --no-sync python -m bin.healthcheck
-"
-
-# ---- 4. 태그 bump + push (WSL) ----------------------------------------------
+# ---- 3. 태그 bump + push (WSL) ----------------------------------------------
 
 echo "[release] updating deploy/compose.yml ..."
 sed -i "s|/daemon:[^ '\"]*|/daemon:$VERSION|g" "$REPO_DIR/deploy/compose.yml"
@@ -83,7 +72,7 @@ if ! git -C "$AIRFLOW_STACK_DIR" diff --quiet dags/reflexion_rondo_cycle.py; the
 fi
 git -C "$AIRFLOW_STACK_DIR" push --quiet
 
-# ---- 5. 재시작 (ops-vm) -----------------------------------------------------
+# ---- 4. 재시작 (ops-vm) -----------------------------------------------------
 
 echo "[release] restarting daemon ..."
 ssh ops-vm "
@@ -92,16 +81,18 @@ ssh ops-vm "
     docker compose -f deploy/compose.yml up -d
 "
 
+# ---- 5. 스모크 (실행 중인 daemon 컨테이너 안에서) ---------------------------
+# docker exec으로 실행해야 compose.yml 환경(AIRFLOW_URL 등)과 nexus 네트워크를 그대로 사용.
+# ollama_local은 컨테이너 내 Tailscale 미지원으로 항상 접근 불가 — 명시적으로 skip.
+
+echo "[release] smoke test (exec into running daemon) ..."
+sleep 5
+ssh ops-vm "
+    CONTAINER=\$(docker compose -f ~/projects/reflexion-rondo/deploy/compose.yml ps -q rondo-daemon)
+    docker exec \"\$CONTAINER\" \
+        uv run --no-sync python -m bin.healthcheck --skip ollama_local
+"
+
 # ---- 6. 사후 확인 ------------------------------------------------------------
 
-echo "[release] waiting for daemon ..."
-for i in $(seq 1 12); do
-    if ssh ops-vm "curl -sf http://localhost:8000/api/heartbeat" >/dev/null 2>&1; then
-        echo "[release] $VERSION deployed successfully"
-        exit 0
-    fi
-    sleep 5
-done
-echo "WARNING: daemon did not respond within 60s — check logs:"
-echo "  ssh ops-vm 'docker compose -f ~/projects/reflexion-rondo/deploy/compose.yml logs --tail=30'"
-exit 1
+echo "[release] $VERSION deployed successfully"

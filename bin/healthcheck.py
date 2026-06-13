@@ -135,6 +135,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="reflexion-rondo dependency health check")
     parser.add_argument("--cycle", metavar="COMPETITION",
                         help="health 통과 후 1사이클 실행 (LLM 토큰 소모)")
+    parser.add_argument("--skip", metavar="CHECK", nargs="+", default=[],
+                        help="지정 체크를 SKIP으로 처리 (e.g. --skip ollama_local airflow)")
     args = parser.parse_args()
 
     print("\nreflexion-rondo healthcheck")
@@ -144,6 +146,9 @@ def main() -> None:
     failed = []
 
     for name, r in results.items():
+        if name in args.skip:
+            _row(name, None, "skipped by --skip")
+            continue
         ok = {"pass": True, "fail": False, "skip": None}[r["status"]]
         if r["status"] == "fail":
             failed.append(name)
