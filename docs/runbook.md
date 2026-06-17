@@ -140,6 +140,15 @@ ssh ops-vm "cd ~/reflexion-rondo && git pull && bash deploy/start.sh"
 
 한도 초과 시 다음 윈도우까지 sleep 후 재개 (스킵 아님). daemon 재시작 시 DB의 실제 attempt 수로 카운터 복원.
 
+## 3-1. 사이클 실패 동작
+
+dagrun(=사이클) 하나가 실패해도 배치를 중단하지 않는다 — 실패 사이클을 건너뛰고 다음 사이클을
+계속 실행한다. 연속 `RONDO_MAX_CONSECUTIVE_FAILURES`(기본 5)회 실패 시에만 큐를 failed로 중단한다.
+
+| 환경변수 | 설명 | 기본값 |
+|---|---|---|
+| `RONDO_MAX_CONSECUTIVE_FAILURES` | 연속 실패 허용 횟수 초과 시 큐 중단 | `5` |
+
 ## 4. 제출 예산 게이트
 
 - `submission_budget` 테이블은 스키마에 존재한다.

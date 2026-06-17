@@ -1,5 +1,14 @@
 # 변경 이력
 
+## 사이클 skip-continue + circuit breaker (2026-06-18)
+- dagrun(사이클) 1개 실패 시 큐 전체를 즉시 failed 처리하던 fail-fast를 폐지.
+  실패 사이클은 건너뛰고 다음 사이클을 계속 실행한다 (skip-and-continue).
+- 연속 `RONDO_MAX_CONSECUTIVE_FAILURES`(기본 5)회 실패 시 큐를 failed로 중단하는
+  circuit breaker 추가. 성공 1회로 연속 카운터 리셋.
+- 큐 최종 상태: 1개라도 성공 → `done`, 전부 실패/스킵 → `failed`, 연속 한도 초과 → `failed`.
+- direct 모드 generic exception도 동일 처리로 통일. `EmbeddingUnavailableError` skip은
+  연속 카운터를 건드리지 않는다.
+
 ## 현재 구현 정렬 (2026-06-08)
 - Store/검색/분석은 Postgres + pgvector 기준. DuckDB 관련 항목은 과거 결정 이력으로만 남아 있다.
 - 임베딩 기본값은 `qwen3-embedding:8b`(1024d), Strategist/Reflector/Coder는 Ollama Cloud 모델 상수(`config/settings.py`)를 사용한다.

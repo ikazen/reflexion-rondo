@@ -30,6 +30,7 @@ from memory.retriever import EmbeddingUnavailableError
 from store.db import connect, ensure_competition
 
 POLL_INTERVAL = 10  # 빈 큐 대기 간격 (초)
+MAX_CONSECUTIVE_CYCLE_FAILURES = int(os.getenv("RONDO_MAX_CONSECUTIVE_FAILURES", "5"))
 ROOT = Path(__file__).parent.parent
 
 _running = True
@@ -187,6 +188,12 @@ def _is_cancelled(conn, queue_id: str) -> bool:
 # 큐 아이템 처리
 # ---------------------------------------------------------------------------
 
+def _final_status(cycles_done: int, skipped: int, failed_cycles: int) -> tuple[str, str | None]:
+    if cycles_done == 0 and (skipped + failed_cycles) > 0:
+        return "failed", f"all cycles unsuccessful — {failed_cycles} failed, {skipped} skipped"
+    return "done", None
+
+
 def _run_api(state: DaemonState) -> None:
     import uvicorn
     api_conn = connect(apply_schema=False)
@@ -237,7 +244,9 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
     latest_score: float | None = None
     cycles_done = 0
     skipped = 0
-    failed = False
+    failed_cycles = 0
+    consecutive_failures = 0
+    aborted = False
 
     for i in range(n_cycles):
         if not _running or _is_cancelled(conn, qid):
@@ -249,6 +258,9 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
         # Ollama Cloud 페이싱 — 한도 초과 시 여기서 대기
         pacer.acquire()
 
+        cycle_failed = False
+        err_msg = None
+
         if mode == "airflow":
             try:
                 dag_run_id = airflow_client.trigger_dag_run(
@@ -258,44 +270,32 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                 )
                 print(f"[daemon] cycle {i + 1}/{n_cycles} dag_run={dag_run_id}")
                 final_state = airflow_client.wait_for_dag_run(dag_run_id)
-                if final_state == "success":
-                    row = conn.execute(
-                        """
-                        select attempt_id, cv_score, label from raw.attempts
-                        where competition_id = %s
-                          and was_promoted is not false
-                        order by run_ts desc limit 1
-                        """,
-                        [comp.COMPETITION_ID],
-                    ).fetchone()
-                    if row:
-                        aid, cv, label = row
-                        if cv is not None:
-                            latest_score = cv
-                        print(f"[daemon] cycle {i + 1}/{n_cycles} winner={aid[:8]} cv={cv} label={label}")
-                    cycles_done += 1
-                    pacer.record()
-                    state.update(current_cycle=cycles_done, last_cycle_at=datetime.now(timezone.utc))
-                else:
-                    err_msg = f"dag_run {dag_run_id} ended with state={final_state}"
-                    print(f"[daemon] cycle {i + 1}/{n_cycles} {err_msg}")
-                    _set_status(conn, qid, "failed",
-                                ended_at=datetime.now(timezone.utc),
-                                cycles_done=cycles_done,
-                                latest_score=latest_score,
-                                error=err_msg)
-                    failed = True
-                    break
             except Exception as exc:
-                err_msg = str(exc)
+                final_state, err_msg = "error", str(exc)
                 print(f"[daemon] cycle {i + 1}/{n_cycles} airflow error: {err_msg}")
-                _set_status(conn, qid, "failed",
-                            ended_at=datetime.now(timezone.utc),
-                            cycles_done=cycles_done,
-                            latest_score=latest_score,
-                            error=err_msg[:2000])
-                failed = True
-                break
+
+            if final_state == "success":
+                row = conn.execute(
+                    """
+                    select attempt_id, cv_score, label from raw.attempts
+                    where competition_id = %s
+                      and was_promoted is not false
+                    order by run_ts desc limit 1
+                    """,
+                    [comp.COMPETITION_ID],
+                ).fetchone()
+                if row:
+                    aid, cv, label = row
+                    if cv is not None:
+                        latest_score = cv
+                    print(f"[daemon] cycle {i + 1}/{n_cycles} winner={aid[:8]} cv={cv} label={label}")
+                cycles_done += 1
+                consecutive_failures = 0
+                pacer.record()
+                state.update(current_cycle=cycles_done, last_cycle_at=datetime.now(timezone.utc))
+            else:
+                cycle_failed = True
+                err_msg = err_msg or f"dag_run {dag_run_id} ended with state={final_state}"
 
         else:
             if train is None:
@@ -317,6 +317,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                 if result.cv_score is not None:
                     latest_score = result.cv_score
                 cycles_done += 1
+                consecutive_failures = 0
                 pacer.record()
                 state.update(current_cycle=cycles_done, last_cycle_at=datetime.now(timezone.utc))
                 print(
@@ -326,34 +327,48 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
             except EmbeddingUnavailableError as exc:
                 print(f"[daemon] cycle {i + 1}/{n_cycles} skipped — embedding unavailable: {exc}")
                 skipped += 1
+                continue
             except Exception as exc:
+                cycle_failed = True
                 err_msg = str(exc)
-                print(f"[daemon] cycle {i + 1}/{n_cycles} raised: {err_msg}")
+
+        if cycle_failed:
+            failed_cycles += 1
+            consecutive_failures += 1
+            print(
+                f"[daemon] cycle {i + 1}/{n_cycles} failed ({(err_msg or '')[:120]})"
+                f" — {consecutive_failures}/{MAX_CONSECUTIVE_CYCLE_FAILURES} consecutive"
+            )
+            if consecutive_failures >= MAX_CONSECUTIVE_CYCLE_FAILURES:
                 _set_status(conn, qid, "failed",
                             ended_at=datetime.now(timezone.utc),
                             cycles_done=cycles_done,
                             latest_score=latest_score,
-                            error=err_msg[:2000])
-                failed = True
+                            error=(
+                                f"{consecutive_failures} consecutive cycle failures; "
+                                f"last: {err_msg}"
+                            )[:2000])
+                print(f"[daemon] queue_id={qid} aborted — {consecutive_failures} consecutive failures")
+                aborted = True
                 break
+            continue
 
         _set_status(conn, qid, "running",
                     cycles_done=cycles_done, latest_score=latest_score)
 
-    if not failed:
-        if _is_cancelled(conn, qid):
-            print(f"[daemon] queue_id={qid} cancelled (detected post-cycle)")
-        elif cycles_done == 0 and skipped > 0:
-            _set_status(conn, qid, "failed",
-                        ended_at=datetime.now(timezone.utc),
-                        cycles_done=0,
-                        error=f"all {skipped} cycles skipped — embedding unavailable")
-            print(f"[daemon] queue_id={qid} failed — all {skipped} cycles skipped (embedding)")
-        else:
-            _set_status(conn, qid, "done",
-                        ended_at=datetime.now(timezone.utc),
-                        cycles_done=cycles_done, latest_score=latest_score)
-            print(f"[daemon] queue_id={qid} done latest_score={latest_score}")
+    if aborted:
+        pass  # circuit breaker가 이미 failed로 설정
+    elif _is_cancelled(conn, qid):
+        print(f"[daemon] queue_id={qid} cancelled (detected post-cycle)")
+    else:
+        status, err = _final_status(cycles_done, skipped, failed_cycles)
+        _set_status(conn, qid, status,
+                    ended_at=datetime.now(timezone.utc),
+                    cycles_done=cycles_done,
+                    latest_score=latest_score,
+                    **({"error": err} if err else {}))
+        suffix = f" ({failed_cycles} failed)" if failed_cycles else ""
+        print(f"[daemon] queue_id={qid} {status} latest_score={latest_score}{suffix}")
 
     state.update(current_queue_id=None, current_competition=None,
                  current_cycle=0, current_n_cycles=0)
