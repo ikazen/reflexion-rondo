@@ -12,12 +12,12 @@ REGISTRY=registry.internal:5000
 DAEMON_BASE=$REGISTRY/reflexion-rondo/daemon
 TASK_BASE=$REGISTRY/reflexion-rondo/task
 
-docker build \
+docker build --provenance=false \
     -t "$DAEMON_BASE:$VERSION" \
     -f deploy/Dockerfile . && \
 docker push "$DAEMON_BASE:$VERSION"
 
-docker build \
+docker build --provenance=false \
     -t "$TASK_BASE:$VERSION" \
     -f deploy/Dockerfile.task . && \
 docker push "$TASK_BASE:$VERSION"
