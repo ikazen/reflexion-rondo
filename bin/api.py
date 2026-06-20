@@ -211,7 +211,9 @@ def _poll_kaggle_once(
         if poll.returncode != 0:
             return "pending", None
 
-        reader = csv_module.DictReader(io.StringIO(poll.stdout))
+        # kaggle CLI may print Warning lines to stdout before CSV — skip them
+        csv_lines = [l for l in poll.stdout.splitlines() if not l.startswith("Warning:")]
+        reader = csv_module.DictReader(io.StringIO("\n".join(csv_lines)))
         for row in reader:
             if (row.get("description") or "").strip() != message:
                 continue
