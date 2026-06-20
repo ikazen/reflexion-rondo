@@ -137,13 +137,17 @@ class AutoSubmitRequest(BaseModel):
 # Kaggle 제출 백그라운드 워커
 # ---------------------------------------------------------------------------
 
-def _kaggle_submit_and_poll(
+_TERMINAL = frozenset({"complete", "error", "invalid"})
+
+
+def _kaggle_submit(
     submission_id: str,
     competition_id: str,
     competition_slug: str,
     attempt_id: str | None,
     message: str,
 ) -> None:
+    """CSV 생성 + kaggle 제출. 폴링은 /refresh 엔드포인트(DAG)가 담당."""
     from store.db import connect
 
     def _update(fields: dict) -> None:
@@ -155,7 +159,6 @@ def _kaggle_submit_and_poll(
         )
         c.close()
 
-    # Step 1: CSV 생성 + kaggle 제출
     cmd = [
         "uv", "run", "python", "-m", "bin.submit",
         "--competition", competition_slug,
@@ -184,53 +187,49 @@ def _kaggle_submit_and_poll(
             csv_path = line.split("submission saved:", 1)[1].strip()
             break
 
-    fields: dict = {"status": "polling", "checked_at": datetime.now(timezone.utc)}
+    fields: dict = {"status": "submitted", "checked_at": datetime.now(timezone.utc)}
     if csv_path:
         fields["csv_path"] = csv_path
     _update(fields)
 
-    # Step 2: 10초 간격, 5분 polling
-    deadline = time.monotonic() + 300
-    while time.monotonic() < deadline:
-        time.sleep(10)
-        try:
-            poll = subprocess.run(
-                ["uv", "run", "kaggle", "competitions", "submissions",
-                 "-c", competition_id, "--csv"],
-                capture_output=True, text=True, timeout=30, cwd=str(ROOT),
-            )
-            if poll.returncode != 0:
+
+def _poll_kaggle_once(
+    competition_id: str,
+    message: str,
+) -> tuple[str, float | None]:
+    """kaggle submissions 1회 조회 → (status, lb_score).
+
+    반환 status: 'complete' | 'error' | 'invalid' | 'pending'
+    kaggle CLI 오류 시 'pending' 반환 (재시도 위임).
+    """
+    try:
+        poll = subprocess.run(
+            ["uv", "run", "kaggle", "competitions", "submissions",
+             "-c", competition_id, "--csv"],
+            capture_output=True, text=True, timeout=30, cwd=str(ROOT),
+        )
+        if poll.returncode != 0:
+            return "pending", None
+
+        reader = csv_module.DictReader(io.StringIO(poll.stdout))
+        for row in reader:
+            if (row.get("description") or "").strip() != message:
                 continue
-
-            reader = csv_module.DictReader(io.StringIO(poll.stdout))
-            for row in reader:
-                if (row.get("description") or "").strip() != message:
-                    continue
-                status = (row.get("status") or "").lower()
-                if status == "complete":
-                    raw_score = row.get("publicScore") or row.get("public score") or ""
-                    lb_score: float | None = None
-                    try:
-                        lb_score = float(raw_score)
-                    except (ValueError, TypeError):
-                        pass
-                    _update({"status": "complete", "lb_score": lb_score, "checked_at": datetime.now(timezone.utc)})
-                    if attempt_id and lb_score is not None:
-                        c = connect(apply_schema=False)
-                        c.execute(
-                            "update raw.attempts set lb_score = %s where attempt_id like %s and lb_score is null",
-                            [lb_score, f"{attempt_id}%"],
-                        )
-                        c.close()
-                    return
-                elif status in ("error", "invalid"):
-                    _update({"status": status, "error": f"kaggle: {status}", "checked_at": datetime.now(timezone.utc)})
-                    return
-                break  # 아직 pending — 다음 interval 대기
-        except Exception:
-            continue
-
-    _update({"status": "timeout", "checked_at": datetime.now(timezone.utc)})
+            status = (row.get("status") or "").lower()
+            if status == "complete":
+                raw_score = row.get("publicScore") or row.get("public score") or ""
+                lb_score: float | None = None
+                try:
+                    lb_score = float(raw_score)
+                except (ValueError, TypeError):
+                    pass
+                return "complete", lb_score
+            if status in ("error", "invalid"):
+                return status, None
+            return "pending", None  # 아직 채점 중
+    except Exception:
+        pass
+    return "pending", None
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +253,7 @@ def _start_submission(
         [sid, competition_id, attempt_id, datetime.now(timezone.utc), message],
     )
     threading.Thread(
-        target=_kaggle_submit_and_poll,
+        target=_kaggle_submit,
         args=(sid, competition_id, competition_slug, attempt_id, message),
         daemon=True,
     ).start()
@@ -650,5 +649,57 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
             "message", "csv_path", "status", "lb_score", "error", "checked_at",
         ]
         return dict(zip(cols, row))
+
+    @app.post("/api/submissions/{submission_id}/refresh")
+    def refresh_submission(submission_id: str):
+        row = conn.execute(
+            """
+            select submission_id, competition_id, attempt_id,
+                   submitted_at, message, csv_path, status, lb_score, error, checked_at
+            from raw.kaggle_submissions
+            where submission_id = %s
+            """,
+            [submission_id],
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="submission not found")
+        cols = [
+            "submission_id", "competition_id", "attempt_id", "submitted_at",
+            "message", "csv_path", "status", "lb_score", "error", "checked_at",
+        ]
+        rec = dict(zip(cols, row))
+
+        if rec["status"] in _TERMINAL:
+            return rec
+
+        kaggle_status, lb_score = _poll_kaggle_once(rec["competition_id"], rec["message"])
+        if kaggle_status == "pending":
+            conn.execute(
+                "update raw.kaggle_submissions set checked_at = %s where submission_id = %s",
+                [datetime.now(timezone.utc), submission_id],
+            )
+            rec["checked_at"] = datetime.now(timezone.utc)
+            return rec
+
+        fields: dict = {"status": kaggle_status, "checked_at": datetime.now(timezone.utc)}
+        if kaggle_status == "complete" and lb_score is not None:
+            fields["lb_score"] = lb_score
+        elif kaggle_status in ("error", "invalid"):
+            fields["error"] = f"kaggle: {kaggle_status}"
+
+        sets = ", ".join(f"{k} = %s" for k in fields)
+        conn.execute(
+            f"update raw.kaggle_submissions set {sets} where submission_id = %s",
+            list(fields.values()) + [submission_id],
+        )
+
+        if kaggle_status == "complete" and lb_score is not None and rec.get("attempt_id"):
+            conn.execute(
+                "update raw.attempts set lb_score = %s where attempt_id like %s and lb_score is null",
+                [lb_score, f"{rec['attempt_id']}%"],
+            )
+
+        rec.update(fields)
+        return rec
 
     return app
