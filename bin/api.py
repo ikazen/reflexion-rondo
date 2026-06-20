@@ -216,7 +216,7 @@ def _poll_kaggle_once(
             if (row.get("description") or "").strip() != message:
                 continue
             status = (row.get("status") or "").lower()
-            if status == "complete":
+            if status.endswith("complete"):
                 raw_score = row.get("publicScore") or row.get("public score") or ""
                 lb_score: float | None = None
                 try:
@@ -224,8 +224,8 @@ def _poll_kaggle_once(
                 except (ValueError, TypeError):
                     pass
                 return "complete", lb_score
-            if status in ("error", "invalid"):
-                return status, None
+            if status.endswith("error") or status.endswith("invalid"):
+                return status.rsplit(".", 1)[-1], None
             return "pending", None  # 아직 채점 중
     except Exception:
         pass
