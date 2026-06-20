@@ -9,6 +9,8 @@ services:
       DAEMON_API_HOST: "0.0.0.0"
       PYTHONUNBUFFERED: "1"
       AIRFLOW_URL: "http://airflow-api-server-1:8080"
+    volumes:
+      - /var/lib/rondo/kaggle_credentials.json:/root/.config/kaggle/credentials.json:ro
     restart: always
 
   rondo-dashboard:
