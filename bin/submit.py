@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import subprocess
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
+import requests
 
 ROOT = Path(__file__).parent.parent
+_MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 RUNS_DIR = ROOT / "runs"
 CODE_SEP = "# " + "-" * 60
 
@@ -59,6 +62,21 @@ def _load_best_code(competition_id: str, attempt_id: str | None) -> tuple[str, f
     sep = CODE_SEP + "\n"
     source = content.split(sep, 1)[1].strip() if sep in content else content.strip()
     return source, cv_score, aid
+
+
+def _read_csv(comp: object, name: str) -> pl.DataFrame:
+    s3 = getattr(comp, "S3_DATA_PATH", None)
+    if s3 and _MINIO_ENDPOINT:
+        try:
+            url = f"{_MINIO_ENDPOINT}/kaggle/{s3}{name}"
+            resp = requests.get(url, timeout=60)
+            resp.raise_for_status()
+            return pl.read_csv(resp.content)
+        except Exception as exc:
+            raise FileNotFoundError(
+                f"MinIO read failed for {name} ({url}): {exc}"
+            ) from exc
+    return pl.read_csv(getattr(comp, "DATA_DIR") / name)
 
 
 _HOOK_NAMES = (
@@ -113,10 +131,10 @@ def main() -> None:
         is_classification=comp.IS_CLASSIFICATION,
     )
 
-    train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
-    test  = pl.read_csv(comp.DATA_DIR / "test.csv")
+    train = _read_csv(comp, "train.csv").drop(comp.DROP_COLS)
+    test  = _read_csv(comp, "test.csv")
 
-    sample = pl.read_csv(comp.DATA_DIR / "sample_submission.csv")
+    sample = _read_csv(comp, "sample_submission.csv")
     id_col = sample.columns[0]
     test_ids = test[id_col]
     test_feat = test.drop([c for c in comp.DROP_COLS if c in test.columns])
