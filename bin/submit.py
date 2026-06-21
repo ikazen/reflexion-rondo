@@ -174,6 +174,7 @@ def main() -> None:
     print(f"submission saved: {out}")
 
     if args.submit:
+        import sys
         msg = args.message or f"reflexion best cv={cv_score:.5f} attempt={attempt_id[:8]}"
         result = subprocess.run(
             ["uv", "run", "kaggle", "competitions", "submit",
@@ -181,6 +182,9 @@ def main() -> None:
             capture_output=True, text=True,
         )
         print(result.stdout or result.stderr)
+        if result.returncode != 0:
+            print(f"kaggle submit failed (rc={result.returncode})", file=sys.stderr)
+            sys.exit(result.returncode)
     else:
         print(f"\n제출하려면: uv run python -m bin.submit --competition {args.competition} --submit")
 

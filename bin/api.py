@@ -22,16 +22,20 @@ DaemonState는 daemon 메인 루프가 갱신하고 API가 읽는 공유 객체.
 """
 from __future__ import annotations
 
+import contextlib
 import csv as csv_module
 import importlib
 import io
+import json
 import os
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -170,9 +174,14 @@ def _kaggle_submit(
     _update({"status": "submitting", "checked_at": datetime.now(timezone.utc)})
 
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=600, cwd=str(ROOT)
-        )
+        with _kaggle_home_env() as env:
+            if env is None:
+                _update({"status": "error", "error": "kaggle token unavailable", "checked_at": datetime.now(timezone.utc)})
+                return
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=600, cwd=str(ROOT),
+                env=env,
+            )
     except subprocess.TimeoutExpired:
         _update({"status": "error", "error": "submit timed out (600s)", "checked_at": datetime.now(timezone.utc)})
         return
@@ -193,6 +202,64 @@ def _kaggle_submit(
     _update(fields)
 
 
+_kaggle_token_cache: dict = {}
+_kaggle_token_lock = threading.Lock()
+
+
+def _get_fresh_kaggle_token() -> str | None:
+    """Return valid OAuth access token, refreshing via kagglesdk if needed.
+
+    credentials.json is bind-mounted read-only in the daemon container.
+    kagglesdk's refresh_access_token() always calls save() → OSError on ro mount.
+    We call generate_access_token() directly (no save()) and cache the result.
+    """
+    with _kaggle_token_lock:
+        now = datetime.now(timezone.utc)
+        cached_token = _kaggle_token_cache.get("token")
+        cached_exp = _kaggle_token_cache.get("expires_at")
+        if cached_token and cached_exp and cached_exp > now + timedelta(minutes=5):
+            return cached_token
+        try:
+            import kagglesdk.kaggle_creds as _kc
+            from kagglesdk.kaggle_client import KaggleClient
+
+            creds_path = Path.home() / ".kaggle" / "credentials.json"
+            if not creds_path.exists():
+                return None
+            creds_data = json.loads(creds_path.read_text())
+            client = KaggleClient()
+            creds = _kc.KaggleCredentials(client=client, refresh_token=creds_data.get("refresh_token"))
+            resp = creds.generate_access_token()
+            _kaggle_token_cache["token"] = resp.token
+            _kaggle_token_cache["expires_at"] = now + timedelta(seconds=resp.expires_in)
+            return resp.token
+        except Exception as exc:
+            print(f"  [kaggle] token refresh failed: {exc}")
+            return None
+
+
+@contextlib.contextmanager
+def _kaggle_home_env():
+    """kaggle CLI가 OAuth credentials.json 대신 access_token 파일을 쓰도록 HOME 오버라이드.
+
+    kagglesdk가 credentials.json의 save()를 항상 호출 → read-only mount에서 OSError.
+    OAuth를 완전히 우회하기 위해: temp HOME dir에 .kaggle/access_token만 두고
+    HOME 환경변수를 해당 경로로 설정 → kaggle CLI가 credentials.json을 찾지 못해
+    OAuth 건너뜀 → access_token 파일로 직접 인증.
+    """
+    token = _get_fresh_kaggle_token()
+    if not token:
+        yield None
+        return
+    tmp = Path(tempfile.mkdtemp(prefix="kaggle_home_"))
+    try:
+        (tmp / ".kaggle").mkdir()
+        (tmp / ".kaggle" / "access_token").write_text(token)
+        yield {**os.environ, "HOME": str(tmp)}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _poll_kaggle_once(
     competition_id: str,
     message: str,
@@ -203,20 +270,28 @@ def _poll_kaggle_once(
     kaggle CLI 오류 시 'pending' 반환 (재시도 위임).
     """
     try:
-        poll = subprocess.run(
-            ["uv", "run", "kaggle", "competitions", "submissions",
-             "-c", competition_id, "--csv"],
-            capture_output=True, text=True, timeout=30, cwd=str(ROOT),
-        )
+        with _kaggle_home_env() as env:
+            if env is None:
+                print("  [poll/warn] kaggle token unavailable, skipping")
+                return "pending", None
+            poll = subprocess.run(
+                ["uv", "run", "kaggle", "competitions", "submissions",
+                 "-c", competition_id, "--csv"],
+                capture_output=True, text=True, timeout=30, cwd=str(ROOT),
+                env=env,
+            )
         if poll.returncode != 0:
+            print(f"  [poll/warn] kaggle CLI rc={poll.returncode}: {(poll.stderr or poll.stdout)[:200]!r}")
             return "pending", None
 
         # kaggle CLI may print Warning lines to stdout before CSV — skip them
         csv_lines = [l for l in poll.stdout.splitlines() if not l.startswith("Warning:")]
         reader = csv_module.DictReader(io.StringIO("\n".join(csv_lines)))
+        matched = False
         for row in reader:
             if (row.get("description") or "").strip() != message:
                 continue
+            matched = True
             status = (row.get("status") or "").lower()
             if status.endswith("complete"):
                 raw_score = row.get("publicScore") or row.get("public score") or ""
@@ -229,8 +304,10 @@ def _poll_kaggle_once(
             if status.endswith("error") or status.endswith("invalid"):
                 return status.rsplit(".", 1)[-1], None
             return "pending", None  # 아직 채점 중
-    except Exception:
-        pass
+        if not matched:
+            print(f"  [poll/warn] no kaggle row matched description={message!r}")
+    except Exception as exc:
+        print(f"  [poll/warn] exception: {exc}")
     return "pending", None
 
 
