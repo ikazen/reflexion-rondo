@@ -40,7 +40,21 @@ if [[ "$LOCAL" != "$REMOTE" ]]; then
     exit 1
 fi
 
-# ---- 2. 빌드 + push (ops-vm) ------------------------------------------------
+# ---- 2. 태그 중복 검사 -------------------------------------------------------
+
+echo "[release] checking tag uniqueness ..."
+for IMG in "$DAEMON_IMG" "$TASK_IMG"; do
+    STATUS=$(curl -o /dev/null -sw "%{http_code}" \
+        "http://${REGISTRY}/v2/${IMG#${REGISTRY}/}/manifests/${VERSION}" \
+        -H "Accept: application/vnd.docker.distribution.manifest.v2+json" 2>/dev/null || true)
+    if [[ "$STATUS" == "200" ]]; then
+        echo "ERROR: tag already exists in registry — $IMG"
+        echo "       use a new version number to enforce immutable tags"
+        exit 1
+    fi
+done
+
+# ---- 3. 빌드 + push (ops-vm) ------------------------------------------------
 
 echo "[release] building on ops-vm ..."
 ssh ops-vm "
@@ -55,7 +69,7 @@ ssh ops-vm "
 echo "[release] pushed $DAEMON_IMG"
 echo "[release] pushed $TASK_IMG"
 
-# ---- 3. 태그 bump + push (WSL) ----------------------------------------------
+# ---- 4. 태그 bump + push (WSL) ----------------------------------------------
 
 echo "[release] updating deploy/compose.yml ..."
 sed -i "s|/daemon:[^ '\"]*|/daemon:$VERSION|g" "$REPO_DIR/deploy/compose.yml"
@@ -72,7 +86,7 @@ if ! git -C "$AIRFLOW_STACK_DIR" diff --quiet dags/reflexion_rondo_cycle.py; the
 fi
 git -C "$AIRFLOW_STACK_DIR" push --quiet
 
-# ---- 4. 재시작 (ops-vm) -----------------------------------------------------
+# ---- 5. 재시작 (ops-vm) -----------------------------------------------------
 
 echo "[release] restarting daemon ..."
 ssh ops-vm "
@@ -81,7 +95,7 @@ ssh ops-vm "
     docker compose -f deploy/compose.yml up -d
 "
 
-# ---- 5. 스모크 (실행 중인 daemon 컨테이너 안에서) ---------------------------
+# ---- 6. 스모크 (실행 중인 daemon 컨테이너 안에서) ---------------------------
 # docker exec으로 실행해야 compose.yml 환경(AIRFLOW_URL 등)과 nexus 네트워크를 그대로 사용.
 # ollama_local은 컨테이너 내 Tailscale 미지원으로 항상 접근 불가 — 명시적으로 skip.
 
@@ -93,6 +107,6 @@ ssh ops-vm "
         uv run --no-sync python -m bin.healthcheck --skip ollama_local
 "
 
-# ---- 6. 사후 확인 ------------------------------------------------------------
+# ---- 7. 사후 확인 ------------------------------------------------------------
 
 echo "[release] $VERSION deployed successfully"
