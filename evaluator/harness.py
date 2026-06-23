@@ -8,6 +8,8 @@ import polars as pl
 from sklearn.inspection import permutation_importance as _permutation_importance
 from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit, KFold, ShuffleSplit
 
+_AUDIT_SEED = 2025  # 고정 seed — 대회·재시작과 무관하게 항상 동일 holdout 분리
+
 from config.settings import LABEL_Z
 from evaluator.metrics import get as get_metric
 
@@ -123,12 +125,41 @@ def _make_folds(y: np.ndarray, ctx: PipelineContext) -> list:
     return list(kf.split(np.zeros(len(y))))
 
 
+def split_audit_holdout(
+    train: pl.DataFrame,
+    target: str,
+    is_classification: bool,
+    frac: float = 0.1,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """고정 seed(_AUDIT_SEED)로 대회 단위 1회 결정적 분리.
+
+    반환: (train90, holdout10).
+    train90은 모든 CV/preselect에 사용하고, holdout10은 승격 시 1회 측정·기록에만 사용한다.
+    내부 k-fold나 파라미터 선택에 절대 사용하지 않는다.
+    """
+    n = len(train)
+    y = train[target].to_numpy()
+    if is_classification:
+        sss = StratifiedShuffleSplit(n_splits=1, test_size=frac, random_state=_AUDIT_SEED)
+        tr_idx, ho_idx = next(sss.split(np.zeros(n), y))
+    else:
+        ss = ShuffleSplit(n_splits=1, test_size=frac, random_state=_AUDIT_SEED)
+        tr_idx, ho_idx = next(ss.split(np.zeros(n)))
+    return train[list(tr_idx)], train[list(ho_idx)]
+
+
 def preselect_params(
     pipeline: BasePipeline | PatchedPipeline,
     train: pl.DataFrame,
     ctx: PipelineContext,
 ) -> dict:
-    """Select best params via a single 80/20 inner holdout to avoid CV leakage."""
+    """Select best params via a single 80/20 inner holdout.
+
+    트레이드오프: 이 80/20 inner split이 이후 k-fold와 동일한 train에서 추출되므로
+    낙관 편향(optimistic bias)이 잔존한다. per-fold nested CV(옵션 B)가 정석이나
+    계산 비용(k^2 모델 피팅)이 크다. 현재 구현은 단일 inner holdout으로 절충
+    (see docs/decisions.md ADR-021).
+    """
     candidates = pipeline.param_candidates(ctx)[:_MAX_PARAM_CANDIDATES]
     if len(candidates) <= 1:
         return candidates[0] if candidates else {}
