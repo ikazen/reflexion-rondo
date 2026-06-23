@@ -25,7 +25,6 @@ Your Patch overrides only the hook(s) assigned. All other hooks fall back to the
   preprocessing        -> preprocess only
   hyperparam_search    -> param_candidates only
   ensemble             -> any hooks needed (combine models: build_model + postprocess_predictions typical)
-  compound             -> at most 2 hooks from the list above
 
 ## Required Patch structure
 ```python
