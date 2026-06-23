@@ -160,17 +160,17 @@ def generate_code(
 ) -> str:
     is_bootstrap = action_type == "bootstrap"
     contract = _BOOTSTRAP_CONTRACT if is_bootstrap else _REFLEXION_CONTRACT
-    parts = [
-        f"## Contract\n{contract}",
+
+    user_parts = [
         f"## EDA Card\n{eda_card}",
         f"## Hypothesis\nAction type: {action_type}\n{hypothesis}",
     ]
     if known_errors:
         pitfall_block = "## Known failure modes (past errors on this task + action — avoid these)\n"
         pitfall_block += "\n".join(f"- {e}" for e in known_errors)
-        parts.insert(1, pitfall_block)
+        user_parts.insert(0, pitfall_block)
     if prev_code and not is_bootstrap:
-        parts.append(
+        user_parts.append(
             "## Current Best Pipeline\n"
             "This is the accumulated best pipeline. Understand what hooks are already implemented "
             "so your Patch complements rather than duplicates them. "
@@ -178,9 +178,9 @@ def generate_code(
             f"```python\n{prev_code}\n```"
         )
     if error_feedback:
-        parts.append(f"## Validation Errors (fix these)\n{error_feedback}")
+        user_parts.append(f"## Validation Errors (fix these)\n{error_feedback}")
 
-    parts.append("Write the Patch class now.")
+    user_parts.append("Write the Patch class now.")
 
     import time
 
@@ -190,7 +190,10 @@ def generate_code(
     _t0 = time.monotonic()
     resp = _client().chat(
         model=settings.MODEL_CODER,
-        messages=[{"role": "user", "content": "\n\n".join(parts)}],
+        messages=[
+            {"role": "system", "content": contract},
+            {"role": "user",   "content": "\n\n".join(user_parts)},
+        ],
     )
     source = _extract_code(resp.message.content)
     print(f"[coder] done in {time.monotonic() - _t0:.1f}s  code_chars={len(source)}")
