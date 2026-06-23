@@ -20,6 +20,7 @@ _MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--queue-id", required=True)
+    parser.add_argument("--competition", required=True)
     args = parser.parse_args()
 
     sys.path.insert(0, str(ROOT))
@@ -110,7 +111,13 @@ def main() -> None:
             train90: pl.DataFrame | None = None
             holdout10: pl.DataFrame | None = None
             try:
-                comp = importlib.import_module(f"config.competitions.{competition_id}")
+                comp = importlib.import_module(f"config.competitions.{args.competition}")
+                if getattr(comp, "COMPETITION_ID", None) != competition_id:
+                    print(
+                        f"[run_promote_task] WARNING: comp.COMPETITION_ID={comp.COMPETITION_ID!r}"
+                        f" != DB competition_id={competition_id!r}",
+                        file=sys.stderr,
+                    )
                 s3_path = getattr(comp, "S3_DATA_PATH", None)
                 if s3_path and _MINIO_ENDPOINT:
                     full_train = pl.read_csv(
