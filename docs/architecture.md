@@ -55,6 +55,7 @@ Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
 4. **Submit?**: (별도 스크립트) best 후보 → submission CSV/Kaggle. `submission_budget` 스키마는 있으나 `bin/submit.py`의 자동 예산 enforcement와 `lb_score` 기록은 아직 미구현이다.
 
 `action_bandit`(BON-109): `reflexion` 단계 attempt 완료 시 action_type별 α/β 업데이트. jump/gain>0 → α++, regression/error → β++, neutral → 소량 양방향.
+`assign_super_cycle_actions`는 super_cycle retrieve에서만 action_type을 강제 배정한다. 정상 reflexion 사이클에서 `get_action_prior`는 LLM Strategist 프롬프트에 텍스트 prior로만 제공되며, 최종 action 선택은 LLM이 한다(advisory, regret 보장 없음 — ADR-005/014).
 
 피드백 신호 정책: **CV = 주 신호**(무제한·결정적), **LB = 확인용 희소 신호**. 일일 제출 예산 게이트와 CV-LB 상관/shake 기록은 운영 목표이며, 현재 submit 경로에는 자동화되어 있지 않다.
 
