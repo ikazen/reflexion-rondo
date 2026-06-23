@@ -3,6 +3,11 @@
 scope='local'(competition_id별) Local 티어만 구현.
 Global/Cluster 티어는 대회 누적 후 승격 예정.
 
+역할 분리:
+  assign_super_cycle_actions — super_cycle retrieve에서 attempt별 action_type 강제 배정.
+  get_action_prior           — reflexion 사이클에서 LLM Strategist에 텍스트 prior로만 제공.
+                               최종 action 결정은 LLM (ADR-005/014). regret 보장 없음(advisory).
+
 업데이트 규칙:
   jump 또는 gain_vs_best > 0  → α += 1.0
   regression 또는 error_trace → β += 1.0
@@ -55,10 +60,12 @@ def assign_super_cycle_actions(
     conn: PgConn,
     competition_id: str,
     n_attempts: int = 3,
+    seed: int | None = None,
 ) -> list[str]:
     """bandit Thompson sample 1회로 전체 action을 순위 매기고 top-n을 배정한다.
 
     같은 사이클 안에서 일관된 선호 순서를 유지하면서 다양성을 보장한다.
+    seed=None(기본)이면 매 사이클 새 엔트로피 → 탐색. 테스트에서만 고정.
     """
     rows = conn.execute(
         """
@@ -70,7 +77,7 @@ def assign_super_cycle_actions(
     ).fetchall()
 
     bandit: dict[str, tuple[float, float]] = {r[0]: (r[1], r[2]) for r in rows}
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(seed)
     scores = {
         action: float(rng.beta(*bandit.get(action, (1.0, 1.0))))
         for action in ACTION_TYPES
@@ -82,12 +89,12 @@ def assign_super_cycle_actions(
 def get_action_prior(
     conn: PgConn,
     competition_id: str,
-    n_samples: int = 1000,
     seed: int | None = None,
 ) -> dict[str, float]:
     """Thompson 샘플 1회씩 → posterior_mean 반환 (advise용, 높을수록 추천).
 
     DB에 데이터 없으면 균일 Beta(1,1) → 모든 action 동등.
+    반환값은 LLM Strategist 프롬프트에 텍스트로 주입되며, 최종 결정은 LLM(advisory).
     """
     rows = conn.execute(
         """
