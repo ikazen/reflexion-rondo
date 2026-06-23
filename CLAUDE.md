@@ -16,7 +16,7 @@ Kaggle 정형 대회용 자기 개선 Reflexion 루프. LLM 3역할(Strategist, 
 
 | 역할 | 모델 | 환경변수 |
 |------|------|---------|
-| Strategist | `glm-5.2:cloud` | `OLLAMA_CLOUD_BASE_URL` + `OLLAMA_API_KEY` |
+| Strategist | `glm-5.2` | `OLLAMA_CLOUD_BASE_URL` + `OLLAMA_API_KEY` |
 | Reflector | `kimi-k2.6` (Strategist와 다른 패밀리 — ADR-016) | 동일 |
 | Coder | `qwen3-coder-next` | 동일 |
 | Embedding | `qwen3-embedding:8b` | `OLLAMA_BASE_URL` (키 없음) |

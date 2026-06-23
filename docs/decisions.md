@@ -80,7 +80,7 @@
 ## ADR-016 — LLM 역할별 모델 배정 (Actor 분리 + Reflector 패밀리 다양성)
 - 역할 매핑: Reflexion의 **Actor = Strategist(정책) + Coder(실행)**, **Self-Reflection = Reflector**, Evaluator는 결정적 코드(ADR-005).
 - 결정: **처음부터 3모델 분리.**
-  - **Strategist**(정책, 추론 모델) — `glm-5.2:cloud` (2026-06-24 `deepseek-v4-pro`에서 변경. 대안 `deepseek-v4-pro`, `kimi-k2.6`).
+  - **Strategist**(정책, 추론 모델) — `glm-5.2` (2026-06-24 `deepseek-v4-pro`에서 변경. 대안 `deepseek-v4-pro`, `kimi-k2.6`).
   - **Reflector**(성찰, 추론 모델) — `kimi-k2.6` (대안 `glm-5`). **Strategist와 다른 패밀리**로 고정 — glm(Strategist) ≠ kimi(Reflector) 유지.
   - **Coder**(실행, 코드 모델) — `qwen3-coder-next` (대안 `glm-4.7`, 저비용 `devstral-small-2:24b`).
 - 근거: Coder 분리는 코드 특화 모델이 컨트랙트 준수에 유리(태스크 성격). Reflector를 다른 패밀리로 두는 건 **상관된 맹점** 완화 — 같은 모델이 가설을 내고 스스로 성찰하면 자기 추론을 합리화한다. ADR-005가 채점에서 LLM을 뺐어도 Reflector의 정성 진단·generality 라벨링엔 자기편향이 남으므로 교차 패밀리가 교훈 품질을 높인다.
