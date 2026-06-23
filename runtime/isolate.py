@@ -44,6 +44,7 @@ class IsolatedResult:
     gain_vs_best: float | None
     error_trace: str | None
     feature_importance: dict | None = None
+    holdout_score: float | None = None
 
 
 def eval_isolated(
@@ -58,6 +59,7 @@ def eval_isolated(
     action_type: str = "",
     best_source: str | None = None,
     timeout_sec: int = DEFAULT_TIMEOUT,
+    holdout_data: pl.DataFrame | None = None,
 ) -> IsolatedResult:
     with tempfile.TemporaryDirectory(prefix="rondo-eval-") as tmpdir:
         ws = Path(tmpdir)
@@ -74,6 +76,8 @@ def eval_isolated(
         }))
         if best_source:
             (ws / "best_pipeline.py").write_text(best_source)
+        if holdout_data is not None:
+            holdout_data.write_parquet(ws / "holdout.parquet")
 
         _EVAL_ENV_ALLOWLIST = {
             "PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE",
@@ -116,6 +120,7 @@ def eval_isolated(
             gain_vs_best=out.get("gain_vs_best"),
             error_trace=None,
             feature_importance=out.get("feature_importance"),
+            holdout_score=out.get("holdout_score"),
         )
 
 
