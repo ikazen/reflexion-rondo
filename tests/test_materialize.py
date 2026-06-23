@@ -3,7 +3,8 @@ from __future__ import annotations
 import ast
 import textwrap
 
-from cycle.materialize import materialize_best_pipeline
+import pytest
+from cycle.materialize import materialize_best_pipeline, _validate_materialized
 
 
 _BASE = textwrap.dedent("""
@@ -157,6 +158,31 @@ def test_toplevel_helpers_appear_before_class():
     helper_pos = result.index("def _patch_helper")
     class_pos = result.index("class Patch:")
     assert helper_pos < class_pos
+
+
+# --- _validate_materialized ---
+
+def test_validate_materialized_valid_source():
+    _validate_materialized(_PATCH)  # should not raise
+
+
+def test_validate_materialized_syntax_error():
+    bad = "class Patch:\n    def broken(self\n"
+    with pytest.raises(ValueError, match="SyntaxError"):
+        _validate_materialized(bad)
+
+
+def test_validate_materialized_missing_patch_class():
+    no_patch = "x = 1\ndef helper(): pass\n"
+    with pytest.raises(ValueError, match="missing class Patch"):
+        _validate_materialized(no_patch)
+
+
+def test_materialize_invalid_merge_raises():
+    """syntactically broken base causes materialize to raise via _validate_materialized."""
+    broken_base = "class Patch:\n    def preprocess(self\n"
+    with pytest.raises(Exception):
+        materialize_best_pipeline(broken_base, _PATCH)
 
 
 def test_multi_target_assign_emitted_once():
