@@ -139,7 +139,9 @@ WITH scored AS (
     WHERE was_promoted IS NOT FALSE  -- NULL=legacy (promoted), TRUE=winner, FALSE=super-cycle loser excluded
 ),
 per_reflection AS (
-    SELECT unnest(reflection_ids) AS reflection_id, gain_vs_best
+    SELECT
+        unnest(reflection_ids) AS reflection_id,
+        gain_vs_best / array_length(reflection_ids, 1) AS gain_vs_best
     FROM scored
     WHERE reflection_ids IS NOT NULL
       AND gain_vs_best IS NOT NULL
