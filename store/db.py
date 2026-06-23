@@ -75,10 +75,14 @@ class PgConn:
         _get_pool().putconn(self._conn)
 
 
+_SCHEMA_LOCK_KEY = 7_463_100  # arbitrary stable int for pg_advisory_xact_lock
+
+
 def _apply_schema(raw: psycopg2.extensions.connection) -> None:
     schema = _SCHEMA.read_text()
     statements = [s.strip() for s in schema.split(";") if s.strip()]
     with raw.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", [_SCHEMA_LOCK_KEY])
         for stmt in statements:
             cur.execute(stmt)
     raw.commit()
