@@ -31,7 +31,16 @@ def embed(text: str) -> list[float]:
             time.sleep(delay)
         try:
             resp = _client().embed(model=settings.MODEL_EMBEDDING, input=text)
-            return resp.embeddings[0][:_EMBED_DIM]
+            raw = resp.embeddings[0]
+            if len(raw) != _EMBED_DIM:
+                # 모델 native 차원이 스키마 vector(_EMBED_DIM)와 다를 때 슬라이스.
+                # 슬라이싱은 방향 정보를 왜곡하므로 L2 재정규화로 보정한다.
+                vec = np.array(raw[:_EMBED_DIM], dtype=np.float32)
+                norm = float(np.linalg.norm(vec))
+                if norm > 1e-9:
+                    vec = vec / norm
+                return vec.tolist()
+            return raw
         except Exception as exc:
             last_exc = exc
     raise EmbeddingUnavailableError(
