@@ -27,13 +27,10 @@ def _write(payload: dict) -> None:
 
 def _load_best_pipeline_class(best_source: str, BasePipeline: type) -> type:
     ns: dict = {}
-    try:
-        exec(compile(best_source, "<best_pipeline>", "exec"), ns)  # noqa: S102
-    except Exception:
-        return BasePipeline
+    exec(compile(best_source, "<best_pipeline>", "exec"), ns)  # noqa: S102
     patch_cls = ns.get("Patch")
     if not patch_cls:
-        return BasePipeline
+        raise RuntimeError("best_pipeline.py has no Patch class")
     methods = {h: getattr(patch_cls, h) for h in _HOOK_NAMES if hasattr(patch_cls, h)}
     return type("BestPipeline", (BasePipeline,), methods)
 
@@ -51,9 +48,13 @@ def main() -> None:
 
     from evaluator.harness import BasePipeline, PatchedPipeline, PipelineContext, evaluate_pipeline
 
-    BestPipelineCls = (
-        _load_best_pipeline_class(best_source, BasePipeline) if best_source else BasePipeline
-    )
+    try:
+        BestPipelineCls = (
+            _load_best_pipeline_class(best_source, BasePipeline) if best_source else BasePipeline
+        )
+    except Exception:
+        _write({"error_trace": f"best_pipeline load failed:\n{traceback.format_exc()}"})
+        sys.exit(0)
     base = BestPipelineCls()
 
     patch_ns: dict = {}

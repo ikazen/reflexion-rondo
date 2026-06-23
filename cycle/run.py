@@ -18,6 +18,7 @@ from cycle.error_pitfalls import top_error_pitfalls
 from cycle.stagnation import detect_stagnation
 from cycle.materialize import materialize_best_pipeline
 from evaluator.contract import validate_patch
+from evaluator.harness import is_significant_gain
 from memory.retriever import EmbeddingUnavailableError, search
 from runtime.isolate import eval_isolated
 from store.db import PgConn, insert_attempt, insert_pipeline
@@ -232,6 +233,7 @@ def run_attempt_core(
     was_promoted: bool | None = None,
     attempt_index: int | None = None,
     forced_action: str | None = None,
+    defer_promotion: bool = False,
 ) -> _AttemptData:
     """Strategize → Generate → Evaluate → Persist one attempt. Returns data needed for reflect."""
     attempt_id = str(uuid.uuid4())
@@ -386,24 +388,26 @@ def run_attempt_core(
         row["was_promoted"] = was_promoted
     insert_attempt(conn, row)
 
-    # Save pipeline if improved — also materialize as new best baseline
-    if gain_vs_best is not None and gain_vs_best > 0 and not error_trace:
+    # Save pipeline if improved — also materialize as new best baseline.
+    # defer_promotion=True: caller (super_cycle / Airflow promote task) handles winner-only promotion.
+    if not defer_promotion and is_significant_gain(gain_vs_best, cv_fold_var) and not error_trace:
         fp_row = conn.execute(
             "select fingerprint from raw.competitions where competition_id = %s",
             [config.competition_id],
         ).fetchone()
         fp_val = fp_row[0] if fp_row and fp_row[0] else {}
         fp_dict = fp_val if isinstance(fp_val, dict) else json.loads(fp_val)
-        insert_pipeline(
-            conn,
-            pipeline_id=str(uuid.uuid4()),
-            attempt_id=attempt_id,
-            competition_id=config.competition_id,
-            fingerprint_snapshot=fp_dict,
-            code=source,
-            cv_score=cv_score,
-            gain_vs_best=gain_vs_best,
-        )
+        with conn.transaction():
+            insert_pipeline(
+                conn,
+                pipeline_id=str(uuid.uuid4()),
+                attempt_id=attempt_id,
+                competition_id=config.competition_id,
+                fingerprint_snapshot=fp_dict,
+                code=source,
+                cv_score=cv_score,
+                gain_vs_best=gain_vs_best,
+            )
         materialized = materialize_best_pipeline(prev_code, source)
         _best_pipeline_upload(config.competition_id, materialized)
         print(f"[attempt] best pipeline materialized (gain={gain_vs_best:+.5f})")
@@ -469,7 +473,11 @@ def run_cycle(
     # 1. Retrieve
     fail_summary = _recent_failure_summary(conn, config.competition_id)
     query = _build_retrieval_query(conn, config.competition_id, config.eda_card, fail_summary)
-    lessons = search(conn, query, config.competition_id, k=config.k_retrieve)
+    try:
+        lessons = search(conn, query, config.competition_id, k=config.k_retrieve)
+    except EmbeddingUnavailableError as exc:
+        print(f"[run_cycle] embedding unavailable, proceeding with no lessons: {exc}")
+        lessons = []
     prev_best_cv = _prev_best(conn, config.competition_id)
 
     # 2-6. Strategize → Generate → Evaluate → Persist

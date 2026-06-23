@@ -4,9 +4,10 @@ import pytest
 import numpy as np
 import polars as pl
 
+from config.settings import LABEL_Z
 from evaluator.harness import (
     BasePipeline, PatchedPipeline, PipelineContext,
-    evaluate_pipeline, preselect_params,
+    evaluate_pipeline, preselect_params, is_significant_gain,
     _LEAK_PERFECT_HIGH,
 )
 
@@ -42,6 +43,48 @@ class _TwoCandidates(BasePipeline):
     def param_candidates(self, ctx):
         return [{"max_iter": 1}, {"max_iter": 200}]
 
+
+# --- is_significant_gain ---
+
+def test_is_significant_gain_none_is_false():
+    assert not is_significant_gain(None, 0.01)
+
+
+def test_is_significant_gain_above_threshold():
+    # gain > LABEL_Z * sqrt(fold_var) => True
+    fold_var = 0.04  # fold_std = 0.2
+    gain = LABEL_Z * 0.2 + 0.001
+    assert is_significant_gain(gain, fold_var)
+
+
+def test_is_significant_gain_at_threshold_is_false():
+    fold_var = 0.04  # fold_std = 0.2
+    gain = LABEL_Z * 0.2  # exactly at threshold — not strictly greater
+    assert not is_significant_gain(gain, fold_var)
+
+
+def test_is_significant_gain_below_threshold():
+    fold_var = 0.04
+    gain = LABEL_Z * 0.2 - 0.001
+    assert not is_significant_gain(gain, fold_var)
+
+
+def test_is_significant_gain_zero_fold_var_positive_gain():
+    # fold_var=0 → fold_std=0 → any positive gain is significant
+    assert is_significant_gain(0.001, 0.0)
+
+
+def test_is_significant_gain_zero_fold_var_zero_gain():
+    assert not is_significant_gain(0.0, 0.0)
+
+
+def test_label_z_imported_from_settings():
+    from config.settings import LABEL_Z as settings_LABEL_Z
+    from evaluator.harness import LABEL_Z as harness_LABEL_Z
+    assert settings_LABEL_Z == harness_LABEL_Z
+
+
+# --- preselect ---
 
 def test_preselect_single_candidate_returned_directly():
     result = preselect_params(_SingleCandidate(), _make_df(), _ctx())

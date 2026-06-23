@@ -103,4 +103,21 @@ def materialize_best_pipeline(base_source: str | None, patch_source: str) -> str
         parts.append(textwrap.indent(ast.unparse(member), "    "))
         parts.append("")
 
-    return "\n".join(parts)
+    result = "\n".join(parts)
+    _validate_materialized(result)
+    return result
+
+
+def _validate_materialized(source: str) -> None:
+    """Compile-check + Patch presence guard. Raises ValueError on invalid merged output."""
+    try:
+        compile(source, "<materialized>", "exec")
+    except SyntaxError as exc:
+        raise ValueError(f"materialized pipeline has SyntaxError: {exc}") from exc
+    tree = ast.parse(source)
+    has_patch = any(
+        isinstance(node, ast.ClassDef) and node.name == "Patch"
+        for node in ast.walk(tree)
+    )
+    if not has_patch:
+        raise ValueError("materialized pipeline is missing class Patch")

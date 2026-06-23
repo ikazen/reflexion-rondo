@@ -8,14 +8,21 @@ import polars as pl
 from sklearn.inspection import permutation_importance as _permutation_importance
 from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit, KFold, ShuffleSplit
 
+from config.settings import LABEL_Z
 from evaluator.metrics import get as get_metric
 
-LABEL_Z = 1.0
 _PI_REPEATS = 3
 _PI_TOP_N = 20
 _MAX_PARAM_CANDIDATES = 12
 _LEAK_PERFECT_HIGH = 0.9999
 _LEAK_PERFECT_LOW = 1e-9
+
+
+def is_significant_gain(gain_vs_best: float | None, cv_fold_var: float) -> bool:
+    """gain이 fold noise(LABEL_Z * fold_std)보다 큰 경우만 True — 라벨 jump 기준과 동일."""
+    if gain_vs_best is None:
+        return False
+    return gain_vs_best > LABEL_Z * (cv_fold_var ** 0.5)
 
 
 def _strip_target(df: pl.DataFrame, target: str) -> pl.DataFrame:

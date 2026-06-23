@@ -1,5 +1,6 @@
 import os
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 import psycopg2
@@ -56,6 +57,19 @@ class PgConn:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+    @contextmanager
+    def transaction(self):
+        """Atomic block: disables autocommit, commits on success, rolls back on error."""
+        self._conn.autocommit = False
+        try:
+            yield self
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        finally:
+            self._conn.autocommit = True
 
     def close(self) -> None:
         _get_pool().putconn(self._conn)
