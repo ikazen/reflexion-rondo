@@ -10,7 +10,10 @@ from store.db import PgConn
 
 _EMBED_DIM = 1024
 _EMBED_RETRY_DELAYS = (1.0, 4.0, 16.0)
-_MMR_LAMBDA = 0.3  # BON-96: 다양성 가중치↑ (coverage 손실 보완)
+# MMR: λ=0.5 — 관련성/다양성 균형. 높일수록 score 우선, 낮출수록 다양성 우선.
+_MMR_LAMBDA = 0.5
+# impact 가중 z-score 배율: multiplier = clip(1 + z * W, [0.5, 1.5])
+_IMPACT_W = 0.25
 
 
 class EmbeddingUnavailableError(RuntimeError):
@@ -84,9 +87,7 @@ def search(
             r.lesson_type,
             r.embedding,
             1 - (r.embedding <=> %s::vector) AS sim,
-            (1 - (r.embedding <=> %s::vector))
-                * (1 + greatest(-1.0, least(1.0, coalesce(i.avg_gain, 0.0)::double precision)))
-                * CASE WHEN r.lesson_type = 'no_op' THEN 0.5 ELSE 1.0 END AS score
+            coalesce(i.avg_gain, 0.0)::double precision AS avg_gain
         FROM raw.reflections r
         LEFT JOIN reflection_impact i USING (reflection_id)
         WHERE r.archived = false
@@ -94,28 +95,61 @@ def search(
               r.generality IN ('L2_class', 'L3_general')
               OR r.competition_id = %s
           )
-        ORDER BY score DESC
+        ORDER BY sim DESC
         LIMIT %s
         """,
-        [query_vec, query_vec, competition_id, k * 4],  # BON-96: 후보 풀 확장
+        [query_vec, competition_id, k * 4],
     ).fetchall()
 
     cols = ["reflection_id", "embedded_text", "full_lesson", "generality",
-            "gain_vs_best", "lesson_type", "embedding", "sim", "score"]
+            "gain_vs_best", "lesson_type", "embedding", "sim", "avg_gain"]
     candidates = [dict(zip(cols, row)) for row in rows]
+    candidates = _apply_impact_score(candidates)
     selected = _mmr_rerank(candidates, k)
     for item in selected:
         del item["embedding"]
     return selected
 
 
+def _apply_impact_score(candidates: list[dict]) -> list[dict]:
+    """avg_gain z-score 표준화 후 sim에 승수 적용. no_op 교훈 추가 감쇠.
+
+    avg_gain 실제 스케일(0.001~0.05)과 sim(0~1)이 달라 단순 clamp 승수로는
+    impact 차이가 sim에 묻힘. z-score로 정규화하면 스케일 무관하게 상/하위 교훈 구분 가능.
+    """
+    if not candidates:
+        return candidates
+    gains = np.array([c["avg_gain"] for c in candidates], dtype=np.float64)
+    std = float(gains.std())
+    if std > 1e-9:
+        z = (gains - float(gains.mean())) / std
+    else:
+        z = np.zeros(len(gains))
+    for i, c in enumerate(candidates):
+        damp = 0.5 if c.get("lesson_type") == "no_op" else 1.0
+        mult = float(np.clip(1.0 + z[i] * _IMPACT_W, 0.5, 1.5))
+        c["score"] = c["sim"] * mult * damp
+    return candidates
+
+
 def _mmr_rerank(candidates: list[dict], k: int) -> list[dict]:
-    """Greedy MMR: λ * score - (1-λ) * max_cos_sim_to_selected."""
+    """Greedy MMR: λ * score_norm - (1-λ) * max_cos_sim_to_selected.
+
+    score를 min-max 정규화해 redundancy(코사인 0~1)와 같은 스케일로 혼합.
+    λ=_MMR_LAMBDA(기본 0.5): 관련성·다양성 균형. 높이면 score 우선.
+    """
     if len(candidates) <= k:
         return candidates
 
     vecs = np.array([c["embedding"] for c in candidates], dtype=np.float32)
-    scores = np.array([c["score"] for c in candidates], dtype=np.float32)
+    raw_scores = np.array([c["score"] for c in candidates], dtype=np.float32)
+
+    s_min, s_max = float(raw_scores.min()), float(raw_scores.max())
+    if s_max - s_min > 1e-9:
+        scores = (raw_scores - s_min) / (s_max - s_min)
+    else:
+        scores = np.ones_like(raw_scores)
+
     norms = np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-9
     vecs_norm = vecs / norms
 
