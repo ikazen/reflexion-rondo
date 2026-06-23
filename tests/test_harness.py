@@ -75,6 +75,24 @@ def test_preselect_regression_path():
     assert result in pipeline.param_candidates(ctx)
 
 
+def _ctx_rmse() -> PipelineContext:
+    return PipelineContext(
+        target_col="y",
+        metric="rmse",
+        n_splits=3,
+        seed=42,
+        is_classification=False,
+    )
+
+
+def test_harness_regression_rmse_scores_without_error():
+    """rmse 메트릭 경로가 TypeError 없이 CV 스코어를 반환한다."""
+    df = _make_df(is_classification=False)
+    result = evaluate_pipeline(BasePipeline(), df, _ctx_rmse())
+    assert result.cv_score > 0  # rmse는 양수 오류값으로 저장
+    assert np.isfinite(result.cv_score)
+
+
 def test_preselect_evaluates_all_candidates():
     evaluated: list[dict] = []
 

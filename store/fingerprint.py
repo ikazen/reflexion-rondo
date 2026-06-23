@@ -35,7 +35,7 @@ def compute(
     n_text_ish = sum(
         1 for c in X.columns
         if X[c].dtype in (pl.Utf8, pl.String)
-        and X[c].drop_nulls().cast(pl.String).str.len_chars().mean() > 20
+        and (X[c].drop_nulls().cast(pl.String).str.len_chars().mean() or 0) > 20
     )
 
     total_cells = n_rows * n_cols
@@ -55,7 +55,7 @@ def compute(
         import numpy as np
         mean = float(arr.mean())
         std  = float(arr.std())
-        target_stat = float(arr.mean() - mean) / std if std > 0 else 0.0  # skew proxy
+        target_stat = float(((arr - mean) ** 3).mean() / std**3) if std > 0 else 0.0  # skew
 
     if n_rows < 10_000:
         size_class = "tiny"

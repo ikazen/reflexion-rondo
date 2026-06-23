@@ -1,5 +1,6 @@
 from sklearn.metrics import roc_auc_score, log_loss, accuracy_score, f1_score
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import root_mean_squared_error, root_mean_squared_log_error
 import numpy as np
 
 _REGISTRY: dict[str, tuple] = {
@@ -8,9 +9,9 @@ _REGISTRY: dict[str, tuple] = {
     "logloss":   (log_loss,       -1, "binary_proba"),
     "accuracy":  (accuracy_score, +1, "classification"),
     "f1":        (f1_score,       +1, "classification"),
-    "rmse":      (lambda y, p: mean_squared_error(y, p, squared=False), -1, "regression_error"),
+    "rmse":      (root_mean_squared_error, -1, "regression_error"),
     "mae":       (mean_absolute_error, -1, "regression_error"),
-    "rmsle":     (lambda y, p: np.sqrt(mean_squared_error(np.log1p(y), np.log1p(np.clip(p, 0, None)))), -1, "regression_error"),
+    "rmsle":     (lambda y, p: root_mean_squared_log_error(y, np.clip(p, 0, None)), -1, "regression_error"),
 }
 
 
