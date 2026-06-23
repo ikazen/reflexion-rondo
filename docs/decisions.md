@@ -164,6 +164,21 @@
   - **톰슨 샘플링 staleness**: 시간 decay 없음 — 오래 누적된 좋은 idea 가 우위를 영구 유지. 트렌드 변화 시 새 cold-start(Beta(1,1)) 가 못 따라잡을 수 있음. 신호 보이면 weekly decay 도입.
 - 추적: Linear BON-XX 시리즈(스키마 / 스케줄러+추출 / 화이트리스트 / Strategist 통합 4단계 분리 예정).
 
+## ADR-020 — 밴딧은 advise-only, 최종 action 결정은 LLM
+
+- 결정: `cycle/action_optimizer.py`의 Beta-Bernoulli 밴딧은 **advisory**로만 동작한다.
+  정상 사이클(`reflexion` stage)에서 밴딧 posterior 샘플은 Strategist 프롬프트의 텍스트 hint로만
+  주입되고(`get_action_prior` → `action_prior` dict), 최종 `action_type` 결정은 LLM(Strategist)이
+  자유롭게 내린다. regret 최적화 보장 없음.
+  `super_cycle`에서는 `assign_super_cycle_actions`가 Thompson 샘플로 attempt 3개에 서로 다른
+  action을 강제 배정한다(`forced_action` 경로). 이쪽은 탐색 강제화 목적이라 LLM 자유 선택 없음.
+- 근거: Strategist가 EDA 컨텍스트·교훈·스테이지를 종합해 선택하는 것이 밴딧 단순 posterior보다
+  정교하다. 밴딧은 "최근 N회 어떤 action이 효과적이었는지"를 수치로 요약해 힌트로 제공하는 용도.
+  epsilon-greedy 강제 혼합(안 B)은 Strategist 자유도를 훼손하고 regret 이론이 LLM 반응에 적용되기
+  어려워 도입하지 않는다.
+- 후속 후보: epsilon-greedy 혼합(super_cycle 내 비율 강제), contextual bandit(EDA fingerprint 피처 입력).
+- cross-ref: ADR-005(LLM-as-judge 금지), ADR-014(컨트랙트), `cycle/action_optimizer.py` docstring.
+
 ---
 
 ## 미정 항목 (TBD)
