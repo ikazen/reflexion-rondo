@@ -65,8 +65,8 @@ def test_allowed_hooks_covers_all_action_types():
     from config.settings import ACTION_TYPES
     from evaluator.contract import _ALLOWED_HOOKS
     # Every emittable action_type must have a contract entry.
-    # bootstrap and ensemble are valid but not in ACTION_TYPES (bandit-emitted list).
-    non_bandit = {"bootstrap", "ensemble"}
+    # bootstrap is valid but not bandit-emitted (special stage).
+    non_bandit = {"bootstrap"}
     bandit_keys = set(_ALLOWED_HOOKS) - non_bandit
     assert bandit_keys == set(ACTION_TYPES), (
         f"_ALLOWED_HOOKS bandit keys {bandit_keys} != ACTION_TYPES {set(ACTION_TYPES)}"
