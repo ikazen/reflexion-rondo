@@ -109,6 +109,8 @@ def ensure_competition(
     metric_sign: int,
     fingerprint: dict | None = None,
 ) -> None:
+    from evaluator.metrics import get as _get_metric
+    _get_metric(metric)  # raises ValueError for unknown metric early
     import json
     fp_json = json.dumps(fingerprint or {})
     conn.execute(
