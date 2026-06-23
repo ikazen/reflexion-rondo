@@ -24,7 +24,6 @@ _ALLOWED_HOOKS: dict[str, frozenset[str]] = {
     "preprocessing":       frozenset({"preprocess"}),
     "hyperparam_search":   frozenset({"param_candidates"}),
     "ensemble":            _ALL_HOOKS,
-    "compound":            _ALL_HOOKS,
     "bootstrap":           _ALL_HOOKS,
 }
 
@@ -121,11 +120,6 @@ def validate_patch(source: str, action_type: str) -> list[str]:
     if disallowed:
         errors.append(
             f"action_type={action_type!r} may not implement hooks: {sorted(disallowed)}"
-        )
-
-    if action_type == "compound" and len(hook_methods) > 2:
-        errors.append(
-            f"compound may implement at most 2 hooks, got {len(hook_methods)}: {sorted(hook_methods)}"
         )
 
     return errors

@@ -5,6 +5,13 @@ import os
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 OLLAMA_BASE_URL       = os.environ["OLLAMA_BASE_URL"]
+
+_CLASSIFICATION_TASK_TYPES = frozenset({"binary", "multiclass"})
+
+
+def is_classification(task_type: str) -> bool:
+    """Derive is_classification from task_type. Single source of truth."""
+    return task_type in _CLASSIFICATION_TASK_TYPES
 OLLAMA_CLOUD_BASE_URL = os.getenv("OLLAMA_CLOUD_BASE_URL", "https://ollama.com")
 OLLAMA_API_KEY        = os.getenv("OLLAMA_API_KEY", "")
 

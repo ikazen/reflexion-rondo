@@ -59,3 +59,15 @@ def test_forbidden_import_still_caught():
 def test_action_type_mismatch_still_caught():
     errs = validate_patch(_VALID_FEATURE_ENG, "model_swap")
     assert any("action_type" in e for e in errs)
+
+
+def test_allowed_hooks_covers_all_action_types():
+    from config.settings import ACTION_TYPES
+    from evaluator.contract import _ALLOWED_HOOKS
+    # Every emittable action_type must have a contract entry.
+    # bootstrap is valid but not bandit-emitted (special stage).
+    non_bandit = {"bootstrap"}
+    bandit_keys = set(_ALLOWED_HOOKS) - non_bandit
+    assert bandit_keys == set(ACTION_TYPES), (
+        f"_ALLOWED_HOOKS bandit keys {bandit_keys} != ACTION_TYPES {set(ACTION_TYPES)}"
+    )
