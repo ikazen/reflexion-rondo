@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS raw.attempts (
 );
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS super_cycle_id text;
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS was_promoted boolean;
+ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS holdout_score double precision;
 
 CREATE TABLE IF NOT EXISTS raw.submission_budget (
     competition_id  text,

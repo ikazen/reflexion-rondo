@@ -25,6 +25,41 @@ def _write(payload: dict) -> None:
     (WS / "output.json").write_text(json.dumps(payload))
 
 
+def _eval_holdout(
+    pipeline: object,
+    train90: "pl.DataFrame",
+    holdout10: "pl.DataFrame",
+    ctx: object,
+) -> float | None:
+    """train90으로 fit, holdout10으로 1회 측정. audit holdout 전용.
+
+    CV 결과와 독립적으로 일반화 성능을 추정한다. 실패 시 None 반환(caller가 무시).
+    """
+    import warnings
+    from evaluator.harness import _strip_target, _encode_residual_categoricals, preselect_params
+    from evaluator.metrics import get as get_metric
+
+    fn, _, metric_class = get_metric(ctx.metric)
+    params = preselect_params(pipeline, train90, ctx)
+    tr2, ho2 = pipeline.preprocess(train90, holdout10, ctx.target_col, ctx)
+    Xtr, Xho = pipeline.feature_transform(tr2, ho2, ctx.target_col, ctx)
+    Xtr = _strip_target(Xtr, ctx.target_col)
+    Xho = _strip_target(Xho, ctx.target_col)
+    Xtr, Xho = _encode_residual_categoricals(Xtr, Xho)
+    ytr = tr2[ctx.target_col].to_numpy()
+    yho = ho2[ctx.target_col].to_numpy()
+    model = pipeline.build_model(params, ctx)
+    model.fit(Xtr.to_numpy(), ytr)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        if metric_class == "binary_proba":
+            raw_preds = model.predict_proba(Xho.to_numpy())[:, 1]
+        else:
+            raw_preds = model.predict(Xho.to_numpy())
+    preds = pipeline.postprocess_predictions(raw_preds, ctx)
+    return float(fn(yho, preds))
+
+
 def _load_best_pipeline_class(best_source: str, BasePipeline: type) -> type:
     ns: dict = {}
     exec(compile(best_source, "<best_pipeline>", "exec"), ns)  # noqa: S102
@@ -89,17 +124,29 @@ def main() -> None:
 
     try:
         result = evaluate_pipeline(pipeline, train, ctx)
-        _write({
-            "cv_score": result.cv_score,
-            "cv_fold_var": result.cv_fold_var,
-            "fold_scores": result.fold_scores,
-            "label": result.label,
-            "gain_vs_best": result.gain_vs_best,
-            "feature_importance": result.feature_importance,
-            "error_trace": None,
-        })
     except Exception:
         _write({"error_trace": traceback.format_exc()})
+        return
+
+    holdout_score = None
+    holdout_path = WS / "holdout.parquet"
+    if holdout_path.exists():
+        try:
+            holdout = pl.read_parquet(holdout_path)
+            holdout_score = _eval_holdout(pipeline, train, holdout, ctx)
+        except Exception:
+            pass  # holdout 실패는 무시 — CV 결과는 유효
+
+    _write({
+        "cv_score": result.cv_score,
+        "cv_fold_var": result.cv_fold_var,
+        "fold_scores": result.fold_scores,
+        "label": result.label,
+        "gain_vs_best": result.gain_vs_best,
+        "feature_importance": result.feature_importance,
+        "error_trace": None,
+        "holdout_score": holdout_score,
+    })
 
 
 if __name__ == "__main__":

@@ -23,6 +23,11 @@ ACTION_TYPES: list[str] = [
 
 LABEL_Z: float = 1.0
 
+# 승격 cross-seed 확인: 이 seed 목록 전부에서 gain_vs_best > 0 재현돼야 승격
+PROMOTE_CONFIRM_SEEDS: list[int] = [
+    int(s) for s in os.getenv("PROMOTE_CONFIRM_SEEDS", "7,101").split(",")
+]
+
 _CLASSIFICATION_TASK_TYPES = frozenset({"binary", "multiclass"})
 
 

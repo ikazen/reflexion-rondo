@@ -41,9 +41,11 @@ comp_id = comp_options[selected_label]
 # 컬럼 존재 여부 확인
 cols = {r[0] for r in conn.execute("select column_name from information_schema.columns where table_schema='raw' and table_name='attempts'").fetchall()}
 has_duration = "duration_sec" in cols
+has_holdout = "holdout_score" in cols
 
 _duration_col = "duration_sec" if has_duration else "null as duration_sec"
 _retries_col  = "retries"       if "retries"      in cols else "0 as retries"
+_holdout_col  = "holdout_score" if has_holdout   else "null as holdout_score"
 
 # --- Attempts ---
 attempts_df = _query_df(
@@ -60,6 +62,7 @@ attempts_df = _query_df(
         gain_vs_best,
         {_duration_col},
         {_retries_col},
+        {_holdout_col},
         error_trace is not null as has_error
     from raw.attempts
     where competition_id = %s
@@ -68,7 +71,7 @@ attempts_df = _query_df(
     [
         "attempt_no", "run_ts", "stage", "action_type", "hypothesis",
         "cv_score", "label", "gain_vs_best", "duration_sec", "retries",
-        "has_error",
+        "holdout_score", "has_error",
     ],
     [comp_id],
 )
@@ -124,6 +127,25 @@ else:
     st.info("No CV scores recorded yet.")
 
 st.divider()
+
+# --- CV vs Holdout divergence ---
+if has_holdout:
+    holdout_rows = attempts_df.filter(pl.col("holdout_score").is_not_null())
+    if not holdout_rows.is_empty():
+        st.subheader("CV vs Holdout Divergence")
+        div_df = holdout_rows.select(["attempt_no", "cv_score", "holdout_score"]).filter(
+            pl.col("cv_score").is_not_null()
+        ).with_columns(
+            (pl.col("cv_score") - pl.col("holdout_score")).alias("cv_minus_holdout")
+        )
+        st.line_chart(
+            div_df.to_pandas().set_index("attempt_no")[["cv_score", "holdout_score"]],
+        )
+        st.caption(
+            f"promoted attempts: {len(holdout_rows)}  |  "
+            f"avg(cv - holdout): {div_df['cv_minus_holdout'].mean():.5f}"
+        )
+        st.divider()
 
 # --- Action type & Label distribution ---
 col_left, col_right = st.columns(2)

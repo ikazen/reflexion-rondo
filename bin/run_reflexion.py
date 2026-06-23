@@ -17,6 +17,7 @@ import polars as pl
 _MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 
 from cycle.run import CycleConfig, run_cycle
+from evaluator.harness import split_audit_holdout
 from memory.transfer import cold_start_lessons, bootstrap_seeds
 from store.db import connect, ensure_competition
 
@@ -75,9 +76,10 @@ def main() -> None:
 
     s3_path = getattr(comp, "S3_DATA_PATH", None)
     if s3_path and _MINIO_ENDPOINT:
-        train = pl.read_csv(f"{_MINIO_ENDPOINT}/kaggle/{s3_path}train.csv").drop(comp.DROP_COLS)
+        full_train = pl.read_csv(f"{_MINIO_ENDPOINT}/kaggle/{s3_path}train.csv").drop(comp.DROP_COLS)
     else:
-        train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
+        full_train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
+    train, holdout = split_audit_holdout(full_train, comp.TARGET, comp.IS_CLASSIFICATION)
     conn = connect()
     ensure_competition(
         conn,
@@ -118,6 +120,7 @@ def main() -> None:
             k_retrieve=5,
             is_classification=comp.IS_CLASSIFICATION,
             seed_code=this_seed,
+            holdout=holdout,
         )
         try:
             result = run_cycle(conn, config)

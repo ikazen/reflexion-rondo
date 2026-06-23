@@ -32,6 +32,7 @@ def main() -> None:
 
     from store.db import connect
     from cycle.run import CycleConfig, run_attempt_core
+    from evaluator.harness import split_audit_holdout
 
     conn = connect(apply_schema=False)
 
@@ -67,9 +68,12 @@ def main() -> None:
 
     s3_path = getattr(comp, "S3_DATA_PATH", None)
     if s3_path and _MINIO_ENDPOINT:
-        train = pl.read_csv(f"{_MINIO_ENDPOINT}/kaggle/{s3_path}train.csv").drop(comp.DROP_COLS)
+        full_train = pl.read_csv(
+            f"{_MINIO_ENDPOINT}/kaggle/{s3_path}train.csv"
+        ).drop(comp.DROP_COLS)
     else:
-        train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
+        full_train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
+    train, holdout = split_audit_holdout(full_train, comp.TARGET, comp.IS_CLASSIFICATION)
 
     config = CycleConfig(
         competition_id=comp.COMPETITION_ID,
@@ -83,6 +87,7 @@ def main() -> None:
         k_retrieve=5,
         is_classification=comp.IS_CLASSIFICATION,
         slug=args.competition,
+        holdout=holdout,
     )
 
     data = run_attempt_core(

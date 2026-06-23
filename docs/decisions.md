@@ -164,6 +164,17 @@
   - **톰슨 샘플링 staleness**: 시간 decay 없음 — 오래 누적된 좋은 idea 가 우위를 영구 유지. 트렌드 변화 시 새 cold-start(Beta(1,1)) 가 못 따라잡을 수 있음. 신호 보이면 weekly decay 도입.
 - 추적: Linear BON-XX 시리즈(스키마 / 스케줄러+추출 / 화이트리스트 / Strategist 통합 4단계 분리 예정).
 
+## ADR-021 — preselect_params는 단일 inner holdout (nested CV 미적용)
+
+- 결정: `evaluator/harness.py: preselect_params`는 80/20 단일 inner split으로 best params를 선택한다.
+  per-fold nested CV(k^2 모델 피팅)는 도입하지 않는다.
+- 근거: playground-series 규모(수만~수십만 행)에서 k=5 × inner k=5 = 25회 피팅은 사이클당 LLM 호출
+  대기에 비해 무시할 수 없는 추가 비용이다. 낙관 편향 잔존(inner split이 outer fold와 같은 train에서 추출)은
+  인지하되 실험적으로 허용한다.
+- 한계: inner split과 outer fold가 완전히 겹치므로 params 선택에 약한 낙관 편향이 있다. CV 점수 자체에는
+  영향 없음(preselect는 model build에만 쓰이고 CV score 계산 loop는 선택된 params로만 실행).
+- 후속 후보: per-fold nested CV(비용 허용 시), random hyperparameter search(fixed budget).
+
 ## ADR-020 — 밴딧은 advise-only, 최종 action 결정은 LLM
 
 - 결정: `cycle/action_optimizer.py`의 Beta-Bernoulli 밴딧은 **advisory**로만 동작한다.

@@ -12,11 +12,12 @@ import polars as pl
 from agents.coder import generate_code
 from agents.reflector import AttemptContext, reflect
 from agents.strategist import StrategyDecision, strategize
-from config.settings import MODEL_CODER
+from config.settings import MODEL_CODER, PROMOTE_CONFIRM_SEEDS
 from cycle.action_optimizer import get_action_prior, update_bandit
 from cycle.error_pitfalls import top_error_pitfalls
 from cycle.stagnation import detect_stagnation
 from cycle.materialize import materialize_best_pipeline
+from cycle.promotion import confirm_and_measure
 from evaluator.contract import validate_patch
 from evaluator.harness import is_significant_gain
 from memory.retriever import EmbeddingUnavailableError, search
@@ -44,6 +45,7 @@ class CycleConfig:
     is_classification: bool = True
     seed_code: str | None = None
     slug: str | None = None  # S3 경로용 모듈명 (e.g. s4e1), 미설정 시 competition_id fallback
+    holdout: pl.DataFrame | None = None  # audit holdout 10% — 승격 시 1회 측정·기록에만 사용
 
 
 @dataclass
@@ -391,26 +393,48 @@ def run_attempt_core(
     # Save pipeline if improved — also materialize as new best baseline.
     # defer_promotion=True: caller (super_cycle / Airflow promote task) handles winner-only promotion.
     if not defer_promotion and is_significant_gain(gain_vs_best, cv_fold_var) and not error_trace:
-        fp_row = conn.execute(
-            "select fingerprint from raw.competitions where competition_id = %s",
-            [config.competition_id],
-        ).fetchone()
-        fp_val = fp_row[0] if fp_row and fp_row[0] else {}
-        fp_dict = fp_val if isinstance(fp_val, dict) else json.loads(fp_val)
-        with conn.transaction():
-            insert_pipeline(
-                conn,
-                pipeline_id=str(uuid.uuid4()),
-                attempt_id=attempt_id,
-                competition_id=config.competition_id,
-                fingerprint_snapshot=fp_dict,
-                code=source,
-                cv_score=cv_score,
-                gain_vs_best=gain_vs_best,
+        confirm = confirm_and_measure(
+            source=source,
+            best_source=prev_code,
+            train90=config.train,
+            holdout10=config.holdout,
+            target_col=config.target_col,
+            metric=config.metric,
+            n_splits=config.n_splits,
+            seed=config.seed,
+            is_classification=config.is_classification,
+            prev_best=prev_best_cv,
+            confirm_seeds=PROMOTE_CONFIRM_SEEDS,
+            action_type=action_type,
+        )
+        if confirm.holdout_score is not None:
+            conn.execute(
+                "UPDATE raw.attempts SET holdout_score = %s WHERE attempt_id = %s",
+                [confirm.holdout_score, attempt_id],
             )
-        materialized = materialize_best_pipeline(prev_code, source)
-        _best_pipeline_upload(config.competition_id, materialized)
-        print(f"[attempt] best pipeline materialized (gain={gain_vs_best:+.5f})")
+        if confirm.confirmed:
+            fp_row = conn.execute(
+                "select fingerprint from raw.competitions where competition_id = %s",
+                [config.competition_id],
+            ).fetchone()
+            fp_val = fp_row[0] if fp_row and fp_row[0] else {}
+            fp_dict = fp_val if isinstance(fp_val, dict) else json.loads(fp_val)
+            with conn.transaction():
+                insert_pipeline(
+                    conn,
+                    pipeline_id=str(uuid.uuid4()),
+                    attempt_id=attempt_id,
+                    competition_id=config.competition_id,
+                    fingerprint_snapshot=fp_dict,
+                    code=source,
+                    cv_score=cv_score,
+                    gain_vs_best=gain_vs_best,
+                )
+            materialized = materialize_best_pipeline(prev_code, source)
+            _best_pipeline_upload(config.competition_id, materialized)
+            print(f"[attempt] best pipeline materialized (gain={gain_vs_best:+.5f})")
+        else:
+            print(f"[attempt] cross-seed 미확인 — 승격 스킵 (gain={gain_vs_best:+.5f})")
 
     print(f"[attempt] persist done — total {round(duration_sec, 1)}s"
           f" attempt_id={attempt_id[:8]} action={action_type}"
