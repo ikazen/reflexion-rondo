@@ -85,7 +85,13 @@ _HOOK_NAMES = (
 )
 
 
-def _load_pipeline(competition_id: str) -> object:
+def _load_pipeline(competition_id: str, extra_source: str | None = None) -> object:
+    """Load the materialized best pipeline from MinIO.
+
+    extra_source: attempt source exec'd first so helper classes defined there
+    (e.g. WeightedEnsemble) are available when the stored best pipeline runs.
+    Needed for pipelines materialized before BON-184 fix (missing ClassDef support).
+    """
     import sys
     sys.path.insert(0, str(ROOT))
     from store.s3_code import download_best_pipeline
@@ -96,6 +102,8 @@ def _load_pipeline(competition_id: str) -> object:
         return BasePipeline()
 
     ns: dict = {}
+    if extra_source:
+        exec(compile(extra_source, "<attempt_ns>", "exec"), ns)  # noqa: S102
     exec(compile(best_source, "<best_pipeline>", "exec"), ns)  # noqa: S102
     patch_cls = ns.get("Patch")
     if not patch_cls:
@@ -122,7 +130,7 @@ def main() -> None:
     print(f"best attempt: {attempt_id[:8]}  cv={cv_score:.5f}")
 
     from evaluator.harness import PipelineContext, preselect_params
-    pipeline = _load_pipeline(comp.COMPETITION_ID)
+    pipeline = _load_pipeline(comp.COMPETITION_ID, extra_source=source)
     ctx = PipelineContext(
         target_col=comp.TARGET,
         metric=comp.METRIC,

@@ -27,7 +27,9 @@ def _extract_toplevel_helpers(source: str) -> dict[str, ast.stmt]:
             continue
         if isinstance(node, ast.ClassDef) and node.name == "Patch":
             continue
-        if isinstance(node, ast.FunctionDef):
+        if isinstance(node, ast.ClassDef):
+            result[node.name] = node
+        elif isinstance(node, ast.FunctionDef):
             result[node.name] = node
         elif isinstance(node, ast.Assign):
             for target in node.targets:
