@@ -20,3 +20,5 @@ ACTION_TYPES: list[str] = [
     "preprocessing",
     "ensemble",
 ]
+
+LABEL_Z: float = 1.0
