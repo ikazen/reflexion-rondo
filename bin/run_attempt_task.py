@@ -90,6 +90,7 @@ def main() -> None:
         super_cycle_id=super_cycle_id,
         attempt_index=args.attempt_index,
         forced_action=forced_action,
+        defer_promotion=True,
     )
     conn.close()
 

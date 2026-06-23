@@ -21,9 +21,10 @@ def main() -> None:
 
     sys.path.insert(0, str(ROOT))
 
-    from store.db import connect
+    from store.db import connect, insert_pipeline
     from agents.reflector import AttemptContext, reflect
     from cycle.materialize import materialize_best_pipeline
+    from evaluator.harness import is_significant_gain
     from memory.retriever import EmbeddingUnavailableError
     from store.s3_code import download as _code_download
     from store.s3_code import download_best_pipeline, upload_best_pipeline
@@ -81,14 +82,36 @@ def main() -> None:
 
     print(f"  -> promoted {rows[winner_idx][0][:8]} (gain={rows[winner_idx][1]})")
 
-    winner_gain = rows[winner_idx][1]
-    winner_error = rows[winner_idx][4]
-    winner_code_path = rows[winner_idx][9]
-    if winner_gain is not None and winner_gain > 0 and not winner_error and winner_code_path:
+    import json as _json
+    import uuid as _uuid
+
+    winner_row = rows[winner_idx]
+    winner_gain = winner_row[1]
+    winner_cv_fold_var = winner_row[8] or 0.0
+    winner_error = winner_row[4]
+    winner_code_path = winner_row[9]
+    if is_significant_gain(winner_gain, winner_cv_fold_var) and not winner_error and winner_code_path:
         winner_content = _code_download(winner_code_path) or ""
         sep = _CODE_HEADER_SEP + "\n"
         winner_source = winner_content.split(sep, 1)[1].strip() if sep in winner_content else winner_content
         if winner_source:
+            fp_row = conn.execute(
+                "select fingerprint from raw.competitions where competition_id = %s",
+                [competition_id],
+            ).fetchone()
+            fp_val = fp_row[0] if fp_row and fp_row[0] else {}
+            fp_dict = fp_val if isinstance(fp_val, dict) else _json.loads(fp_val)
+            with conn.transaction():
+                insert_pipeline(
+                    conn,
+                    pipeline_id=str(_uuid.uuid4()),
+                    attempt_id=winner_row[0],
+                    competition_id=competition_id,
+                    fingerprint_snapshot=fp_dict,
+                    code=winner_source,
+                    cv_score=winner_row[2],
+                    gain_vs_best=winner_gain,
+                )
             current_best = download_best_pipeline(competition_id)
             materialized = materialize_best_pipeline(current_best, winner_source)
             upload_best_pipeline(competition_id, materialized)
