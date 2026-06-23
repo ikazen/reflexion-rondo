@@ -421,6 +421,8 @@ def main() -> None:
         _process(conn, item, pacer, state)
 
     conn.close()
+    from store.db import close_pool
+    close_pool()
     print("[daemon] stopped")
 
 
