@@ -55,5 +55,26 @@ def test_generate_code_with_error_feedback() -> None:
             eda_card="x",
             error_feedback="missing class definition: Patch",
         )
-        prompt = mock_client.return_value.chat.call_args.kwargs["messages"][0]["content"]
-    assert "missing class definition" in prompt
+        messages = mock_client.return_value.chat.call_args.kwargs["messages"]
+    # system message = static contract; user message = dynamic context + error_feedback
+    system_msg = next(m for m in messages if m["role"] == "system")
+    user_msg   = next(m for m in messages if m["role"] == "user")
+    assert "Patch" in system_msg["content"]
+    assert "missing class definition" in user_msg["content"]
+
+
+def test_generate_code_system_message_is_contract() -> None:
+    """정적 contract가 system 메시지, 동적 컨텍스트는 user 메시지여야 한다."""
+    with patch("agents.coder._client") as mock_client:
+        mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)
+        generate_code(
+            hypothesis="Drop low-variance columns",
+            action_type="feature_engineering",
+            eda_card="n_rows=100",
+        )
+        messages = mock_client.return_value.chat.call_args.kwargs["messages"]
+    roles = [m["role"] for m in messages]
+    assert roles == ["system", "user"]
+    # EDA Card는 user 메시지에 있어야 함
+    user_content = next(m["content"] for m in messages if m["role"] == "user")
+    assert "n_rows=100" in user_content

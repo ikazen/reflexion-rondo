@@ -141,8 +141,9 @@ def test_generate_code_known_errors_in_prompt() -> None:
             eda_card="x",
             known_errors=["ValueError: could not convert string to float: <val> (seen 3x)"],
         )
-        prompt = mock_client.return_value.chat.call_args.kwargs["messages"][0]["content"]
+        messages = mock_client.return_value.chat.call_args.kwargs["messages"]
+        user_content = next(m["content"] for m in messages if m["role"] == "user")
 
-    assert "Known failure modes" in prompt
-    assert "ValueError" in prompt
-    assert "seen 3x" in prompt
+    assert "Known failure modes" in user_content
+    assert "ValueError" in user_content
+    assert "seen 3x" in user_content

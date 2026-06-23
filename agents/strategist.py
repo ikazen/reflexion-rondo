@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ollama import Client
 
 from config import settings
+
+_LOG = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from cycle.stagnation import StagnationSignal
@@ -151,15 +154,15 @@ Respond with ONLY a JSON object using exactly these keys:
     import re
     import time
 
-    print(f"[strategist] model={settings.MODEL_STRATEGIST} n_lessons={len(lessons)}"
-          f" stage={stage} forced={forced_action_type or '-'}")
+    _LOG.info("model=%s n_lessons=%d stage=%s forced=%s",
+              settings.MODEL_STRATEGIST, len(lessons), stage, forced_action_type or "-")
     _t0 = time.monotonic()
     resp = _client().chat(
         model=settings.MODEL_STRATEGIST,
         messages=[{"role": "user", "content": user_prompt}],
         format=_OUTPUT_SCHEMA,
     )
-    print(f"[strategist] done in {time.monotonic() - _t0:.1f}s")
+    _LOG.info("done in %.1fs", time.monotonic() - _t0)
 
     content = resp.message.content.strip()
     if not content:
@@ -184,6 +187,6 @@ Respond with ONLY a JSON object using exactly these keys:
         action_type=data["action_type"],
         reflection_ids=adopted,
     )
-    print(f"[strategist] action={decision.action_type} used_lessons={len(adopted)}"
-          f" hypothesis={decision.hypothesis[:120]}")
+    _LOG.info("action=%s used_lessons=%d hypothesis=%s",
+              decision.action_type, len(adopted), decision.hypothesis[:120])
     return decision

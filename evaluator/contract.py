@@ -7,6 +7,7 @@ _FORBIDDEN_IMPORTS = frozenset({
     "os", "subprocess", "socket", "urllib", "urllib2", "urllib3",
     "requests", "httpx", "aiohttp", "http", "ftplib", "smtplib",
     "paramiko", "pickle", "marshal", "ctypes", "cffi",
+    "pandas",
 })
 
 _FORBIDDEN_CALLS = frozenset({

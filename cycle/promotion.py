@@ -6,11 +6,14 @@ confirm_and_measure가 confirmed=True를 반환해야 insert_pipeline/materializ
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import polars as pl
 
 from runtime.isolate import eval_isolated
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,12 +106,10 @@ def _cross_seed_confirm(
             best_source=best_source,
         )
         if result.error_trace or result.gain_vs_best is None or result.gain_vs_best <= 0:
-            print(
-                f"[promotion] cross-seed={cseed} 미재현 → 승격 취소"
-                f" (gain={result.gain_vs_best} err={bool(result.error_trace)})"
-            )
+            _LOG.info("cross-seed=%d 미재현 → 승격 취소 (gain=%s err=%s)",
+                      cseed, result.gain_vs_best, bool(result.error_trace))
             return False
-        print(f"[promotion] cross-seed={cseed} 재현 gain={result.gain_vs_best:+.6f}")
+        _LOG.info("cross-seed=%d 재현 gain=%+.6f", cseed, result.gain_vs_best)
 
     return True
 
@@ -141,5 +142,5 @@ def _measure_holdout(
         holdout_data=holdout10,
     )
     if result.holdout_score is not None:
-        print(f"[promotion] holdout_score={result.holdout_score:.6f}")
+        _LOG.info("holdout_score=%.6f", result.holdout_score)
     return result.holdout_score
