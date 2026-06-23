@@ -31,7 +31,7 @@ def main() -> None:
     from store.db import connect, ensure_competition
     from cycle.run import _build_retrieval_query, _prev_best, _recent_failure_summary
     from cycle.action_optimizer import assign_super_cycle_actions
-    from memory.retriever import search
+    from memory.retriever import EmbeddingUnavailableError, search
 
     conn = connect(apply_schema=False)
 
@@ -61,7 +61,11 @@ def main() -> None:
           f" prev_best_cv={prev_best_cv}")
     if fail_summary:
         print(f"  fail_summary: {fail_summary[:120]}")
-    lessons = search(conn, query, competition_id, k=args.k_retrieve)
+    try:
+        lessons = search(conn, query, competition_id, k=args.k_retrieve)
+    except EmbeddingUnavailableError as exc:
+        print(f"[run_retrieve_task] embedding unavailable, proceeding with no lessons: {exc}")
+        lessons = []
     assigned_actions = assign_super_cycle_actions(conn, competition_id, n_attempts=3)
     print(f"  assigned_actions: {assigned_actions}")
 
