@@ -8,6 +8,7 @@ from config.settings import LABEL_Z
 from evaluator.harness import (
     BasePipeline, PatchedPipeline, PipelineContext,
     evaluate_pipeline, preselect_params, is_significant_gain,
+    split_audit_holdout,
     _LEAK_PERFECT_HIGH,
 )
 
@@ -222,6 +223,57 @@ def test_harness_encodes_unknown_category_as_minus_one():
     pipeline = PatchedPipeline(base, patch)
     result = evaluate_pipeline(pipeline, df, _ctx())
     assert result.cv_score is not None
+
+
+# --- split_audit_holdout ---
+
+def test_split_audit_holdout_deterministic():
+    """같은 입력 → 항상 같은 분리 (고정 seed)."""
+    df = _make_df(n=200)
+    train1, ho1 = split_audit_holdout(df, "y", is_classification=True)
+    train2, ho2 = split_audit_holdout(df, "y", is_classification=True)
+    assert train1.equals(train2)
+    assert ho1.equals(ho2)
+
+
+def test_split_audit_holdout_fraction():
+    """holdout 비율 기본값 0.1 검증 (±1 row 허용)."""
+    df = _make_df(n=200)
+    train, holdout = split_audit_holdout(df, "y", is_classification=True)
+    assert len(train) + len(holdout) == 200
+    assert abs(len(holdout) - 20) <= 1
+
+
+def test_split_audit_holdout_no_overlap():
+    """train/holdout 행이 겹치지 않는다."""
+    df = _make_df(n=200).with_row_index("_row_idx")
+    train, holdout = split_audit_holdout(df, "y", is_classification=True)
+    train_rows = set(train["_row_idx"].to_list())
+    holdout_rows = set(holdout["_row_idx"].to_list())
+    assert train_rows.isdisjoint(holdout_rows)
+    assert len(train_rows) + len(holdout_rows) == 200
+
+
+def test_split_audit_holdout_regression_path():
+    """회귀(is_classification=False)도 결정적 분리."""
+    df = _make_df(n=200, is_classification=False)
+    train1, ho1 = split_audit_holdout(df, "y", is_classification=False)
+    train2, ho2 = split_audit_holdout(df, "y", is_classification=False)
+    assert train1.equals(train2)
+    assert ho1.equals(ho2)
+
+
+def test_split_audit_holdout_class_balance_maintained():
+    """분류 시 stratify — holdout의 클래스 비율이 원본과 유사."""
+    rng = np.random.default_rng(99)
+    n = 300
+    x = rng.standard_normal(n)
+    y = (x > 0).astype(float)
+    df = pl.DataFrame({"x": x, "y": y})
+    train, holdout = split_audit_holdout(df, "y", is_classification=True)
+    orig_ratio = float(y.mean())
+    ho_ratio = holdout["y"].mean()
+    assert abs(ho_ratio - orig_ratio) < 0.05
 
 
 def test_tripwire_rejects_perfect_classification_score():
