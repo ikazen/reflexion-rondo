@@ -18,6 +18,22 @@ import polars as pl
 _RUNNER = Path(__file__).parent / "runner.py"
 DEFAULT_TIMEOUT = 600
 
+# 메모리/CPU 제한 — attempt 하나의 OOM이 컨테이너 전체를 죽이지 않도록.
+# 제한 초과 시 subprocess가 SIGKILL(RLIMIT_AS) 또는 SIGXCPU(RLIMIT_CPU)로 종료되고
+# runner output.json 없음 → _err() 경로로 error_trace에 기록.
+try:
+    import resource as _resource
+
+    def _set_eval_limits() -> None:
+        mem = int(os.environ.get("EVAL_MEM_LIMIT_BYTES", str(6 * 1024 ** 3)))
+        cpu = int(os.environ.get("EVAL_CPU_LIMIT_SECS", "900"))
+        _resource.setrlimit(_resource.RLIMIT_AS, (mem, mem))
+        _resource.setrlimit(_resource.RLIMIT_CPU, (cpu, cpu))
+
+    _PREEXEC = _set_eval_limits
+except (ImportError, AttributeError):
+    _PREEXEC = None  # Windows/non-Linux fallback
+
 
 @dataclass(frozen=True, slots=True)
 class IsolatedResult:
@@ -72,6 +88,7 @@ def eval_isolated(
                 capture_output=True,
                 text=True,
                 env=env,
+                preexec_fn=_PREEXEC,
             )
         except subprocess.TimeoutExpired:
             return _err(f"timeout after {timeout_sec}s")

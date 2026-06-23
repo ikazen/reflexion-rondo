@@ -217,3 +217,8 @@ CREATE TABLE IF NOT EXISTS raw.kaggle_submissions (
     error          text,
     checked_at     timestamp
 );
+
+-- BON-184: hot-path indexes
+CREATE INDEX IF NOT EXISTS idx_attempts_comp_ts     ON raw.attempts (competition_id, run_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_attempts_comp_action ON raw.attempts (competition_id, action_type);
+CREATE INDEX IF NOT EXISTS idx_reflections_comp_arch ON raw.reflections (competition_id, archived);

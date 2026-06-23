@@ -379,6 +379,9 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    from config.settings import require_llm_env
+    require_llm_env()
+
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
 
@@ -418,6 +421,8 @@ def main() -> None:
         _process(conn, item, pacer, state)
 
     conn.close()
+    from store.db import close_pool
+    close_pool()
     print("[daemon] stopped")
 
 

@@ -8,10 +8,7 @@ import psycopg2.pool
 from psycopg2 import sql as pgsql
 from pgvector.psycopg2 import register_vector
 
-_DSN = os.getenv(
-    "RONDO_DB_URL",
-    "postgresql://rondo:rondo@localhost:5432/rondo",
-)
+_DSN = os.getenv("RONDO_DB_URL")
 _SCHEMA = Path(__file__).parent / "schema.sql"
 _pool: psycopg2.pool.ThreadedConnectionPool | None = None
 _pool_lock = threading.Lock()
@@ -22,8 +19,19 @@ def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
     if _pool is None:
         with _pool_lock:
             if _pool is None:
-                _pool = psycopg2.pool.ThreadedConnectionPool(1, 10, dsn=_DSN)
+                dsn = _DSN
+                if not dsn:
+                    raise RuntimeError("RONDO_DB_URL env var is not set")
+                _pool = psycopg2.pool.ThreadedConnectionPool(1, 10, dsn=dsn)
     return _pool
+
+
+def close_pool() -> None:
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            _pool.closeall()
+            _pool = None
 
 
 class _Result:
@@ -75,10 +83,14 @@ class PgConn:
         _get_pool().putconn(self._conn)
 
 
+_SCHEMA_LOCK_KEY = 7_463_100  # arbitrary stable int for pg_advisory_xact_lock
+
+
 def _apply_schema(raw: psycopg2.extensions.connection) -> None:
     schema = _SCHEMA.read_text()
     statements = [s.strip() for s in schema.split(";") if s.strip()]
     with raw.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", [_SCHEMA_LOCK_KEY])
         for stmt in statements:
             cur.execute(stmt)
     raw.commit()

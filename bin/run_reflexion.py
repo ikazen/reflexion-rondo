@@ -58,6 +58,9 @@ def _format_cold_start_context(lessons: list[dict]) -> str:
 
 
 def main() -> None:
+    from config.settings import require_llm_env
+    require_llm_env()
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--competition", "-c", default="s4e1",
                         help="competition config name (config/competitions/*.py)")
