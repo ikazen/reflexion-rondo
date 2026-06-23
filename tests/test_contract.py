@@ -61,6 +61,12 @@ def test_action_type_mismatch_still_caught():
     assert any("action_type" in e for e in errs)
 
 
+def test_pandas_import_forbidden():
+    source = "import pandas as pd\n" + _VALID_FEATURE_ENG
+    errs = validate_patch(source, "feature_engineering")
+    assert any("forbidden import" in e and "pandas" in e for e in errs)
+
+
 def test_allowed_hooks_covers_all_action_types():
     from config.settings import ACTION_TYPES
     from evaluator.contract import _ALLOWED_HOOKS
