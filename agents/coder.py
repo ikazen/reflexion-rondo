@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import re
 
 from ollama import Client
 
 from config import settings
+
+_LOG = logging.getLogger(__name__)
 
 _REFLEXION_CONTRACT = """\
 Generate a Python class named Patch that implements exactly the hook(s) required by the given action_type.
@@ -185,8 +188,9 @@ def generate_code(
     import time
 
     retry_tag = " [retry/feedback]" if error_feedback else ""
-    print(f"[coder] model={settings.MODEL_CODER} action={action_type}"
-          f" prev_code={'yes' if prev_code else 'no'}{retry_tag}")
+    _LOG.info("model=%s action=%s prev_code=%s%s",
+              settings.MODEL_CODER, action_type,
+              "yes" if prev_code else "no", retry_tag)
     _t0 = time.monotonic()
     resp = _client().chat(
         model=settings.MODEL_CODER,
@@ -196,5 +200,5 @@ def generate_code(
         ],
     )
     source = _extract_code(resp.message.content)
-    print(f"[coder] done in {time.monotonic() - _t0:.1f}s  code_chars={len(source)}")
+    _LOG.info("done in %.1fs  code_chars=%d", time.monotonic() - _t0, len(source))
     return source
