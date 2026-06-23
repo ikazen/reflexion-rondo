@@ -379,6 +379,9 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    from config.settings import require_llm_env
+    require_llm_env()
+
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
 
