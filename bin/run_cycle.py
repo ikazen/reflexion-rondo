@@ -116,7 +116,7 @@ def main() -> None:
         "error_trace":    None,
     })
     conn.close()
-    print("DuckDB 기록 완료.")
+    print("Postgres 기록 완료.")
 
 
 if __name__ == "__main__":
