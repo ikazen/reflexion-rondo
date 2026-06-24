@@ -355,6 +355,7 @@ def run_attempt_core(
                 error_trace = iso.error_trace
 
     if error_trace:
+        label = "error"
         _LOG.warning("failed — %s", error_trace[:200])
 
     # Save code

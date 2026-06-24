@@ -70,7 +70,7 @@ cycle/           사이클 로직:
                    materialize.py (AST 레벨 파이프라인 누적 병합)
 evaluator/       결정적 k-fold CV (contract, harness, metrics)
 memory/          retriever (pgvector 검색 + MMR), transfer (cross-competition, 부분 구현)
-runtime/         격리 실행 (isolate.py → subprocess runner.py, 타임아웃 600s)
+runtime/         격리 실행 (isolate.py → preexec_fn os.unshare(CLONE_NEWNET) + rlimit + 600s timeout → runner.py; CAP_SYS_ADMIN 없으면 rlimit+timeout만)
 store/           db.py (psycopg2 풀), s3_code.py (MinIO), fingerprint.py, schema.sql
 deploy/          Dockerfile, build.sh (registry.internal 푸시)
 dashboard.py     Streamlit 모니터링
