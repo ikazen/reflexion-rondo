@@ -10,3 +10,5 @@ runs/
 catboost_info/
 secrets/*.env
 !secrets/*.enc.env
+a.md
+to.md

@@ -225,6 +225,79 @@ def test_harness_encodes_unknown_category_as_minus_one():
     assert result.cv_score is not None
 
 
+class _TargetEncodingLeakyPatch:
+    """feature_transform이 valid[target]으로 타깃 인코딩 파생 피처를 생성한다.
+
+    _strip_target이 새 컬럼명(te_geo)을 drop하지 않으므로, 마스킹이 없으면 누수가 생존한다.
+    """
+    action_type = "feature_engineering"
+
+    def feature_transform(self, train, valid, target, ctx):
+        import polars as pl
+        mean_map = train.group_by("geo").agg(pl.col(target).mean().alias("te_geo"))
+        tr_out = train.join(mean_map, on="geo", how="left").drop("geo")
+        va_out = valid.join(mean_map, on="geo", how="left").drop("geo")
+        return tr_out, va_out
+
+
+def test_target_masking_blocks_derived_feature_leakage():
+    """valid 타깃 마스킹 후 타깃 인코딩 파생 피처가 null 처리돼 누수 억제됨을 검증.
+
+    마스킹 전이라면 te_geo(valid target 평균)가 label과 완전히 상관돼 AUC가 near-perfect에 도달한다.
+    마스킹 후에는 te_geo가 null(→ 0으로 채워짐)이 되어 AUC가 완전누수 임계값 아래에 머문다.
+    """
+    df = _make_df_with_strings(n=300)
+    ctx = _ctx()
+    pipeline = PatchedPipeline(BasePipeline(), _TargetEncodingLeakyPatch())
+    result = evaluate_pipeline(pipeline, df, ctx)
+    assert result.cv_score < _LEAK_PERFECT_HIGH
+
+
+class _PerfectLoglossLeakyViaPreprocessPatch:
+    """preprocess가 valid[target]을 새 컬럼명(leaked)으로 복사하고,
+    postprocess_predictions가 모델 출력을 극값(1e-10 / 1-1e-10)으로 클리핑한다.
+
+    preprocess는 타깃 변환이 정당하므로 마스킹 대상 외다 — 이 경로의 완전 누수는
+    트립와이어(else 절: cv_score <= _LEAK_PERFECT_LOW)가 백스톱으로 잡아야 한다.
+
+    logloss ≈ -log(1-1e-10) ≈ 1e-10 < _LEAK_PERFECT_LOW(1e-9) 이므로 트립와이어 발동.
+    """
+    action_type = "feature_engineering"
+
+    def preprocess(self, train, valid, target, ctx):
+        tr_out = train.with_columns(pl.col(target).cast(pl.Float64).alias("leaked"))
+        va_out = valid.with_columns(pl.col(target).cast(pl.Float64).alias("leaked"))
+        return tr_out, va_out
+
+    def feature_transform(self, train, valid, target, ctx):
+        cols = [c for c in train.columns if c != target]
+        return train.select(cols), valid.select(cols)
+
+    def postprocess_predictions(self, preds, ctx):
+        # 모델이 leaked 피처로 near-perfect로 학습했으므로 preds > 0.5 == y=1
+        # 극값으로 클리핑 → logloss ≈ 1e-10 < 1e-9 → tripwire 발동
+        return np.where(preds > 0.5, 1 - 1e-10, 1e-10)
+
+
+def test_logloss_tripwire_raises_on_perfect_leak():
+    """logloss(metric_sign=-1)에서 완전 누수 시 트립와이어가 ValueError를 발생시킨다.
+
+    preprocess를 통한 누수는 feature_transform 마스킹이 차단하지 않으므로, cv_score ≈ 0이
+    되어 metric_sign < 0 분기(else 절)의 _LEAK_PERFECT_LOW 트립와이어가 발동해야 한다.
+    """
+    df = _make_df(n=300)
+    ctx = PipelineContext(
+        target_col="y",
+        metric="logloss",
+        n_splits=3,
+        seed=42,
+        is_classification=True,
+    )
+    pipeline = PatchedPipeline(BasePipeline(), _PerfectLoglossLeakyViaPreprocessPatch())
+    with pytest.raises(ValueError, match="suspected target leakage"):
+        evaluate_pipeline(pipeline, df, ctx)
+
+
 # --- split_audit_holdout ---
 
 def test_split_audit_holdout_deterministic():
