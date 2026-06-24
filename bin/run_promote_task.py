@@ -146,13 +146,17 @@ def main() -> None:
                     n_splits=n_splits,
                     seed=42,
                     is_classification=is_classification,
-                    prev_best=winner_row[2],
                     confirm_seeds=PROMOTE_CONFIRM_SEEDS,
                 )
                 if confirm.holdout_score is not None:
                     conn.execute(
                         "UPDATE raw.attempts SET holdout_score = %s WHERE attempt_id = %s",
                         [confirm.holdout_score, winner_row[0]],
+                    )
+                if confirm.seed_gains:
+                    conn.execute(
+                        "UPDATE raw.attempts SET confirm_seed_gains = %s WHERE attempt_id = %s",
+                        [_json.dumps(confirm.seed_gains), winner_row[0]],
                     )
                 if not confirm.confirmed:
                     print(f"[run_promote_task] cross-seed 미확인 — 승격 스킵 winner={winner_row[0][:8]}")
