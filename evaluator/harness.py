@@ -31,6 +31,17 @@ def _strip_target(df: pl.DataFrame, target: str) -> pl.DataFrame:
     return df.drop(target) if target in df.columns else df
 
 
+def _mask_target(df: pl.DataFrame, target: str) -> pl.DataFrame:
+    """feature_transform 직전 valid fold의 타깃을 null로 교체해 파생 피처 누수를 차단한다.
+
+    yva는 반드시 이 호출 전 va2에서 캡처할 것.
+    preprocess 단계는 타깃 변환(log1p 등)이 정당하므로 마스킹 대상 외.
+    """
+    if target not in df.columns:
+        return df
+    return df.with_columns(pl.lit(None, dtype=df[target].dtype).alias(target))
+
+
 def _encode_residual_categoricals(
     Xtr: pl.DataFrame, Xva: pl.DataFrame
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -177,12 +188,12 @@ def preselect_params(
     tr = train[list(tr_idx)]
     va = train[list(va_idx)]
     tr2, va2 = pipeline.preprocess(tr, va, ctx.target_col, ctx)
-    Xtr, Xva = pipeline.feature_transform(tr2, va2, ctx.target_col, ctx)
+    ytr = tr2[ctx.target_col].to_numpy()
+    yva = va2[ctx.target_col].to_numpy()
+    Xtr, Xva = pipeline.feature_transform(tr2, _mask_target(va2, ctx.target_col), ctx.target_col, ctx)
     Xtr = _strip_target(Xtr, ctx.target_col)
     Xva = _strip_target(Xva, ctx.target_col)
     Xtr, Xva = _encode_residual_categoricals(Xtr, Xva)
-    ytr = tr2[ctx.target_col].to_numpy()
-    yva = va2[ctx.target_col].to_numpy()
     Xtr_np = Xtr.to_numpy()
     Xva_np = Xva.to_numpy()
 
@@ -226,12 +237,12 @@ def evaluate_pipeline(
         va = train[list(va_idx)]
 
         tr2, va2 = pipeline.preprocess(tr, va, ctx.target_col, ctx)
-        Xtr, Xva = pipeline.feature_transform(tr2, va2, ctx.target_col, ctx)
+        ytr = tr2[ctx.target_col].to_numpy()
+        yva = va2[ctx.target_col].to_numpy()
+        Xtr, Xva = pipeline.feature_transform(tr2, _mask_target(va2, ctx.target_col), ctx.target_col, ctx)
         Xtr = _strip_target(Xtr, ctx.target_col)
         Xva = _strip_target(Xva, ctx.target_col)
         Xtr, Xva = _encode_residual_categoricals(Xtr, Xva)
-        ytr = tr2[ctx.target_col].to_numpy()
-        yva = va2[ctx.target_col].to_numpy()
 
         Xtr_np = Xtr.to_numpy()
         Xva_np = Xva.to_numpy()
@@ -272,10 +283,10 @@ def evaluate_pipeline(
     cv_fold_var = float(np.var(fold_scores))
     fold_std = float(np.std(fold_scores))
 
-    if metric_class in ("binary_proba", "classification") and metric_sign > 0:
+    if metric_sign > 0:
         if cv_score >= _LEAK_PERFECT_HIGH:
             raise ValueError(f"suspected target leakage: perfect cv_score={cv_score:.6f} (threshold={_LEAK_PERFECT_HIGH})")
-    elif metric_class == "regression_error":
+    else:
         if cv_score <= _LEAK_PERFECT_LOW:
             raise ValueError(f"suspected target leakage: perfect cv_score={cv_score:.2e} (threshold={_LEAK_PERFECT_LOW})")
 
