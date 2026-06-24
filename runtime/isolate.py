@@ -1,12 +1,18 @@
-"""eval runner를 컨테이너 내부 subprocess로 직접 실행한다.
+"""LLM 생성 코드(class Patch)를 샌드박스 subprocess로 실행한다.
 
-DockerOperator 컨테이너 자체가 격리 환경이므로 DooD 불필요.
-timeout은 subprocess.run timeout_sec으로 제어.
+프로덕션(Linux, bwrap 존재): bubblewrap --unshare-net으로 네트워크 차단 +
+--ro-bind/--tmpfs FS 화이트리스트. rlimit(AS/CPU) + timeout 병행.
+
+폴백(bwrap 부재, 로컬 mac): env allowlist + rlimit + timeout만 적용.
+네트워크/FS 샌드박스 없음.
+
+EVAL_SANDBOX=none 으로 강제 폴백, =bwrap 으로 bwrap 강제(테스트용).
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import subprocess
 import tempfile
@@ -33,6 +39,45 @@ try:
     _PREEXEC = _set_eval_limits
 except (ImportError, AttributeError):
     _PREEXEC = None  # Windows/non-Linux fallback
+
+
+def _bwrap_cmd(tmpdir: str, inner_cmd: list[str]) -> list[str] | None:
+    """bwrap 래핑 커맨드 반환. 사용 불가/비활성 시 None.
+
+    네트워크 차단(--unshare-net)과 FS 화이트리스트(--ro-bind/--tmpfs)를
+    한 번에 실현한다. container-level --network none 대신 subprocess 레벨에서
+    적용하는 이유: task 컨테이너 자체는 Postgres/MinIO/Ollama 접근에 네트워크 필요.
+    """
+    sandbox = os.environ.get("EVAL_SANDBOX", "")
+    if sandbox == "none":
+        return None
+    use_bwrap = sandbox == "bwrap" or (sys.platform == "linux" and shutil.which("bwrap"))
+    if not use_bwrap:
+        return None
+
+    app_root = str(_RUNNER.parent.parent)
+    ro_bind_paths = ["/usr", "/lib", "/etc"]
+    for extra in ("/lib64", "/lib32"):
+        if Path(extra).exists():
+            ro_bind_paths.append(extra)
+    # /app = 컨테이너 내 repo 루트 (.venv 포함). 로컬 경로에선 실제 repo 루트.
+    if app_root not in ("", "/") and Path(app_root).exists():
+        ro_bind_paths.append(app_root)
+
+    cmd = [
+        "bwrap",
+        "--unshare-net", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+        "--die-with-parent",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--tmpfs", "/tmp",
+        "--chdir", tmpdir,
+    ]
+    for p in ro_bind_paths:
+        cmd += ["--ro-bind", p, p]
+    cmd += ["--bind", tmpdir, tmpdir]
+    cmd += inner_cmd
+    return cmd
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,9 +130,14 @@ def eval_isolated(
         }
         env = {k: v for k, v in os.environ.items() if k in _EVAL_ENV_ALLOWLIST}
         env["PYTHONPATH"] = str(_RUNNER.parent.parent)
+        env["HOME"] = tmpdir  # catboost_info 등 홈 쓰기를 tmpdir로 격리
+
+        inner_cmd = [sys.executable, str(_RUNNER), tmpdir]
+        cmd = _bwrap_cmd(tmpdir, inner_cmd) or inner_cmd
+
         try:
             proc = subprocess.run(
-                [sys.executable, str(_RUNNER), tmpdir],
+                cmd,
                 timeout=timeout_sec,
                 capture_output=True,
                 text=True,
