@@ -60,11 +60,10 @@ fi
 docker pull registry.internal:5000/reflexion-rondo/task:latest || \
     echo "[install] WARNING: task 이미지 pull 실패 — 첫 사이클에서 자동 시도"
 
-# 8. compose.yml 설치 및 시작 (Docker restart: always 로 재부팅 생존)
-sudo mkdir -p /opt/rondo
-sudo cp compose.yml /opt/rondo/compose.yml
-cd /opt/rondo && sudo docker compose up -d
+# 8. compose 기동 — repo의 deploy/compose.yml 직접 사용 (project=deploy, release.sh와 동일)
+#    Docker restart: always 로 재부팅 생존.
+docker compose -f "$REPO_DIR/deploy/compose.yml" up -d
 
 echo "[install] rondo-daemon 시작 완료"
-echo "  상태: docker compose -f /opt/rondo/compose.yml ps"
-echo "  로그: docker compose -f /opt/rondo/compose.yml logs -f"
+echo "  상태: docker compose -f $REPO_DIR/deploy/compose.yml ps"
+echo "  로그: docker compose -f $REPO_DIR/deploy/compose.yml logs -f"
