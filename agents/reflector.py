@@ -184,7 +184,7 @@ Respond with ONLY a JSON object using exactly these keys:
     if not data.get("full_lesson"):
         data["full_lesson"] = data["embedded_text"]
     if data.get("generality") not in GENERALITY_VALUES:
-        data["generality"] = "L3_general"
+        data["generality"] = "L1_local"
     if data.get("reflector_label") not in LABEL_VALUES:
         data["reflector_label"] = "neutral"
 

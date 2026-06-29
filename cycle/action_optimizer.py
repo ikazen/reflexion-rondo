@@ -9,9 +9,13 @@ Global/Cluster 티어는 대회 누적 후 승격 예정.
                                최종 action 결정은 LLM (ADR-005/014). regret 보장 없음(advisory).
 
 업데이트 규칙:
-  jump 또는 gain_vs_best > 0  → α += 1.0
+  jump                        → α += 1.0  (LABEL_Z*fold_std 게이트 통과, 유의미 이득)
+  gain_vs_best > 0 (non-jump) → α += 0.5  (half-success, 유의미 미달 양수 이득)
   regression 또는 error_trace → β += 1.0
   neutral                     → α, β 각 0.1 (약한 신호 유지)
+
+ON CONFLICT 시 decay(_BANDIT_DECAY=0.95)로 기존 α/β를 prior(1.0) 쪽으로 수축 후 가산.
+초기 운빨 action의 조기 수렴을 방지한다.
 """
 from __future__ import annotations
 
@@ -21,6 +25,8 @@ from config.settings import ACTION_TYPES
 from store.db import PgConn
 
 _NEUTRAL_INCREMENT = 0.1
+_HALF_SUCCESS = 0.5
+_BANDIT_DECAY = 0.95
 _SCOPE_LOCAL = "local"
 
 
@@ -37,8 +43,10 @@ def update_bandit(
 
     if error_trace is not None or label == "regression":
         da, db = 0.0, 1.0
-    elif label == "jump" or (gain_vs_best is not None and gain_vs_best > 0):
+    elif label == "jump":
         da, db = 1.0, 0.0
+    elif gain_vs_best is not None and gain_vs_best > 0:
+        da, db = _HALF_SUCCESS, _NEUTRAL_INCREMENT
     else:
         da, db = _NEUTRAL_INCREMENT, _NEUTRAL_INCREMENT
 
@@ -48,8 +56,8 @@ def update_bandit(
         VALUES (%s, %s, %s, 1.0 + %s, 1.0 + %s, now())
         ON CONFLICT (scope, scope_key, action_type)
         DO UPDATE SET
-            alpha      = raw.action_bandit.alpha + %s,
-            beta       = raw.action_bandit.beta  + %s,
+            alpha      = 1.0 + (raw.action_bandit.alpha - 1.0) * 0.95 + %s,
+            beta       = 1.0 + (raw.action_bandit.beta  - 1.0) * 0.95 + %s,
             updated_at = now()
         """,
         [_SCOPE_LOCAL, competition_id, action_type, da, db, da, db],
