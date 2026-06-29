@@ -41,14 +41,14 @@ def main() -> None:
     conn = connect(apply_schema=False)
 
     ctx_row = conn.execute(
-        "SELECT super_cycle_id, competition_id FROM raw.super_cycle_context WHERE queue_id = %s",
+        "SELECT super_cycle_id, competition_id, prev_best_cv FROM raw.super_cycle_context WHERE queue_id = %s",
         [args.queue_id],
     ).fetchone()
     if not ctx_row:
         print(f"[run_promote_task] no context for queue_id={args.queue_id}", file=sys.stderr)
         sys.exit(1)
 
-    super_cycle_id, competition_id = ctx_row
+    super_cycle_id, competition_id, prev_best_cv = ctx_row
 
     rows = conn.execute(
         """
@@ -146,7 +146,7 @@ def main() -> None:
                     n_splits=n_splits,
                     seed=42,
                     is_classification=is_classification,
-                    prev_best=winner_row[2],
+                    prev_best=prev_best_cv,
                     confirm_seeds=PROMOTE_CONFIRM_SEEDS,
                 )
                 if confirm.holdout_score is not None:
