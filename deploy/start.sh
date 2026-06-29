@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ops-vm daemon 시작 래퍼 — sops 복호화 후 compose up
-# 실행 위치: /opt/rondo (install.sh가 compose.yml을 여기 복사)
+# repo의 deploy/compose.yml에서 직접 기동 (compose project=deploy, release.sh와 동일)
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,7 +16,5 @@ sops --decrypt "$ENC_ENV" > "$PLAIN_ENV"
 chmod 600 "$PLAIN_ENV"
 echo "[start] .env 복호화 완료"
 
-sudo mkdir -p /opt/rondo
-sudo cp "$REPO_DIR/deploy/compose.yml" /opt/rondo/compose.yml
-sudo docker compose -f /opt/rondo/compose.yml up -d
-echo "[start] rondo-daemon 시작 완료"
+docker compose -f "$REPO_DIR/deploy/compose.yml" up -d
+echo "[start] rondo-daemon 시작 완료 (compose project: deploy)"
