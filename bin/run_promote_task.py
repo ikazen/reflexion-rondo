@@ -156,7 +156,7 @@ def main() -> None:
                     )
                 if not confirm.confirmed:
                     print(f"[run_promote_task] cross-seed 미확인 — 승격 스킵 winner={winner_row[0][:8]}")
-                    return  # reflect는 아래서 계속
+                    # 승격만 스킵 — 아래 promotion 가드(confirm.confirmed)가 막고, reflect 루프는 계속 실행
             else:
                 confirm = None
 
