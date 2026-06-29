@@ -5,7 +5,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from config.settings import ACTION_TYPES
-from cycle.action_optimizer import assign_super_cycle_actions, get_action_prior, update_bandit
+from cycle.action_optimizer import (
+    _BANDIT_DECAY,
+    _HALF_SUCCESS,
+    _NEUTRAL_INCREMENT,
+    assign_super_cycle_actions,
+    get_action_prior,
+    update_bandit,
+)
 
 
 def _conn(rows: list[tuple] | None = None) -> MagicMock:
@@ -104,11 +111,12 @@ def test_update_jump_label_increments_alpha():
     assert da == 1.0 and db == 0.0
 
 
-def test_update_positive_gain_increments_alpha():
+def test_update_positive_gain_is_half_success():
+    """유의미 미달 양수 gain은 full win이 아닌 half-success(_HALF_SUCCESS)."""
     conn = _update("neutral", 0.005, None)
     params = conn.execute.call_args[0][1]
     da, db = params[3], params[4]
-    assert da == 1.0 and db == 0.0
+    assert da == pytest.approx(_HALF_SUCCESS) and db == pytest.approx(_NEUTRAL_INCREMENT)
 
 
 def test_update_neutral_increments_both_small():
@@ -116,6 +124,27 @@ def test_update_neutral_increments_both_small():
     params = conn.execute.call_args[0][1]
     da, db = params[3], params[4]
     assert da == pytest.approx(0.1) and db == pytest.approx(0.1)
+
+
+def test_update_jump_is_full_win_not_positive_gain():
+    """jump만 full win(1.0). gain_vs_best > 0이어도 jump 아니면 half-success."""
+    conn_jump = _update("jump", 0.02, None)
+    conn_neutral_gain = _update("neutral", 0.02, None)
+    params_jump = conn_jump.execute.call_args[0][1]
+    params_ng = conn_neutral_gain.execute.call_args[0][1]
+    assert params_jump[3] == pytest.approx(1.0) and params_jump[4] == pytest.approx(0.0)
+    assert params_ng[3] == pytest.approx(_HALF_SUCCESS) and params_ng[4] == pytest.approx(_NEUTRAL_INCREMENT)
+
+
+def test_update_decay_in_sql():
+    """ON CONFLICT SQL에 decay factor(0.95)가 포함된다."""
+    conn = _update("jump", 0.02, None)
+    sql: str = conn.execute.call_args[0][0]
+    assert "0.95" in sql
+
+
+def test_update_decay_constant_value():
+    assert _BANDIT_DECAY == pytest.approx(0.95)
 
 
 def test_update_unknown_action_type_skips_db():
