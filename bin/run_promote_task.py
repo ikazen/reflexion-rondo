@@ -50,6 +50,13 @@ def main() -> None:
 
     super_cycle_id, competition_id = ctx_row
 
+    # BON-111: 컨텍스트를 다 읽은 시점이라 즉시 삭제 — 이후 모든 return 경로를
+    # 일괄 커버(no attempts/no winner 포함). ON CONFLICT UPDATE라 재실행 시 재삽입 정상.
+    conn.execute(
+        "DELETE FROM raw.super_cycle_context WHERE queue_id = %s",
+        [args.queue_id],
+    )
+
     rows = conn.execute(
         """
         SELECT attempt_id, gain_vs_best, cv_score, label, error_trace,
