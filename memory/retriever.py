@@ -120,6 +120,45 @@ def search(
     return selected
 
 
+def search_failure_lessons(
+    conn: PgConn,
+    competition_id: str,
+    k: int = 3,
+) -> list[dict]:
+    """최근 실패(lesson_type='failure') 교훈을 코사인 무관하게 최대 k개 반환한다.
+
+    error-fix 교훈은 현재 쿼리(hypothesis)와 의미가 달라 search()의 top-k*4 코사인
+    후보에 안 들 수 있음(BON-134) — 이 함수는 임베딩 없이 순수 SQL로 별도 채널을 연다.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            r.reflection_id,
+            r.embedded_text,
+            r.full_lesson,
+            r.generality,
+            r.gain_vs_best,
+            r.lesson_type,
+            coalesce(i.avg_gain, 0.0)::double precision AS avg_gain
+        FROM raw.reflections r
+        LEFT JOIN reflection_impact i USING (reflection_id)
+        WHERE r.archived = false
+          AND r.lesson_type = 'failure'
+          AND (
+              r.generality IN ('L2_class', 'L3_general')
+              OR r.competition_id = %s
+          )
+        ORDER BY r.created_at DESC
+        LIMIT %s
+        """,
+        [competition_id, k],
+    ).fetchall()
+
+    cols = ["reflection_id", "embedded_text", "full_lesson", "generality",
+            "gain_vs_best", "lesson_type", "avg_gain"]
+    return [dict(zip(cols, row)) for row in rows]
+
+
 def _apply_impact_score(candidates: list[dict]) -> list[dict]:
     """avg_gain z-score 표준화 후 sim에 승수 적용. no_op 교훈 추가 감쇠.
 
