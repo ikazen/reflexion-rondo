@@ -46,7 +46,7 @@ launchctl setenv OLLAMA_MODELS "/Users/<your-username>/mnt/ollama-model"
 ollama pull qwen3-embedding:8b
 ```
 
-> 현재 코드의 기본 역할 모델은 Strategist=`deepseek-v4-pro`, Reflector=`glm-5`,
+> 현재 코드의 기본 역할 모델은 Strategist=`glm-5.2`, Reflector=`kimi-k2.6`,
 > Coder=`qwen3-coder-next`, Embedding=`qwen3-embedding:8b`다.
 > Strategist/Reflector/Coder는 Ollama Cloud를 사용하고, 임베딩만 `OLLAMA_BASE_URL`의
 > 로컬 Ollama 서버를 사용한다.
@@ -83,8 +83,8 @@ OLLAMA_BASE_URL=http://mac-server.<tailnet>.ts.net:11434
 OLLAMA_CLOUD_BASE_URL=https://ollama.com
 OLLAMA_API_KEY=<your-ollama-cloud-key>
 
-# 참고: 현재 config/settings.py의 모델 기본값은 코드 상수다.
-# MODEL_STRATEGIST / MODEL_REFLECTOR / MODEL_CODER / MODEL_EMBEDDING 환경변수는 현재 코드에서 읽지 않는다.
+# 참고: config/settings.py의 모델 기본값이 단일 소스다.
+# MODEL_STRATEGIST / MODEL_REFLECTOR / MODEL_CODER / MODEL_EMBEDDING 환경변수로 override 가능하지만 실험용으로만 쓰고 SOPS·Airflow Variable엔 넣지 않는다.
 ```
 
 `.env`는 `.gitignore`에 포함되어 있으므로 커밋되지 않는다. 실제 tailnet 이름과 IP는 `.env`에만 보관한다.

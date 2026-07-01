@@ -34,6 +34,22 @@ def test_extract_code_plain() -> None:
     assert _extract_code(_VALID_PATCH) == _VALID_PATCH
 
 
+def test_extract_code_picks_class_patch_block() -> None:
+    example_block = "x = 1\ny = 2"
+    text = (
+        f"Example:\n```python\n{example_block}\n```\n"
+        f"Real code:\n```python\n{_VALID_PATCH}\n```"
+    )
+    assert _extract_code(text) == _VALID_PATCH
+
+
+def test_extract_code_falls_back_to_first_block_when_no_patch() -> None:
+    first = "x = 1"
+    second = "y = 2"
+    text = f"```python\n{first}\n```\n```python\n{second}\n```"
+    assert _extract_code(text) == first
+
+
 def test_generate_code_returns_string() -> None:
     with patch("agents.coder._client") as mock_client:
         mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)

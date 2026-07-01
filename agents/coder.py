@@ -141,9 +141,12 @@ class Patch:
 
 def _extract_code(text: str) -> str:
     blocks = re.findall(r"```(?:python)?\n(.*?)```", text, re.DOTALL)
-    if blocks:
-        return "\n\n".join(b.strip() for b in blocks)
-    return text.strip()
+    if not blocks:
+        return text.strip()
+    for b in blocks:
+        if "class Patch" in b:
+            return b.strip()
+    return blocks[0].strip()
 
 
 def _client() -> Client:
