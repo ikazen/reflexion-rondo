@@ -196,7 +196,7 @@
 
 | 항목 | 제안 | 상태 |
 |---|---|---|
-| Strategist 모델 | deepseek-v4-pro (대안 kimi-k2.6) | ADR-016 |
+| Strategist 모델 | glm-5.2 (대안 deepseek-v4-pro, kimi-k2.6) | ADR-016 |
 | Reflector 모델 | kimi-k2.6 (Strategist와 다른 패밀리) | ADR-016 |
 | Coder 모델 | qwen3-coder-next (대안 glm-4.7/devstral-small-2) | ADR-016 |
 | 스토어 (검색+분석) | Postgres + pgvector (벡터 컬럼) | 확정, ADR-007 amend (BON-98) |

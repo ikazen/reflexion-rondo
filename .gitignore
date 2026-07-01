@@ -12,3 +12,5 @@ secrets/*.env
 !secrets/*.enc.env
 a.md
 to.md
+api.md
+review.md
