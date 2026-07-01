@@ -41,14 +41,14 @@ def main() -> None:
     conn = connect(apply_schema=False)
 
     ctx_row = conn.execute(
-        "SELECT super_cycle_id, competition_id FROM raw.super_cycle_context WHERE queue_id = %s",
+        "SELECT super_cycle_id, competition_id, prev_best_cv FROM raw.super_cycle_context WHERE queue_id = %s",
         [args.queue_id],
     ).fetchone()
     if not ctx_row:
         print(f"[run_promote_task] no context for queue_id={args.queue_id}", file=sys.stderr)
         sys.exit(1)
 
-    super_cycle_id, competition_id = ctx_row
+    super_cycle_id, competition_id, prev_best_cv = ctx_row
 
     rows = conn.execute(
         """
@@ -146,7 +146,7 @@ def main() -> None:
                     n_splits=n_splits,
                     seed=42,
                     is_classification=is_classification,
-                    prev_best=winner_row[2],
+                    prev_best=prev_best_cv,
                     confirm_seeds=PROMOTE_CONFIRM_SEEDS,
                 )
                 if confirm.holdout_score is not None:
@@ -156,7 +156,7 @@ def main() -> None:
                     )
                 if not confirm.confirmed:
                     print(f"[run_promote_task] cross-seed 미확인 — 승격 스킵 winner={winner_row[0][:8]}")
-                    return  # reflect는 아래서 계속
+                    # 승격만 스킵 — 아래 promotion 가드(confirm.confirmed)가 막고, reflect 루프는 계속 실행
             else:
                 confirm = None
 

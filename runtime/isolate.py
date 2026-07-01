@@ -1,7 +1,13 @@
-"""eval runner를 컨테이너 내부 subprocess로 직접 실행한다.
+"""LLM 생성 코드(class Patch)를 격리 subprocess로 실행한다.
 
-DockerOperator 컨테이너 자체가 격리 환경이므로 DooD 불필요.
-timeout은 subprocess.run timeout_sec으로 제어.
+프로덕션(Linux, CAP_SYS_ADMIN 있음): preexec_fn에서 os.unshare(CLONE_NEWNET)으로
+network namespace를 분리해 subprocess egress 차단. rlimit(AS/CPU) + timeout 병행.
+
+폴백(SYS_ADMIN 없음, 로컬 mac): env allowlist + rlimit + timeout만 적용.
+네트워크 샌드박스 없음 — EVAL_SANDBOX=none 으로 명시적 비활성도 가능.
+
+DockerOperator에 cap_add=["SYS_ADMIN"] 필요(컨테이너 자체 네트워크는 유지,
+차단은 subprocess preexec_fn 레벨에서만).
 """
 from __future__ import annotations
 
@@ -18,19 +24,26 @@ import polars as pl
 _RUNNER = Path(__file__).parent / "runner.py"
 DEFAULT_TIMEOUT = 600
 
+_HAVE_NEWNET = sys.platform == "linux" and hasattr(os, "CLONE_NEWNET")
+
 # 메모리/CPU 제한 — attempt 하나의 OOM이 컨테이너 전체를 죽이지 않도록.
 # 제한 초과 시 subprocess가 SIGKILL(RLIMIT_AS) 또는 SIGXCPU(RLIMIT_CPU)로 종료되고
 # runner output.json 없음 → _err() 경로로 error_trace에 기록.
 try:
     import resource as _resource
 
-    def _set_eval_limits() -> None:
+    def _preexec_fn() -> None:
+        if _HAVE_NEWNET and os.environ.get("EVAL_SANDBOX") != "none":
+            try:
+                os.unshare(os.CLONE_NEWNET)
+            except OSError:
+                pass  # CAP_SYS_ADMIN 없으면 조용히 스킵 (로컬 개발 환경 등)
         mem = int(os.environ.get("EVAL_MEM_LIMIT_BYTES", str(6 * 1024 ** 3)))
         cpu = int(os.environ.get("EVAL_CPU_LIMIT_SECS", "900"))
         _resource.setrlimit(_resource.RLIMIT_AS, (mem, mem))
         _resource.setrlimit(_resource.RLIMIT_CPU, (cpu, cpu))
 
-    _PREEXEC = _set_eval_limits
+    _PREEXEC = _preexec_fn
 except (ImportError, AttributeError):
     _PREEXEC = None  # Windows/non-Linux fallback
 
@@ -85,6 +98,8 @@ def eval_isolated(
         }
         env = {k: v for k, v in os.environ.items() if k in _EVAL_ENV_ALLOWLIST}
         env["PYTHONPATH"] = str(_RUNNER.parent.parent)
+        env["HOME"] = tmpdir  # catboost_info 등 홈 쓰기를 tmpdir로 격리
+
         try:
             proc = subprocess.run(
                 [sys.executable, str(_RUNNER), tmpdir],

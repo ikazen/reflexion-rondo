@@ -13,55 +13,142 @@
 성공 조건: 객관적·자동 검증 가능한 피드백 신호(CV + LB)가 있는 도메인
 → Kaggle CSV 제출형 정형 대회 (Playground Series).
 
-## 진입점
+## 환경
 
-- `bin/run_daemon.py` — 운영 daemon. `raw.cycle_queue`를 폴링하고, `AIRFLOW_URL`이 있으면 Airflow super-cycle DAG를 트리거한다. `AIRFLOW_URL`이 없으면 로컬 smoke/test용 단일 attempt만 실행한다.
-- `bin/run_reflexion.py` — 로컬/수동 Reflexion 사이클 러너 (`cycle/run.py` 호출: retrieve → strategize → generate → evaluate → reflect → persist + 생성 코드를 `runs/code/`에 저장).
-- `bin/start_competition.py` — 대회 등록 (fingerprint 계산 → `raw.competitions` insert). 유사 대회 검색·cold-start lessons/seed pipeline 정보를 `runs/cold_start/`에 저장한다.
-- `bin/run_cycle.py` — Phase 0 PoC (LLM 없는 LightGBM 베이스라인, 참고용).
-- `bin/submit.py` — Kaggle 제출.  `dashboard.py` — Streamlit 모니터링.
+- Python 패키지 관리: `uv` (`uv run python ...` 형태로 실행)
+- 로컬 venv: `.venv/` (repo 내부)
+- DB: ops-vm Postgres + pgvector (`raw` 스키마). `RONDO_DB_URL` 환경변수.
+- 객체 스토리지: MinIO (생성 코드 `.py` 저장). `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`.
+- LLM 추론: Ollama Cloud Pro (`OLLAMA_CLOUD_BASE_URL`, `OLLAMA_API_KEY`).
+- 임베딩: Mac Ollama 서버 로컬 (`OLLAMA_BASE_URL`, 키 없음).
+- 운영 호스트: worker-vm (Airflow DockerOperator 경유). 로컬에선 direct 모드로 실행.
 
-## 레포 구조
+## 모델 배정
 
-```text
-reflexion-rondo/
-  config/settings.py      # 모델/엔드포인트/자격증명 로딩
-  agents/                 # 평면 모듈 (서브디렉토리 아님)
-    strategist.py         # 프롬프트 + StrategyDecision (action_type enum)
-    coder.py              # class Patch 생성 (action_type별 hook)
-    reflector.py          # 성찰 → 교훈 + generality enum (참고 판정 포함)
-  cycle/run.py            # Reflexion 1 사이클 오케스트레이션 (7단계)
-  evaluator/
-    harness.py            # 결정적 k-fold CV + label 계산
-    metrics.py            # 지표 + metric_sign
-    contract.py           # 생성 코드 검증 + smoke test
-  memory/retriever.py     # Postgres/pgvector 검색 + embed() + 메타필터 + MMR
-  memory/transfer.py      # fingerprint 거리 · 유사 대회 검색 · cold-start lessons/seed 추출
-  store/
-    schema.sql            # competitions, attempts, reflections, submission_budget + 분석 뷰
-    db.py                 # connect / ensure_competition / insert_attempt
-    fingerprint.py        # 결정적 메타피처(14개) 계산기
-  bin/
-    run_daemon.py         # queue daemon + FastAPI + Airflow trigger
-    run_reflexion.py      # 로컬/수동 Reflexion 사이클 러너
-    run_retrieve_task.py  # Airflow super-cycle retrieve task
-    run_attempt_task.py   # Airflow super-cycle attempt task
-    run_promote_task.py   # Airflow super-cycle promote task
-    start_competition.py  # 대회 등록 (fingerprint → competitions insert)
-    run_cycle.py          # Phase 0 PoC (LLM 없는 베이스라인, 참고용)
-    submit.py             # Kaggle 제출
-  dashboard.py            # Streamlit 모니터링
-  runs/                   # 생성 코드(runs/code/) · cold-start JSON · 제출 CSV  (gitignore)
-  docs/                   # 아래 문서
+| 역할 | 모델 | 환경변수 |
+|------|------|---------|
+| Strategist | `glm-5.2` | `OLLAMA_CLOUD_BASE_URL` + `OLLAMA_API_KEY` |
+| Reflector | `kimi-k2.6` (Strategist와 다른 패밀리 — ADR-016) | 동일 |
+| Coder | `qwen3-coder-next` | 동일 |
+| Embedding | `qwen3-embedding:8b` | `OLLAMA_BASE_URL` (키 없음) |
 
-분석 뷰(dbt 아님, schema.sql 내 SQL view): score_progression, stg_attempts,
-stg_attempts_reflexion_only, reflection_impact, action_bandit_posterior,
-cold_start_progression
+모델명 단일 소스 = `config/settings.py` 기본값 (평문, 비밀 아님). `MODEL_*` env override는 실험용으로 읽히지만 SOPS·Airflow Variable엔 넣지 않는다. 모델 변경 = settings.py 편집 후 두 이미지(daemon, task) 재빌드·재배포.
 
-계획(미구현):
-  external ideas 채널      # raw.external_ideas / Strategist 노출 / 사후 bandit — ADR-019 설계만
-  제출 예산 자동 게이트    # submission_budget 스키마는 있으나 submit.py enforcement는 미구현
-  강화된 생성 코드 sandbox # 현재 subprocess + env allowlist, 네트워크 격리 미구현
+## 주요 진입점
+
+```bash
+# daemon 시작 (큐 폴링)
+uv run python -m bin.run_daemon
+
+# 새 대회 등록 + 첫 루프
+uv run python -m bin.start_competition --id <slug> --name "<명>" --task binary --metric auc --target <col>
+uv run python -m bin.run_reflexion --competition <slug> --stage bootstrap --cycles 5
+
+# 큐 조작 (daemon 실행 중)
+curl -X POST http://localhost:8000/api/queue \
+  -H 'Content-Type: application/json' \
+  -d '{"competition": "<slug>", "stage": "reflexion", "n_cycles": 30}'
+
+# 대시보드
+uv run streamlit run dashboard.py
+
+# DB 초기화 (스키마 유지)
+uv run python bin/reset.py --competition <slug>
+```
+
+## 프로젝트 구조
+
+```
+agents/          LLM 역할 (strategist, coder, reflector)
+bin/             실행 진입점:
+                   run_daemon.py (큐 폴링 + FastAPI + Airflow trigger)
+                   run_retrieve_task.py / run_attempt_task.py / run_promote_task.py (Airflow super-cycle 3태스크)
+                   run_cycle_task.py (Airflow single-cycle DockerOperator 태스크)
+                   run_reflexion.py (로컬/수동 러너)
+                   start_competition.py (대회 등록)
+                   archive_lessons.py (저효율 교훈 자동 archive)
+                   healthcheck.py (의존성 헬스체크 + /api/health 재사용)
+                   api.py (FastAPI 앱 팩토리)
+                   airflow_client.py (Airflow REST API 클라이언트)
+                   reset.py / run_cycle.py / submit.py
+config/          settings.py + competitions/<slug>.py (대회별 설정)
+cycle/           사이클 로직:
+                   run.py (단일 사이클 오케스트레이션)
+                   super_cycle.py (슈퍼사이클 오케스트레이션)
+                   stagnation.py (정체 감지)
+                   action_optimizer.py (action_bandit Thompson sampling)
+                   error_pitfalls.py (에러 시그니처 정규화 + top pitfall 조회)
+                   materialize.py (AST 레벨 파이프라인 누적 병합)
+evaluator/       결정적 k-fold CV (contract, harness, metrics)
+memory/          retriever (pgvector 검색 + MMR), transfer (cross-competition, 부분 구현)
+runtime/         격리 실행 (isolate.py → preexec_fn os.unshare(CLONE_NEWNET) + rlimit + 600s timeout → runner.py; CAP_SYS_ADMIN 없으면 rlimit+timeout만)
+store/           db.py (psycopg2 풀), s3_code.py (MinIO), fingerprint.py, schema.sql
+deploy/          Dockerfile, release.sh (ops-vm 빌드+배포, semver), build.sh (mac-server dev 빌드)
+dashboard.py     Streamlit 모니터링
+runs/            생성 코드 캐시 · cold-start JSON · 제출 CSV (gitignore)
+docs/            아래 문서
+```
+
+## 수퍼사이클 구조 (1회 실행 단위)
+
+1. **Retrieve** (`bin/run_retrieve_task.py`): pgvector 코사인 검색으로 교훈 top-k + `action_bandit` Thompson sample로 attempt 3개에 서로 다른 `action_type` 배정 → `raw.super_cycle_context` upsert.
+2. **Attempt × 3** 병렬 (`bin/run_attempt_task.py`): Strategize → Generate → Evaluate(k-fold CV) → Persist.
+3. **Promote** (`bin/run_promote_task.py`): `gain_vs_best` 최대값 winner 선정 → `was_promoted` 플래그 → Reflect 호출 (winner: jump/regression/error 시만, loser: 전부).
+
+## Stage 규칙
+
+| stage | 1변경 규율 | 비고 |
+|-------|-----------|------|
+| `bootstrap` | 예외 (큰 변경 허용) | 새 대회 진입 첫 N=3~5회 |
+| `reflexion` | **강제** — `prev_code` 주입 후 "한 군데만 수정" | 정상 루프 |
+| `exploitation` | 예외 | best 안정화 |
+
+## Coder 컨트랙트 (ADR-014)
+
+Coder 출력은 반드시 `class Patch` 하나. action_type별 허용 훅:
+
+| action_type | 허용 훅 |
+|---|---|
+| `feature_engineering` | `feature_transform` |
+| `model_swap` | `build_model` |
+| `preprocessing` | `preprocess` |
+| `hyperparam_search` | `param_candidates` |
+| `ensemble` | 모든 훅 (fallback, `compound` 별칭) |
+| `bootstrap` | 모든 훅 (from-scratch) |
+
+훅 이름: `preprocess` / `feature_transform` / `param_candidates` / `build_model` / `postprocess_predictions`.
+`Patch.action_type` 속성이 배정된 action_type과 일치해야 함. IO·네트워크·eval 금지.
+Polars API 사용 (pandas 스타일 혼용 금지). 컨트랙트 위반 코드는 `evaluator/contract.py`가 실행 전 차단.
+
+## DB 스키마 핵심
+
+- `raw.attempts` — 모든 시도 기록. `was_promoted`, `super_cycle_id`, `code_path`(MinIO) 포함.
+- `raw.reflections` — 교훈 + `embedding vector(1024)`. 검색은 `store/db.py`가 아닌 `memory/retriever.py`.
+- `raw.action_bandit` — `(scope, scope_key, action_type)` Beta-Bernoulli 밴딧.
+- `raw.super_cycle_context` — retrieve → attempt 상태 전달용 임시 테이블.
+- `raw.competitions` — 대회 메타 + fingerprint JSON.
+- `raw.kaggle_submissions` — Kaggle 제출 추적 (submit_id, status, lb_score, polling 상태). `bin/api.py`의 `/api/submissions` 엔드포인트가 관리.
+
+스키마 변경 시: `store/schema.sql` 수정 후 `uv run python bin/reset.py --hard`.
+
+## 이미지 빌드 & 배포
+
+운영 배포 정본은 ops-vm에서 빌드하는 `deploy/release.sh`. WSL에서 실행하면
+ops-vm 빌드+registry push → 스모크(`bin/healthcheck.py`) → compose.yml+DAG 태그 bump+push →
+ops-vm 재시작 → heartbeat 확인까지 전 단계를 수행한다.
+
+```bash
+# WSL에서 실행
+bash deploy/release.sh v1.2.0
+```
+
+이미지 2개: `reflexion-rondo/daemon` (오케스트레이션+LLM호출), `reflexion-rondo/task` (격리 실행).
+`deploy/build.sh`는 mac-server(ARM64 네이티브) dev 빌드용 보조 스크립트 — 상세는 `docs/runbook.md`.
+
+## 테스트
+
+```bash
+uv run pytest
 ```
 
 ## 문서
