@@ -1,5 +1,10 @@
 # 변경 이력
 
+## 문서 정리 (2026-07-01)
+- `CLAUDE.md`를 제거하고 정확한 내용을 `README.md`로 통합 — 정본 진입 문서를 README+docs 하나로 유지.
+- README 구조 트리·진입점·배포 절차를 현재 코드에 맞춰 재작성 (DuckDB/평면 모듈/`runs/code` 등 stale 서술 제거).
+- `docs/setup.md`, `docs/spec.md`, `docs/decisions.md`의 잔여 모델명(`deepseek-v4-pro`/`glm-5`)을 현재 기본값(`glm-5.2`/`kimi-k2.6`)으로 정정.
+
 ## 사이클 skip-continue + circuit breaker (2026-06-18)
 - dagrun(사이클) 1개 실패 시 큐 전체를 즉시 failed 처리하던 fail-fast를 폐지.
   실패 사이클은 건너뛰고 다음 사이클을 계속 실행한다 (skip-and-continue).
