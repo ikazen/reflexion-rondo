@@ -81,6 +81,22 @@ class _AttemptData:
 
 
 def _prev_best(conn: PgConn, competition_id: str) -> float | None:
+    # 확정 파이프라인(cross-seed 확인 통과분) 기준 — phantom 천장 제거.
+    # cold-start(첫 승격 전 pipelines 비어 있음)면 all-attempts max로 폴백해 부트스트랩.
+    row = conn.execute(
+        """
+        select max(c.metric_sign * p.cv_score) * max(c.metric_sign)
+        from raw.pipelines p
+        join raw.competitions c using (competition_id)
+        where p.competition_id = %s
+          and p.cv_score is not null
+        """,
+        [competition_id],
+    ).fetchone()
+    confirmed_best: float | None = row[0] if row else None
+    if confirmed_best is not None:
+        return confirmed_best
+    # 폴백: 첫 승격 이전 윈도우 (cold-start 부트스트랩)
     row = conn.execute(
         """
         select max(c.metric_sign * a.cv_score) * max(c.metric_sign)
@@ -355,6 +371,7 @@ def run_attempt_core(
                 error_trace = iso.error_trace
 
     if error_trace:
+        label = "error"
         _LOG.warning("failed — %s", error_trace[:200])
 
     # Save code

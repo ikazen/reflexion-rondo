@@ -33,7 +33,7 @@ features          jsonb,
 cv_score          double precision,
 cv_fold_var       double precision,  -- fold별 분산 (overfit·노이즈 감지)
 lb_score          double precision,  -- 미제출 시 null
-label             text,              -- jump / neutral / regression (Evaluator 결정, §4)
+label             text,              -- jump / neutral / regression / error (Evaluator 결정, §4)
 gain_vs_best      double precision,  -- metric_sign * (cv_score - prev_best_cv), null이면 첫 attempt
 error_trace       text,              -- 실패 시
 reflection_ids    text[],            -- Strategist가 실제 채택한 교훈 id
@@ -210,7 +210,7 @@ adopted_attempt_ids    text[]          -- 채택 attempt 역추적 (디버깅·�
 - `L2_class`: 비슷한 fingerprint 부류에서 통하는 패턴.
 - `L3_general`: 정형 대회 보편 원칙.
 
-`label` (Evaluator 결정, §4): `jump` / `neutral` / `regression`.
+`label` (Evaluator 결정, §4): `jump` / `neutral` / `regression` / `error`.
 
 `source_kind` (`raw.external_ideas`, §1.11, ADR-019 계획):
 - `writeup`: 종료된 유사 fingerprint 대회 우승 writeup
@@ -253,7 +253,7 @@ neutral     otherwise
 
 - `z`: fold_std 배수. 기본 1.0, 캘리브레이션 대상(`decisions.md` TBD). 더 보수적으로 `fold_std/sqrt(k)` (표준오차)를 쓸 수 있음.
 - `prev_best_cv`가 없으면(첫 attempt) label = `neutral`, gain = null.
-- 실패 attempt(`error_trace` 존재)는 label = `regression`, gain = null.
+- 실패 attempt(`error_trace` 존재)는 label = `error`, gain = null.
 
 Reflector는 이 숫자를 보고 **왜 그런 결과가 나왔는지**(교훈 본문)만 쓴다. 정성 판정은 `reflector_label`로 분리.
 
@@ -373,7 +373,7 @@ cloud = Client(
     headers={"Authorization": f"Bearer {os.environ['OLLAMA_API_KEY']}"},
 )
 resp = cloud.chat(
-    model="deepseek-v4-pro",           # Strategist. Reflector=glm-5, Coder=qwen3-coder-next (ADR-016)
+    model="glm-5.2",                   # Strategist. Reflector=kimi-k2.6, Coder=qwen3-coder-next (ADR-016)
     messages=[...],
     format=hypothesis_schema_dict,     # ollama-python: JSON Schema dict 허용
 )

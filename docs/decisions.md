@@ -64,7 +64,7 @@
 - 결정: Coder가 생성한 `class Patch`는 격리 런타임에서 실행. 시간/메모리 상한, 네트워크 차단, FS 화이트리스트.
 - 대안: timeout만 적용 / 신뢰 후 직접 실행.
 - 근거: cron 무인 루프에서 LLM 생성 코드를 실행하므로 OOM·행·우발적 네트워크 접근이 워커를 죽이거나 환경을 오염시킬 수 있다. 격리 경계가 안정성과 재현성을 보장한다.
-- **현재 구현:** `runtime/isolate.py`가 `runtime/runner.py`를 subprocess로 실행하고 env allowlist/timeout을 적용한다. Docker `--network none` 수준의 네트워크/FS sandbox는 아직 미구현이다.
+- **현재 구현(BON-191):** `runtime/isolate.py`가 `runtime/runner.py`를 subprocess로 실행. preexec_fn에서 `os.unshare(CLONE_NEWNET)`으로 network namespace를 분리해 subprocess egress 차단(DockerOperator `cap_add=["SYS_ADMIN"]` 필요). CAP_SYS_ADMIN 없는 환경(로컬 mac 등)에선 조용히 스킵. rlimit(AS/CPU) + 600s timeout 병행. env allowlist가 시크릿 env 제거.
 
 ## ADR-014 — Coder 컨트랙트는 class Patch + hook 분리
 - 결정: 산출물은 `class Patch` 하나. action_type에 허용된 훅(hook)만 구현하고, 나머지는 현재 best pipeline이 fallback으로 제공한다. 훅은 `preprocess` / `feature_transform` / `param_candidates` / `build_model` / `postprocess_predictions` 5종. IO/k-fold 하니스/파라미터 선정은 Evaluator가 소유.
@@ -94,7 +94,7 @@
   - **호스트**: 이 루프의 wall-clock은 Ollama Cloud 추론 대기가 지배하고 처리량은 Cloud rate-limit(5h 세션 + 주간 cap)이 이미 throttle한다. 따라서 always-on 노드는 약해도(2 ARM/12GB) 충분 — "강한 CPU"보다 "진짜 24/7"이 우선. nexus-prime에 ML 전용 여유 노드는 없고 worker-vm이 유일한 여유 always-on 노드(airflow edge-worker만 상주).
   - **daemon > cron** (ADR-011 정련): 단일 24/7 워커에선 데몬이 cron 중첩/DuckDB 파일락(runbook §4) 문제를 제거하고, Ollama 페이싱 상태를 메모리에 들고 self-throttle 한다. ADR-011의 "Prefect 승격은 워커 ≥3"은 유지(BON-24) — 데몬화는 승격이 아니라 단일 워커의 단순화.
   - **임베딩 Mac 유지**: 임베딩은 매 사이클 retrieve+persist 2회로 빈번하다. Cloud로 보내면 추론 3역할에 써야 할 한도/과금을 갉아먹어 사이클 처리량 자체가 준다. Mac이 사실상 always-on이므로 ADR-004/008 분리를 그대로 둔다. 단 Mac 일시 불통(슬립)에 대비해 daemon은 임베딩 호출에 retry/backoff, 실패 시 해당 사이클만 스킵(크래시 금지).
-  - **격리 = Docker `--network none`** (ADR-013의 "컨테이너 vs nsjail" TBD 확정): nexus-prime이 Docker는 제공하나 nsjail 표준은 없다. 생성 코드는 순수 compute라 네트워크 차단이 깔끔히 맞고, mem/cpu/timeout 상한으로 12GB ARM의 OOM 리스크를 흡수한다. OOM·타임아웃은 워커 사망이 아니라 `error_trace`→교훈이 된다.
+  - **격리 = subprocess `os.unshare(CLONE_NEWNET)`** (ADR-013의 "컨테이너 vs nsjail" TBD 확정, BON-191): 초기 설계의 "Docker `--network none`"은 컨테이너 레벨을 의미했으나, eval/task 컨테이너 자체는 Postgres/MinIO/Ollama 접근에 네트워크가 필요하다. 격리 경계는 **생성 코드 subprocess**. Python 3.12 `os.unshare(CLONE_NEWNET)`을 preexec_fn에서 호출해 subprocess에게 격리된 network namespace를 부여 — subprocess에서 나가는 모든 연결 차단. 컨테이너에 `cap_add=["SYS_ADMIN"]` 필요(네트워크 namespace 생성용). eval 컨테이너는 시크릿 마운트 없음(secrets는 Airflow Variable env로만 주입, allowlist가 제거). mem/cpu/timeout 상한으로 OOM 리스크를 흡수. OOM·타임아웃은 워커 사망이 아니라 `error_trace`→교훈이 된다.
   - **Postgres 영속 + 백업**: Postgres raw 스키마의 competitions/attempts/reflections/pipelines가 누적 교훈이자 transfer 자산이다. 백업 대상은 DuckDB 파일이 아니라 ops-vm Postgres 데이터와 MinIO/로컬 code artifact다.
 - 한계: 12GB는 대형 데이터셋에서 빠듯 — 격리 컨테이너 mem-limit로 OOM을 lesson화해 흡수하되, 빈발하면 mac-server 디스패치(하이브리드)를 재고한다.
 
@@ -196,7 +196,7 @@
 
 | 항목 | 제안 | 상태 |
 |---|---|---|
-| Strategist 모델 | deepseek-v4-pro (대안 kimi-k2.6) | ADR-016 |
+| Strategist 모델 | glm-5.2 (대안 deepseek-v4-pro, kimi-k2.6) | ADR-016 |
 | Reflector 모델 | kimi-k2.6 (Strategist와 다른 패밀리) | ADR-016 |
 | Coder 모델 | qwen3-coder-next (대안 glm-4.7/devstral-small-2) | ADR-016 |
 | 스토어 (검색+분석) | Postgres + pgvector (벡터 컬럼) | 확정, ADR-007 amend (BON-98) |
@@ -204,7 +204,7 @@
 | Ollama Cloud 요금제 | Pro($20, 동시 3) | 시작값 |
 | 시작 대회 | playground-series-s4e1 (Bank Churn, 이진/AUC, ~16.5만 행) | 확정 |
 | 임베딩 모델 | qwen3-embedding:8b(로컬, 1024d) | 확정, ADR-008 |
-| 격리 런타임 | Docker `--network none` + mem/cpu/timeout | 확정, ADR-017 (BON-67) |
+| 격리 런타임 | `os.unshare(CLONE_NEWNET)` preexec + rlimit + timeout | 구현 완료, ADR-017 (BON-191) |
 | 운용 호스트 | worker-vm + 단일 daemon(systemd) | 확정, ADR-017 (Phase 5) |
 | label 임계값 z | fold_std 배수(기본 1.0) | TBD (캘리브레이션 필요) |
 | fingerprint 거리 가중치 | task/metric 큼·size 중간·기타 작음 | TBD (대회 누적 후 캘리브레이션) |
