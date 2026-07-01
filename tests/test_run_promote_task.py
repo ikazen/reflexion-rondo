@@ -171,8 +171,8 @@ class _Conn:
         pass
 
 
-def _run_promote_with_mocks(confirm_result, reflect_mock, confirm_mock):
-    """모든 외부 의존을 mock 처리하고 run_promote_task.main()을 1회 실행."""
+def _run_promote_with_mocks(confirm_result, reflect_mock, confirm_mock) -> "_Conn":
+    """모든 외부 의존을 mock 처리하고 run_promote_task.main()을 1회 실행. 사용된 conn을 반환."""
     fake_df = MagicMock(name="train_df")
     fake_df.drop.return_value = fake_df
 
@@ -182,12 +182,13 @@ def _run_promote_with_mocks(confirm_result, reflect_mock, confirm_mock):
         return importlib.import_module(name, *a, **k)
 
     confirm_mock.return_value = confirm_result
+    conn = _Conn()
 
     argv = ["run_promote_task", "--queue-id", "qid", "--competition", _SLUG]
     sys.path.insert(0, str(ROOT))
     try:
         with patch.object(sys, "argv", argv), \
-             patch("store.db.connect", return_value=_Conn()), \
+             patch("store.db.connect", return_value=conn), \
              patch("store.db.insert_pipeline"), \
              patch("store.s3_code.download", return_value="def f():\n    return 1\n"), \
              patch("store.s3_code.download_best_pipeline", return_value=None), \
@@ -208,6 +209,7 @@ def _run_promote_with_mocks(confirm_result, reflect_mock, confirm_mock):
     finally:
         if str(ROOT) in sys.path:
             sys.path.remove(str(ROOT))
+    return conn
 
 
 def test_a1_reflect_runs_even_when_unconfirmed() -> None:
@@ -238,3 +240,16 @@ def test_confirm_and_measure_takes_no_outside_prev_best() -> None:
     )
     assert confirm_mock.call_count == 1
     assert "prev_best" not in confirm_mock.call_args.kwargs
+
+
+def test_super_cycle_context_deleted_after_read() -> None:
+    """BON-111: 컨텍스트를 읽은 뒤 해당 queue_id 행을 삭제해야 한다."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None),
+        reflect_mock,
+        confirm_mock,
+    )
+    delete_calls = [s for s in conn.executed if "DELETE FROM raw.super_cycle_context" in s]
+    assert len(delete_calls) == 1
