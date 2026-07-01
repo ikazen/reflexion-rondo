@@ -17,6 +17,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 
+_ERROR_LESSON_K = 3  # BON-134: 코사인 무관 강제 포함할 최근 failure 교훈 수
+
+
+def _merge_lessons(lessons: list[dict], extra: list[dict]) -> list[dict]:
+    """extra를 lessons 뒤에 병합, reflection_id 중복은 lessons 쪽을 우선한다."""
+    seen = {l["reflection_id"] for l in lessons}
+    return lessons + [l for l in extra if l["reflection_id"] not in seen]
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -31,7 +39,7 @@ def main() -> None:
     from store.db import connect, ensure_competition
     from cycle.run import _build_retrieval_query, _prev_best, _recent_failure_summary
     from cycle.action_optimizer import assign_super_cycle_actions
-    from memory.retriever import EmbeddingUnavailableError, search
+    from memory.retriever import EmbeddingUnavailableError, search, search_failure_lessons
 
     conn = connect(apply_schema=False)
 
@@ -66,6 +74,8 @@ def main() -> None:
     except EmbeddingUnavailableError as exc:
         print(f"[run_retrieve_task] embedding unavailable, proceeding with no lessons: {exc}")
         lessons = []
+    failure_lessons = search_failure_lessons(conn, competition_id, k=_ERROR_LESSON_K)
+    lessons = _merge_lessons(lessons, failure_lessons)
     assigned_actions = assign_super_cycle_actions(conn, competition_id, n_attempts=3)
     print(f"  assigned_actions: {assigned_actions}")
 
@@ -89,7 +99,9 @@ def main() -> None:
     print(f"[run_retrieve_task] done competition={args.competition} stage={args.stage} n_lessons={len(lessons)}")
     for i, l in enumerate(lessons):
         snippet = (l.get("embedded_text") or "")[:80].replace("\n", " ")
-        print(f"  lesson[{i}] score={l.get('score', ''):.3f} {snippet}")
+        score = l.get("score")
+        score_str = f"{score:.3f}" if score is not None else "n/a(forced-failure)"
+        print(f"  lesson[{i}] score={score_str} {snippet}")
 
 
 if __name__ == "__main__":
