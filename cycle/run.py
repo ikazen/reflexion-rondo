@@ -426,7 +426,6 @@ def run_attempt_core(
             n_splits=config.n_splits,
             seed=config.seed,
             is_classification=config.is_classification,
-            prev_best=prev_best_cv,
             confirm_seeds=PROMOTE_CONFIRM_SEEDS,
             action_type=action_type,
         )
@@ -434,6 +433,11 @@ def run_attempt_core(
             conn.execute(
                 "UPDATE raw.attempts SET holdout_score = %s WHERE attempt_id = %s",
                 [confirm.holdout_score, attempt_id],
+            )
+        if confirm.seed_gains:
+            conn.execute(
+                "UPDATE raw.attempts SET confirm_seed_gains = %s WHERE attempt_id = %s",
+                [json.dumps(confirm.seed_gains), attempt_id],
             )
         if confirm.confirmed:
             fp_row = conn.execute(

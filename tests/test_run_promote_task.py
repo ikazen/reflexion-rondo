@@ -1,5 +1,8 @@
 """BON-187: promote task uses slug (--competition) for module import, not DB competition_id.
-BON-210: queued promote 경로 버그 — A-1(미확인 시 reflect 전멸), A-2(cross-seed 기준점).
+BON-210: queued promote 경로 버그 — A-1(미확인 시 reflect 전멸).
+BON-190: cross-seed 기준점 버그(A-2)는 paired 비교 도입으로 구조적으로 제거됨 —
+confirm_and_measure가 outside prev_best를 아예 받지 않고 seed마다 baseline을
+직접 재평가한다(tests/test_promotion_gate.py에서 회귀 검증).
 """
 from __future__ import annotations
 
@@ -118,8 +121,7 @@ def test_promote_task_imports_by_slug_not_full_id() -> None:
 
 _FULL_ID = "playground-series-s4e1"
 _SLUG = "s4e1"
-_PREV_BEST_CV = 0.80  # context baseline (A-2 정답)
-_WINNER_CV = 0.85     # winner 자기 cv_score (A-2 오답이던 값)
+_WINNER_CV = 0.85
 
 # attempts SELECT 컬럼 순서:
 # attempt_id, gain_vs_best, cv_score, label, error_trace,
@@ -152,7 +154,7 @@ class _Conn:
         s = " ".join(sql.split())
         self.executed.append(s)
         if "FROM raw.super_cycle_context" in s:
-            return _Cur(one=("sc-id", _FULL_ID, _PREV_BEST_CV))
+            return _Cur(one=("sc-id", _FULL_ID))
         if "FROM raw.attempts" in s and "ORDER BY run_ts" in s:
             return _Cur(all_=_ATTEMPT_ROWS)
         if "task_type, metric from raw.competitions" in s:
@@ -213,7 +215,7 @@ def test_a1_reflect_runs_even_when_unconfirmed() -> None:
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
     confirm_mock = MagicMock()
     _run_promote_with_mocks(
-        SimpleNamespace(confirmed=False, holdout_score=None),
+        SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None),
         reflect_mock,
         confirm_mock,
     )
@@ -223,18 +225,16 @@ def test_a1_reflect_runs_even_when_unconfirmed() -> None:
     )
 
 
-def test_a2_cross_seed_uses_context_prev_best() -> None:
-    """A-2: confirm_and_measure에 winner 자기 CV가 아니라 context prev_best_cv가 넘어가야 한다."""
+def test_confirm_and_measure_takes_no_outside_prev_best() -> None:
+    """BON-190: confirm_and_measure는 outside prev_best를 받지 않는다 (paired 비교가
+    seed마다 baseline을 직접 재평가하므로 winner 자기 CV를 기준점으로 쓰는 경로 자체가 없다).
+    """
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
     confirm_mock = MagicMock()
     _run_promote_with_mocks(
-        SimpleNamespace(confirmed=False, holdout_score=None),
+        SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None),
         reflect_mock,
         confirm_mock,
     )
     assert confirm_mock.call_count == 1
-    passed_prev_best = confirm_mock.call_args.kwargs["prev_best"]
-    assert passed_prev_best == _PREV_BEST_CV, (
-        f"prev_best={passed_prev_best} — context 값 {_PREV_BEST_CV} 여야 함"
-    )
-    assert passed_prev_best != _WINNER_CV, "winner 자기 cv_score를 baseline으로 쓰면 안 됨"
+    assert "prev_best" not in confirm_mock.call_args.kwargs
