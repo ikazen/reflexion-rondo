@@ -244,6 +244,11 @@ def _load_best_pipeline(competition_id: str) -> str | None:
     return _best_pipeline_download(competition_id)
 
 
+def _retrieval_scores(lessons: list[dict]) -> list[float | None] | None:
+    """lessons의 score 목록. BON-134 failure-lesson 채널은 score 키가 없음(.get 필수)."""
+    return [l.get("score") for l in lessons] or None
+
+
 
 def run_attempt_core(
     conn: PgConn,
@@ -397,7 +402,7 @@ def run_attempt_core(
         "hypothesis":       decision.hypothesis,
         "action_type":      action_type,
         "reflection_ids":   decision.reflection_ids or None,
-        "retrieval_scores": [l["score"] for l in lessons] or None,
+        "retrieval_scores": _retrieval_scores(lessons),
         "cv_score":         cv_score,
         "cv_fold_var":      cv_fold_var,
         "label":            label,
