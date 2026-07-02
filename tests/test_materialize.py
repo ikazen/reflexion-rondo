@@ -324,6 +324,63 @@ def test_undefined_name_for_with_except_walrus_binding_ok():
     _validate_materialized(source)  # should not raise
 
 
+# --- optional-dependency 가드 보존 (BON-233) ---
+# s4e10 replay 중 발견: try/except로 조건부 바인딩하는 패턴
+# (`try: import catboost; FLAG=True except ImportError: FLAG=False`)이
+# _extract_toplevel_helpers의 named-helper 분류(class/def/assign)에 안 걸려
+# 조용히 드롭되고 있었다 — build_model이 FLAG를 참조하면 NameError.
+
+_PATCH_WITH_OPTIONAL_DEP = textwrap.dedent("""
+    import numpy as np
+    try:
+        from catboost import CatBoostClassifier
+        CATBOOST_AVAILABLE = True
+    except ImportError:
+        CATBOOST_AVAILABLE = False
+
+    class Patch:
+        action_type = "ensemble"
+        changed_stages = ["build_model"]
+        rationale = "add catboost"
+
+        def build_model(self, params, ctx):
+            if CATBOOST_AVAILABLE:
+                return CatBoostClassifier()
+            return None
+""").strip()
+
+
+def test_optional_dependency_guard_preserved_no_raise():
+    result = materialize_best_pipeline(None, _PATCH_WITH_OPTIONAL_DEP)
+    ast.parse(result)  # implicitly validated too, but double-check
+    assert "CATBOOST_AVAILABLE" in result
+    assert "try:" in result and "except ImportError" in result
+
+
+def test_optional_dependency_guard_dropped_would_have_raised():
+    """회귀 고정: 이 패턴이 드롭되면 undefined-name 가드가 잡아야 한다."""
+    dropped = textwrap.dedent("""
+        import numpy as np
+
+        class Patch:
+            action_type = "materialized"
+            changed_stages = []
+            rationale = "test"
+
+            def build_model(self, params, ctx):
+                if CATBOOST_AVAILABLE:
+                    return None
+                return None
+    """).strip()
+    with pytest.raises(ValueError, match="CATBOOST_AVAILABLE"):
+        _validate_materialized(dropped)
+
+
+def test_other_toplevel_statements_deduplicated_across_base_and_patch():
+    result = materialize_best_pipeline(_PATCH_WITH_OPTIONAL_DEP, _PATCH_WITH_OPTIONAL_DEP)
+    assert result.count("CATBOOST_AVAILABLE = True") == 1
+
+
 # --- helper/member name collision (BON-197) ---
 
 _BASE_WITH_ENCODE = textwrap.dedent("""

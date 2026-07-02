@@ -45,6 +45,32 @@ def _extract_toplevel_helpers(source: str) -> dict[str, ast.stmt]:
     return result
 
 
+def _extract_other_toplevel_statements(source: str) -> list[str]:
+    """Import/named-helper(class/def/assign) 외의 top-level 문을 unparse해서 수집한다.
+
+    `try: import catboost; CATBOOST_AVAILABLE = True except ImportError: ...` 같은
+    optional-dependency 가드 패턴은 named helper로 분류되지 않아 (`ast.Try`는
+    `_extract_toplevel_helpers`의 어떤 isinstance 분기에도 안 걸림) 조용히 드롭되던
+    문제(BON-233) — union으로 보존한다. 이름 기반 override 개념이 없으므로 텍스트
+    dedup만 하고(단순 재현), base와 patch 양쪽 모두 유지한다.
+    """
+    tree = ast.parse(source)
+    seen: set[str] = set()
+    stmts: list[str] = []
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if isinstance(node, ast.ClassDef) and node.name == "Patch":
+            continue
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef, ast.Assign, ast.AnnAssign)):
+            continue  # _extract_toplevel_helpers가 처리
+        line = ast.unparse(node)
+        if line not in seen:
+            seen.add(line)
+            stmts.append(line)
+    return stmts
+
+
 def _extract_class_members(source: str) -> dict[str, ast.stmt]:
     tree = ast.parse(source)
     for node in ast.walk(tree):
@@ -90,7 +116,17 @@ def materialize_best_pipeline(base_source: str | None, patch_source: str) -> str
             seen_imports.add(line)
             imports.append(line)
 
-    parts: list[str] = imports + ["", ""]
+    seen_other: set[str] = set()
+    other_stmts: list[str] = []
+    for line in (
+        (_extract_other_toplevel_statements(base_source) if base_source else [])
+        + _extract_other_toplevel_statements(patch_source)
+    ):
+        if line not in seen_other:
+            seen_other.add(line)
+            other_stmts.append(line)
+
+    parts: list[str] = imports + ["", ""] + other_stmts + (["", ""] if other_stmts else [])
 
     seen_nodes: set[int] = set()
     for node in merged_helpers.values():
@@ -145,6 +181,16 @@ def _module_level_names(tree: ast.Module) -> set[str] | None:
         elif isinstance(node, ast.AnnAssign):
             if isinstance(node.target, ast.Name):
                 names.add(node.target.id)
+        elif not isinstance(node, (ast.Import, ast.ImportFrom)):
+            # try/except, if, with 등 top-level 복합문(예: optional-dependency 가드
+            # `try: import x; FLAG=True except ImportError: FLAG=False`) 내부에서
+            # 조건부로 바인딩되는 이름도 모듈 스코프로 인정한다 — _validate_materialized가
+            # 이제 이런 문을 verbatim 보존하므로(BON-233) 오탐하면 안 된다.
+            for n in ast.walk(node):
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                    names.add(n.id)
+                elif isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                    names.add(n.name)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
