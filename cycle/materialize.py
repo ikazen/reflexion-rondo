@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import logging
 import textwrap
 
@@ -123,8 +124,116 @@ def materialize_best_pipeline(base_source: str | None, patch_source: str) -> str
     return result
 
 
+_SAFE_NAMES = frozenset(dir(builtins)) | {"self", "cls", "__class__"}
+
+
+def _module_level_names(tree: ast.Module) -> set[str] | None:
+    """모듈 최상단에서 해석 가능한 이름 전부 (helper 정의 + import 바인딩).
+
+    star import(`from x import *`)가 있으면 무엇을 바인딩하는지 알 수 없으므로
+    None을 반환해 호출자가 undefined-name 검사 자체를 건너뛰게 한다 — 미탐지가
+    오탐(유효한 파이프라인을 잘못 거부)보다 안전하다.
+    """
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name):
+                names.add(node.target.id)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "*":
+                    return None
+                names.add(alias.asname or alias.name)
+    return names
+
+
+def _collect_bound_names(node: ast.AST) -> set[str]:
+    """서브트리 내에서 지역적으로 바인딩되는 모든 이름 (과대추정 — 오탐 방지 우선).
+
+    컴프리헨션 스코프 격리는 무시하고 Store 컨텍스트 Name을 전부 지역 바인딩으로
+    친다. 매개변수·중첩 함수/클래스 이름·for/with/except 타겟·global/nonlocal
+    선언명도 포함.
+    """
+    bound: set[str] = set()
+    for n in ast.walk(node):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            args = n.args
+            for a in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+                bound.add(a.arg)
+            if args.vararg:
+                bound.add(args.vararg.arg)
+            if args.kwarg:
+                bound.add(args.kwarg.arg)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                bound.add(n.name)
+        elif isinstance(n, ast.ClassDef):
+            bound.add(n.name)
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            bound.add(n.id)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            bound.add(n.name)
+        elif isinstance(n, (ast.Global, ast.Nonlocal)):
+            bound.update(n.names)
+    return bound
+
+
+def _collect_loaded_names(node: ast.AST) -> set[str]:
+    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+
+
+def _check_undefined_names(tree: ast.Module) -> None:
+    """병합된 class Patch 메서드가 어디에도 정의되지 않은 이름을 참조하면 raise.
+
+    BON-197 helper collision 경고와 달리 이건 실제로 깨진 파이프라인(예: 삭제된
+    top-level helper 클래스를 build_model이 여전히 호출)이라 경고가 아니라 에러로
+    막는다 — 손상된 best_pipeline이 조용히 업로드되면 안 되기 때문.
+
+    top-level helper 본문은 검사하지 않는다(멤버 스코프만으로 이 버그 클래스를
+    잡기에 충분하고, helper 내부까지 보면 오탐 표면만 늘어난다 — under-detection은
+    의도적으로 허용).
+    """
+    module_names = _module_level_names(tree)
+    if module_names is None:
+        return  # star import — 무엇이 바인딩되는지 알 수 없어 검사 스킵
+    resolvable = module_names | _SAFE_NAMES
+
+    patch_cls = next(
+        (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "Patch"),
+        None,
+    )
+    if patch_cls is None:
+        return  # missing-Patch는 별도 가드가 처리
+
+    broken: list[tuple[str, list[str]]] = []
+    for item in patch_cls.body:
+        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        loaded = _collect_loaded_names(item)
+        bound = _collect_bound_names(item)
+        unresolved = sorted(loaded - bound - resolvable)
+        if unresolved:
+            broken.append((item.name, unresolved))
+
+    if broken:
+        detail = "; ".join(f"{name}: {unresolved}" for name, unresolved in broken)
+        raise ValueError(f"materialized pipeline references undefined name(s) — {detail}")
+
+
 def _validate_materialized(source: str) -> None:
-    """Compile-check + Patch presence guard. Raises ValueError on invalid merged output."""
+    """Compile-check + Patch presence guard + undefined-name guard.
+
+    Raises ValueError on invalid merged output.
+    """
     try:
         compile(source, "<materialized>", "exec")
     except SyntaxError as exc:
@@ -136,3 +245,4 @@ def _validate_materialized(source: str) -> None:
     )
     if not has_patch:
         raise ValueError("materialized pipeline is missing class Patch")
+    _check_undefined_names(tree)

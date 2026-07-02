@@ -185,6 +185,145 @@ def test_materialize_invalid_merge_raises():
         materialize_best_pipeline(broken_base, _PATCH)
 
 
+# --- undefined-name guard (BON-233) ---
+# 재현: s4e10 best_pipeline.py에서 build_model이 WeightedEnsemble(...)을 호출하는데
+# 그 클래스 정의가 파일 어디에도 없어 NameError가 535회 반복 발생했다.
+
+def test_undefined_name_dangling_reference_raises():
+    broken = textwrap.dedent("""
+        class Patch:
+            action_type = "materialized"
+            changed_stages = []
+            rationale = "test"
+
+            def build_model(self, params, ctx):
+                return WeightedEnsemble([1, 2], [0.5, 0.5])
+    """).strip()
+    with pytest.raises(ValueError, match="WeightedEnsemble"):
+        _validate_materialized(broken)
+
+
+def test_undefined_name_builtins_and_params_ok():
+    source = textwrap.dedent("""
+        class Patch:
+            action_type = "materialized"
+            changed_stages = []
+            rationale = "test"
+
+            def build_model(self, params, ctx):
+                return sorted(range(len(params)))
+    """).strip()
+    _validate_materialized(source)  # should not raise
+
+
+def test_undefined_name_imported_name_ok():
+    source = textwrap.dedent("""
+        import numpy as np
+
+        class Patch:
+            action_type = "materialized"
+            changed_stages = []
+            rationale = "test"
+
+            def build_model(self, params, ctx):
+                return np.array([1, 2, 3])
+    """).strip()
+    _validate_materialized(source)  # should not raise
+
+
+def test_undefined_name_toplevel_helper_ok():
+    source = textwrap.dedent("""
+        def _helper(x):
+            return x
+
+        class Patch:
+            action_type = "materialized"
+            changed_stages = []
+            rationale = "test"
+
+            def build_model(self, params, ctx):
+                return _helper(params)
+    """).strip()
+    _validate_materialized(source)  # should not raise
+
+
+def test_undefined_name_comprehension_lambda_nested_def_ok():
+    """컴프리헨션/람다/중첩 함수의 자기 타겟·파라미터, 외부 지역변수 참조는 오탐이 아니다."""
+    source = textwrap.dedent("""
+        class Patch:
+            action_type = "materialized"
+            changed_stages = []
+            rationale = "test"
+
+            def build_model(self, params, ctx):
+                base = params.get("n", 1)
+                squares = [x * base for x in range(base)]
+                adder = lambda y: y + base
+                def nested(z):
+                    return z + base
+                return sum(squares) + adder(1) + nested(2)
+    """).strip()
+    _validate_materialized(source)  # should not raise
+
+
+def test_undefined_name_in_annotation_raises():
+    """annotation도 def 시점에 즉시 평가되므로(future annotations 미사용) 검사 대상이다."""
+    source = textwrap.dedent("""
+        from typing import List
+
+        class Patch:
+            action_type = "materialized"
+            changed_stages = []
+            rationale = "test"
+
+            def build_model(self, params, ctx) -> List[SomeUndefinedType]:
+                return []
+    """).strip()
+    with pytest.raises(ValueError, match="SomeUndefinedType"):
+        _validate_materialized(source)
+
+
+def test_undefined_name_star_import_skips_check():
+    source = textwrap.dedent("""
+        from sklearn.ensemble import *
+
+        class Patch:
+            action_type = "materialized"
+            changed_stages = []
+            rationale = "test"
+
+            def build_model(self, params, ctx):
+                return TotallyUndefinedThing()
+    """).strip()
+    _validate_materialized(source)  # star import → 검사 스킵, raise 안 함
+
+
+def test_undefined_name_for_with_except_walrus_binding_ok():
+    source = textwrap.dedent("""
+        import contextlib
+
+        class Patch:
+            action_type = "materialized"
+            changed_stages = []
+            rationale = "test"
+
+            def build_model(self, params, ctx):
+                total = 0
+                for i in range(3):
+                    total += i
+                with contextlib.suppress(ZeroDivisionError) as suppressed:
+                    total += 1
+                try:
+                    risky = 1 / 0
+                except ZeroDivisionError as err:
+                    total += 1
+                if (n := params.get("n", 0)) > 0:
+                    total += n
+                return total
+    """).strip()
+    _validate_materialized(source)  # should not raise
+
+
 # --- helper/member name collision (BON-197) ---
 
 _BASE_WITH_ENCODE = textwrap.dedent("""
