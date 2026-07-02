@@ -34,7 +34,7 @@ def _fake_comp_module(slug: str, full_id: str) -> types.ModuleType:
 def _run_main(slug: str, monkeypatched_import) -> None:
     from unittest.mock import patch
 
-    argv = ["run_promote_task", "--queue-id", "test-queue-id", "--competition", slug]
+    argv = ["run_promote_task", "--queue-id", "test-queue-id", "--run-id", "test-run-id", "--competition", slug]
     with patch.object(sys, "argv", argv):
         with patch("store.db.connect") as mock_conn:
             mock_cur = MagicMock()
@@ -62,9 +62,11 @@ def test_promote_task_accepts_competition_arg() -> None:
         # argparse만 테스트 — 실제 main 실행은 DB 필요
         parser = argparse.ArgumentParser()
         parser.add_argument("--queue-id", required=True)
+        parser.add_argument("--run-id", required=True)
         parser.add_argument("--competition", required=True)
-        args = parser.parse_args(["--queue-id", "qid", "--competition", "s4e1"])
+        args = parser.parse_args(["--queue-id", "qid", "--run-id", "rid", "--competition", "s4e1"])
         assert args.queue_id == "qid"
+        assert args.run_id == "rid"
         assert args.competition == "s4e1"
     finally:
         if str(ROOT) in sys.path:
@@ -88,7 +90,7 @@ def test_promote_task_imports_by_slug_not_full_id() -> None:
 
     sys.path.insert(0, str(ROOT))
     try:
-        argv = ["run_promote_task", "--queue-id", "test-qid", "--competition", slug]
+        argv = ["run_promote_task", "--queue-id", "test-qid", "--run-id", "test-rid", "--competition", slug]
         with patch.object(sys, "argv", argv):
             with patch("importlib.import_module", side_effect=tracking_import):
                 with patch("store.db.connect") as mock_conn:
@@ -184,7 +186,7 @@ def _run_promote_with_mocks(confirm_result, reflect_mock, confirm_mock) -> "_Con
     confirm_mock.return_value = confirm_result
     conn = _Conn()
 
-    argv = ["run_promote_task", "--queue-id", "qid", "--competition", _SLUG]
+    argv = ["run_promote_task", "--queue-id", "qid", "--run-id", "rid", "--competition", _SLUG]
     sys.path.insert(0, str(ROOT))
     try:
         with patch.object(sys, "argv", argv), \
@@ -243,7 +245,7 @@ def test_confirm_and_measure_takes_no_outside_prev_best() -> None:
 
 
 def test_super_cycle_context_deleted_after_read() -> None:
-    """BON-111: 컨텍스트를 읽은 뒤 해당 queue_id 행을 삭제해야 한다."""
+    """BON-111: 컨텍스트를 읽은 뒤 해당 run_id 행을 삭제해야 한다(BON-237: 키가 run_id로 변경)."""
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
     confirm_mock = MagicMock()
     conn = _run_promote_with_mocks(

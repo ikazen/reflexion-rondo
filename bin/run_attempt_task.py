@@ -2,8 +2,11 @@
 
 Reads shared context from raw.super_cycle_context, runs one attempt.
 
+BON-237: context lookup key is --run-id (Airflow dag_run_id), not --queue-id —
+see run_retrieve_task.py docstring.
+
 Usage (container):
-    uv run python -m bin.run_attempt_task --competition s4e1 --stage reflexion --queue-id <id>
+    uv run python -m bin.run_attempt_task --competition s4e1 --stage reflexion --queue-id <id> --run-id <run_id>
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ def main() -> None:
     parser.add_argument("--competition", "-c", required=True)
     parser.add_argument("--stage", "-s", required=True)
     parser.add_argument("--queue-id", required=True)
+    parser.add_argument("--run-id", required=True)
     parser.add_argument("--attempt-index", type=int, default=None)
     args = parser.parse_args()
 
@@ -40,12 +44,12 @@ def main() -> None:
         """
         SELECT super_cycle_id, competition_id, prev_best_cv, lessons, assigned_actions
         FROM raw.super_cycle_context
-        WHERE queue_id = %s
+        WHERE run_id = %s
         """,
-        [args.queue_id],
+        [args.run_id],
     ).fetchone()
     if not ctx_row:
-        print(f"[run_attempt_task] no context for queue_id={args.queue_id}", file=sys.stderr)
+        print(f"[run_attempt_task] no context for run_id={args.run_id}", file=sys.stderr)
         sys.exit(1)
 
     super_cycle_id, competition_id, prev_best_cv, lessons_raw, assigned_actions_raw = ctx_row
