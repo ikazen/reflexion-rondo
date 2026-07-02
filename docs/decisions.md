@@ -77,6 +77,7 @@
 - 결정: 자가 개선 효과는 `reflection_impact` 상관 + 1변경 규율 + 실제 채택 교훈 id로 추정. retrieval ON/OFF ablation은 도입하지 않는다.
 - 대안: 인터리브 ablation / 별도 memory-OFF 대조 대회.
 - 근거: 초기 단순성 우선. 단 이는 인과 증명이 아니라는 한계를 명시하고(`architecture.md` §4), 신호가 모호하면 ablation을 후속 과제로 승격한다.
+- **[2026-07 amend]** BON-195: 상관 기반 귀속은 "그냥 인과가 약하다" 수준을 넘어 **자기강화(rich-get-richer) 편향**을 갖는다 — avg_gain 높은 교훈이 `_apply_impact_score`에서 부스팅되어 더 자주 검색되고, 그 결과 avg_gain이 계속 유지/상승하는 루프가 생긴다. 완화책: (1) z-score를 배치 로컬이 아닌 전역(`reflection_impact` 전체) 통계로 계산해 배치 구성에 따른 흔들림 제거(`memory/retriever._global_gain_stats`), (2) `_IMPACT_W` 0.25 → 0.15로 부스팅 강도 감쇠. attempt gain을 인용된 교훈에 균등 배분하는 근본 문제(Coder 변경분과 교훈 기여분 미분리)는 미해결 — ablation 도입 시 함께 재검토.
 
 ## ADR-016 — LLM 역할별 모델 배정 (Actor 분리 + Reflector 패밀리 다양성)
 - 역할 매핑: Reflexion의 **Actor = Strategist(정책) + Coder(실행)**, **Self-Reflection = Reflector**, Evaluator는 결정적 코드(ADR-005).

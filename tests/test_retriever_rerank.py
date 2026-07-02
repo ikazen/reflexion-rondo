@@ -61,6 +61,24 @@ def test_impact_empty_candidates():
     assert _apply_impact_score([]) == []
 
 
+def test_impact_global_stats_batch_independent():
+    """전역 (gain_mean, gain_std)를 넘기면 배치 구성이 달라도 동일 교훈의 score가 같다 (BON-195)."""
+    target = _c(sim=0.7, avg_gain=0.02, seed=0)
+    batch_a = [target, _c(sim=0.6, avg_gain=0.0, seed=1)]
+    batch_b = [target.copy(), _c(sim=0.6, avg_gain=-0.5, seed=2), _c(sim=0.6, avg_gain=0.9, seed=3)]
+    out_a = _apply_impact_score(batch_a, gain_mean=0.01, gain_std=0.05)
+    out_b = _apply_impact_score(batch_b, gain_mean=0.01, gain_std=0.05)
+    assert out_a[0]["score"] == pytest.approx(out_b[0]["score"])
+
+
+def test_impact_default_none_falls_back_to_batch_local():
+    """gain_mean/gain_std 미지정 시 배치 내부 통계로 폴백(하위 호환 경로)."""
+    hi = _c(sim=0.8, avg_gain=0.05, seed=0)
+    lo = _c(sim=0.8, avg_gain=-0.05, seed=1)
+    out = _apply_impact_score([hi, lo])
+    assert out[0]["score"] > out[1]["score"]
+
+
 def test_impact_score_bounded():
     """multiplier 범위 [0.5, 1.5] 내: score ∈ [sim*0.5, sim*1.5]."""
     candidates = [_c(sim=0.8, avg_gain=float(v), seed=i)
