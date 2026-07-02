@@ -59,6 +59,7 @@
 - 결정: `label`(jump/neutral/regression)·`gain_vs_best`는 **Evaluator가 CV 델타와 fold 분산으로 결정적 계산**한다. Reflector(LLM)의 정성 판정은 `reflector_label`로 별도 기록하되, 마트·검색의 진실값으로는 쓰지 않는다.
 - 대안: Reflector가 label을 직접 부여 (v2 초안).
 - 근거: jump/regression 판정은 점수 움직임에 대한 채점이므로 ADR-005(LLM-as-judge 금지)에 귀속된다. Playground는 fold 노이즈 수준의 델타 싸움이라 "노이즈 vs 진짜 점프" 경계를 임계값으로 명시해야 한다. 정성 판정은 디버깅 참고로 가치가 있어 폐기하지 않고 분리 보관.
+- **[2026-07 amend]** BON-194: `LABEL_Z` 1.0 → 2.0. 1σ는 통계적으로 유의하지 않아 노이즈가 상시 "jump"로 라벨링되고 그 노이즈가 `reflection_impact` 검색 부스팅에 그대로 반영됐다. 2.0σ를 방어적 기본값으로 확정, 대회 데이터 축적 후 fold_std 실측 분포로 재캘리브레이션 예정.
 
 ## ADR-013 — 생성 코드는 컨테이너/nsjail로 격리 실행
 - 결정: Coder가 생성한 `class Patch`는 격리 런타임에서 실행. 시간/메모리 상한, 네트워크 차단, FS 화이트리스트.
@@ -206,7 +207,7 @@
 | 임베딩 모델 | qwen3-embedding:8b(로컬, 1024d) | 확정, ADR-008 |
 | 격리 런타임 | `os.unshare(CLONE_NEWNET)` preexec + rlimit + timeout | 구현 완료, ADR-017 (BON-191) |
 | 운용 호스트 | worker-vm + 단일 daemon(systemd) | 확정, ADR-017 (Phase 5) |
-| label 임계값 z | fold_std 배수(기본 1.0) | TBD (캘리브레이션 필요) |
+| label 임계값 z | fold_std 배수(2.0) | 확정(방어적 기본값), ADR-012 amend (BON-194) — 대회 데이터 축적 후 재캘리브레이션 |
 | fingerprint 거리 가중치 | task/metric 큼·size 중간·기타 작음 | TBD (대회 누적 후 캘리브레이션) |
 | 외부 아이디어 source 화이트리스트 | 우승 writeup / pinned tips / gold·silver solution | TBD, ADR-019 (큐레이션 필요) |
 | 외부 아이디어 추출 LLM | Strategist/Reflector 와 다른 호출 | TBD, ADR-019 |
