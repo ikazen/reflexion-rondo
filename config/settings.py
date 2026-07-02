@@ -10,8 +10,14 @@ OLLAMA_API_KEY        = os.getenv("OLLAMA_API_KEY", "")
 
 MODEL_STRATEGIST  = os.getenv("MODEL_STRATEGIST",  "glm-5.2")
 MODEL_REFLECTOR   = os.getenv("MODEL_REFLECTOR",   "kimi-k2.6")
-MODEL_CODER       = os.getenv("MODEL_CODER",        "qwen3.5:397b")
+MODEL_CODER       = os.getenv("MODEL_CODER",        "gpt-oss:120b")
 MODEL_EMBEDDING   = os.getenv("MODEL_EMBEDDING",    "qwen3-embedding:8b")
+
+# BON-240: qwen3.5:397b는 동일 프롬프트에서 qwen3-coder-next 대비 출력 토큰 9배(reasoning
+# 모델이라 긴 thinking을 뿜는데 _extract_code가 ```python 블록만 취해 전량 버려짐). 폐기
+# 공지로 코더 전문 라인(qwen3-coder-next/480b, devstral 계열)이 전부 없어져 gpt-oss:120b로
+# 대체 — reasoning_effort로 토큰 예산 조절 가능한 생존 모델 중 벤치 결과가 가장 나음.
+MODEL_CODER_REASONING_EFFORT = os.getenv("MODEL_CODER_REASONING_EFFORT", "medium")
 
 # BON-193: Actor(Strategist/Coder/Reflector)는 확률적이라 attempt 간 CV 변화가
 # 교훈 효과인지 LLM 샘플링 운인지 구분이 안 됐다. temperature를 명시 고정해 최소한
