@@ -201,7 +201,7 @@ def generate_code(
             {"role": "system", "content": contract},
             {"role": "user",   "content": "\n\n".join(user_parts)},
         ],
-        options=settings.llm_options(),
+        options=settings.llm_options(reasoning_effort=settings.MODEL_CODER_REASONING_EFFORT),
     )
     source = _extract_code(resp.message.content)
     _LOG.info("done in %.1fs  code_chars=%d", time.monotonic() - _t0, len(source))
