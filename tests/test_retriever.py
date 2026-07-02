@@ -6,12 +6,18 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from memory.retriever import search_failure_lessons
+from memory.retriever import search_failure_lessons, _global_gain_stats
 
 
 def _conn(rows: list[tuple]) -> MagicMock:
     mock = MagicMock()
     mock.execute.return_value.fetchall.return_value = rows
+    return mock
+
+
+def _conn_one(row: tuple | None) -> MagicMock:
+    mock = MagicMock()
+    mock.execute.return_value.fetchone.return_value = row
     return mock
 
 
@@ -41,3 +47,30 @@ def test_search_failure_lessons_query_filters_lesson_type_failure():
     sql: str = conn.execute.call_args[0][0]
     assert "lesson_type = 'failure'" in sql
     assert "archived = false" in sql
+
+
+# --- _global_gain_stats (BON-195) ---
+
+def test_global_gain_stats_returns_mean_and_std():
+    conn = _conn_one((0.01, 0.02))
+    mean, std = _global_gain_stats(conn)
+    assert mean == 0.01
+    assert std == 0.02
+
+
+def test_global_gain_stats_empty_table_returns_zeros():
+    """reflection_impact이 비어 있으면 avg()가 NULL을 반환한다 — (0.0, 0.0) 폴백."""
+    conn = _conn_one((None, None))
+    assert _global_gain_stats(conn) == (0.0, 0.0)
+
+
+def test_global_gain_stats_no_row_returns_zeros():
+    conn = _conn_one(None)
+    assert _global_gain_stats(conn) == (0.0, 0.0)
+
+
+def test_global_gain_stats_queries_reflection_impact_view():
+    conn = _conn_one((0.0, 0.0))
+    _global_gain_stats(conn)
+    sql: str = conn.execute.call_args[0][0]
+    assert "reflection_impact" in sql
