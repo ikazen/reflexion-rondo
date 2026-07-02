@@ -1,5 +1,10 @@
 # 변경 이력
 
+## Coder 모델 교체 (2026-07-02)
+- `qwen3-coder-next` deprecate 예정으로 `qwen3.5:397b`로 교체(ADR-016 amend, BON-236).
+- 태그 확정 전 ops-vm에서 cloud `/api/tags` 실측 조회로 정확한 문자열 확인(bare
+  `qwen3.5:397b` — 웹 검색 결과와 다르게 `-cloud` 접미사 없음).
+
 ## 문서 정리 (2026-07-01)
 - `CLAUDE.md`를 제거하고 정확한 내용을 `README.md`로 통합 — 정본 진입 문서를 README+docs 하나로 유지.
 - README 구조 트리·진입점·배포 절차를 현재 코드에 맞춰 재작성 (DuckDB/평면 모듈/`runs/code` 등 stale 서술 제거).

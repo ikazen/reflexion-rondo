@@ -29,7 +29,7 @@
 |------|------|---------|
 | Strategist | `glm-5.2` | `OLLAMA_CLOUD_BASE_URL` + `OLLAMA_API_KEY` |
 | Reflector | `kimi-k2.6` (Strategist와 다른 패밀리 — ADR-016) | 동일 |
-| Coder | `qwen3-coder-next` | 동일 |
+| Coder | `qwen3.5:397b` | 동일 |
 | Embedding | `qwen3-embedding:8b` | `OLLAMA_BASE_URL` (키 없음) |
 
 모델명 단일 소스 = `config/settings.py` 기본값 (평문, 비밀 아님). `MODEL_*` env override는 실험용으로 읽히지만 SOPS·Airflow Variable엔 넣지 않는다. 모델 변경 = settings.py 편집 후 두 이미지(daemon, task) 재빌드·재배포.
