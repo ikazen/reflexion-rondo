@@ -37,7 +37,10 @@ ACTION_TYPES: list[str] = [
     "ensemble",
 ]
 
-LABEL_Z: float = 1.0
+# BON-194: 1σ는 통계적으로 유의하지 않아 fold 노이즈가 일상적으로 "jump"로 라벨링되고
+# 그 노이즈가 검색 부스팅(reflection_impact)에 그대로 들어갔다. 2.0σ로 상향해 방어적
+# 기본값으로 삼는다. 대회 데이터가 쌓이면 fold_std 실측 분포로 재캘리브레이션 (ADR-012).
+LABEL_Z: float = 2.0
 
 # 승격 cross-seed 확인: 이 seed 목록 전부에서 gain_vs_best > 0 재현돼야 승격
 PROMOTE_CONFIRM_SEEDS: list[int] = [
