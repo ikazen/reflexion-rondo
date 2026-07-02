@@ -10,7 +10,7 @@ OLLAMA_API_KEY        = os.getenv("OLLAMA_API_KEY", "")
 
 MODEL_STRATEGIST  = os.getenv("MODEL_STRATEGIST",  "glm-5.2")
 MODEL_REFLECTOR   = os.getenv("MODEL_REFLECTOR",   "kimi-k2.6")
-MODEL_CODER       = os.getenv("MODEL_CODER",        "qwen3-coder-next")
+MODEL_CODER       = os.getenv("MODEL_CODER",        "qwen3.5:397b")
 MODEL_EMBEDDING   = os.getenv("MODEL_EMBEDDING",    "qwen3-embedding:8b")
 
 # BON-193: Actor(Strategist/Coder/Reflector)는 확률적이라 attempt 간 CV 변화가
