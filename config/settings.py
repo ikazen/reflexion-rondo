@@ -13,6 +13,22 @@ MODEL_REFLECTOR   = os.getenv("MODEL_REFLECTOR",   "kimi-k2.6")
 MODEL_CODER       = os.getenv("MODEL_CODER",        "qwen3-coder-next")
 MODEL_EMBEDDING   = os.getenv("MODEL_EMBEDDING",    "qwen3-embedding:8b")
 
+# BON-193: Actor(Strategist/Coder/Reflector)는 확률적이라 attempt 간 CV 변화가
+# 교훈 효과인지 LLM 샘플링 운인지 구분이 안 됐다. temperature를 명시 고정해 최소한
+# 비결정성 자체를 문서화·재현 가능하게 한다. seed는 기본 미고정(탐색성 유지) —
+# LLM_SEED env로 실험 시에만 고정.
+LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+LLM_SEED: int | None = int(os.getenv("LLM_SEED")) if os.getenv("LLM_SEED") else None
+
+
+def llm_options(**extra) -> dict:
+    """Strategist/Coder/Reflector 공용 .chat() options. temperature/seed를 단일 소스로 유지."""
+    opts: dict = {"temperature": LLM_TEMPERATURE}
+    if LLM_SEED is not None:
+        opts["seed"] = LLM_SEED
+    opts.update(extra)
+    return opts
+
 ACTION_TYPES: list[str] = [
     "feature_engineering",
     "model_swap",
