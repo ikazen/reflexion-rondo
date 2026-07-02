@@ -108,7 +108,12 @@ def bootstrap_seeds(
     similar: list[str],
     n: int = 2,
 ) -> list[dict]:
-    """유사 대회의 gain_vs_best > 0 파이프라인 (cv_score 내림차순). [{pipeline_id, code, cv_score}, ...]"""
+    """유사 대회의 gain_vs_best > 0 파이프라인 (gain_vs_best 내림차순). [{pipeline_id, code, cv_score}, ...]
+
+    cv_score는 대회마다 metric/스케일이 달라 여러 대회에 걸친 정렬 기준으로 쓸 수 없다
+    (예: AUC 0.85 vs RMSE 0.3). gain_vs_best는 metric_sign으로 방향 정규화된 값이라
+    cross-competition 비교에 적합하다 (BON-199).
+    """
     if not similar:
         return []
 
@@ -118,7 +123,7 @@ def bootstrap_seeds(
         from raw.pipelines
         where competition_id = any(%s::text[])
           and gain_vs_best > 0
-        order by cv_score desc
+        order by gain_vs_best desc
         limit %s
         """,
         [similar, n],
