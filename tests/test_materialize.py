@@ -185,6 +185,79 @@ def test_materialize_invalid_merge_raises():
         materialize_best_pipeline(broken_base, _PATCH)
 
 
+# --- helper/member name collision (BON-197) ---
+
+_BASE_WITH_ENCODE = textwrap.dedent("""
+    def _encode(x):
+        return x + 1
+
+    class Patch:
+        action_type = "preprocessing"
+        changed_stages = ["preprocess"]
+        rationale = "base"
+
+        def feature_transform(self, train, valid, target, ctx):
+            return _encode(train), _encode(valid)
+""").strip()
+
+_PATCH_WITH_ENCODE = textwrap.dedent("""
+    def _encode(x):
+        return x * 2
+
+    class Patch:
+        action_type = "feature_engineering"
+        changed_stages = ["feature"]
+        rationale = "different _encode semantics"
+
+        def param_candidates(self, ctx):
+            return [{"n_estimators": 100}]
+""").strip()
+
+
+def test_helper_collision_logs_warning(caplog):
+    with caplog.at_level("WARNING", logger="cycle.materialize"):
+        result = materialize_best_pipeline(_BASE_WITH_ENCODE, _PATCH_WITH_ENCODE)
+    assert any("_encode" in rec.message for rec in caplog.records)
+    ast.parse(result)
+
+
+def test_helper_collision_patch_wins_silently_in_output():
+    """merge 결과 자체는 여전히 patch 정의로 override된다 — 경고는 가시화용, 동작은 불변."""
+    result = materialize_best_pipeline(_BASE_WITH_ENCODE, _PATCH_WITH_ENCODE)
+    assert "x * 2" in result
+    assert "x + 1" not in result
+
+
+def test_no_collision_no_warning(caplog):
+    no_collision_base = textwrap.dedent("""
+        def _only_in_base(x):
+            return x
+
+        class Patch:
+            action_type = "preprocessing"
+            changed_stages = ["preprocess"]
+            rationale = "base"
+
+            def preprocess(self, train, valid, target, ctx):
+                return train, valid
+    """).strip()
+    no_collision_patch = textwrap.dedent("""
+        def _only_in_patch(x):
+            return x
+
+        class Patch:
+            action_type = "feature_engineering"
+            changed_stages = ["feature"]
+            rationale = "patch"
+
+            def feature_transform(self, train, valid, target, ctx):
+                return train, valid
+    """).strip()
+    with caplog.at_level("WARNING", logger="cycle.materialize"):
+        materialize_best_pipeline(no_collision_base, no_collision_patch)
+    assert not any("collision" in rec.message for rec in caplog.records)
+
+
 def test_multi_target_assign_emitted_once():
     patch = textwrap.dedent("""
         import polars as pl
