@@ -67,6 +67,46 @@ def test_pandas_import_forbidden():
     assert any("forbidden import" in e and "pandas" in e for e in errs)
 
 
+def test_importlib_import_now_forbidden():
+    """BON-192: importlib.import_module('os')로 _FORBIDDEN_IMPORTS 우회하던 경로를 막는다."""
+    source = "import importlib\n" + _VALID_FEATURE_ENG
+    errs = validate_patch(source, "feature_engineering")
+    assert any("forbidden import" in e and "importlib" in e for e in errs)
+
+
+def test_getattr_string_concat_bypass_not_caught():
+    """soft guard 한계 문서화 (BON-192): _collect_calls는 ast.Name/Attribute만 보므로
+    getattr(...)(...) 호출 형태는 forbidden call로 잡히지 않는다. 진짜 경계는 실행
+    샌드박스(BON-191)이며, 이 테스트는 lint의 한계를 회귀 기준으로 고정한다."""
+    source = (
+        'class Patch:\n'
+        '    action_type = "feature_engineering"\n'
+        '    changed_stages = ["feature_transform"]\n'
+        '    rationale = "bypass demo"\n'
+        '    def feature_transform(self, train, valid, target, ctx):\n'
+        '        getattr(__builtins__, "ope" + "n")("/etc/passwd")\n'
+        '        return train, valid\n'
+    )
+    errs = validate_patch(source, "feature_engineering")
+    assert not any("forbidden call" in e for e in errs)
+
+
+def test_dunder_subclass_chain_bypass_not_caught():
+    """soft guard 한계 문서화 (BON-192): dunder 체인으로 임의 클래스 접근은
+    이름 기반 검사로 탐지되지 않는다. eval/exec/open 등 직접 호출만 잡힘."""
+    source = (
+        'class Patch:\n'
+        '    action_type = "feature_engineering"\n'
+        '    changed_stages = ["feature_transform"]\n'
+        '    rationale = "bypass demo"\n'
+        '    def feature_transform(self, train, valid, target, ctx):\n'
+        '        subclasses = ().__class__.__bases__[0].__subclasses__()\n'
+        '        return train, valid\n'
+    )
+    errs = validate_patch(source, "feature_engineering")
+    assert not any("forbidden call" in e or "forbidden import" in e for e in errs)
+
+
 def test_allowed_hooks_covers_all_action_types():
     from config.settings import ACTION_TYPES
     from evaluator.contract import _ALLOWED_HOOKS

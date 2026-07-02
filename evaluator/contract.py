@@ -1,4 +1,11 @@
-"""Coder contract: AST-level validation for Patch class."""
+"""Coder contract: AST-level validation for Patch class.
+
+이 검사는 이름 기반 정적 lint다 — 정직한 LLM이 실수로 금지 API를 쓰는 것을 막는
+soft guard이며, 보안 경계가 아니다. `getattr(__builtins__, "ope"+"n")(...)`,
+dunder 체인(`().__class__.__bases__[0].__subclasses__()`) 등은 우회 가능하다
+(회귀 문서화: tests/test_contract.py). 실제 격리 경계는 실행 샌드박스
+(runtime/isolate.py, BON-191)가 담당한다.
+"""
 from __future__ import annotations
 
 import ast
@@ -7,7 +14,7 @@ _FORBIDDEN_IMPORTS = frozenset({
     "os", "subprocess", "socket", "urllib", "urllib2", "urllib3",
     "requests", "httpx", "aiohttp", "http", "ftplib", "smtplib",
     "paramiko", "pickle", "marshal", "ctypes", "cffi",
-    "pandas",
+    "pandas", "importlib",
 })
 
 _FORBIDDEN_CALLS = frozenset({
