@@ -369,7 +369,7 @@ def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None
         where a.competition_id = %s
           and a.cv_score is not null
           and a.error_trace is null
-        order by c.metric_sign * a.cv_score desc
+        order by c.metric_sign * a.cv_score desc, a.run_ts asc, a.attempt_id asc
         limit 1
         """,
         [competition_id],
