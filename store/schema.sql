@@ -163,7 +163,7 @@ ORDER BY avg_gain DESC;
 -- super-cycle의 여러 cycle이 공유해서(max_active_runs=4) 동시 실행 시 서로의
 -- context row를 덮어쓰거나 훔쳐 지우는 레이스가 있었다 — run_id는 cycle마다 유일.
 -- 기존 라이브 DB의 PK 전환(queue_id -> run_id)은 이 파일이 다루지 않는 1회성 수동
--- 마이그레이션으로 처리(스키마 적용기가 단순 `;` split이라 가드된 DDL을 못 돌림).
+-- 마이그레이션으로 처리한다(스키마 적용기가 세미콜론 기준 단순 분할이라 가드된 DDL을 못 돌림).
 CREATE TABLE IF NOT EXISTS raw.super_cycle_context (
     run_id            text PRIMARY KEY,
     queue_id          text NOT NULL,
