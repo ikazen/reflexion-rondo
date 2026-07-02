@@ -158,9 +158,15 @@ FROM per_reflection
 GROUP BY reflection_id
 ORDER BY avg_gain DESC;
 
--- BON-110: super-cycle 공유 retrieve 컨텍스트 (retrieve task → attempt tasks)
+-- BON-110: super-cycle 공유 retrieve 컨텍스트 (retrieve task → attempt/promote tasks)
+-- BON-237: PK를 queue_id -> run_id(Airflow dag_run_id)로 변경. queue_id는 같은
+-- super-cycle의 여러 cycle이 공유해서(max_active_runs=4) 동시 실행 시 서로의
+-- context row를 덮어쓰거나 훔쳐 지우는 레이스가 있었다 — run_id는 cycle마다 유일.
+-- 기존 라이브 DB의 PK 전환(queue_id -> run_id)은 이 파일이 다루지 않는 1회성 수동
+-- 마이그레이션으로 처리(스키마 적용기가 단순 `;` split이라 가드된 DDL을 못 돌림).
 CREATE TABLE IF NOT EXISTS raw.super_cycle_context (
-    queue_id          text PRIMARY KEY,
+    run_id            text PRIMARY KEY,
+    queue_id          text NOT NULL,
     super_cycle_id    text NOT NULL,
     competition_id    text NOT NULL,
     prev_best_cv      double precision,
@@ -169,6 +175,7 @@ CREATE TABLE IF NOT EXISTS raw.super_cycle_context (
     created_at        timestamp DEFAULT now()
 );
 ALTER TABLE raw.super_cycle_context ADD COLUMN IF NOT EXISTS assigned_actions jsonb;
+ALTER TABLE raw.super_cycle_context ADD COLUMN IF NOT EXISTS run_id text;
 
 -- BON-109: action_type별 Beta-Bernoulli 밴딧 (advise용, stagnation 승격)
 CREATE TABLE IF NOT EXISTS raw.action_bandit (

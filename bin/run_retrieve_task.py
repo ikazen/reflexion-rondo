@@ -1,10 +1,14 @@
 """Super-cycle retrieve step — Airflow task 1 of 4.
 
 Generates super_cycle_id, fetches lessons + prev_best_cv,
-stores in raw.super_cycle_context for attempt tasks to read.
+stores in raw.super_cycle_context for attempt/promote tasks to read.
+
+BON-237: context is keyed by --run-id (Airflow dag_run_id, unique per cycle),
+not --queue-id (shared by every cycle of the same super-cycle queue item —
+keying by queue_id let concurrent cycles clobber/steal each other's context row).
 
 Usage (container):
-    uv run python -m bin.run_retrieve_task --competition s4e1 --stage reflexion --queue-id <id>
+    uv run python -m bin.run_retrieve_task --competition s4e1 --stage reflexion --queue-id <id> --run-id <run_id>
 """
 from __future__ import annotations
 
@@ -31,6 +35,7 @@ def main() -> None:
     parser.add_argument("--competition", "-c", required=True)
     parser.add_argument("--stage", "-s", required=True)
     parser.add_argument("--queue-id", required=True)
+    parser.add_argument("--run-id", required=True)
     parser.add_argument("--k-retrieve", type=int, default=5)
     args = parser.parse_args()
 
@@ -65,8 +70,8 @@ def main() -> None:
     prev_best_cv = _prev_best(conn, competition_id)
     fail_summary = _recent_failure_summary(conn, competition_id)
     query = _build_retrieval_query(conn, competition_id, eda_card, fail_summary)
-    print(f"[run_retrieve_task] queue_id={args.queue_id[:8]} super_cycle_id={super_cycle_id[:8]}"
-          f" prev_best_cv={prev_best_cv}")
+    print(f"[run_retrieve_task] run_id={args.run_id} queue_id={args.queue_id[:8]}"
+          f" super_cycle_id={super_cycle_id[:8]} prev_best_cv={prev_best_cv}")
     if fail_summary:
         print(f"  fail_summary: {fail_summary[:120]}")
     try:
@@ -82,16 +87,17 @@ def main() -> None:
     conn.execute(
         """
         INSERT INTO raw.super_cycle_context
-            (queue_id, super_cycle_id, competition_id, prev_best_cv, lessons, assigned_actions, created_at)
-        VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, now())
-        ON CONFLICT (queue_id) DO UPDATE SET
+            (run_id, queue_id, super_cycle_id, competition_id, prev_best_cv, lessons, assigned_actions, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, now())
+        ON CONFLICT (run_id) DO UPDATE SET
+            queue_id         = EXCLUDED.queue_id,
             super_cycle_id   = EXCLUDED.super_cycle_id,
             prev_best_cv     = EXCLUDED.prev_best_cv,
             lessons          = EXCLUDED.lessons,
             assigned_actions = EXCLUDED.assigned_actions,
             created_at       = EXCLUDED.created_at
         """,
-        [args.queue_id, super_cycle_id, competition_id, prev_best_cv,
+        [args.run_id, args.queue_id, super_cycle_id, competition_id, prev_best_cv,
          json.dumps(lessons), json.dumps(assigned_actions)],
     )
 

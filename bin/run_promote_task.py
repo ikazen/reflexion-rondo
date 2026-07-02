@@ -3,8 +3,15 @@
 Picks winner from 3 attempts, updates was_promoted, reflects winner (BON-96 gate).
 cross-seed confirmation + audit holdout 측정 후 confirmed=True일 때만 승격.
 
+BON-237: context lookup/delete key is --run-id (Airflow dag_run_id), not --queue-id.
+queue_id is shared by every cycle of the same super-cycle (max_active_runs=4 lets
+several run concurrently) — keying by queue_id let a later cycle's retrieve
+overwrite an earlier cycle's context row, and whichever promote ran first would
+delete it out from under the other (hard "no context" failure, or worse: silently
+promoting the wrong cycle's winner).
+
 Usage (container):
-    uv run python -m bin.run_promote_task --queue-id <id>
+    uv run python -m bin.run_promote_task --queue-id <id> --run-id <run_id>
 """
 from __future__ import annotations
 
@@ -20,6 +27,7 @@ _MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--queue-id", required=True)
+    parser.add_argument("--run-id", required=True)
     parser.add_argument("--competition", required=True)
     args = parser.parse_args()
 
@@ -41,20 +49,22 @@ def main() -> None:
     conn = connect(apply_schema=False)
 
     ctx_row = conn.execute(
-        "SELECT super_cycle_id, competition_id FROM raw.super_cycle_context WHERE queue_id = %s",
-        [args.queue_id],
+        "SELECT super_cycle_id, competition_id FROM raw.super_cycle_context WHERE run_id = %s",
+        [args.run_id],
     ).fetchone()
     if not ctx_row:
-        print(f"[run_promote_task] no context for queue_id={args.queue_id}", file=sys.stderr)
+        print(f"[run_promote_task] no context for run_id={args.run_id}", file=sys.stderr)
         sys.exit(1)
 
     super_cycle_id, competition_id = ctx_row
 
     # BON-111: 컨텍스트를 다 읽은 시점이라 즉시 삭제 — 이후 모든 return 경로를
     # 일괄 커버(no attempts/no winner 포함). ON CONFLICT UPDATE라 재실행 시 재삽입 정상.
+    # BON-237: run_id로 삭제 — queue_id는 같은 super-cycle의 다른(동시 실행) cycle과
+    # 공유되므로 그 키로 지우면 다른 cycle의 아직 안 읽은 context까지 지워버린다.
     conn.execute(
-        "DELETE FROM raw.super_cycle_context WHERE queue_id = %s",
-        [args.queue_id],
+        "DELETE FROM raw.super_cycle_context WHERE run_id = %s",
+        [args.run_id],
     )
 
     rows = conn.execute(
