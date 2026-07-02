@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import ast
+import logging
 import textwrap
+
+logger = logging.getLogger(__name__)
 
 _META_ATTRS = frozenset({"action_type", "changed_stages", "rationale"})
 
@@ -63,10 +66,20 @@ def _extract_class_members(source: str) -> dict[str, ast.stmt]:
 def materialize_best_pipeline(base_source: str | None, patch_source: str) -> str:
     base_helpers = _extract_toplevel_helpers(base_source) if base_source else {}
     patch_helpers = _extract_toplevel_helpers(patch_source)
+    # base와 patch가 동명 helper/member를 정의하면 patch가 base를 조용히 덮어쓴다.
+    # base의 다른 helper가 그 이름에 의존하면 merge 후 의미가 바뀌어 CV 퇴행으로만
+    # 드러나고 엉뚱한 교훈으로 귀속될 수 있다 (BON-197). 에러로 막지 않고 경고만 남긴다
+    # — override 자체는 의도적일 수 있어 가시화가 목적.
+    helper_collisions = base_helpers.keys() & patch_helpers.keys()
+    if helper_collisions:
+        logger.warning("helper name collision (patch overrides base): %s", sorted(helper_collisions))
     merged_helpers: dict[str, ast.stmt] = {**base_helpers, **patch_helpers}
 
     base_members = _extract_class_members(base_source) if base_source else {}
     patch_members = _extract_class_members(patch_source)
+    member_collisions = base_members.keys() & patch_members.keys()
+    if member_collisions:
+        logger.warning("Patch member collision (patch overrides base): %s", sorted(member_collisions))
     merged_members: dict[str, ast.stmt] = {**base_members, **patch_members}
 
     seen_imports: set[str] = set()
