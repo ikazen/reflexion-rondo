@@ -154,13 +154,15 @@ Respond with ONLY a JSON object using exactly these keys:
     import re
     import time
 
-    _LOG.info("model=%s n_lessons=%d stage=%s forced=%s",
-              settings.MODEL_STRATEGIST, len(lessons), stage, forced_action_type or "-")
+    _LOG.info("model=%s n_lessons=%d stage=%s forced=%s temp=%.2f",
+              settings.MODEL_STRATEGIST, len(lessons), stage, forced_action_type or "-",
+              settings.LLM_TEMPERATURE)
     _t0 = time.monotonic()
     resp = _client().chat(
         model=settings.MODEL_STRATEGIST,
         messages=[{"role": "user", "content": user_prompt}],
         format=_OUTPUT_SCHEMA,
+        options=settings.llm_options(),
     )
     _LOG.info("done in %.1fs", time.monotonic() - _t0)
 

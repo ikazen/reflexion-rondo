@@ -150,7 +150,7 @@ Respond with ONLY a JSON object using exactly these keys:
     import time as _time
 
     gain_str = f"{context.gain_vs_best:+.5f}" if context.gain_vs_best is not None else "N/A"
-    print(f"[reflector] model={settings.MODEL_REFLECTOR}"
+    print(f"[reflector] model={settings.MODEL_REFLECTOR} temp={settings.LLM_TEMPERATURE}"
           f" label={context.label} cv={context.cv_score:.5f} gain={gain_str}")
     _t0 = _time.monotonic()
     last_err: Exception | None = None
@@ -159,7 +159,7 @@ Respond with ONLY a JSON object using exactly these keys:
             model=settings.MODEL_REFLECTOR,
             messages=[{"role": "user", "content": user_prompt}],
             format=_OUTPUT_SCHEMA,
-            options={"num_predict": 4096},
+            options=settings.llm_options(num_predict=4096),
         )
         content = resp.message.content.strip()
         if not content:

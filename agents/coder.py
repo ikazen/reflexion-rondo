@@ -191,9 +191,9 @@ def generate_code(
     import time
 
     retry_tag = " [retry/feedback]" if error_feedback else ""
-    _LOG.info("model=%s action=%s prev_code=%s%s",
+    _LOG.info("model=%s action=%s prev_code=%s%s temp=%.2f",
               settings.MODEL_CODER, action_type,
-              "yes" if prev_code else "no", retry_tag)
+              "yes" if prev_code else "no", retry_tag, settings.LLM_TEMPERATURE)
     _t0 = time.monotonic()
     resp = _client().chat(
         model=settings.MODEL_CODER,
@@ -201,6 +201,7 @@ def generate_code(
             {"role": "system", "content": contract},
             {"role": "user",   "content": "\n\n".join(user_parts)},
         ],
+        options=settings.llm_options(),
     )
     source = _extract_code(resp.message.content)
     _LOG.info("done in %.1fs  code_chars=%d", time.monotonic() - _t0, len(source))
