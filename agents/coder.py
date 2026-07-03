@@ -55,6 +55,10 @@ class Patch:
   ctx.seed: int
   ctx.is_classification: bool
 
+## Available libraries
+- Available: scikit-learn, lightgbm, xgboost, catboost, imbalanced-learn (imblearn), optuna, polars
+- NOT available: tabpfn, pandas — importing these fails
+
 ## Rules
 - Only implement the hook(s) allowed for your action_type
 - Patch.action_type MUST exactly match the assigned action_type
@@ -119,6 +123,10 @@ class Patch:
   ctx.metric: str
   ctx.seed: int
   ctx.is_classification: bool
+
+## Available libraries
+- Available: scikit-learn, lightgbm, xgboost, catboost, imbalanced-learn (imblearn), optuna, polars
+- NOT available: tabpfn, pandas — importing these fails
 
 ## Rules
 - Patch.action_type MUST be exactly "bootstrap"

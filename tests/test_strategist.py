@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agents.strategist import ACTION_TYPES, StrategyDecision, strategize
+from agents.strategist import _ACTION_CATALOG, ACTION_TYPES, StrategyDecision, strategize
 
 
 def _mock_response(hypothesis: str, action_type: str, reflection_ids: list[str]) -> MagicMock:
@@ -77,3 +77,8 @@ def test_action_type_passthrough() -> None:
             mock_client.return_value.chat.return_value = mock_resp
             result = strategize(eda_card="x", lessons=[], stage="reflexion")
         assert result.action_type == at
+
+
+def test_action_catalog_does_not_advertise_uninstalled_tabpfn() -> None:
+    """BON-243: tabpfn은 pyproject.toml에 없어 model_swap→tabpfn은 100% ModuleNotFoundError."""
+    assert "tabpfn" not in _ACTION_CATALOG.lower()
