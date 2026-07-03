@@ -11,6 +11,7 @@ from evaluator.harness import (
     split_audit_holdout,
     _LEAK_PERFECT_HIGH,
 )
+from runtime.runner import _eval_holdout
 
 
 def _ctx(is_classification: bool = True) -> PipelineContext:
@@ -251,6 +252,33 @@ def test_target_masking_blocks_derived_feature_leakage():
     pipeline = PatchedPipeline(BasePipeline(), _TargetEncodingLeakyPatch())
     result = evaluate_pipeline(pipeline, df, ctx)
     assert result.cv_score < _LEAK_PERFECT_HIGH
+
+
+class _HoldoutSelfTargetLeakPatch:
+    """feature_transform이 각 split의 자기 타깃을 피처(leak)로 복사한다.
+
+    holdout 마스킹이 없으면 holdout에서 leak==label로 생존해 near-perfect가 된다.
+    """
+    action_type = "feature_engineering"
+
+    def feature_transform(self, train, valid, target, ctx):
+        tr_out = train.with_columns(pl.col(target).alias("leak"))
+        va_out = valid.with_columns(pl.col(target).alias("leak"))
+        return tr_out, va_out
+
+
+def test_eval_holdout_masks_target_derived_leakage():
+    """_eval_holdout이 holdout 타깃을 마스킹해 파생 피처 누수를 차단함을 검증.
+
+    수정 전(마스킹 없음)이면 holdout_score가 near-perfect(>0.9999)라 이 테스트가 실패한다.
+    """
+    df = _make_df_with_strings(n=300)
+    ctx = _ctx()
+    train90, holdout10 = split_audit_holdout(df, "y", is_classification=True)
+    pipeline = PatchedPipeline(BasePipeline(), _HoldoutSelfTargetLeakPatch())
+    score = _eval_holdout(pipeline, train90, holdout10, ctx)
+    assert score is not None
+    assert score < _LEAK_PERFECT_HIGH
 
 
 class _PerfectLoglossLeakyViaPreprocessPatch:
