@@ -36,18 +36,18 @@ def _eval_holdout(
     CV 결과와 독립적으로 일반화 성능을 추정한다. 실패 시 None 반환(caller가 무시).
     """
     import warnings
-    from evaluator.harness import _strip_target, _encode_residual_categoricals, preselect_params
+    from evaluator.harness import _mask_target, _strip_target, _encode_residual_categoricals, preselect_params
     from evaluator.metrics import get as get_metric
 
     fn, _, metric_class = get_metric(ctx.metric)
     params = preselect_params(pipeline, train90, ctx)
     tr2, ho2 = pipeline.preprocess(train90, holdout10, ctx.target_col, ctx)
-    Xtr, Xho = pipeline.feature_transform(tr2, ho2, ctx.target_col, ctx)
+    ytr = tr2[ctx.target_col].to_numpy()
+    yho = ho2[ctx.target_col].to_numpy()
+    Xtr, Xho = pipeline.feature_transform(tr2, _mask_target(ho2, ctx.target_col), ctx.target_col, ctx)
     Xtr = _strip_target(Xtr, ctx.target_col)
     Xho = _strip_target(Xho, ctx.target_col)
     Xtr, Xho = _encode_residual_categoricals(Xtr, Xho)
-    ytr = tr2[ctx.target_col].to_numpy()
-    yho = ho2[ctx.target_col].to_numpy()
     model = pipeline.build_model(params, ctx)
     model.fit(Xtr.to_numpy(), ytr)
     with warnings.catch_warnings():
