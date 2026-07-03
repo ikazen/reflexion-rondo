@@ -101,6 +101,16 @@ def main() -> None:
          json.dumps(lessons), json.dumps(assigned_actions)],
     )
 
+    # BON-242: promote 스킵(attempt 하드 실패) 시 row 가 영구 누수되므로
+    # retrieve 에서 매 사이클 TTL 청소. 실패해도 retrieve 자체는 성공시킨다.
+    try:
+        conn.execute(
+            "DELETE FROM raw.super_cycle_context"
+            " WHERE created_at < now() - interval '7 days'"
+        )
+    except Exception:
+        print("[run_retrieve_task] super_cycle_context ttl sweep failed", file=sys.stderr)
+
     conn.close()
     print(f"[run_retrieve_task] done competition={args.competition} stage={args.stage} n_lessons={len(lessons)}")
     for i, l in enumerate(lessons):
