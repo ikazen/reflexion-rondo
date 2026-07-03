@@ -132,13 +132,13 @@ WITH scored AS (
     SELECT
         competition_id,
         reflection_ids,
-        metric_sign * cv_score
-        - max(metric_sign * cv_score) OVER (
-            PARTITION BY competition_id
-            ORDER BY run_ts ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-          ) AS gain_vs_best
+        gain_vs_best   -- BON-244: 런타임 _prev_best(확정 파이프라인 raw.pipelines) 기준으로
+                       -- evaluator/harness.py가 저장한 값 재사용. 기존 running-max(was_promoted
+                       -- 기준) baseline은 cross-seed confirm 전에 마킹되는 미확정 winner를
+                       -- 포함해 이후 attempt들의 gain을 왜곡시켰다.
     FROM stg_attempts_reflexion_only
     WHERE was_promoted IS NOT FALSE  -- NULL=legacy (promoted), TRUE=winner, FALSE=super-cycle loser excluded
+      AND gain_vs_best IS NOT NULL
 ),
 per_reflection AS (
     SELECT
@@ -146,7 +146,6 @@ per_reflection AS (
         gain_vs_best / array_length(reflection_ids, 1) AS gain_vs_best
     FROM scored
     WHERE reflection_ids IS NOT NULL
-      AND gain_vs_best IS NOT NULL
 )
 SELECT
     reflection_id,
