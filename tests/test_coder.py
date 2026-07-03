@@ -94,3 +94,34 @@ def test_generate_code_system_message_is_contract() -> None:
     # EDA Card는 user 메시지에 있어야 함
     user_content = next(m["content"] for m in messages if m["role"] == "user")
     assert "n_rows=100" in user_content
+
+
+def test_generate_code_reflexion_contract_declares_available_libs() -> None:
+    """BON-243: reflexion contract가 실제 설치된 라이브러리를 명시해야 한다."""
+    with patch("agents.coder._client") as mock_client:
+        mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)
+        generate_code(
+            hypothesis="Swap estimator",
+            action_type="model_swap",
+            eda_card="n_rows=100",
+        )
+        messages = mock_client.return_value.chat.call_args.kwargs["messages"]
+    system_msg = next(m["content"] for m in messages if m["role"] == "system")
+    assert "lightgbm" in system_msg
+    assert "NOT available: tabpfn" in system_msg
+    assert "pandas" in system_msg
+
+
+def test_generate_code_bootstrap_contract_declares_available_libs() -> None:
+    """BON-243: bootstrap contract도 동일하게 라이브러리 가용 목록을 명시해야 한다."""
+    with patch("agents.coder._client") as mock_client:
+        mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)
+        generate_code(
+            hypothesis="Bootstrap baseline",
+            action_type="bootstrap",
+            eda_card="n_rows=100",
+        )
+        messages = mock_client.return_value.chat.call_args.kwargs["messages"]
+    system_msg = next(m["content"] for m in messages if m["role"] == "system")
+    assert "lightgbm" in system_msg
+    assert "NOT available: tabpfn" in system_msg

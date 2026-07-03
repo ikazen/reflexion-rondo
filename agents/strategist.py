@@ -17,7 +17,7 @@ from config.settings import ACTION_TYPES
 
 _ACTION_CATALOG = """\
 - feature_engineering: derive/transform features (target encoding, interactions, binning, aggregations)
-- model_swap: change the estimator (e.g. lgbm <-> catboost <-> xgboost <-> tabpfn)
+- model_swap: change the estimator (e.g. lgbm <-> catboost <-> xgboost)
 - hyperparam_search: propose alternative hyperparameter candidates for the current model
 - preprocessing: missing-value handling, scaling, encoding before feature engineering
 - ensemble: combine models (weighted averaging, stacking)"""
