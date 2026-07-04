@@ -160,14 +160,19 @@ def insert_pipeline(
     cv_score: float,
     gain_vs_best: float,
     pipeline_sha256: str | None = None,
+    oof_preds: list | None = None,
 ) -> None:
     import json
     conn.execute(
         """
         INSERT INTO raw.pipelines
-            (pipeline_id, attempt_id, competition_id, fingerprint_snapshot, code, cv_score, gain_vs_best, pipeline_sha256)
-        VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+            (pipeline_id, attempt_id, competition_id, fingerprint_snapshot, code, cv_score, gain_vs_best, pipeline_sha256, oof_preds)
+        VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb)
         ON CONFLICT (pipeline_id) DO NOTHING
         """,
-        [pipeline_id, attempt_id, competition_id, json.dumps(fingerprint_snapshot), code, cv_score, gain_vs_best, pipeline_sha256],
+        [
+            pipeline_id, attempt_id, competition_id, json.dumps(fingerprint_snapshot),
+            code, cv_score, gain_vs_best, pipeline_sha256,
+            json.dumps(oof_preds) if oof_preds is not None else None,
+        ],
     )

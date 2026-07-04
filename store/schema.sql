@@ -51,6 +51,10 @@ ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS fold_scores jsonb;
 -- 실제 exec되는 materialized best_pipeline.py 내용의 해시.
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS pipeline_sha256 text;
 
+-- BON-248: merge-verify eval(BON-256, 승격 시 1회) 시점에 함께 뽑은 out-of-fold
+-- 예측 — bin/blend.py가 파이프라인 밖에서 결정적 blend(Ridge)를 학습할 때 사용.
+ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS oof_preds jsonb;
+
 CREATE TABLE IF NOT EXISTS raw.submission_budget (
     competition_id  text,
     day             date,
@@ -224,6 +228,21 @@ SELECT
 FROM raw.attempts a
 JOIN raw.competitions c USING (competition_id)
 WHERE a.cv_score IS NOT NULL;
+
+-- BON-250: 고정 seed=42 fold에 수백 attempt가 최적화되면서 교훈·밴딧·전략 신호가
+-- seed-42 노이즈를 학습할 위험을 감시하는 추세 뷰. overfit_gap 양수 = holdout이
+-- CV보다 나쁨(metric_sign으로 방향 통일) = drift 의심.
+CREATE OR REPLACE VIEW holdout_cv_gap_trend AS
+SELECT
+    a.attempt_id,
+    a.competition_id,
+    a.run_ts,
+    a.cv_score,
+    a.holdout_score,
+    c.metric_sign * (a.cv_score - a.holdout_score) AS overfit_gap
+FROM raw.attempts a
+JOIN raw.competitions c USING (competition_id)
+WHERE a.holdout_score IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS raw.kaggle_submissions (
     submission_id  text PRIMARY KEY,

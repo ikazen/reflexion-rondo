@@ -239,6 +239,7 @@ def main() -> None:
     print(f"best attempt: {attempt_id[:8]}  cv={cv_score:.5f}")
 
     from evaluator.harness import PipelineContext, preselect_params
+    from store.train_data import load_train
     pipeline = _load_pipeline(comp.COMPETITION_ID, extra_source=source, expected_sha256=pipeline_sha256)
     ctx = PipelineContext(
         target_col=comp.TARGET,
@@ -248,7 +249,7 @@ def main() -> None:
         is_classification=comp.IS_CLASSIFICATION,
     )
 
-    train = _read_csv(comp, "train.csv").drop(comp.DROP_COLS)
+    train = load_train(comp)
     test  = _read_csv(comp, "test.csv")
 
     sample = _read_csv(comp, "sample_submission.csv")

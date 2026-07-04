@@ -17,12 +17,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
-_MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 # BON-256: 병합본(materialize_best_pipeline 산출물) cv_score가 winner 자신의 기록된
 # cv_score와 크게 다르면 병합 손상(BON-197/233류) 신호 — 같은 seed·fold라 결정적
 # 재현이면 거의 bit-identical해야 한다. 부동소수 연산차만 허용하는 엄격한 허용오차.
@@ -50,6 +48,7 @@ def main() -> None:
     from runtime.isolate import eval_isolated
     from store.s3_code import download as _code_download
     from store.s3_code import download_best_pipeline, upload_best_pipeline
+    from store.train_data import load_train
     from cycle.run import _CODE_HEADER_SEP, _prev_best_fold_scores
 
     conn = connect(apply_schema=False)
@@ -158,13 +157,7 @@ def main() -> None:
                         f" != DB competition_id={competition_id!r}",
                         file=sys.stderr,
                     )
-                s3_path = getattr(comp, "S3_DATA_PATH", None)
-                if s3_path and _MINIO_ENDPOINT:
-                    full_train = pl.read_csv(
-                        f"{_MINIO_ENDPOINT}/kaggle/{s3_path}train.csv"
-                    ).drop(comp.DROP_COLS)
-                else:
-                    full_train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
+                full_train = load_train(comp)
                 train90, holdout10 = split_audit_holdout(
                     full_train, comp.TARGET, comp.IS_CLASSIFICATION
                 )
@@ -221,6 +214,7 @@ def main() -> None:
                 # train90 없으면(train 로드 실패) 확인 불가 — 기존 confirm/holdout 스킵과
                 # 같은 원칙으로 검증을 건너뛰고 진행(보수적으로 막지 않음, 기존 동작 유지).
                 merge_ok = True
+                merge_oof_preds = None
                 if train90 is not None:
                     merge_eval = eval_isolated(
                         source=materialized,
@@ -231,6 +225,7 @@ def main() -> None:
                         n_splits=n_splits,
                         seed=42,
                         is_classification=is_classification,
+                        collect_oof=True,  # BON-248: 이 1회 eval에 얹어 OOF 확보(추가 비용 없음)
                     )
                     if merge_eval.error_trace or merge_eval.cv_score is None:
                         merge_ok = False
@@ -247,6 +242,8 @@ def main() -> None:
                                 f"merged_cv={merge_eval.cv_score:.6f} winner_cv={winner_row[2]:.6f} "
                                 f"delta={merge_delta:.6f} (tolerance={_MERGE_VERIFY_TOLERANCE})"
                             )
+                        else:
+                            merge_oof_preds = merge_eval.oof_preds
 
                 if merge_ok:
                     with conn.transaction():
@@ -260,6 +257,7 @@ def main() -> None:
                             cv_score=winner_row[2],
                             gain_vs_best=winner_gain,
                             pipeline_sha256=pipeline_sha256,
+                            oof_preds=merge_oof_preds,
                         )
                     upload_best_pipeline(competition_id, materialized)
                     print(f"[run_promote_task] best pipeline materialized for {competition_id}")

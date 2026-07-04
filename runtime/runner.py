@@ -124,7 +124,7 @@ def main() -> None:
     )
 
     try:
-        result = evaluate_pipeline(pipeline, train, ctx)
+        result = evaluate_pipeline(pipeline, train, ctx, collect_oof=inp.get("collect_oof", False))
     except Exception:
         _write({"error_trace": traceback.format_exc()})
         return
@@ -147,6 +147,7 @@ def main() -> None:
         "feature_importance": result.feature_importance,
         "is_noop_tie": result.is_noop_tie,
         "selected_params": result.selected_params,
+        "oof_preds": result.oof_preds,
         "error_trace": None,
         "holdout_score": holdout_score,
     })

@@ -9,17 +9,13 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
-import os
 from pathlib import Path
-
-import polars as pl
-
-_MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 
 from cycle.run import CycleConfig, run_cycle
 from evaluator.harness import split_audit_holdout
 from memory.transfer import cold_start_lessons, bootstrap_seeds
 from store.db import connect, ensure_competition
+from store.train_data import load_train
 
 ROOT = Path(__file__).parent.parent
 COLD_START_DIR = ROOT / "runs" / "cold_start"
@@ -74,11 +70,7 @@ def main() -> None:
 
     comp = importlib.import_module(f"config.competitions.{args.competition}")
 
-    s3_path = getattr(comp, "S3_DATA_PATH", None)
-    if s3_path and _MINIO_ENDPOINT:
-        full_train = pl.read_csv(f"{_MINIO_ENDPOINT}/kaggle/{s3_path}train.csv").drop(comp.DROP_COLS)
-    else:
-        full_train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
+    full_train = load_train(comp)
     train, holdout = split_audit_holdout(full_train, comp.TARGET, comp.IS_CLASSIFICATION)
     conn = connect()
     ensure_competition(
