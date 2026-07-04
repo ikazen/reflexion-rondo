@@ -63,6 +63,7 @@ class EvalResult:
     label: str
     gain_vs_best: float | None
     feature_importance: dict | None = None
+    is_noop_tie: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,10 +291,16 @@ def evaluate_pipeline(
         if cv_score <= _LEAK_PERFECT_LOW:
             raise ValueError(f"suspected target leakage: perfect cv_score={cv_score:.2e} (threshold={_LEAK_PERFECT_LOW})")
 
+    is_noop_tie = False
     if ctx.prev_best is None:
         label = "neutral"
         gain_vs_best = None
     else:
+        # 정확히 동일한 cv_score(부동소수 16자리까지 일치)는 정상적 확률적 학습으로는
+        # 사실상 불가능 — patch hook이 base로 위임/무시되어 유효 계산이 안 바뀐 신호다
+        # (BON-239: hyperparam_search의 build_model params 무시, feature_engineering의
+        # 기존 base와 동일한 재발명 등 action_type 무관하게 발생).
+        is_noop_tie = cv_score == ctx.prev_best
         delta = metric_sign * (cv_score - ctx.prev_best)
         gain_vs_best = delta
         if delta > LABEL_Z * fold_std:
@@ -324,4 +331,5 @@ def evaluate_pipeline(
         label=label,
         gain_vs_best=gain_vs_best,
         feature_importance=feature_importance,
+        is_noop_tie=is_noop_tie,
     )

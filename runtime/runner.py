@@ -144,6 +144,7 @@ def main() -> None:
         "label": result.label,
         "gain_vs_best": result.gain_vs_best,
         "feature_importance": result.feature_importance,
+        "is_noop_tie": result.is_noop_tie,
         "error_trace": None,
         "holdout_score": holdout_score,
     })

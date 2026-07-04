@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agents.reflector import GENERALITY_VALUES, LABEL_VALUES
+from agents.reflector import AttemptContext, GENERALITY_VALUES, LABEL_VALUES, _format_context
 
 
 def _apply_fallbacks(data: dict) -> dict:
@@ -49,3 +49,23 @@ def test_missing_full_lesson_filled_from_embedded_text():
     data = _apply_fallbacks({"generality": "L1_local", "reflector_label": "jump",
                               "embedded_text": "the lesson"})
     assert data["full_lesson"] == "the lesson"
+
+
+def _ctx(**overrides) -> AttemptContext:
+    base = dict(
+        hypothesis="h", action_type="hyperparam_search", code="class Patch: ...",
+        cv_score=0.9, cv_fold_var=0.0, gain_vs_best=0.0, label="neutral",
+    )
+    base.update(overrides)
+    return AttemptContext(**base)
+
+
+def test_format_context_includes_noop_note_when_flagged():
+    """BON-239: is_noop_tie=True면 프롬프트에 명시적 설명 요청 노트가 포함된다."""
+    text = _format_context(_ctx(is_noop_tie=True))
+    assert "bit-for-bit identical to prev_best" in text
+
+
+def test_format_context_omits_noop_note_by_default():
+    text = _format_context(_ctx())
+    assert "bit-for-bit identical" not in text

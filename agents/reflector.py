@@ -56,6 +56,7 @@ class AttemptContext:
     retrieved_ids: list[str] = field(default_factory=list)
     feature_importance: dict | None = None
     error_trace: str | None = None
+    is_noop_tie: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +105,14 @@ def _format_context(ctx: AttemptContext) -> str:
     fi_text = json.dumps(ctx.feature_importance, indent=2) if ctx.feature_importance else "N/A"
     gain_text = f"{ctx.gain_vs_best:+.5f}" if ctx.gain_vs_best is not None else "N/A (first attempt)"
     error_text = _tail_error(ctx.error_trace) if ctx.error_trace else "none"
+    noop_note = (
+        "\n- NOTE: cv_score is bit-for-bit identical to prev_best. The patch made no "
+        "effective change to the evaluated pipeline (e.g. a hook fell back to the base "
+        "pipeline, or reimplemented logic already present in it). Explain WHY this "
+        "action_type/hypothesis likely had no effect here, so the strategist avoids "
+        "repeating it blindly."
+        if ctx.is_noop_tie else ""
+    )
 
     return f"""## Attempt Summary
 - Hypothesis: {ctx.hypothesis}
@@ -111,7 +120,7 @@ def _format_context(ctx: AttemptContext) -> str:
 - Evaluator label: {ctx.label}
 - CV score: {ctx.cv_score:.5f}
 - Gain vs best: {gain_text}
-- Fold variance: {ctx.cv_fold_var:.6f}
+- Fold variance: {ctx.cv_fold_var:.6f}{noop_note}
 
 ## Code
 ```python
