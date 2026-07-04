@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -460,6 +461,11 @@ def run_attempt_core(
             ).fetchone()
             fp_val = fp_row[0] if fp_row and fp_row[0] else {}
             fp_dict = fp_val if isinstance(fp_val, dict) else json.loads(fp_val)
+            # materialize 먼저 → 해시는 실제 MinIO에 올라가는 내용(submit.py가 exec하는
+            # 그 문자열) 기준이어야 한다 (BON-255). raw.pipelines.code(winner source)와는
+            # 다른 문자열이므로 순서를 바꿔 sha256을 insert_pipeline에 함께 기록한다.
+            materialized = materialize_best_pipeline(prev_code, source)
+            pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
             with conn.transaction():
                 insert_pipeline(
                     conn,
@@ -470,8 +476,8 @@ def run_attempt_core(
                     code=source,
                     cv_score=cv_score,
                     gain_vs_best=gain_vs_best,
+                    pipeline_sha256=pipeline_sha256,
                 )
-            materialized = materialize_best_pipeline(prev_code, source)
             _best_pipeline_upload(config.competition_id, materialized)
             _LOG.info("best pipeline materialized (gain=%+.5f)", gain_vs_best)
         else:
