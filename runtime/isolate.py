@@ -58,6 +58,7 @@ class IsolatedResult:
     error_trace: str | None
     feature_importance: dict | None = None
     holdout_score: float | None = None
+    is_noop_tie: bool = False
 
 
 def eval_isolated(
@@ -136,6 +137,7 @@ def eval_isolated(
             error_trace=None,
             feature_importance=out.get("feature_importance"),
             holdout_score=out.get("holdout_score"),
+            is_noop_tie=out.get("is_noop_tie", False),
         )
 
 

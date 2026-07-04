@@ -326,6 +326,41 @@ def test_logloss_tripwire_raises_on_perfect_leak():
         evaluate_pipeline(pipeline, df, ctx)
 
 
+# --- is_noop_tie (BON-239) ---
+
+def test_no_prev_best_is_not_noop_tie():
+    """prev_best 없음(첫 attempt)은 no-op tie 판정 대상이 아니다."""
+    df = _make_df()
+    result = evaluate_pipeline(BasePipeline(), df, _ctx())
+    assert result.is_noop_tie is False
+
+
+def test_exact_tie_with_prev_best_is_noop_tie():
+    """cv_score가 prev_best와 정확히 같으면 (예: build_model이 params를 무시해
+    patch가 유효 계산을 못 바꾼 경우) is_noop_tie=True."""
+    df = _make_df()
+    baseline = evaluate_pipeline(BasePipeline(), df, _ctx())
+    ctx_with_prev = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42,
+        is_classification=True, prev_best=baseline.cv_score,
+    )
+    # 동일 pipeline·동일 데이터·동일 seed → 결정적으로 같은 cv_score 재현
+    result = evaluate_pipeline(BasePipeline(), df, ctx_with_prev)
+    assert result.cv_score == baseline.cv_score
+    assert result.is_noop_tie is True
+
+
+def test_different_prev_best_is_not_noop_tie():
+    """cv_score가 prev_best와 다르면 is_noop_tie=False."""
+    df = _make_df()
+    ctx_with_prev = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42,
+        is_classification=True, prev_best=0.01,
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx_with_prev)
+    assert result.is_noop_tie is False
+
+
 # --- split_audit_holdout ---
 
 def test_split_audit_holdout_deterministic():

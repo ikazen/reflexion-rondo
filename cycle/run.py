@@ -78,6 +78,7 @@ class _AttemptData:
     error_trace: str | None
     code_path: str
     feature_importance: dict | None
+    is_noop_tie: bool = False
 
 
 def _prev_best(conn: PgConn, competition_id: str) -> float | None:
@@ -336,6 +337,7 @@ def run_attempt_core(
     label = "regression"
     gain_vs_best = None
     feature_importance: dict | None = None
+    is_noop_tie = False
 
     if not error_trace:
         for _eval_i in range(2):
@@ -357,11 +359,18 @@ def run_attempt_core(
                 label = iso.label or "regression"
                 gain_vs_best = iso.gain_vs_best
                 feature_importance = iso.feature_importance
+                is_noop_tie = iso.is_noop_tie
                 gain_str = f"{gain_vs_best:+.6f}" if gain_vs_best is not None else "N/A"
                 _LOG.info(
                     "eval ok in %.1fs cv=%.6f fold_var=%.6f gain=%s label=%s",
                     time.monotonic() - _t_eval, cv_score, cv_fold_var, gain_str, label,
                 )
+                if is_noop_tie:
+                    _LOG.warning(
+                        "no-op tie (BON-239): cv_score exactly matches prev_best "
+                        "(action=%s) — patch made no effective change",
+                        action_type,
+                    )
                 break
             _LOG.warning("eval error (try %d) → regenerating: %s",
                          _eval_i + 1, (iso.error_trace or "")[:120])
@@ -497,12 +506,15 @@ def run_attempt_core(
         error_trace=error_trace,
         code_path=code_path,
         feature_importance=feature_importance,
+        is_noop_tie=is_noop_tie,
     )
 
 
 def _do_reflect(conn: PgConn, competition_id: str, data: _AttemptData) -> str | None:
-    """Reflect if label warrants it (BON-96 gate). Returns reflection_id or None."""
-    if data.label not in ("jump", "regression") and data.error_trace is None:
+    """Reflect if label warrants it (BON-96 gate), or if a no-op tie was detected (BON-239) —
+    otherwise these zero-effect attempts silently bypass the label gate (label=neutral,
+    error_trace=None) and the strategist never learns why the action had no effect."""
+    if data.label not in ("jump", "regression") and data.error_trace is None and not data.is_noop_tie:
         return None
     ctx = AttemptContext(
         hypothesis=data.decision.hypothesis,
@@ -515,6 +527,7 @@ def _do_reflect(conn: PgConn, competition_id: str, data: _AttemptData) -> str | 
         retrieved_ids=data.decision.reflection_ids,
         feature_importance=data.feature_importance,
         error_trace=data.error_trace,
+        is_noop_tie=data.is_noop_tie,
     )
     try:
         output = reflect(conn, attempt_id=data.attempt_id, competition_id=competition_id, context=ctx)
