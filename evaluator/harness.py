@@ -75,6 +75,9 @@ class PipelineContext:
     is_classification: bool
     prev_best: float | None = None
     action_type: str = ""
+    # BON-249: 확정 best 파이프라인의 params — hyperparam_search 훅이 로컬 서치에
+    # 참고할 수 있는 advisory 필드. 훅이 무시해도 무해(강제 소비 아님).
+    best_params: dict | None = None
 
 
 class BasePipeline:

@@ -24,6 +24,9 @@ _MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 RUNS_DIR = ROOT / "runs"
 CODE_SEP = "# " + "-" * 60
 
+# BON-249: 5-seed 예측 평균(bagging) — 단일 seed=42 fit 대비 거의 공짜인 LB 이득.
+_BAG_SEEDS = [42, 101, 7, 13, 29]
+
 
 def _load_best_code(
     competition_id: str, attempt_id: str | None
@@ -179,6 +182,42 @@ def _impute_train_test_median(train_np, test_np):
     return train_np, test_np
 
 
+def _bagged_predict(
+    pipeline: object,
+    params: dict,
+    X_train_np: np.ndarray,
+    y_train: np.ndarray,
+    X_test_np: np.ndarray,
+    ctx: object,
+    metric_class: str,
+    bag_seeds: list[int] = _BAG_SEEDS,
+) -> np.ndarray:
+    """BON-249: seed별 build_model+fit 반복 후 raw 예측 평균(bagging).
+
+    preprocess/feature_transform은 seed 무관이라 호출부에서 1회만 수행되고,
+    이 함수는 이미 변환된 X_train_np/X_test_np를 받아 모델 fit만 반복한다.
+    """
+    from evaluator.harness import PipelineContext
+    bag_preds = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for bag_seed in bag_seeds:
+            bag_ctx = PipelineContext(
+                target_col=ctx.target_col,
+                metric=ctx.metric,
+                n_splits=ctx.n_splits,
+                seed=bag_seed,
+                is_classification=ctx.is_classification,
+                prev_best=ctx.prev_best,
+                action_type=ctx.action_type,
+                best_params=ctx.best_params,
+            )
+            model = pipeline.build_model(params, bag_ctx)
+            model.fit(X_train_np, y_train)
+            bag_preds.append(_predict_raw(model, X_test_np, metric_class))
+    return np.mean(bag_preds, axis=0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--competition", "-c", required=True)
@@ -225,15 +264,10 @@ def main() -> None:
         X_train.to_numpy().astype(float), X_test.to_numpy().astype(float)
     )
 
-    model = pipeline.build_model(params, ctx)
-    model.fit(X_train_np, y_train)
-
     from evaluator.metrics import get as get_metric
     _, _, metric_class = get_metric(comp.METRIC)
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        raw_preds = _predict_raw(model, X_test_np, metric_class)
+    raw_preds = _bagged_predict(pipeline, params, X_train_np, y_train, X_test_np, ctx, metric_class)
     preds = pipeline.postprocess_predictions(raw_preds, ctx)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")

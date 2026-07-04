@@ -112,6 +112,31 @@ def _prev_best(conn: PgConn, competition_id: str) -> float | None:
     return row[0] if row else None
 
 
+def _prev_best_params(conn: PgConn, competition_id: str) -> dict | None:
+    """확정 파이프라인(raw.pipelines)에 연결된 attempt의 params.
+
+    hyperparam_search 훅이 ctx.best_params로 현재 best 근방 로컬 서치를 할 수 있도록
+    advisory로 제공 (BON-249). 훅이 참고 안 해도 무해 — 강제 소비 아님.
+    """
+    row = conn.execute(
+        """
+        select a.params
+        from raw.pipelines p
+        join raw.competitions c using (competition_id)
+        join raw.attempts a using (attempt_id)
+        where p.competition_id = %s
+          and p.cv_score is not null
+        order by c.metric_sign * p.cv_score desc
+        limit 1
+        """,
+        [competition_id],
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    val = row[0]
+    return val if isinstance(val, dict) else json.loads(val)
+
+
 def _last_hypothesis(conn: PgConn, competition_id: str) -> str | None:
     row = conn.execute(
         """
@@ -353,6 +378,7 @@ def run_attempt_core(
                 is_classification=config.is_classification,
                 action_type=action_type,
                 best_source=prev_code,
+                best_params=_prev_best_params(conn, config.competition_id),
             )
             if not iso.error_trace:
                 cv_score = iso.cv_score

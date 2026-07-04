@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bin.submit import (
+    _bagged_predict,
     _impute_train_test_median,
     _load_best_code,
     _load_pipeline,
@@ -118,6 +119,59 @@ def test_load_pipeline_skips_verification_when_sha256_none() -> None:
     with patch("store.s3_code.download_best_pipeline", return_value="class Patch:\n    pass\n"):
         pipeline = _load_pipeline("s4e1", expected_sha256=None)
     assert pipeline is not None
+
+
+# ---------------------------------------------------------------------------
+# (BON-249) _bagged_predict seed bagging
+# ---------------------------------------------------------------------------
+
+def _bagging_ctx():
+    from evaluator.harness import PipelineContext
+    return PipelineContext(target_col="y", metric="auc", n_splits=5, seed=42, is_classification=True)
+
+
+def test_bagged_predict_calls_build_model_once_per_seed() -> None:
+    ctx = _bagging_ctx()
+    pipeline = MagicMock()
+    model = MagicMock()
+    model.predict.return_value = np.array([1.0, 2.0])
+    pipeline.build_model.return_value = model
+
+    _bagged_predict(
+        pipeline, {"a": 1}, np.zeros((2, 1)), np.zeros(2), np.zeros((2, 1)),
+        ctx, "regression_error", bag_seeds=[1, 2, 3],
+    )
+    assert pipeline.build_model.call_count == 3
+    used_seeds = [c.args[1].seed for c in pipeline.build_model.call_args_list]
+    assert used_seeds == [1, 2, 3]
+
+
+def test_bagged_predict_averages_predictions() -> None:
+    ctx = _bagging_ctx()
+    pipeline = MagicMock()
+    model = MagicMock()
+    model.predict.side_effect = [np.array([1.0, 3.0]), np.array([3.0, 5.0])]
+    pipeline.build_model.return_value = model
+
+    result = _bagged_predict(
+        pipeline, {}, np.zeros((2, 1)), np.zeros(2), np.zeros((2, 1)),
+        ctx, "regression_error", bag_seeds=[1, 2],
+    )
+    assert list(result) == [2.0, 4.0]
+
+
+def test_bagged_predict_uses_binary_proba_for_classification_metric() -> None:
+    ctx = _bagging_ctx()
+    pipeline = MagicMock()
+    model = MagicMock()
+    model.predict_proba.return_value = np.array([[0.2, 0.8], [0.6, 0.4]])
+    pipeline.build_model.return_value = model
+
+    result = _bagged_predict(
+        pipeline, {}, np.zeros((2, 1)), np.zeros(2), np.zeros((2, 1)),
+        ctx, "binary_proba", bag_seeds=[1],
+    )
+    assert list(result) == [0.8, 0.4]
 
 
 # ---------------------------------------------------------------------------

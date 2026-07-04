@@ -86,6 +86,20 @@ def test_label_z_imported_from_settings():
     assert settings_LABEL_Z == harness_LABEL_Z
 
 
+# --- PipelineContext.best_params (BON-249) ---
+
+def test_pipeline_context_best_params_defaults_to_none():
+    assert _ctx().best_params is None
+
+
+def test_pipeline_context_best_params_settable():
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42,
+        is_classification=True, best_params={"max_depth": 4},
+    )
+    assert ctx.best_params == {"max_depth": 4}
+
+
 # --- preselect ---
 
 def test_preselect_single_candidate_returned_directly():

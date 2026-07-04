@@ -72,6 +72,7 @@ def eval_isolated(
     is_classification: bool,
     action_type: str = "",
     best_source: str | None = None,
+    best_params: dict | None = None,
     timeout_sec: int = DEFAULT_TIMEOUT,
     holdout_data: pl.DataFrame | None = None,
 ) -> IsolatedResult:
@@ -87,6 +88,7 @@ def eval_isolated(
             "seed": seed,
             "is_classification": is_classification,
             "action_type": action_type,
+            "best_params": best_params,
         }))
         if best_source:
             (ws / "best_pipeline.py").write_text(best_source)
