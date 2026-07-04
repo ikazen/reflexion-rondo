@@ -51,6 +51,10 @@ ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS fold_scores jsonb;
 -- 실제 exec되는 materialized best_pipeline.py 내용의 해시.
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS pipeline_sha256 text;
 
+-- BON-248: merge-verify eval(BON-256, 승격 시 1회) 시점에 함께 뽑은 out-of-fold
+-- 예측 — bin/blend.py가 파이프라인 밖에서 결정적 blend(Ridge)를 학습할 때 사용.
+ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS oof_preds jsonb;
+
 CREATE TABLE IF NOT EXISTS raw.submission_budget (
     competition_id  text,
     day             date,

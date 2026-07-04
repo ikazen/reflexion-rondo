@@ -280,6 +280,23 @@ def test_eval_result_selected_params_defaults_to_empty_dict():
     assert result.selected_params == {}
 
 
+# --- EvalResult.oof_preds / collect_oof (BON-248) ---
+
+def test_collect_oof_false_by_default_leaves_oof_preds_none():
+    result = evaluate_pipeline(BasePipeline(), _make_df(), _ctx())
+    assert result.oof_preds is None
+
+
+def test_collect_oof_true_fills_every_row_no_nan():
+    df = _make_df(n=120)
+    result = evaluate_pipeline(BasePipeline(), df, _ctx(), collect_oof=True)
+    assert result.oof_preds is not None
+    assert len(result.oof_preds) == len(df)
+    assert not any(v is None for v in result.oof_preds)
+    import math
+    assert not any(math.isnan(v) for v in result.oof_preds)
+
+
 # --- preselect ---
 
 def test_preselect_single_candidate_returned_directly():

@@ -214,6 +214,7 @@ def main() -> None:
                 # train90 없으면(train 로드 실패) 확인 불가 — 기존 confirm/holdout 스킵과
                 # 같은 원칙으로 검증을 건너뛰고 진행(보수적으로 막지 않음, 기존 동작 유지).
                 merge_ok = True
+                merge_oof_preds = None
                 if train90 is not None:
                     merge_eval = eval_isolated(
                         source=materialized,
@@ -224,6 +225,7 @@ def main() -> None:
                         n_splits=n_splits,
                         seed=42,
                         is_classification=is_classification,
+                        collect_oof=True,  # BON-248: 이 1회 eval에 얹어 OOF 확보(추가 비용 없음)
                     )
                     if merge_eval.error_trace or merge_eval.cv_score is None:
                         merge_ok = False
@@ -240,6 +242,8 @@ def main() -> None:
                                 f"merged_cv={merge_eval.cv_score:.6f} winner_cv={winner_row[2]:.6f} "
                                 f"delta={merge_delta:.6f} (tolerance={_MERGE_VERIFY_TOLERANCE})"
                             )
+                        else:
+                            merge_oof_preds = merge_eval.oof_preds
 
                 if merge_ok:
                     with conn.transaction():
@@ -253,6 +257,7 @@ def main() -> None:
                             cv_score=winner_row[2],
                             gain_vs_best=winner_gain,
                             pipeline_sha256=pipeline_sha256,
+                            oof_preds=merge_oof_preds,
                         )
                     upload_best_pipeline(competition_id, materialized)
                     print(f"[run_promote_task] best pipeline materialized for {competition_id}")

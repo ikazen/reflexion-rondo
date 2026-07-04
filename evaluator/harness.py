@@ -136,6 +136,8 @@ class EvalResult:
     # 내부에서만 쓰이고 반환되지 않아 ctx.best_params(BON-249)의 데이터 소스가
     # 항상 비어 있었다. persist까지 흘려보내 다음 attempt가 참고할 수 있게 한다.
     selected_params: dict = field(default_factory=dict)
+    # BON-248: collect_oof=True일 때만 채워지는 fold별 out-of-fold 예측 (원본 행 순서).
+    oof_preds: list[float] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,7 +299,13 @@ def evaluate_pipeline(
     pipeline: BasePipeline | PatchedPipeline,
     train: pl.DataFrame,
     ctx: PipelineContext,
+    collect_oof: bool = False,
 ) -> EvalResult:
+    """collect_oof=True면 fold별 검증 예측을 원본 행 위치에 모아 EvalResult.oof_preds로
+    반환한다(BON-248). K-fold가 전체 행을 정확히 1번씩 커버하므로 NaN 없이 꽉 찬다.
+    attempt마다 매번 계산하면 낭비라 기본은 False — 승격 시 merge-verify eval
+    (bin/run_promote_task.py)에서만 True로 호출해 추가 평가 비용 없이 확보한다.
+    """
     fn, metric_sign, metric_class = get_metric(ctx.metric)
     y = train[ctx.target_col].to_numpy()
     compute_importance = ctx.action_type in _IMPORTANCE_ACTIONS
@@ -307,6 +315,7 @@ def evaluate_pipeline(
     fold_scores: list[float] = []
     fold_pi_means: list[np.ndarray] = []
     feature_names: list[str] = []
+    oof = np.full(len(train), np.nan) if collect_oof else None
 
     for tr_idx, va_idx in _make_folds(y, ctx):
         tr = train[list(tr_idx)]
@@ -334,6 +343,8 @@ def evaluate_pipeline(
         preds = pipeline.postprocess_predictions(raw_preds, ctx)
         best_model = model
         fold_scores.append(float(fn(yva, preds)))
+        if oof is not None:
+            oof[va_idx] = preds
 
         if compute_importance and best_model is not None:
             if not feature_names:
@@ -408,4 +419,5 @@ def evaluate_pipeline(
         feature_importance=feature_importance,
         is_noop_tie=is_noop_tie,
         selected_params=selected_params,
+        oof_preds=oof.tolist() if oof is not None else None,
     )

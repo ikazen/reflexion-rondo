@@ -195,7 +195,7 @@ def _run_promote_with_mocks(
 
     if eval_isolated_mock is None:
         eval_isolated_mock = MagicMock(
-            return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None)
+            return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None, oof_preds=None)
         )
 
     argv = ["run_promote_task", "--queue-id", "qid", "--run-id", "rid", "--competition", _SLUG]
@@ -282,7 +282,7 @@ def test_merge_verify_matching_cv_allows_promotion() -> None:
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
     confirm_mock = MagicMock()
     eval_isolated_mock = MagicMock(
-        return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None)
+        return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None, oof_preds=[0.1, 0.2, 0.3])
     )
     conn = _run_promote_with_mocks(
         SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
@@ -294,12 +294,32 @@ def test_merge_verify_matching_cv_allows_promotion() -> None:
     assert conn.upload_best_pipeline_mock.call_count == 1
 
 
+def test_merge_verify_passes_oof_preds_to_insert_pipeline() -> None:
+    """BON-248: merge-verify eval에서 뽑은 oof_preds가 insert_pipeline까지 전달돼야 한다."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    eval_isolated_mock = MagicMock(
+        return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None, oof_preds=[0.1, 0.2, 0.3])
+    )
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
+        reflect_mock,
+        confirm_mock,
+        eval_isolated_mock=eval_isolated_mock,
+    )
+    _, call_kwargs = conn.insert_pipeline_mock.call_args
+    assert call_kwargs["oof_preds"] == [0.1, 0.2, 0.3]
+    # BON-248: collect_oof=True로 호출해야 OOF가 실제로 채워진다.
+    _, eval_kwargs = conn.eval_isolated_mock.call_args
+    assert eval_kwargs["collect_oof"] is True
+
+
 def test_merge_verify_mismatched_cv_blocks_promotion() -> None:
     """병합본 cv_score가 winner cv_score와 크게 다르면(병합 손상 의심) 승격을 스킵한다."""
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
     confirm_mock = MagicMock()
     eval_isolated_mock = MagicMock(
-        return_value=SimpleNamespace(cv_score=_WINNER_CV - 0.3, error_trace=None)
+        return_value=SimpleNamespace(cv_score=_WINNER_CV - 0.3, error_trace=None, oof_preds=None)
     )
     conn = _run_promote_with_mocks(
         SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
@@ -316,7 +336,7 @@ def test_merge_verify_eval_error_blocks_promotion() -> None:
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
     confirm_mock = MagicMock()
     eval_isolated_mock = MagicMock(
-        return_value=SimpleNamespace(cv_score=None, error_trace="NameError: WeightedEnsemble")
+        return_value=SimpleNamespace(cv_score=None, error_trace="NameError: WeightedEnsemble", oof_preds=None)
     )
     conn = _run_promote_with_mocks(
         SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),

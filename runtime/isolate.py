@@ -60,6 +60,7 @@ class IsolatedResult:
     holdout_score: float | None = None
     is_noop_tie: bool = False
     selected_params: dict | None = None
+    oof_preds: list[float] | None = None
 
 
 def eval_isolated(
@@ -74,6 +75,7 @@ def eval_isolated(
     action_type: str = "",
     best_source: str | None = None,
     best_params: dict | None = None,
+    collect_oof: bool = False,
     timeout_sec: int = DEFAULT_TIMEOUT,
     holdout_data: pl.DataFrame | None = None,
 ) -> IsolatedResult:
@@ -90,6 +92,7 @@ def eval_isolated(
             "is_classification": is_classification,
             "action_type": action_type,
             "best_params": best_params,
+            "collect_oof": collect_oof,
         }))
         if best_source:
             (ws / "best_pipeline.py").write_text(best_source)
@@ -142,6 +145,7 @@ def eval_isolated(
             holdout_score=out.get("holdout_score"),
             is_noop_tie=out.get("is_noop_tie", False),
             selected_params=out.get("selected_params"),
+            oof_preds=out.get("oof_preds"),
         )
 
 
