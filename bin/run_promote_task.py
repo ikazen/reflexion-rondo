@@ -45,7 +45,7 @@ def main() -> None:
     from memory.retriever import EmbeddingUnavailableError
     from store.s3_code import download as _code_download
     from store.s3_code import download_best_pipeline, upload_best_pipeline
-    from cycle.run import _CODE_HEADER_SEP
+    from cycle.run import _CODE_HEADER_SEP, _prev_best_fold_scores
 
     conn = connect(apply_schema=False)
 
@@ -117,7 +117,23 @@ def main() -> None:
     winner_cv_fold_var = winner_row[8] or 0.0
     winner_error = winner_row[4]
     winner_code_path = winner_row[9]
-    if is_significant_gain(winner_gain, winner_cv_fold_var) and not winner_error and winner_code_path:
+    winner_fold_scores = winner_row[10]
+
+    # BON-247: paired per-fold 검정용 metric_sign + baseline fold_scores.
+    # 이 시점엔 comp 모듈을 아직 import 안 했으므로(뒤에서 필요할 때 import) DB에서 바로 조회.
+    _sign_row = conn.execute(
+        "select metric_sign from raw.competitions where competition_id = %s",
+        [competition_id],
+    ).fetchone()
+    _metric_sign = _sign_row[0] if _sign_row and _sign_row[0] is not None else 1
+    _baseline_fold_scores = _prev_best_fold_scores(conn, competition_id)
+
+    if is_significant_gain(
+        winner_gain, winner_cv_fold_var,
+        candidate_fold_scores=winner_fold_scores,
+        baseline_fold_scores=_baseline_fold_scores,
+        metric_sign=_metric_sign,
+    ) and not winner_error and winner_code_path:
         winner_content = _code_download(winner_code_path) or ""
         sep = _CODE_HEADER_SEP + "\n"
         winner_source = winner_content.split(sep, 1)[1].strip() if sep in winner_content else winner_content
@@ -211,7 +227,8 @@ def main() -> None:
 
     for i, r in enumerate(rows):
         (attempt_id, gain_vs_best, cv_score, label, error_trace,
-         hypothesis, action_type, reflection_ids, cv_fold_var, code_path) = r
+         hypothesis, action_type, reflection_ids, cv_fold_var, code_path,
+         _fold_scores) = r
 
         is_winner = (i == winner_idx)
         # winner: jump/regression/error만 reflect (neutral은 교훈 불명확)

@@ -49,8 +49,11 @@ ACTION_TYPES: list[str] = [
 LABEL_Z: float = 2.0
 
 # 승격 cross-seed 확인: 이 seed 목록 전부에서 gain_vs_best > 0 재현돼야 승격
+# BON-247: 기본값에서 42 제거 — 메인 CV seed(cycle/run.py의 config.seed)가 42라
+# 2σ 게이트를 seed 42에서 통과한 후보는 seed 42 confirm을 자명하게 통과해버려
+# 실질 독립 확인이 4개가 아니라 3개뿐이었다.
 PROMOTE_CONFIRM_SEEDS: list[int] = [
-    int(s) for s in os.getenv("PROMOTE_CONFIRM_SEEDS", "7,42,101,137").split(",")
+    int(s) for s in os.getenv("PROMOTE_CONFIRM_SEEDS", "7,101,137").split(",")
 ]
 
 _CLASSIFICATION_TASK_TYPES = frozenset({"binary", "multiclass"})

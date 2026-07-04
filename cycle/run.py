@@ -24,6 +24,7 @@ from cycle.materialize import materialize_best_pipeline
 from cycle.promotion import confirm_and_measure
 from evaluator.contract import validate_patch
 from evaluator.harness import is_significant_gain
+from evaluator.metrics import get as get_metric
 from memory.retriever import EmbeddingUnavailableError, search
 from runtime.isolate import eval_isolated
 from store.db import PgConn, insert_attempt, insert_pipeline
@@ -135,6 +136,32 @@ def _prev_best_params(conn: PgConn, competition_id: str) -> dict | None:
         return None
     val = row[0]
     return val if isinstance(val, dict) else json.loads(val)
+
+
+def _prev_best_fold_scores(conn: PgConn, competition_id: str) -> list[float] | None:
+    """확정 파이프라인(raw.pipelines)에 연결된 attempt의 fold_scores.
+
+    paired per-fold 유의성 검정(is_significant_gain, BON-247)의 baseline으로 쓰인다.
+    같은 seed로 생성된 fold split은 결정적이라 candidate의 fold_scores와 인덱스별로
+    바로 대응시킬 수 있다. 없으면(콜드스타트) None — 호출부가 절대-gain으로 폴백.
+    """
+    row = conn.execute(
+        """
+        select a.fold_scores
+        from raw.pipelines p
+        join raw.competitions c using (competition_id)
+        join raw.attempts a using (attempt_id)
+        where p.competition_id = %s
+          and p.cv_score is not null
+        order by c.metric_sign * p.cv_score desc
+        limit 1
+        """,
+        [competition_id],
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    val = row[0]
+    return val if isinstance(val, list) else json.loads(val)
 
 
 def _last_hypothesis(conn: PgConn, competition_id: str) -> str | None:
@@ -464,7 +491,14 @@ def run_attempt_core(
 
     # Save pipeline if improved — also materialize as new best baseline.
     # defer_promotion=True: caller (super_cycle / Airflow promote task) handles winner-only promotion.
-    if not defer_promotion and is_significant_gain(gain_vs_best, cv_fold_var) and not error_trace:
+    _, _metric_sign, _ = get_metric(config.metric)
+    _significant = is_significant_gain(
+        gain_vs_best, cv_fold_var,
+        candidate_fold_scores=fold_scores,
+        baseline_fold_scores=_prev_best_fold_scores(conn, config.competition_id),
+        metric_sign=_metric_sign,
+    )
+    if not defer_promotion and _significant and not error_trace:
         confirm = confirm_and_measure(
             source=source,
             best_source=prev_code,

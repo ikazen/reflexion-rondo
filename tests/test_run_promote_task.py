@@ -129,9 +129,9 @@ _WINNER_CV = 0.85
 # attempt_id, gain_vs_best, cv_score, label, error_trace,
 # hypothesis, action_type, reflection_ids, cv_fold_var, code_path
 _ATTEMPT_ROWS = [
-    ("w0000000", 0.05, _WINNER_CV, "jump", None, "hyp-w", "model_swap", [], 0.0, "s3://w"),
-    ("l1111111", 0.01, 0.81, "neutral", None, "hyp-1", "feature_engineering", [], 0.0, "s3://l1"),
-    ("l2222222", -0.01, 0.79, "neutral", None, "hyp-2", "preprocessing", [], 0.0, "s3://l2"),
+    ("w0000000", 0.05, _WINNER_CV, "jump", None, "hyp-w", "model_swap", [], 0.0, "s3://w", None),
+    ("l1111111", 0.01, 0.81, "neutral", None, "hyp-1", "feature_engineering", [], 0.0, "s3://l1", None),
+    ("l2222222", -0.01, 0.79, "neutral", None, "hyp-2", "preprocessing", [], 0.0, "s3://l2", None),
 ]
 
 

@@ -82,6 +82,68 @@ def test_is_significant_gain_zero_fold_var_zero_gain():
     assert not is_significant_gain(0.0, 0.0)
 
 
+# --- is_significant_gain paired per-fold delta (BON-247) ---
+
+def test_paired_mode_detects_consistent_small_improvement():
+    """절대 gain은 작아도 모든 fold에서 일관되게 개선되면(분산 작음) paired 검정은 유의로 본다."""
+    candidate = [0.901, 0.902, 0.900, 0.903]
+    baseline = [0.899, 0.900, 0.898, 0.901]
+    assert is_significant_gain(0.002, 0.0001, candidate, baseline, metric_sign=1)
+
+
+def test_paired_mode_rejects_noisy_improvement():
+    """평균은 양수지만 fold 간 변동이 커서 유의하지 않은 경우 False."""
+    candidate = [0.95, 0.80, 0.90, 0.70]
+    baseline = [0.90, 0.85, 0.88, 0.75]
+    assert not is_significant_gain(0.02, 0.01, candidate, baseline, metric_sign=1)
+
+
+def test_paired_mode_falls_back_when_baseline_none():
+    """baseline fold_scores 캐시가 없으면(콜드스타트) 절대 gain 방식으로 폴백."""
+    candidate = [0.9, 0.91, 0.89]
+    fold_var = 0.0001
+    gain = LABEL_Z * (fold_var ** 0.5) + 0.001
+    assert is_significant_gain(gain, fold_var, candidate, None)
+
+
+def test_paired_mode_falls_back_on_length_mismatch():
+    candidate = [0.9, 0.91, 0.89]
+    baseline = [0.9, 0.91]
+    fold_var = 0.0001
+    gain = LABEL_Z * (fold_var ** 0.5) + 0.001
+    assert is_significant_gain(gain, fold_var, candidate, baseline)
+
+
+def test_paired_mode_falls_back_on_single_fold():
+    """fold 1개면 분산 정의 불가 — 절대 gain 방식으로 폴백."""
+    candidate = [0.9]
+    baseline = [0.85]
+    fold_var = 0.0001
+    gain = LABEL_Z * (fold_var ** 0.5) + 0.001
+    assert is_significant_gain(gain, fold_var, candidate, baseline)
+
+
+def test_paired_mode_zero_variance_positive_mean_is_significant():
+    """모든 fold에서 완전히 동일한 양의 delta면 분산 0 — 부호만으로 판정."""
+    candidate = [0.91, 0.91, 0.91]
+    baseline = [0.90, 0.90, 0.90]
+    assert is_significant_gain(0.01, 0.0, candidate, baseline)
+
+
+def test_paired_mode_zero_variance_nonpositive_mean_is_not_significant():
+    candidate = [0.90, 0.90, 0.90]
+    baseline = [0.90, 0.90, 0.90]
+    assert not is_significant_gain(0.0, 0.0, candidate, baseline)
+
+
+def test_paired_mode_respects_metric_sign_for_lower_is_better():
+    """logloss처럼 낮을수록 좋은 metric(metric_sign=-1)에서 candidate가 baseline보다
+    일관되게 낮으면(실제 개선) 유의미로 판정돼야 한다."""
+    candidate = [0.10, 0.11, 0.09, 0.105]
+    baseline = [0.15, 0.16, 0.14, 0.155]
+    assert is_significant_gain(0.05, 0.0001, candidate, baseline, metric_sign=-1)
+
+
 def test_label_z_imported_from_settings():
     from config.settings import LABEL_Z as settings_LABEL_Z
     from evaluator.harness import LABEL_Z as harness_LABEL_Z
