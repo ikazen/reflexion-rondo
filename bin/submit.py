@@ -213,6 +213,10 @@ def _bagged_predict(
                 best_params=ctx.best_params,
             )
             model = pipeline.build_model(params, bag_ctx)
+            # BON-246: 여기선 early stopping(harness._fit_with_early_stopping) 미적용 —
+            # 전체 train으로 최종 fit하는 자리라 라벨 있는 held-out validation이 없음
+            # (test_np는 unlabeled). 억지로 train 일부를 떼면 최종 제출 방법론 자체가
+            # 바뀌므로 이번 범위에서 제외 — CV 경로(harness.py)만 적용.
             model.fit(X_train_np, y_train)
             bag_preds.append(_predict_raw(model, X_test_np, metric_class))
     return np.mean(bag_preds, axis=0)
