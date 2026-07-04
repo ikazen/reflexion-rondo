@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, call
 
-from cycle.run import _prev_best
+from cycle.run import _prev_best, _prev_best_params
 
 
 def _conn_seq(*results) -> MagicMock:
@@ -50,3 +50,39 @@ def test_fallback_query_uses_attempts_table():
     _prev_best(conn, "s4e1")
     fallback_sql: str = conn.execute.call_args_list[1][0][0]
     assert "raw.attempts" in fallback_sql
+
+
+# --- _prev_best_params (BON-249) ---
+
+def test_prev_best_params_returns_dict_row():
+    conn = _conn_seq(({"max_depth": 4},))
+    result = _prev_best_params(conn, "s4e1")
+    assert result == {"max_depth": 4}
+
+
+def test_prev_best_params_parses_json_string():
+    """jsonb가 driver에서 raw str로 온 경우도 dict로 파싱한다."""
+    conn = _conn_seq(('{"max_depth": 4}',))
+    result = _prev_best_params(conn, "s4e1")
+    assert result == {"max_depth": 4}
+
+
+def test_prev_best_params_no_row_returns_none():
+    conn = _conn_seq(None)
+    result = _prev_best_params(conn, "s4e1")
+    assert result is None
+
+
+def test_prev_best_params_null_params_returns_none():
+    """raw.pipelines 행은 있으나 attempts.params가 null인 경우."""
+    conn = _conn_seq((None,))
+    result = _prev_best_params(conn, "s4e1")
+    assert result is None
+
+
+def test_prev_best_params_joins_attempts_and_pipelines():
+    conn = _conn_seq(({"a": 1},))
+    _prev_best_params(conn, "s4e1")
+    sql: str = conn.execute.call_args_list[0][0][0]
+    assert "raw.pipelines" in sql
+    assert "raw.attempts" in sql

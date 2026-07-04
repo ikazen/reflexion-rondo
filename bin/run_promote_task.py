@@ -16,6 +16,7 @@ Usage (container):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -188,6 +189,10 @@ def main() -> None:
                 ).fetchone()
                 fp_val = fp_row[0] if fp_row and fp_row[0] else {}
                 fp_dict = fp_val if isinstance(fp_val, dict) else _json.loads(fp_val)
+                # materialize 먼저 → 해시는 실제 MinIO 업로드 내용(submit.py가 exec하는
+                # 문자열) 기준 (BON-255). raw.pipelines.code(winner source)와는 다른 문자열.
+                materialized = materialize_best_pipeline(current_best, winner_source)
+                pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
                 with conn.transaction():
                     insert_pipeline(
                         conn,
@@ -198,8 +203,8 @@ def main() -> None:
                         code=winner_source,
                         cv_score=winner_row[2],
                         gain_vs_best=winner_gain,
+                        pipeline_sha256=pipeline_sha256,
                     )
-                materialized = materialize_best_pipeline(current_best, winner_source)
                 upload_best_pipeline(competition_id, materialized)
                 print(f"[run_promote_task] best pipeline materialized for {competition_id}")
 

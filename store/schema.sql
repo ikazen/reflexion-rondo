@@ -41,6 +41,11 @@ ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS was_promoted boolean;
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS holdout_score double precision;
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS confirm_seed_gains jsonb;
 
+-- BON-255: materialize 시 sha256 기록 — submit.py exec 전 MinIO 다운로드본과 대조해
+-- 익명 write 버킷 변조를 탐지한다. code 컬럼(raw.attempts 원본)이 아니라
+-- 실제 exec되는 materialized best_pipeline.py 내용의 해시.
+ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS pipeline_sha256 text;
+
 CREATE TABLE IF NOT EXISTS raw.submission_budget (
     competition_id  text,
     day             date,

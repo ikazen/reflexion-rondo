@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -109,6 +110,31 @@ def _prev_best(conn: PgConn, competition_id: str) -> float | None:
         [competition_id],
     ).fetchone()
     return row[0] if row else None
+
+
+def _prev_best_params(conn: PgConn, competition_id: str) -> dict | None:
+    """확정 파이프라인(raw.pipelines)에 연결된 attempt의 params.
+
+    hyperparam_search 훅이 ctx.best_params로 현재 best 근방 로컬 서치를 할 수 있도록
+    advisory로 제공 (BON-249). 훅이 참고 안 해도 무해 — 강제 소비 아님.
+    """
+    row = conn.execute(
+        """
+        select a.params
+        from raw.pipelines p
+        join raw.competitions c using (competition_id)
+        join raw.attempts a using (attempt_id)
+        where p.competition_id = %s
+          and p.cv_score is not null
+        order by c.metric_sign * p.cv_score desc
+        limit 1
+        """,
+        [competition_id],
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    val = row[0]
+    return val if isinstance(val, dict) else json.loads(val)
 
 
 def _last_hypothesis(conn: PgConn, competition_id: str) -> str | None:
@@ -352,6 +378,7 @@ def run_attempt_core(
                 is_classification=config.is_classification,
                 action_type=action_type,
                 best_source=prev_code,
+                best_params=_prev_best_params(conn, config.competition_id),
             )
             if not iso.error_trace:
                 cv_score = iso.cv_score
@@ -460,6 +487,11 @@ def run_attempt_core(
             ).fetchone()
             fp_val = fp_row[0] if fp_row and fp_row[0] else {}
             fp_dict = fp_val if isinstance(fp_val, dict) else json.loads(fp_val)
+            # materialize 먼저 → 해시는 실제 MinIO에 올라가는 내용(submit.py가 exec하는
+            # 그 문자열) 기준이어야 한다 (BON-255). raw.pipelines.code(winner source)와는
+            # 다른 문자열이므로 순서를 바꿔 sha256을 insert_pipeline에 함께 기록한다.
+            materialized = materialize_best_pipeline(prev_code, source)
+            pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
             with conn.transaction():
                 insert_pipeline(
                     conn,
@@ -470,8 +502,8 @@ def run_attempt_core(
                     code=source,
                     cv_score=cv_score,
                     gain_vs_best=gain_vs_best,
+                    pipeline_sha256=pipeline_sha256,
                 )
-            materialized = materialize_best_pipeline(prev_code, source)
             _best_pipeline_upload(config.competition_id, materialized)
             _LOG.info("best pipeline materialized (gain=%+.5f)", gain_vs_best)
         else:

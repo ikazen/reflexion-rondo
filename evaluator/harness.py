@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import warnings
 from dataclasses import dataclass, field
 
@@ -18,6 +19,7 @@ _PI_TOP_N = 20
 _MAX_PARAM_CANDIDATES = 12
 _LEAK_PERFECT_HIGH = 0.9999
 _LEAK_PERFECT_LOW = 1e-9
+_EARLY_STOPPING_ROUNDS = 50
 
 
 def is_significant_gain(gain_vs_best: float | None, cv_fold_var: float) -> bool:
@@ -55,6 +57,39 @@ def _encode_residual_categoricals(
 _IMPORTANCE_ACTIONS = frozenset({"feature_engineering", "preprocessing"})
 
 
+def _fit_with_early_stopping(model: object, Xtr, ytr, Xva, yva) -> None:
+    """BON-246: fold valid를 early stopping에 쓸 수 있는 estimator면 opt-in으로 활용한다.
+
+    LightGBM/XGBoost/CatBoost는 fit()에 eval_set을 받고(라이브러리별로 콜백/kwarg가
+    다름), sklearn HistGradientBoosting은 X_val/y_val을 받는다. Patch.build_model이
+    반환하는 model이 어떤 타입인지 harness는 알 수 없으므로 fit() 시그니처를 검사해
+    감지하고, 무엇이든 실패하면(estimator가 이 인자들을 실제로 지원 안 하거나 조합이
+    안 맞는 경우) 조용히 기존 fit(Xtr, ytr)로 폴백한다 — opt-in이라 결과가 나빠지지
+    않는다(라이브러리 자체 콜백이 최선의 라운드에서 멈추므로 동일하거나 더 나음).
+
+    XGBoost는 3.x부터 early_stopping_rounds가 생성자 전용이라 harness가 fit()에서
+    강제할 수 없다 — eval_set만 전달, 실제 조기 종료 여부는 Patch.build_model이
+    생성자에 early_stopping_rounds를 설정했는지에 달려있다.
+    """
+    try:
+        sig_params = inspect.signature(model.fit).parameters
+        if "eval_set" in sig_params:
+            kwargs: dict = {"eval_set": [(Xva, yva)]}
+            if "callbacks" in sig_params:
+                import lightgbm as lgb
+                kwargs["callbacks"] = [lgb.early_stopping(_EARLY_STOPPING_ROUNDS, verbose=False)]
+            elif "early_stopping_rounds" in sig_params:
+                kwargs["early_stopping_rounds"] = _EARLY_STOPPING_ROUNDS
+            model.fit(Xtr, ytr, **kwargs)
+            return
+        if "X_val" in sig_params and "y_val" in sig_params:
+            model.fit(Xtr, ytr, X_val=Xva, y_val=yva)
+            return
+    except Exception:
+        pass  # 미지원 조합/버전 차이 — 조용히 폴백
+    model.fit(Xtr, ytr)
+
+
 @dataclass
 class EvalResult:
     cv_score: float
@@ -75,6 +110,9 @@ class PipelineContext:
     is_classification: bool
     prev_best: float | None = None
     action_type: str = ""
+    # BON-249: 확정 best 파이프라인의 params — hyperparam_search 훅이 로컬 서치에
+    # 참고할 수 있는 advisory 필드. 훅이 무시해도 무해(강제 소비 아님).
+    best_params: dict | None = None
 
 
 class BasePipeline:
@@ -204,7 +242,7 @@ def preselect_params(
         warnings.simplefilter("ignore", UserWarning)
         for params in candidates:
             model = pipeline.build_model(params, ctx)
-            model.fit(Xtr_np, ytr)
+            _fit_with_early_stopping(model, Xtr_np, ytr, Xva_np, yva)
             if metric_class == "binary_proba":
                 raw_preds = model.predict_proba(Xva_np)[:, 1]
             else:
@@ -249,7 +287,7 @@ def evaluate_pipeline(
         Xva_np = Xva.to_numpy()
 
         model = pipeline.build_model(selected_params, ctx)
-        model.fit(Xtr_np, ytr)
+        _fit_with_early_stopping(model, Xtr_np, ytr, Xva_np, yva)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             if metric_class == "binary_proba":

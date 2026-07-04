@@ -120,6 +120,7 @@ def main() -> None:
         is_classification=inp["is_classification"],
         prev_best=inp.get("prev_best"),
         action_type=inp.get("action_type", ""),
+        best_params=inp.get("best_params"),
     )
 
     try:

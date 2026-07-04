@@ -10,6 +10,8 @@ from evaluator.harness import (
     evaluate_pipeline, preselect_params, is_significant_gain,
     split_audit_holdout,
     _LEAK_PERFECT_HIGH,
+    _EARLY_STOPPING_ROUNDS,
+    _fit_with_early_stopping,
 )
 from runtime.runner import _eval_holdout
 
@@ -84,6 +86,122 @@ def test_label_z_imported_from_settings():
     from config.settings import LABEL_Z as settings_LABEL_Z
     from evaluator.harness import LABEL_Z as harness_LABEL_Z
     assert settings_LABEL_Z == harness_LABEL_Z
+
+
+# --- PipelineContext.best_params (BON-249) ---
+
+def test_pipeline_context_best_params_defaults_to_none():
+    assert _ctx().best_params is None
+
+
+def test_pipeline_context_best_params_settable():
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42,
+        is_classification=True, best_params={"max_depth": 4},
+    )
+    assert ctx.best_params == {"max_depth": 4}
+
+
+# --- _fit_with_early_stopping (BON-246) ---
+
+_XTR, _YTR, _XVA, _YVA = np.zeros((3, 2)), np.zeros(3), np.zeros((2, 2)), np.zeros(2)
+
+
+class _LGBMLikeModel:
+    """lightgbm sklearn API 흉내: fit(..., eval_set=, callbacks=)."""
+    def __init__(self):
+        self.fit_calls: list[dict] = []
+
+    def fit(self, X, y, sample_weight=None, eval_set=None, callbacks=None):
+        self.fit_calls.append({"eval_set": eval_set, "callbacks": callbacks})
+
+
+class _XGBLikeModel:
+    """xgboost 3.x sklearn API 흉내: fit(..., eval_set=) — early_stopping_rounds는 생성자 전용."""
+    def __init__(self):
+        self.fit_calls: list[dict] = []
+
+    def fit(self, X, y, sample_weight=None, eval_set=None, verbose=None):
+        self.fit_calls.append({"eval_set": eval_set})
+
+
+class _CatBoostLikeModel:
+    """catboost sklearn API 흉내: fit(..., eval_set=, early_stopping_rounds=)."""
+    def __init__(self):
+        self.fit_calls: list[dict] = []
+
+    def fit(self, X, y, eval_set=None, early_stopping_rounds=None):
+        self.fit_calls.append({"eval_set": eval_set, "early_stopping_rounds": early_stopping_rounds})
+
+
+class _HGBLikeModel:
+    """sklearn HistGradientBoosting 흉내: fit(..., X_val=, y_val=)."""
+    def __init__(self):
+        self.fit_calls: list[dict] = []
+
+    def fit(self, X, y, X_val=None, y_val=None):
+        self.fit_calls.append({"X_val": X_val, "y_val": y_val})
+
+
+class _PlainModel:
+    """eval_set/X_val 어느 것도 지원하지 않는 estimator."""
+    def __init__(self):
+        self.fit_calls: list[dict] = []
+
+    def fit(self, X, y):
+        self.fit_calls.append({})
+
+
+class _RaisingModel:
+    """eval_set 시그니처는 있지만 실제 호출 시 예외 — 폴백 검증용."""
+    def __init__(self):
+        self.fit_calls: list[dict] = []
+
+    def fit(self, X, y, eval_set=None):
+        if eval_set is not None:
+            raise TypeError("simulated version incompatibility")
+        self.fit_calls.append({})
+
+
+def test_fit_early_stopping_lightgbm_style_uses_callbacks():
+    model = _LGBMLikeModel()
+    _fit_with_early_stopping(model, _XTR, _YTR, _XVA, _YVA)
+    assert len(model.fit_calls) == 1
+    assert model.fit_calls[0]["eval_set"] == [(_XVA, _YVA)]
+    assert model.fit_calls[0]["callbacks"] is not None
+
+
+def test_fit_early_stopping_catboost_style_uses_rounds():
+    model = _CatBoostLikeModel()
+    _fit_with_early_stopping(model, _XTR, _YTR, _XVA, _YVA)
+    assert model.fit_calls[0]["eval_set"] == [(_XVA, _YVA)]
+    assert model.fit_calls[0]["early_stopping_rounds"] == _EARLY_STOPPING_ROUNDS
+
+
+def test_fit_early_stopping_xgboost_style_eval_set_only():
+    model = _XGBLikeModel()
+    _fit_with_early_stopping(model, _XTR, _YTR, _XVA, _YVA)
+    assert len(model.fit_calls) == 1
+    assert model.fit_calls[0]["eval_set"] == [(_XVA, _YVA)]
+
+
+def test_fit_early_stopping_sklearn_style_uses_x_val_y_val():
+    model = _HGBLikeModel()
+    _fit_with_early_stopping(model, _XTR, _YTR, _XVA, _YVA)
+    assert model.fit_calls[0]["X_val"] is _XVA
+    assert model.fit_calls[0]["y_val"] is _YVA
+
+
+def test_fit_early_stopping_plain_model_uses_plain_fit():
+    model = _PlainModel()
+    _fit_with_early_stopping(model, _XTR, _YTR, _XVA, _YVA)
+    assert model.fit_calls == [{}]
+
+
+def test_fit_early_stopping_falls_back_on_exception():
+    model = _RaisingModel()
+    _fit_with_early_stopping(model, _XTR, _YTR, _XVA, _YVA)
+    assert model.fit_calls == [{}]  # eval_set 시도 실패 후 plain fit로 폴백, 1회만 기록
 
 
 # --- preselect ---

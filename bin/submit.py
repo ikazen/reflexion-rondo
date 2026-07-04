@@ -24,15 +24,24 @@ _MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 RUNS_DIR = ROOT / "runs"
 CODE_SEP = "# " + "-" * 60
 
+# BON-249: 5-seed 예측 평균(bagging) — 단일 seed=42 fit 대비 거의 공짜인 LB 이득.
+_BAG_SEEDS = [42, 101, 7, 13, 29]
 
-def _load_best_code(competition_id: str, attempt_id: str | None) -> tuple[str, float, str]:
-    """(code_source, cv_score, attempt_id) 반환.
 
-    attempt_id 지정 시: 사용자가 명시적으로 고른 attempt(미확정이어도 허용) — 의도된 escape hatch.
+def _load_best_code(
+    competition_id: str, attempt_id: str | None
+) -> tuple[str, float, str, str | None]:
+    """(code_source, cv_score, attempt_id, pipeline_sha256) 반환.
+
+    attempt_id 지정 시: 사용자가 명시적으로 고른 attempt(미확정이어도 허용) — 의도된 escape
+    hatch. pipeline_sha256은 None(무결성 검증 스킵 — raw.pipelines가 아니라 raw.attempts의
+    개별 code_path라 대조할 신뢰 해시가 없음, 명시적 지정이므로 허용).
     미지정(자동 선택) 시: BON-245(a) — confirmed 파이프라인(raw.pipelines, cross-seed 통과분)만
     소스로 쓴다. _load_pipeline()이 실제 제출하는 모델도 confirmed 소스에서 materialize된
     것이므로, 리포팅되는 cv_score/attempt_id도 같은 소스여야 한다. raw.attempts all-time
     max는 미확정 attempt를 가리킬 수 있어 리포팅 불일치를 낳았다.
+    pipeline_sha256은 BON-255 — MinIO best_pipeline.py 무결성 검증용 신뢰 해시(raw.pipelines,
+    materialize 시점 기록).
     """
     import sys
     sys.path.insert(0, str(ROOT))
@@ -54,11 +63,11 @@ def _load_best_code(competition_id: str, attempt_id: str | None) -> tuple[str, f
             raise FileNotFoundError(f"code not found: {code_path}")
         sep = CODE_SEP + "\n"
         source = content.split(sep, 1)[1].strip() if sep in content else content.strip()
-        return source, cv_score, aid
+        return source, cv_score, aid, None
 
     row = conn.execute(
         """
-        select p.code, p.cv_score, p.attempt_id
+        select p.code, p.cv_score, p.attempt_id, p.pipeline_sha256
         from raw.pipelines p
         join raw.competitions c using (competition_id)
         where p.competition_id = %s
@@ -74,8 +83,8 @@ def _load_best_code(competition_id: str, attempt_id: str | None) -> tuple[str, f
             f"No confirmed pipeline for {competition_id} — "
             "use --attempt-id to submit an unconfirmed attempt explicitly"
         )
-    source, cv_score, aid = row
-    return source.strip(), cv_score, aid
+    source, cv_score, aid, pipeline_sha256 = row
+    return source.strip(), cv_score, aid, pipeline_sha256
 
 
 def _read_csv(comp: object, name: str) -> pl.DataFrame:
@@ -99,12 +108,20 @@ _HOOK_NAMES = (
 )
 
 
-def _load_pipeline(competition_id: str, extra_source: str | None = None) -> object:
+def _load_pipeline(
+    competition_id: str,
+    extra_source: str | None = None,
+    expected_sha256: str | None = None,
+) -> object:
     """Load the materialized best pipeline from MinIO.
 
     extra_source: attempt source exec'd first so helper classes defined there
     (e.g. WeightedEnsemble) are available when the stored best pipeline runs.
     Needed for pipelines materialized before BON-184 fix (missing ClassDef support).
+
+    expected_sha256: BON-255 — MinIO kaggle 버킷은 익명 write 허용이라 best_pipeline.py가
+    변조될 수 있다. raw.pipelines(신뢰된 Postgres 사본)에 기록된 해시와 대조해 불일치 시
+    조용히 진행하지 않고 즉시 raise한다. None이면 검증 스킵(예: --attempt-id 명시 경로).
     """
     import sys
     sys.path.insert(0, str(ROOT))
@@ -114,6 +131,16 @@ def _load_pipeline(competition_id: str, extra_source: str | None = None) -> obje
     best_source = download_best_pipeline(competition_id)
     if not best_source:
         return BasePipeline()
+
+    if expected_sha256:
+        import hashlib
+        actual_sha256 = hashlib.sha256(best_source.encode()).hexdigest()
+        if actual_sha256 != expected_sha256:
+            raise RuntimeError(
+                f"best_pipeline.py integrity check failed for {competition_id}: "
+                f"sha256 mismatch (expected {expected_sha256[:12]}…, got {actual_sha256[:12]}…) "
+                "— MinIO kaggle 버킷 변조 가능성 (BON-255). 확인 없이 exec를 중단한다."
+            )
 
     ns: dict = {}
     if extra_source:
@@ -155,6 +182,46 @@ def _impute_train_test_median(train_np, test_np):
     return train_np, test_np
 
 
+def _bagged_predict(
+    pipeline: object,
+    params: dict,
+    X_train_np: np.ndarray,
+    y_train: np.ndarray,
+    X_test_np: np.ndarray,
+    ctx: object,
+    metric_class: str,
+    bag_seeds: list[int] = _BAG_SEEDS,
+) -> np.ndarray:
+    """BON-249: seed별 build_model+fit 반복 후 raw 예측 평균(bagging).
+
+    preprocess/feature_transform은 seed 무관이라 호출부에서 1회만 수행되고,
+    이 함수는 이미 변환된 X_train_np/X_test_np를 받아 모델 fit만 반복한다.
+    """
+    from evaluator.harness import PipelineContext
+    bag_preds = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for bag_seed in bag_seeds:
+            bag_ctx = PipelineContext(
+                target_col=ctx.target_col,
+                metric=ctx.metric,
+                n_splits=ctx.n_splits,
+                seed=bag_seed,
+                is_classification=ctx.is_classification,
+                prev_best=ctx.prev_best,
+                action_type=ctx.action_type,
+                best_params=ctx.best_params,
+            )
+            model = pipeline.build_model(params, bag_ctx)
+            # BON-246: 여기선 early stopping(harness._fit_with_early_stopping) 미적용 —
+            # 전체 train으로 최종 fit하는 자리라 라벨 있는 held-out validation이 없음
+            # (test_np는 unlabeled). 억지로 train 일부를 떼면 최종 제출 방법론 자체가
+            # 바뀌므로 이번 범위에서 제외 — CV 경로(harness.py)만 적용.
+            model.fit(X_train_np, y_train)
+            bag_preds.append(_predict_raw(model, X_test_np, metric_class))
+    return np.mean(bag_preds, axis=0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--competition", "-c", required=True)
@@ -168,11 +235,11 @@ def main() -> None:
 
     comp = importlib.import_module(f"config.competitions.{args.competition}")
 
-    source, cv_score, attempt_id = _load_best_code(comp.COMPETITION_ID, args.attempt_id)
+    source, cv_score, attempt_id, pipeline_sha256 = _load_best_code(comp.COMPETITION_ID, args.attempt_id)
     print(f"best attempt: {attempt_id[:8]}  cv={cv_score:.5f}")
 
     from evaluator.harness import PipelineContext, preselect_params
-    pipeline = _load_pipeline(comp.COMPETITION_ID, extra_source=source)
+    pipeline = _load_pipeline(comp.COMPETITION_ID, extra_source=source, expected_sha256=pipeline_sha256)
     ctx = PipelineContext(
         target_col=comp.TARGET,
         metric=comp.METRIC,
@@ -201,15 +268,10 @@ def main() -> None:
         X_train.to_numpy().astype(float), X_test.to_numpy().astype(float)
     )
 
-    model = pipeline.build_model(params, ctx)
-    model.fit(X_train_np, y_train)
-
     from evaluator.metrics import get as get_metric
     _, _, metric_class = get_metric(comp.METRIC)
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        raw_preds = _predict_raw(model, X_test_np, metric_class)
+    raw_preds = _bagged_predict(pipeline, params, X_train_np, y_train, X_test_np, ctx, metric_class)
     preds = pipeline.postprocess_predictions(raw_preds, ctx)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
