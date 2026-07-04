@@ -225,6 +225,21 @@ FROM raw.attempts a
 JOIN raw.competitions c USING (competition_id)
 WHERE a.cv_score IS NOT NULL;
 
+-- BON-250: 고정 seed=42 fold에 수백 attempt가 최적화되면서 교훈·밴딧·전략 신호가
+-- seed-42 노이즈를 학습할 위험을 감시하는 추세 뷰. overfit_gap 양수 = holdout이
+-- CV보다 나쁨(metric_sign으로 방향 통일) = drift 의심.
+CREATE OR REPLACE VIEW holdout_cv_gap_trend AS
+SELECT
+    a.attempt_id,
+    a.competition_id,
+    a.run_ts,
+    a.cv_score,
+    a.holdout_score,
+    c.metric_sign * (a.cv_score - a.holdout_score) AS overfit_gap
+FROM raw.attempts a
+JOIN raw.competitions c USING (competition_id)
+WHERE a.holdout_score IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS raw.kaggle_submissions (
     submission_id  text PRIMARY KEY,
     competition_id text NOT NULL,
