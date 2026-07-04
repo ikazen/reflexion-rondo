@@ -22,8 +22,41 @@ _LEAK_PERFECT_LOW = 1e-9
 _EARLY_STOPPING_ROUNDS = 50
 
 
-def is_significant_gain(gain_vs_best: float | None, cv_fold_var: float) -> bool:
-    """gain이 fold noise(LABEL_Z * fold_std)보다 큰 경우만 True — 라벨 jump 기준과 동일."""
+def is_significant_gain(
+    gain_vs_best: float | None,
+    cv_fold_var: float,
+    candidate_fold_scores: list[float] | None = None,
+    baseline_fold_scores: list[float] | None = None,
+    metric_sign: int = 1,
+) -> bool:
+    """gain이 fold noise보다 큰 경우만 True.
+
+    BON-247: candidate/baseline이 같은 seed·같은 fold split에서 나온 fold_scores 쌍을
+    받으면 paired per-fold delta의 t-통계로 판정한다(fold 난이도가 상관되므로
+    delta 분산이 절대 분산보다 훨씬 작아 더 민감) — LABEL_Z를 그대로 임계값으로 재사용.
+
+    baseline 캐시가 없거나(콜드스타트) fold 수가 안 맞으면 기존 절대-gain 방식
+    (gain_vs_best > LABEL_Z * sqrt(cv_fold_var))으로 폴백한다.
+    """
+    if (
+        candidate_fold_scores
+        and baseline_fold_scores
+        and len(candidate_fold_scores) == len(baseline_fold_scores)
+        and len(candidate_fold_scores) >= 2
+    ):
+        deltas = [
+            metric_sign * (c - b)
+            for c, b in zip(candidate_fold_scores, baseline_fold_scores)
+        ]
+        n = len(deltas)
+        mean_delta = sum(deltas) / n
+        variance = sum((d - mean_delta) ** 2 for d in deltas) / (n - 1)
+        std_delta = variance ** 0.5
+        if std_delta == 0:
+            return mean_delta > 0
+        t_stat = mean_delta / (std_delta / (n ** 0.5))
+        return t_stat > LABEL_Z
+
     if gain_vs_best is None:
         return False
     return gain_vs_best > LABEL_Z * (cv_fold_var ** 0.5)
@@ -99,6 +132,10 @@ class EvalResult:
     gain_vs_best: float | None
     feature_importance: dict | None = None
     is_noop_tie: bool = False
+    # BON-247 선행 fix: preselect_params가 고른 params — 이전엔 evaluate_pipeline
+    # 내부에서만 쓰이고 반환되지 않아 ctx.best_params(BON-249)의 데이터 소스가
+    # 항상 비어 있었다. persist까지 흘려보내 다음 attempt가 참고할 수 있게 한다.
+    selected_params: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,4 +407,5 @@ def evaluate_pipeline(
         gain_vs_best=gain_vs_best,
         feature_importance=feature_importance,
         is_noop_tie=is_noop_tie,
+        selected_params=selected_params,
     )

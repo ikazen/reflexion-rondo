@@ -59,6 +59,7 @@ class IsolatedResult:
     feature_importance: dict | None = None
     holdout_score: float | None = None
     is_noop_tie: bool = False
+    selected_params: dict | None = None
 
 
 def eval_isolated(
@@ -140,6 +141,7 @@ def eval_isolated(
             feature_importance=out.get("feature_importance"),
             holdout_score=out.get("holdout_score"),
             is_noop_tie=out.get("is_noop_tie", False),
+            selected_params=out.get("selected_params"),
         )
 
 

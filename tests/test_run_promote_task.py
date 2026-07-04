@@ -129,9 +129,9 @@ _WINNER_CV = 0.85
 # attempt_id, gain_vs_best, cv_score, label, error_trace,
 # hypothesis, action_type, reflection_ids, cv_fold_var, code_path
 _ATTEMPT_ROWS = [
-    ("w0000000", 0.05, _WINNER_CV, "jump", None, "hyp-w", "model_swap", [], 0.0, "s3://w"),
-    ("l1111111", 0.01, 0.81, "neutral", None, "hyp-1", "feature_engineering", [], 0.0, "s3://l1"),
-    ("l2222222", -0.01, 0.79, "neutral", None, "hyp-2", "preprocessing", [], 0.0, "s3://l2"),
+    ("w0000000", 0.05, _WINNER_CV, "jump", None, "hyp-w", "model_swap", [], 0.0, "s3://w", None),
+    ("l1111111", 0.01, 0.81, "neutral", None, "hyp-1", "feature_engineering", [], 0.0, "s3://l1", None),
+    ("l2222222", -0.01, 0.79, "neutral", None, "hyp-2", "preprocessing", [], 0.0, "s3://l2", None),
 ]
 
 
@@ -173,8 +173,15 @@ class _Conn:
         pass
 
 
-def _run_promote_with_mocks(confirm_result, reflect_mock, confirm_mock) -> "_Conn":
-    """모든 외부 의존을 mock 처리하고 run_promote_task.main()을 1회 실행. 사용된 conn을 반환."""
+def _run_promote_with_mocks(
+    confirm_result, reflect_mock, confirm_mock, eval_isolated_mock=None
+) -> "_Conn":
+    """모든 외부 의존을 mock 처리하고 run_promote_task.main()을 1회 실행. 사용된 conn을 반환.
+
+    conn.insert_pipeline_mock / conn.upload_best_pipeline_mock / conn.eval_isolated_mock에
+    각 mock을 붙여둔다 — BON-256 merge-verify 테스트가 호출 여부를 검증할 수 있도록.
+    eval_isolated_mock 미지정 시 winner_cv(_WINNER_CV)와 일치하는 기본 성공 응답으로 채운다.
+    """
     fake_df = MagicMock(name="train_df")
     fake_df.drop.return_value = fake_df
 
@@ -186,20 +193,26 @@ def _run_promote_with_mocks(confirm_result, reflect_mock, confirm_mock) -> "_Con
     confirm_mock.return_value = confirm_result
     conn = _Conn()
 
+    if eval_isolated_mock is None:
+        eval_isolated_mock = MagicMock(
+            return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None)
+        )
+
     argv = ["run_promote_task", "--queue-id", "qid", "--run-id", "rid", "--competition", _SLUG]
     sys.path.insert(0, str(ROOT))
     try:
         with patch.object(sys, "argv", argv), \
              patch("store.db.connect", return_value=conn), \
-             patch("store.db.insert_pipeline"), \
+             patch("store.db.insert_pipeline") as insert_pipeline_mock, \
              patch("store.s3_code.download", return_value="def f():\n    return 1\n"), \
              patch("store.s3_code.download_best_pipeline", return_value=None), \
-             patch("store.s3_code.upload_best_pipeline"), \
+             patch("store.s3_code.upload_best_pipeline") as upload_best_pipeline_mock, \
              patch("cycle.materialize.materialize_best_pipeline", return_value="code"), \
              patch("cycle.promotion.confirm_and_measure", confirm_mock), \
              patch("agents.reflector.reflect", reflect_mock), \
              patch("evaluator.harness.is_significant_gain", return_value=True), \
              patch("evaluator.harness.split_audit_holdout", return_value=(fake_df, fake_df)), \
+             patch("runtime.isolate.eval_isolated", eval_isolated_mock), \
              patch("polars.read_csv", return_value=fake_df), \
              patch("importlib.import_module", side_effect=fake_import):
             import bin.run_promote_task as rpt
@@ -211,6 +224,9 @@ def _run_promote_with_mocks(confirm_result, reflect_mock, confirm_mock) -> "_Con
     finally:
         if str(ROOT) in sys.path:
             sys.path.remove(str(ROOT))
+    conn.insert_pipeline_mock = insert_pipeline_mock
+    conn.upload_best_pipeline_mock = upload_best_pipeline_mock
+    conn.eval_isolated_mock = eval_isolated_mock
     return conn
 
 
@@ -255,3 +271,58 @@ def test_super_cycle_context_deleted_after_read() -> None:
     )
     delete_calls = [s for s in conn.executed if "DELETE FROM raw.super_cycle_context" in s]
     assert len(delete_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# BON-256: merge-verify eval
+# ---------------------------------------------------------------------------
+
+def test_merge_verify_matching_cv_allows_promotion() -> None:
+    """병합본 cv_score가 winner cv_score와 (허용오차 내) 일치하면 정상 승격된다."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    eval_isolated_mock = MagicMock(
+        return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None)
+    )
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
+        reflect_mock,
+        confirm_mock,
+        eval_isolated_mock=eval_isolated_mock,
+    )
+    assert conn.insert_pipeline_mock.call_count == 1
+    assert conn.upload_best_pipeline_mock.call_count == 1
+
+
+def test_merge_verify_mismatched_cv_blocks_promotion() -> None:
+    """병합본 cv_score가 winner cv_score와 크게 다르면(병합 손상 의심) 승격을 스킵한다."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    eval_isolated_mock = MagicMock(
+        return_value=SimpleNamespace(cv_score=_WINNER_CV - 0.3, error_trace=None)
+    )
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
+        reflect_mock,
+        confirm_mock,
+        eval_isolated_mock=eval_isolated_mock,
+    )
+    assert conn.insert_pipeline_mock.call_count == 0
+    assert conn.upload_best_pipeline_mock.call_count == 0
+
+
+def test_merge_verify_eval_error_blocks_promotion() -> None:
+    """병합본 평가 자체가 실패하면(예: undefined-name) 승격을 스킵한다."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    eval_isolated_mock = MagicMock(
+        return_value=SimpleNamespace(cv_score=None, error_trace="NameError: WeightedEnsemble")
+    )
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
+        reflect_mock,
+        confirm_mock,
+        eval_isolated_mock=eval_isolated_mock,
+    )
+    assert conn.insert_pipeline_mock.call_count == 0
+    assert conn.upload_best_pipeline_mock.call_count == 0

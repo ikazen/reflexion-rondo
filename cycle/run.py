@@ -24,6 +24,7 @@ from cycle.materialize import materialize_best_pipeline
 from cycle.promotion import confirm_and_measure
 from evaluator.contract import validate_patch
 from evaluator.harness import is_significant_gain
+from evaluator.metrics import get as get_metric
 from memory.retriever import EmbeddingUnavailableError, search
 from runtime.isolate import eval_isolated
 from store.db import PgConn, insert_attempt, insert_pipeline
@@ -135,6 +136,32 @@ def _prev_best_params(conn: PgConn, competition_id: str) -> dict | None:
         return None
     val = row[0]
     return val if isinstance(val, dict) else json.loads(val)
+
+
+def _prev_best_fold_scores(conn: PgConn, competition_id: str) -> list[float] | None:
+    """확정 파이프라인(raw.pipelines)에 연결된 attempt의 fold_scores.
+
+    paired per-fold 유의성 검정(is_significant_gain, BON-247)의 baseline으로 쓰인다.
+    같은 seed로 생성된 fold split은 결정적이라 candidate의 fold_scores와 인덱스별로
+    바로 대응시킬 수 있다. 없으면(콜드스타트) None — 호출부가 절대-gain으로 폴백.
+    """
+    row = conn.execute(
+        """
+        select a.fold_scores
+        from raw.pipelines p
+        join raw.competitions c using (competition_id)
+        join raw.attempts a using (attempt_id)
+        where p.competition_id = %s
+          and p.cv_score is not null
+        order by c.metric_sign * p.cv_score desc
+        limit 1
+        """,
+        [competition_id],
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    val = row[0]
+    return val if isinstance(val, list) else json.loads(val)
 
 
 def _last_hypothesis(conn: PgConn, competition_id: str) -> str | None:
@@ -364,6 +391,8 @@ def run_attempt_core(
     gain_vs_best = None
     feature_importance: dict | None = None
     is_noop_tie = False
+    fold_scores: list[float] | None = None
+    selected_params: dict | None = None
 
     if not error_trace:
         for _eval_i in range(2):
@@ -387,6 +416,8 @@ def run_attempt_core(
                 gain_vs_best = iso.gain_vs_best
                 feature_importance = iso.feature_importance
                 is_noop_tie = iso.is_noop_tie
+                fold_scores = iso.fold_scores
+                selected_params = iso.selected_params
                 gain_str = f"{gain_vs_best:+.6f}" if gain_vs_best is not None else "N/A"
                 _LOG.info(
                     "eval ok in %.1fs cv=%.6f fold_var=%.6f gain=%s label=%s",
@@ -447,6 +478,10 @@ def run_attempt_core(
         "duration_sec":     round(duration_sec, 1),
         "code_path":        str(code_path),
         "retries":          retries,
+        # BON-247 선행 fix: 다음 attempt/승격 게이트가 이 attempt의 fold_scores/params를
+        # 참고할 수 있도록 영속화 (이전엔 EvalResult 안에서만 존재하고 버려졌음).
+        "fold_scores":      json.dumps(fold_scores) if fold_scores is not None else None,
+        "params":           json.dumps(selected_params) if selected_params else None,
     }
     if super_cycle_id is not None:
         row["super_cycle_id"] = super_cycle_id
@@ -456,7 +491,14 @@ def run_attempt_core(
 
     # Save pipeline if improved — also materialize as new best baseline.
     # defer_promotion=True: caller (super_cycle / Airflow promote task) handles winner-only promotion.
-    if not defer_promotion and is_significant_gain(gain_vs_best, cv_fold_var) and not error_trace:
+    _, _metric_sign, _ = get_metric(config.metric)
+    _significant = is_significant_gain(
+        gain_vs_best, cv_fold_var,
+        candidate_fold_scores=fold_scores,
+        baseline_fold_scores=_prev_best_fold_scores(conn, config.competition_id),
+        metric_sign=_metric_sign,
+    )
+    if not defer_promotion and _significant and not error_trace:
         confirm = confirm_and_measure(
             source=source,
             best_source=prev_code,

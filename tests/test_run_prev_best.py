@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, call
 
-from cycle.run import _prev_best, _prev_best_params
+from cycle.run import _prev_best, _prev_best_fold_scores, _prev_best_params
 
 
 def _conn_seq(*results) -> MagicMock:
@@ -83,6 +83,40 @@ def test_prev_best_params_null_params_returns_none():
 def test_prev_best_params_joins_attempts_and_pipelines():
     conn = _conn_seq(({"a": 1},))
     _prev_best_params(conn, "s4e1")
+    sql: str = conn.execute.call_args_list[0][0][0]
+    assert "raw.pipelines" in sql
+    assert "raw.attempts" in sql
+
+
+# --- _prev_best_fold_scores (BON-247) ---
+
+def test_prev_best_fold_scores_returns_list_row():
+    conn = _conn_seq(([0.9, 0.91, 0.89],))
+    result = _prev_best_fold_scores(conn, "s4e1")
+    assert result == [0.9, 0.91, 0.89]
+
+
+def test_prev_best_fold_scores_parses_json_string():
+    conn = _conn_seq(("[0.9, 0.91, 0.89]",))
+    result = _prev_best_fold_scores(conn, "s4e1")
+    assert result == [0.9, 0.91, 0.89]
+
+
+def test_prev_best_fold_scores_no_row_returns_none():
+    conn = _conn_seq(None)
+    result = _prev_best_fold_scores(conn, "s4e1")
+    assert result is None
+
+
+def test_prev_best_fold_scores_null_returns_none():
+    conn = _conn_seq((None,))
+    result = _prev_best_fold_scores(conn, "s4e1")
+    assert result is None
+
+
+def test_prev_best_fold_scores_joins_attempts_and_pipelines():
+    conn = _conn_seq(([0.9],))
+    _prev_best_fold_scores(conn, "s4e1")
     sql: str = conn.execute.call_args_list[0][0][0]
     assert "raw.pipelines" in sql
     assert "raw.attempts" in sql
