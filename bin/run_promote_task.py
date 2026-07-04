@@ -23,6 +23,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 _MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
+# BON-256: 병합본(materialize_best_pipeline 산출물) cv_score가 winner 자신의 기록된
+# cv_score와 크게 다르면 병합 손상(BON-197/233류) 신호 — 같은 seed·fold라 결정적
+# 재현이면 거의 bit-identical해야 한다. 부동소수 연산차만 허용하는 엄격한 허용오차.
+_MERGE_VERIFY_TOLERANCE = 1e-6
 
 
 def main() -> None:
@@ -43,6 +47,7 @@ def main() -> None:
     from cycle.promotion import confirm_and_measure
     from evaluator.harness import is_significant_gain, split_audit_holdout
     from memory.retriever import EmbeddingUnavailableError
+    from runtime.isolate import eval_isolated
     from store.s3_code import download as _code_download
     from store.s3_code import download_best_pipeline, upload_best_pipeline
     from cycle.run import _CODE_HEADER_SEP, _prev_best_fold_scores
@@ -210,20 +215,54 @@ def main() -> None:
                 # 문자열) 기준 (BON-255). raw.pipelines.code(winner source)와는 다른 문자열.
                 materialized = materialize_best_pipeline(current_best, winner_source)
                 pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
-                with conn.transaction():
-                    insert_pipeline(
-                        conn,
-                        pipeline_id=str(_uuid.uuid4()),
-                        attempt_id=winner_row[0],
-                        competition_id=competition_id,
-                        fingerprint_snapshot=fp_dict,
-                        code=winner_source,
-                        cv_score=winner_row[2],
-                        gain_vs_best=winner_gain,
-                        pipeline_sha256=pipeline_sha256,
+
+                # BON-256: merge-verify — 병합본을 실제로 1회 평가해 winner 자신의 cv_score와
+                # 어긋나지 않는지 확인(정적 AST 검증만으로는 BON-197/233류 손상을 못 잡음).
+                # train90 없으면(train 로드 실패) 확인 불가 — 기존 confirm/holdout 스킵과
+                # 같은 원칙으로 검증을 건너뛰고 진행(보수적으로 막지 않음, 기존 동작 유지).
+                merge_ok = True
+                if train90 is not None:
+                    merge_eval = eval_isolated(
+                        source=materialized,
+                        train=train90,
+                        target_col=comp.TARGET,
+                        metric=comp.METRIC,
+                        prev_best=None,
+                        n_splits=n_splits,
+                        seed=42,
+                        is_classification=is_classification,
                     )
-                upload_best_pipeline(competition_id, materialized)
-                print(f"[run_promote_task] best pipeline materialized for {competition_id}")
+                    if merge_eval.error_trace or merge_eval.cv_score is None:
+                        merge_ok = False
+                        print(
+                            f"[run_promote_task] merge-verify 실패(평가 에러) — 승격 스킵: "
+                            f"{(merge_eval.error_trace or '')[:200]}"
+                        )
+                    else:
+                        merge_delta = abs(merge_eval.cv_score - winner_row[2])
+                        if merge_delta > _MERGE_VERIFY_TOLERANCE:
+                            merge_ok = False
+                            print(
+                                f"[run_promote_task] merge-verify 실패 — 승격 스킵: "
+                                f"merged_cv={merge_eval.cv_score:.6f} winner_cv={winner_row[2]:.6f} "
+                                f"delta={merge_delta:.6f} (tolerance={_MERGE_VERIFY_TOLERANCE})"
+                            )
+
+                if merge_ok:
+                    with conn.transaction():
+                        insert_pipeline(
+                            conn,
+                            pipeline_id=str(_uuid.uuid4()),
+                            attempt_id=winner_row[0],
+                            competition_id=competition_id,
+                            fingerprint_snapshot=fp_dict,
+                            code=winner_source,
+                            cv_score=winner_row[2],
+                            gain_vs_best=winner_gain,
+                            pipeline_sha256=pipeline_sha256,
+                        )
+                    upload_best_pipeline(competition_id, materialized)
+                    print(f"[run_promote_task] best pipeline materialized for {competition_id}")
 
     for i, r in enumerate(rows):
         (attempt_id, gain_vs_best, cv_score, label, error_trace,
