@@ -28,6 +28,7 @@ from bin.api import DaemonState, create_app
 from cycle.run import CycleConfig, run_cycle
 from memory.retriever import EmbeddingUnavailableError
 from store.db import connect, ensure_competition
+from store.train_data import load_train
 
 POLL_INTERVAL = 10  # 빈 큐 대기 간격 (초)
 MAX_CONSECUTIVE_CYCLE_FAILURES = int(os.getenv("RONDO_MAX_CONSECUTIVE_FAILURES", "5"))
@@ -231,7 +232,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
     # airflow 모드는 task 컨테이너 안에서 데이터를 로드하고 super-cycle을 실행한다.
     train: pl.DataFrame | None = None
     if mode == "direct":
-        train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
+        train = load_train(comp)
         ensure_competition(
             conn,
             competition_id=comp.COMPETITION_ID,

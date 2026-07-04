@@ -17,12 +17,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
-_MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 # BON-256: 병합본(materialize_best_pipeline 산출물) cv_score가 winner 자신의 기록된
 # cv_score와 크게 다르면 병합 손상(BON-197/233류) 신호 — 같은 seed·fold라 결정적
 # 재현이면 거의 bit-identical해야 한다. 부동소수 연산차만 허용하는 엄격한 허용오차.
@@ -50,6 +48,7 @@ def main() -> None:
     from runtime.isolate import eval_isolated
     from store.s3_code import download as _code_download
     from store.s3_code import download_best_pipeline, upload_best_pipeline
+    from store.train_data import load_train
     from cycle.run import _CODE_HEADER_SEP, _prev_best_fold_scores
 
     conn = connect(apply_schema=False)
@@ -158,13 +157,7 @@ def main() -> None:
                         f" != DB competition_id={competition_id!r}",
                         file=sys.stderr,
                     )
-                s3_path = getattr(comp, "S3_DATA_PATH", None)
-                if s3_path and _MINIO_ENDPOINT:
-                    full_train = pl.read_csv(
-                        f"{_MINIO_ENDPOINT}/kaggle/{s3_path}train.csv"
-                    ).drop(comp.DROP_COLS)
-                else:
-                    full_train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
+                full_train = load_train(comp)
                 train90, holdout10 = split_audit_holdout(
                     full_train, comp.TARGET, comp.IS_CLASSIFICATION
                 )

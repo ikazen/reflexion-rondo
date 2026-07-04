@@ -13,14 +13,10 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
-import os
 import sys
 from pathlib import Path
 
-import polars as pl
-
 ROOT = Path(__file__).parent.parent
-_MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 
 
 def main() -> None:
@@ -35,6 +31,7 @@ def main() -> None:
     sys.path.insert(0, str(ROOT))
 
     from store.db import connect
+    from store.train_data import load_train
     from cycle.run import CycleConfig, run_attempt_core
     from evaluator.harness import split_audit_holdout
 
@@ -70,13 +67,7 @@ def main() -> None:
         print(f"[run_attempt_task] competition config not found: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    s3_path = getattr(comp, "S3_DATA_PATH", None)
-    if s3_path and _MINIO_ENDPOINT:
-        full_train = pl.read_csv(
-            f"{_MINIO_ENDPOINT}/kaggle/{s3_path}train.csv"
-        ).drop(comp.DROP_COLS)
-    else:
-        full_train = pl.read_csv(comp.DATA_DIR / "train.csv").drop(comp.DROP_COLS)
+    full_train = load_train(comp)
     train, holdout = split_audit_holdout(full_train, comp.TARGET, comp.IS_CLASSIFICATION)
 
     config = CycleConfig(
