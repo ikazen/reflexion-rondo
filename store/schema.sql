@@ -41,6 +41,11 @@ ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS was_promoted boolean;
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS holdout_score double precision;
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS confirm_seed_gains jsonb;
 
+-- BON-247 선행 fix: attempt별 fold_scores 영속화 — paired per-fold 유의성 검정이
+-- 이전 confirmed best의 fold_scores를 참고하려면 승격 시점이 아니라 매 attempt마다
+-- 기록돼 있어야 한다(raw.pipelines가 attempt_id로 join해 재사용).
+ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS fold_scores jsonb;
+
 -- BON-255: materialize 시 sha256 기록 — submit.py exec 전 MinIO 다운로드본과 대조해
 -- 익명 write 버킷 변조를 탐지한다. code 컬럼(raw.attempts 원본)이 아니라
 -- 실제 exec되는 materialized best_pipeline.py 내용의 해시.

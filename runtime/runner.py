@@ -146,6 +146,7 @@ def main() -> None:
         "gain_vs_best": result.gain_vs_best,
         "feature_importance": result.feature_importance,
         "is_noop_tie": result.is_noop_tie,
+        "selected_params": result.selected_params,
         "error_trace": None,
         "holdout_score": holdout_score,
     })

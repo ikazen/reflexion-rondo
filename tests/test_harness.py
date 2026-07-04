@@ -6,7 +6,7 @@ import polars as pl
 
 from config.settings import LABEL_Z
 from evaluator.harness import (
-    BasePipeline, PatchedPipeline, PipelineContext,
+    BasePipeline, EvalResult, PatchedPipeline, PipelineContext,
     evaluate_pipeline, preselect_params, is_significant_gain,
     split_audit_holdout,
     _LEAK_PERFECT_HIGH,
@@ -202,6 +202,20 @@ def test_fit_early_stopping_falls_back_on_exception():
     model = _RaisingModel()
     _fit_with_early_stopping(model, _XTR, _YTR, _XVA, _YVA)
     assert model.fit_calls == [{}]  # eval_set 시도 실패 후 plain fit로 폴백, 1회만 기록
+
+
+# --- EvalResult.selected_params 배관 (BON-247 선행 fix) ---
+
+def test_evaluate_pipeline_returns_selected_params():
+    """preselect_params가 고른 params가 EvalResult까지 흘러나와야 ctx.best_params(BON-249)의
+    데이터 소스로 쓸 수 있다 — 이전엔 evaluate_pipeline 내부에서만 쓰이고 버려졌다."""
+    result = evaluate_pipeline(_SingleCandidate(), _make_df(), _ctx())
+    assert result.selected_params == {"max_iter": 50}
+
+
+def test_eval_result_selected_params_defaults_to_empty_dict():
+    result = EvalResult(cv_score=0.9, cv_fold_var=0.0, fold_scores=[0.9], label="neutral", gain_vs_best=None)
+    assert result.selected_params == {}
 
 
 # --- preselect ---

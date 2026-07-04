@@ -99,6 +99,10 @@ class EvalResult:
     gain_vs_best: float | None
     feature_importance: dict | None = None
     is_noop_tie: bool = False
+    # BON-247 선행 fix: preselect_params가 고른 params — 이전엔 evaluate_pipeline
+    # 내부에서만 쓰이고 반환되지 않아 ctx.best_params(BON-249)의 데이터 소스가
+    # 항상 비어 있었다. persist까지 흘려보내 다음 attempt가 참고할 수 있게 한다.
+    selected_params: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,4 +374,5 @@ def evaluate_pipeline(
         gain_vs_best=gain_vs_best,
         feature_importance=feature_importance,
         is_noop_tie=is_noop_tie,
+        selected_params=selected_params,
     )

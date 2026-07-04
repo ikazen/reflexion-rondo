@@ -364,6 +364,8 @@ def run_attempt_core(
     gain_vs_best = None
     feature_importance: dict | None = None
     is_noop_tie = False
+    fold_scores: list[float] | None = None
+    selected_params: dict | None = None
 
     if not error_trace:
         for _eval_i in range(2):
@@ -387,6 +389,8 @@ def run_attempt_core(
                 gain_vs_best = iso.gain_vs_best
                 feature_importance = iso.feature_importance
                 is_noop_tie = iso.is_noop_tie
+                fold_scores = iso.fold_scores
+                selected_params = iso.selected_params
                 gain_str = f"{gain_vs_best:+.6f}" if gain_vs_best is not None else "N/A"
                 _LOG.info(
                     "eval ok in %.1fs cv=%.6f fold_var=%.6f gain=%s label=%s",
@@ -447,6 +451,10 @@ def run_attempt_core(
         "duration_sec":     round(duration_sec, 1),
         "code_path":        str(code_path),
         "retries":          retries,
+        # BON-247 선행 fix: 다음 attempt/승격 게이트가 이 attempt의 fold_scores/params를
+        # 참고할 수 있도록 영속화 (이전엔 EvalResult 안에서만 존재하고 버려졌음).
+        "fold_scores":      json.dumps(fold_scores) if fold_scores is not None else None,
+        "params":           json.dumps(selected_params) if selected_params else None,
     }
     if super_cycle_id is not None:
         row["super_cycle_id"] = super_cycle_id

@@ -71,7 +71,8 @@ def main() -> None:
     rows = conn.execute(
         """
         SELECT attempt_id, gain_vs_best, cv_score, label, error_trace,
-               hypothesis, action_type, reflection_ids, cv_fold_var, code_path
+               hypothesis, action_type, reflection_ids, cv_fold_var, code_path,
+               fold_scores
         FROM raw.attempts
         WHERE super_cycle_id = %s
         ORDER BY run_ts
