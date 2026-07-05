@@ -10,7 +10,7 @@ _METRIC_CLASS: dict[str, str] = {
     "auc": "binary_proba", "logloss": "binary_proba",
     "rmse": "regression_error", "mae": "regression_error", "rmsle": "regression_error",
     "accuracy": "classification", "f1": "classification",
-    "qwk": "classification",
+    "qwk": "classification", "balanced_accuracy": "classification",
 }
 _SIZE_RANK: dict[str, int] = {"tiny": 0, "small": 1, "mid": 2, "large": 3}
 
