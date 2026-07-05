@@ -395,6 +395,9 @@ def evaluate_pipeline(
             label = "regression"
         else:
             label = "neutral"
+        # BON-267: 이 절대-마진 jump는 cycle/run.py가 promotion과 동일한
+        # is_significant_gain(paired per-fold t-test) 기준으로 최종 재판정/강등한다 —
+        # 여기 label은 잠정값이다. (수렴한 대회에선 이 절대 마진에 거의 도달 못 함.)
 
     feature_importance: dict | None = None
     if compute_importance and fold_pi_means and feature_names:
