@@ -21,6 +21,7 @@ _CASES = [
     ("accuracy", _Y_CLS, _P_CLS),
     ("f1",       _Y_CLS, _P_CLS),
     ("qwk",      _Y_QWK, _P_QWK),
+    ("balanced_accuracy", _Y_QWK, _P_QWK),  # BON-273: multiclass 대상, _Y_QWK가 3-class 이상 라벨 포함
     ("rmse",     _Y_REG, _P_REG),
     ("mae",      _Y_REG, _P_REG),
     ("rmsle",    _Y_REG, _P_REG),
@@ -49,6 +50,18 @@ def test_qwk_sign_and_class():
     _, sign, metric_class = get("qwk")
     assert sign == +1
     assert metric_class == "classification"
+
+
+def test_balanced_accuracy_sign_and_class():
+    _, sign, metric_class = get("balanced_accuracy")
+    assert sign == +1
+    assert metric_class == "classification"
+
+
+def test_balanced_accuracy_matches_sklearn():
+    from sklearn.metrics import balanced_accuracy_score
+    fn, _, _ = get("balanced_accuracy")
+    assert abs(fn(_Y_QWK, _P_QWK) - balanced_accuracy_score(_Y_QWK, _P_QWK)) < 1e-9
 
 
 def test_transfer_metric_class_keys_covered():
