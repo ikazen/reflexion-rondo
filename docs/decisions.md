@@ -60,6 +60,7 @@
 - 대안: Reflector가 label을 직접 부여 (v2 초안).
 - 근거: jump/regression 판정은 점수 움직임에 대한 채점이므로 ADR-005(LLM-as-judge 금지)에 귀속된다. Playground는 fold 노이즈 수준의 델타 싸움이라 "노이즈 vs 진짜 점프" 경계를 임계값으로 명시해야 한다. 정성 판정은 디버깅 참고로 가치가 있어 폐기하지 않고 분리 보관.
 - **[2026-07 amend]** BON-194: `LABEL_Z` 1.0 → 2.0. 1σ는 통계적으로 유의하지 않아 노이즈가 상시 "jump"로 라벨링되고 그 노이즈가 `reflection_impact` 검색 부스팅에 그대로 반영됐다. 2.0σ를 방어적 기본값으로 확정, 대회 데이터 축적 후 fold_std 실측 분포로 재캘리브레이션 예정.
+- **[2026-07 amend]** BON-267: jump 판정 기준을 harness의 절대-마진(`delta > LABEL_Z * fold_std`)에서 promotion 게이트와 동일한 paired per-fold 유의성 검정(`is_significant_gain`, BON-247)으로 통일. 절대-마진 기준은 수렴한 대회에서 사실상 도달 불가해(7447건 중 jump 0건 실측) label과 promotion 판정이 어긋났고, 그 결과 bandit·stagnation·reflection이 전부 "성공 신호 0"으로 고착돼 있었다. `cycle/run.py`에서 eval 직후 `is_significant_gain`으로 label을 재확정(harness가 절대-마진으로 jump 판정했더라도 paired 미달이면 neutral로 강등)하며, `LABEL_Z` 자체는 promotion 용도로 유지.
 
 ## ADR-013 — 생성 코드는 컨테이너/nsjail로 격리 실행
 - 결정: Coder가 생성한 `class Patch`는 격리 런타임에서 실행. 시간/메모리 상한, 네트워크 차단, FS 화이트리스트.
