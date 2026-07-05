@@ -446,6 +446,29 @@ def run_attempt_core(
         label = "error"
         _LOG.warning("failed — %s", error_trace[:200])
 
+    # BON-267: label의 jump 판정을 promotion 게이트(is_significant_gain, paired
+    # per-fold t-test)와 동일 기준으로 통일한다. harness의 절대-마진 jump
+    # (LABEL_Z*fold_std)는 수렴한 대회에서 사실상 도달 불가해 실제 승격 attempt도
+    # 전부 label=neutral로 남았고, 그 결과 bandit/stagnation/reflection 전부가
+    # "성공 신호 0"으로 굳어 있었다. 여기서 확정해야 insert_attempt에 반영된다.
+    _, _metric_sign, _ = get_metric(config.metric)
+    _significant = (
+        is_significant_gain(
+            gain_vs_best, cv_fold_var,
+            candidate_fold_scores=fold_scores,
+            baseline_fold_scores=_prev_best_fold_scores(conn, config.competition_id),
+            metric_sign=_metric_sign,
+        )
+        if not error_trace
+        else False
+    )
+    if not error_trace:
+        if _significant:
+            label = "jump"
+        elif label == "jump":
+            # harness 절대-마진 기준은 통과했지만 paired 유의성은 미달 — 강등.
+            label = "neutral"
+
     # Save code
     code_path = _save_code(
         source,
@@ -491,13 +514,7 @@ def run_attempt_core(
 
     # Save pipeline if improved — also materialize as new best baseline.
     # defer_promotion=True: caller (super_cycle / Airflow promote task) handles winner-only promotion.
-    _, _metric_sign, _ = get_metric(config.metric)
-    _significant = is_significant_gain(
-        gain_vs_best, cv_fold_var,
-        candidate_fold_scores=fold_scores,
-        baseline_fold_scores=_prev_best_fold_scores(conn, config.competition_id),
-        metric_sign=_metric_sign,
-    )
+    # _significant은 위에서 label 확정 시 이미 계산됨 (BON-267) — 재계산하지 않음.
     if not defer_promotion and _significant and not error_trace:
         confirm = confirm_and_measure(
             source=source,

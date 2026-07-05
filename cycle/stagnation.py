@@ -7,6 +7,9 @@ action_type 사용 여부(underused_actions)는 승자·패자 구분 없이 전
 assign_super_cycle_actions가 매 사이클 여러 action_type을 강제 배정하므로 패자로 시도된
 action도 이미 최근에 탐색된 것. jump 감지·stagnant_for는 승자 이력만 사용한다(label='jump'는
 승자=argmax gain_vs_best에서만 실질적으로 발생).
+
+BON-267: label='jump'는 cycle/run.py에서 promotion과 동일한 is_significant_gain(paired
+per-fold t-test) 기준으로 확정된다 — harness의 절대-마진 기준이 아니다.
 """
 from __future__ import annotations
 

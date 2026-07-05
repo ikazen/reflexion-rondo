@@ -9,7 +9,8 @@ Global/Cluster 티어는 대회 누적 후 승격 예정.
                                최종 action 결정은 LLM (ADR-005/014). regret 보장 없음(advisory).
 
 업데이트 규칙:
-  jump                        → α += 1.0  (LABEL_Z*fold_std 게이트 통과, 유의미 이득)
+  jump                        → α += 1.0  (BON-267: is_significant_gain paired 게이트 통과,
+                                            promotion과 동일 기준의 유의미 이득)
   gain_vs_best > 0 (non-jump) → α += 0.5  (half-success, 유의미 미달 양수 이득)
   regression 또는 error_trace → β += 1.0
   neutral                     → α, β 각 0.1 (약한 신호 유지)
