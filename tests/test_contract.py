@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from evaluator.contract import validate_patch
 
 _VALID_FEATURE_ENG = """
@@ -117,3 +119,96 @@ def test_allowed_hooks_covers_all_action_types():
     assert bandit_keys == set(ACTION_TYPES), (
         f"_ALLOWED_HOOKS bandit keys {bandit_keys} != ACTION_TYPES {set(ACTION_TYPES)}"
     )
+
+
+# --- BON-268: pandas-only API 정적 금지 ---
+
+@pytest.mark.parametrize("attr", [
+    "groupby", "map_dict", "take", "apply", "iterrows", "applymap", "get_dummies",
+])
+def test_pandas_only_attr_forbidden(attr: str):
+    """polars 1.41.2에 hasattr로 직접 확인한 순수 pandas 관용구 — 실제 최근 3일 AttributeError
+    상위 원인. DataFrame/Series 어디에도 없어 오탐 없이 금지 가능하다."""
+    source = (
+        'class Patch:\n'
+        '    action_type = "feature_engineering"\n'
+        '    changed_stages = ["feature_transform"]\n'
+        '    rationale = "pandas confusion demo"\n'
+        '    def feature_transform(self, train, valid, target, ctx):\n'
+        f'        train.{attr}("x")\n'
+        '        return train, valid\n'
+    )
+    errs = validate_patch(source, "feature_engineering")
+    assert any("pandas-only API" in e and attr in e for e in errs)
+
+
+def test_value_counts_not_forbidden():
+    """value_counts는 polars Series에 실존한다(DataFrame에는 없음) — 금지 목록에서
+    의도적으로 제외했으므로 오탐이 없어야 한다(회귀 고정)."""
+    source = (
+        'class Patch:\n'
+        '    action_type = "feature_engineering"\n'
+        '    changed_stages = ["feature_transform"]\n'
+        '    rationale = "value_counts is legit on Series"\n'
+        '    def feature_transform(self, train, valid, target, ctx):\n'
+        '        counts = train["target"].value_counts()\n'
+        '        return train, valid\n'
+    )
+    errs = validate_patch(source, "feature_engineering")
+    assert not any("pandas-only API" in e for e in errs)
+
+
+# --- BON-268: candidate patch 자체의 undefined-name 검사 ---
+
+def test_undefined_name_in_hook_caught():
+    """hook 안에서 자기 소스 어디에도 정의되지 않은 이름을 참조하면 에러.
+
+    실제 사고(WeightedEnsemble)와 같은 클래스의 버그를 candidate patch 자신이
+    저지른 경우(예: ensemble action이 helper 클래스를 참조만 하고 정의를 빼먹음)를
+    재현한다."""
+    source = (
+        'class Patch:\n'
+        '    action_type = "model_swap"\n'
+        '    changed_stages = ["build_model"]\n'
+        '    rationale = "forgot to define helper"\n'
+        '    def build_model(self, params, ctx):\n'
+        '        return WeightedEnsemble(params)\n'
+    )
+    errs = validate_patch(source, "model_swap")
+    assert any("undefined name" in e and "WeightedEnsemble" in e for e in errs)
+
+
+def test_undefined_name_resolved_via_import_or_toplevel_helper_ok():
+    """import된 이름이나 같은 소스의 top-level helper로 해석되면 오탐이 없어야 한다."""
+    source = (
+        'from sklearn.ensemble import RandomForestClassifier\n'
+        '\n'
+        'def _make_params():\n'
+        '    return {"n_estimators": 100}\n'
+        '\n'
+        'class Patch:\n'
+        '    action_type = "model_swap"\n'
+        '    changed_stages = ["build_model"]\n'
+        '    rationale = "uses import + top-level helper"\n'
+        '    def build_model(self, params, ctx):\n'
+        '        return RandomForestClassifier(**_make_params())\n'
+    )
+    errs = validate_patch(source, "model_swap")
+    assert not any("undefined name" in e for e in errs)
+
+
+def test_star_import_skips_undefined_name_check():
+    """star import가 있으면 무엇이 바인딩되는지 알 수 없어 미탐지를 택한다
+    (cycle/materialize.py의 동일 원칙과 일치, 오탐 방지 우선)."""
+    source = (
+        'from sklearn.ensemble import *\n'
+        '\n'
+        'class Patch:\n'
+        '    action_type = "model_swap"\n'
+        '    changed_stages = ["build_model"]\n'
+        '    rationale = "star import hides bindings"\n'
+        '    def build_model(self, params, ctx):\n'
+        '        return SomeUnknownEstimator(params)\n'
+    )
+    errs = validate_patch(source, "model_swap")
+    assert not any("undefined name" in e for e in errs)
