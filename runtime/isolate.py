@@ -22,7 +22,8 @@ from pathlib import Path
 import polars as pl
 
 _RUNNER = Path(__file__).parent / "runner.py"
-DEFAULT_TIMEOUT = 600
+DEFAULT_TIMEOUT = 1200  # BON-275: s5e5/s6e6(기존 최대 165k행 대비 3.5~4.5배 큰 데이터)에서
+# 600s 타임아웃 실측 발생 확인 후 상향
 
 _HAVE_NEWNET = sys.platform == "linux" and hasattr(os, "CLONE_NEWNET")
 
