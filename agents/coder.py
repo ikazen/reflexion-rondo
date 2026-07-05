@@ -75,7 +75,13 @@ class Patch:
     valid = valid.with_columns(pl.col(col).replace_strict(mapping).cast(pl.Int32))
 - pl.concat requires identical schemas
 - No inplace mutations
-- clip() takes positional args: expr.clip(lower_bound, upper_bound)"""
+- clip() takes positional args: expr.clip(lower_bound, upper_bound)
+- FORBIDDEN (pandas-only, do not exist on polars — statically rejected):
+    .groupby()   -> use .group_by()
+    .map_dict()  -> use .replace_strict()
+    .take()      -> use .gather()
+    .apply()     -> use .map_elements()
+    .iterrows(), .applymap(), .get_dummies() -> no polars equivalent needed, avoid entirely"""
 
 _BOOTSTRAP_CONTRACT = """\
 Generate a complete, self-contained Python pipeline class named Patch.
@@ -144,7 +150,13 @@ class Patch:
     valid = valid.with_columns(pl.col(col).replace_strict(mapping).cast(pl.Int32))
 - pl.concat requires identical schemas
 - No inplace mutations
-- clip() takes positional args: expr.clip(lower_bound, upper_bound)"""
+- clip() takes positional args: expr.clip(lower_bound, upper_bound)
+- FORBIDDEN (pandas-only, do not exist on polars — statically rejected):
+    .groupby()   -> use .group_by()
+    .map_dict()  -> use .replace_strict()
+    .take()      -> use .gather()
+    .apply()     -> use .map_elements()
+    .iterrows(), .applymap(), .get_dummies() -> no polars equivalent needed, avoid entirely"""
 
 
 def _extract_code(text: str) -> str:
