@@ -130,7 +130,16 @@ def _load_pipeline(
 
     best_source = download_best_pipeline(competition_id)
     if not best_source:
-        return BasePipeline()
+        # confirmed pipeline(best_pipeline.py) 부재 시(예: s6e6는 merge-verify 크래시로
+        # 승격이 막힘, GH issue #1) 기존엔 BasePipeline 기본 모델로 폴백해 약한 제출을
+        # 냈다. auto_submit이 넘긴 best attempt source(cross-seed confirm 통과분)에
+        # Patch가 있으면 그걸로 제출한다 — 이미 격리 평가를 거친 코드라
+        # --attempt-id 명시 제출과 동일한 신뢰 수준(BON-245).
+        if not extra_source:
+            return BasePipeline()
+        best_source = extra_source
+        extra_source = None
+        expected_sha256 = None  # attempt source엔 신뢰 해시 없음 — 검증 스킵
 
     if expected_sha256:
         import hashlib
