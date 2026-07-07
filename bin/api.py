@@ -142,6 +142,9 @@ class AutoSubmitRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 _TERMINAL = frozenset({"complete", "error", "invalid"})
+# BON-275가 eval 타임아웃은 600->1200s로 올렸으나 submit은 누락 — s5e5(75만 행) 5-seed
+# bagging이 600s를 넘겨 매번 타임아웃으로 실패했다. eval과 동일하게 상향.
+_SUBMIT_TIMEOUT_SEC = 1200
 
 
 def _kaggle_submit(
@@ -179,11 +182,15 @@ def _kaggle_submit(
                 _update({"status": "error", "error": "kaggle token unavailable", "checked_at": datetime.now(timezone.utc)})
                 return
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=600, cwd=str(ROOT),
+                cmd, capture_output=True, text=True, timeout=_SUBMIT_TIMEOUT_SEC, cwd=str(ROOT),
                 env=env,
             )
     except subprocess.TimeoutExpired:
-        _update({"status": "error", "error": "submit timed out (600s)", "checked_at": datetime.now(timezone.utc)})
+        _update({
+            "status": "error",
+            "error": f"submit timed out ({_SUBMIT_TIMEOUT_SEC}s)",
+            "checked_at": datetime.now(timezone.utc),
+        })
         return
 
     if result.returncode != 0:
