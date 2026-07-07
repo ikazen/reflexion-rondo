@@ -228,7 +228,23 @@ def _bagged_predict(
             # 바뀌므로 이번 범위에서 제외 — CV 경로(harness.py)만 적용.
             model.fit(X_train_np, y_train)
             bag_preds.append(_predict_raw(model, X_test_np, metric_class))
+    if metric_class == "classification":
+        # discrete label 예측(멀티클래스 문자열 라벨 포함, s6e6)은 평균이 의미 없다 —
+        # 문자열이면 np.mean이 TypeError로 죽고, 정수 인코딩이어도 평균은 라벨이 아니다.
+        # seed별 다수결로 집계한다(scipy.stats.mode는 1.11부터 non-numeric dtype 미지원
+        # 이라 순수 numpy로 구현). binary_proba/regression_error는 연속값이라 기존
+        # 평균(np.mean) 그대로 둔다.
+        return _majority_vote(bag_preds)
     return np.mean(bag_preds, axis=0)
+
+
+def _majority_vote(bag_preds: list[np.ndarray]) -> np.ndarray:
+    """seed별 예측(라벨, 문자열 가능) 중 샘플별 최빈값. dtype 무관하게 동작."""
+    stacked = np.stack(bag_preds, axis=0)  # (n_seeds, n_samples)
+    classes, codes = np.unique(stacked, return_inverse=True)
+    codes = codes.reshape(stacked.shape)
+    counts = np.stack([(codes == k).sum(axis=0) for k in range(len(classes))], axis=1)
+    return classes[counts.argmax(axis=1)]
 
 
 def main() -> None:
