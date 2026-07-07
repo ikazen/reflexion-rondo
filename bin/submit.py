@@ -265,6 +265,14 @@ def main() -> None:
     X_train, X_test = pipeline.feature_transform(train_proc, test_proc, comp.TARGET, ctx)
     y_train = train_proc[comp.TARGET].to_numpy()
 
+    # CV 경로(harness.py:328-330)와 동일하게: target 제거 후 남은 categorical 인코딩.
+    # submit이 이 단계를 빠뜨려 BasePipeline 폴백 시(confirmed pipeline 없음) raw string이
+    # astype(float)에서 크래시했다 (s6e6 'M', s5e5 'male').
+    from evaluator.harness import _strip_target, _encode_residual_categoricals
+    X_train = _strip_target(X_train, comp.TARGET)
+    X_test = _strip_target(X_test, comp.TARGET)
+    X_train, X_test = _encode_residual_categoricals(X_train, X_test)
+
     X_train_np, X_test_np = _impute_train_test_median(
         X_train.to_numpy().astype(float), X_test.to_numpy().astype(float)
     )
