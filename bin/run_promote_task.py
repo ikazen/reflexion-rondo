@@ -229,9 +229,12 @@ def main() -> None:
                     )
                     if merge_eval.error_trace or merge_eval.cv_score is None:
                         merge_ok = False
+                        # GH issue #1: [:200] 절단이 Airflow 로그에서 실제 예외를 가려
+                        # s6e6 merge-verify 반복 실패의 원인을 못 잡았다. 전체 출력.
                         print(
-                            f"[run_promote_task] merge-verify 실패(평가 에러) — 승격 스킵: "
-                            f"{(merge_eval.error_trace or '')[:200]}"
+                            "[run_promote_task] merge-verify 실패(평가 에러) — 승격 스킵 "
+                            f"competition={competition_id} winner={winner_row[0][:8]}\n"
+                            f"{merge_eval.error_trace or '(cv_score is None)'}"
                         )
                     else:
                         merge_delta = abs(merge_eval.cv_score - winner_row[2])
