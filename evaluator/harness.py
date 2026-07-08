@@ -315,7 +315,15 @@ def evaluate_pipeline(
     fold_scores: list[float] = []
     fold_pi_means: list[np.ndarray] = []
     feature_names: list[str] = []
-    oof = np.full(len(train), np.nan) if collect_oof else None
+    # metric_class="classification"(accuracy/f1/qwk/balanced_accuracy)는 discrete label
+    # 예측이라(멀티클래스는 문자열 라벨) float OOF 배열에 못 담는다(ValueError) — Ridge
+    # 블렌딩(bin/blend.py) 대상도 아니므로 애초에 수집하지 않는다. blend.py는 이미
+    # oof_preds IS NULL인 pipeline을 자동 제외해 이 경로와 정합적이다.
+    oof = (
+        np.full(len(train), np.nan)
+        if (collect_oof and metric_class != "classification")
+        else None
+    )
 
     for tr_idx, va_idx in _make_folds(y, ctx):
         tr = train[list(tr_idx)]
