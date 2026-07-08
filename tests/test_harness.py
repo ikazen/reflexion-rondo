@@ -440,6 +440,52 @@ def test_preselect_params_scores_against_raw_target_not_log_transformed():
     assert result in pipeline.param_candidates(_ctx_rmsle())
 
 
+# --- 회귀 메트릭 phantom(구현 불가 수준 저점수) 방어 가드 (issue #4) ---
+
+class _ScaleLeakPatch:
+    """preprocess가 (작은 노이즈만 섞은) 타깃 사본을 feature로 흘리는 스케일 누수 패치.
+
+    _make_df_positive_target은 irreducible noise(std=3)가 있어 leak 없이는 완전한
+    0-residual이 나올 수 없다 — 그래서 leak feature의 잔차(noise std=0.05)가 기존
+    perfect-score tripwire(_LEAK_PERFECT_LOW=1e-9)는 피해가면서도, trivial
+    mean-baseline 대비는 압도적으로 좋은 점수를 내 새 가드
+    (_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO)에 걸려야 한다.
+    """
+    action_type = "feature_engineering"
+
+    def preprocess(self, train, valid, target, ctx):
+        rng = np.random.default_rng(123)
+        noise_tr = rng.normal(0, 0.05, size=train.height)
+        noise_va = rng.normal(0, 0.05, size=valid.height)
+        tr = train.with_columns((pl.col(target) + pl.Series(noise_tr)).alias("leaked"))
+        va = valid.with_columns((pl.col(target) + pl.Series(noise_va)).alias("leaked"))
+        return tr, va
+
+    def feature_transform(self, train, valid, target, ctx):
+        # 오직 leaked 컬럼만 남겨 leak 신호를 명확히 분리한다.
+        return train.select("leaked"), valid.select("leaked")
+
+    def build_model(self, params, ctx):
+        from sklearn.linear_model import LinearRegression
+        return LinearRegression()
+
+
+def test_regression_phantom_guard_trips_on_scale_leak():
+    """trivial baseline 대비 압도적으로 좋은 회귀 점수는 스케일 누수로 reject되어야 한다."""
+    df = _make_df_positive_target()
+    pipeline = PatchedPipeline(BasePipeline(), _ScaleLeakPatch())
+    with pytest.raises(ValueError, match="suspected scale leakage"):
+        evaluate_pipeline(pipeline, df, _ctx_rmse())
+
+
+def test_regression_phantom_guard_does_not_trip_on_honest_score():
+    """평범한(누수 없는) 회귀 파이프라인은 이 가드에 걸리지 않는다."""
+    df = _make_df(is_classification=False)
+    result = evaluate_pipeline(BasePipeline(), df, _ctx_rmse())
+    assert result.cv_score > 0
+    assert np.isfinite(result.cv_score)
+
+
 def test_preselect_evaluates_all_candidates():
     evaluated: list[dict] = []
 

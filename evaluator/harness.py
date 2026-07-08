@@ -20,6 +20,12 @@ _MAX_PARAM_CANDIDATES = 12
 _LEAK_PERFECT_HIGH = 0.9999
 _LEAK_PERFECT_LOW = 1e-9
 _EARLY_STOPPING_ROUNDS = 50
+# issue #4: 회귀 error 메트릭(rmse/mae/rmsle)이 "타깃 평균만 예측하는" trivial baseline보다
+# 이 배수 이상 좋으면 스케일/타깃 누수로 간주한다. s5e5 이중 log1p phantom(cv≈0.017)이
+# trivial baseline 대비 비정상적으로 큰 개선폭을 보였던 사례의 사후 안전망 — 근본 수정은
+# issue #6(raw 타깃 채점 계약). 실제 최상위 모델의 baseline 대비 개선은 대부분 수십 배
+# 이내이므로 100배는 정상 개선을 오탐하지 않을 만큼 충분히 관대한 임계값이다.
+_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO = 100.0
 
 
 def is_significant_gain(
@@ -318,6 +324,10 @@ def evaluate_pipeline(
     selected_params = preselect_params(pipeline, train, ctx)
 
     fold_scores: list[float] = []
+    # issue #4: regression_error 메트릭 전용 trivial baseline(train fold 타깃 평균으로만
+    # 예측) 점수 — cv_score가 이 baseline보다 비정상적으로(수백 배) 좋으면 스케일 누수
+    # 의심 신호로 쓴다. 다른 metric_class는 채우지 않는다(빈 리스트로 가드 스킵).
+    baseline_fold_scores: list[float] = []
     fold_pi_means: list[np.ndarray] = []
     feature_names: list[str] = []
     # metric_class="classification"(accuracy/f1/qwk/balanced_accuracy)는 discrete label
@@ -336,6 +346,7 @@ def evaluate_pipeline(
         # preprocess가 타깃을 변환(log1p 등)할 수 있으므로 채점은 변환 이전의 raw
         # 타깃(yva_raw)으로 한다 — preselect_params와 동일 계약(위 주석 참고).
         yva_raw = va[ctx.target_col].to_numpy()
+        ytr_raw = tr[ctx.target_col].to_numpy()
 
         tr2, va2 = pipeline.preprocess(tr, va, ctx.target_col, ctx)
         ytr = tr2[ctx.target_col].to_numpy()
@@ -359,6 +370,9 @@ def evaluate_pipeline(
         preds = pipeline.postprocess_predictions(raw_preds, ctx)
         best_model = model
         fold_scores.append(float(fn(yva_raw, preds)))
+        if metric_class == "regression_error":
+            baseline_pred = np.full_like(yva_raw, fill_value=float(np.mean(ytr_raw)), dtype=float)
+            baseline_fold_scores.append(float(fn(yva_raw, baseline_pred)))
         if oof is not None:
             oof[va_idx] = preds
 
@@ -392,6 +406,18 @@ def evaluate_pipeline(
     else:
         if cv_score <= _LEAK_PERFECT_LOW:
             raise ValueError(f"suspected target leakage: perfect cv_score={cv_score:.2e} (threshold={_LEAK_PERFECT_LOW})")
+
+    # issue #4: "구현 불가 수준"의 회귀 점수 방어 가드 — trivial mean-baseline 대비
+    # _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO 배 이상 좋으면 스케일/타깃 누수로 간주.
+    # metric_sign<0(rmse/mae/rmsle 전부 해당)인 regression_error 메트릭에만 적용.
+    if metric_class == "regression_error" and metric_sign < 0 and baseline_fold_scores:
+        baseline_cv = float(np.mean(baseline_fold_scores))
+        if cv_score > 0 and baseline_cv / cv_score > _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO:
+            raise ValueError(
+                f"suspected scale leakage: cv_score={cv_score:.6f} is "
+                f"{baseline_cv / cv_score:.1f}x better than trivial mean-baseline={baseline_cv:.6f} "
+                f"(threshold={_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO}x)"
+            )
 
     is_noop_tie = False
     if ctx.prev_best is None:
