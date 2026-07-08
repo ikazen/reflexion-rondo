@@ -265,6 +265,11 @@ def preselect_params(
 
     tr = train[list(tr_idx)]
     va = train[list(va_idx)]
+    # issue #6: preprocess가 타깃을 변환(log1p 등)할 수 있으므로, 채점은 변환 이전의
+    # raw 타깃(yva_raw)으로 한다. yva(변환된 값)는 early stopping의 eval_set에만 쓴다.
+    # 파이프라인이 log 공간에서 학습했다면 postprocess_predictions에서 raw 스케일로
+    # inverse-transform 해서 반환해야 점수가 정상적으로 나온다 — submit.py와 동일 계약.
+    yva_raw = va[ctx.target_col].to_numpy()
     tr2, va2 = pipeline.preprocess(tr, va, ctx.target_col, ctx)
     ytr = tr2[ctx.target_col].to_numpy()
     yva = va2[ctx.target_col].to_numpy()
@@ -287,7 +292,7 @@ def preselect_params(
             else:
                 raw_preds = model.predict(Xva_np)
             preds = pipeline.postprocess_predictions(raw_preds, ctx)
-            score = float(fn(yva, preds))
+            score = float(fn(yva_raw, preds))
             if best_score is None or metric_sign * score > metric_sign * best_score:
                 best_score = score
                 best_params = params
@@ -328,6 +333,9 @@ def evaluate_pipeline(
     for tr_idx, va_idx in _make_folds(y, ctx):
         tr = train[list(tr_idx)]
         va = train[list(va_idx)]
+        # preprocess가 타깃을 변환(log1p 등)할 수 있으므로 채점은 변환 이전의 raw
+        # 타깃(yva_raw)으로 한다 — preselect_params와 동일 계약(위 주석 참고).
+        yva_raw = va[ctx.target_col].to_numpy()
 
         tr2, va2 = pipeline.preprocess(tr, va, ctx.target_col, ctx)
         ytr = tr2[ctx.target_col].to_numpy()
@@ -350,7 +358,7 @@ def evaluate_pipeline(
                 raw_preds = model.predict(Xva_np)
         preds = pipeline.postprocess_predictions(raw_preds, ctx)
         best_model = model
-        fold_scores.append(float(fn(yva, preds)))
+        fold_scores.append(float(fn(yva_raw, preds)))
         if oof is not None:
             oof[va_idx] = preds
 

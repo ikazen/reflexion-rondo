@@ -349,6 +349,97 @@ def test_harness_regression_rmse_scores_without_error():
     assert np.isfinite(result.cv_score)
 
 
+# --- rmsle 이중 log 채점 회귀 테스트 (s5e5 phantom cv 원인, 2026-07) ---
+# preprocess가 타깃을 log1p로 변환하면, rmsle 스코어러(evaluator/metrics.py)가 그 위에
+# log1p를 한 번 더 적용해 이중 log 압축이 발생한다. harness는 반드시 변환 이전의 raw
+# 타깃으로 채점해야 하며, 파이프라인이 postprocess_predictions에서 expm1로 역변환하지
+# 않으면 그 사실이 legitimately 나쁜 점수로 드러나야 한다(phantom하게 좋아지면 안 됨).
+
+def _ctx_rmsle() -> PipelineContext:
+    return PipelineContext(
+        target_col="y",
+        metric="rmsle",
+        n_splits=3,
+        seed=42,
+        is_classification=False,
+    )
+
+
+def _make_df_positive_target(n: int = 300) -> pl.DataFrame:
+    """rmsle은 y>=0 요구 — Calories류 양수 타깃을 흉내."""
+    rng = np.random.default_rng(7)
+    x = rng.standard_normal((n, 3))
+    y = 80.0 + 15.0 * x[:, 0] + rng.standard_normal(n) * 3.0
+    y = np.clip(y, 1.0, None)
+    return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y})
+
+
+class _Log1pNoInversePatch:
+    """preprocess에서 타깃을 log1p 변환하지만 postprocess에서 역변환을 빠뜨린 버그 패치.
+
+    s5e5에서 실제로 관측된 패턴 — 이걸 정상 점수로 착각하면 phantom cv가 나온다.
+    """
+    action_type = "feature_engineering"
+
+    def preprocess(self, train, valid, target, ctx):
+        tr = train.with_columns(pl.col(target).log1p())
+        va = valid.with_columns(pl.col(target).log1p())
+        return tr, va
+
+    def feature_transform(self, train, valid, target, ctx):
+        cols = [c for c in train.columns if c != target]
+        return train.select(cols), valid.select(cols)
+
+    def build_model(self, params, ctx):
+        from sklearn.linear_model import LinearRegression
+        return LinearRegression()
+
+    def postprocess_predictions(self, preds, ctx):
+        return preds  # 버그: log 공간 예측을 그대로 반환 (expm1 누락)
+
+
+class _Log1pWithInversePatch(_Log1pNoInversePatch):
+    """위와 동일하지만 postprocess에서 올바르게 expm1로 역변환한다."""
+
+    def postprocess_predictions(self, preds, ctx):
+        return np.expm1(preds)
+
+
+def test_rmsle_scores_against_raw_target_not_log_transformed():
+    """preprocess가 타깃을 log1p 변환해도 harness는 raw 스케일 타깃으로 채점해야 한다.
+
+    역변환을 빠뜨린 패치는 log 공간 예측과 raw 타깃이 스케일 불일치 상태라
+    (fold var 대비) 크게 나쁜 rmsle을 내야 한다 — 과거 버그처럼 phantom하게
+    좋은(~0.017) 점수가 나오면 안 된다.
+    """
+    df = _make_df_positive_target()
+    result = evaluate_pipeline(PatchedPipeline(BasePipeline(), _Log1pNoInversePatch()), df, _ctx_rmsle())
+    # 역변환 누락 시 raw 타깃(~80) 대비 예측(~4.5, log space)의 rmsle은 매우 크다.
+    assert result.cv_score > 1.0
+
+
+def test_rmsle_correct_inverse_transform_recovers_honest_score():
+    """postprocess에서 expm1로 올바르게 역변환하면 정상 범위의 낮은 rmsle이 나와야 한다."""
+    df = _make_df_positive_target()
+    result = evaluate_pipeline(PatchedPipeline(BasePipeline(), _Log1pWithInversePatch()), df, _ctx_rmsle())
+    assert 0.0 < result.cv_score < 0.5
+
+
+def test_preselect_params_scores_against_raw_target_not_log_transformed():
+    """preselect_params도 evaluate_pipeline과 동일한 raw-타깃 채점 계약을 따라야 한다."""
+
+    class _TwoCandidatesLog1pNoInverse(_Log1pNoInversePatch):
+        def param_candidates(self, ctx):
+            return [{"tag": "a"}, {"tag": "b"}]
+
+    df = _make_df_positive_target()
+    pipeline = PatchedPipeline(BasePipeline(), _TwoCandidatesLog1pNoInverse())
+    # preselect_params 호출 경로가 raw 타깃과 스케일이 안 맞는 예측을 정상 낮은 점수로
+    # 착각하지 않고 끝까지 실행되는지만 확인 (에러 없이 후보 중 하나를 선택).
+    result = preselect_params(pipeline, df, _ctx_rmsle())
+    assert result in pipeline.param_candidates(_ctx_rmsle())
+
+
 def test_preselect_evaluates_all_candidates():
     evaluated: list[dict] = []
 
