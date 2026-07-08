@@ -41,9 +41,12 @@ def _eval_holdout(
 
     fn, _, metric_class = get_metric(ctx.metric)
     params = preselect_params(pipeline, train90, ctx)
+    # preprocess가 타깃을 변환(log1p 등)할 수 있으므로 채점은 변환 이전의 raw
+    # 타깃(yho_raw)으로 한다 — evaluator/harness.py의 evaluate_pipeline/preselect_params와
+    # 동일 계약.
+    yho_raw = holdout10[ctx.target_col].to_numpy()
     tr2, ho2 = pipeline.preprocess(train90, holdout10, ctx.target_col, ctx)
     ytr = tr2[ctx.target_col].to_numpy()
-    yho = ho2[ctx.target_col].to_numpy()
     Xtr, Xho = pipeline.feature_transform(tr2, _mask_target(ho2, ctx.target_col), ctx.target_col, ctx)
     Xtr = _strip_target(Xtr, ctx.target_col)
     Xho = _strip_target(Xho, ctx.target_col)
@@ -57,7 +60,7 @@ def _eval_holdout(
         else:
             raw_preds = model.predict(Xho.to_numpy())
     preds = pipeline.postprocess_predictions(raw_preds, ctx)
-    return float(fn(yho, preds))
+    return float(fn(yho_raw, preds))
 
 
 def _load_best_pipeline_class(best_source: str, BasePipeline: type) -> type:
