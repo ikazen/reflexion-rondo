@@ -64,15 +64,20 @@ bin/             실행 진입점:
                    run_cycle_task.py (Airflow single-cycle DockerOperator 태스크)
                    run_reflexion.py (로컬/수동 러너)
                    start_competition.py (대회 등록)
+                   seed_competition_data.py (Kaggle 다운로드 → MinIO 시딩)
                    archive_lessons.py (저효율 교훈 자동 archive)
                    healthcheck.py (의존성 헬스체크 + /api/health 재사용)
                    api.py (FastAPI 앱 팩토리)
                    airflow_client.py (Airflow REST API 클라이언트)
-                   reset.py / run_cycle.py / submit.py
+                   submit.py (best attempt → Kaggle 제출)
+                   blend.py (승격 파이프라인 OOF 예측 Ridge blend)
+                   rebuild_best_pipeline.py (raw.pipelines 히스토리 replay)
+                   export_results.py (핵심 가설 검증 CSV 내보내기)
+                   reset.py
 config/          settings.py + competitions/<slug>.py (대회별 설정)
 cycle/           사이클 로직:
                    run.py (단일 사이클 오케스트레이션)
-                   super_cycle.py (슈퍼사이클 오케스트레이션)
+                   promotion.py (승격 후보 cross-seed 확인 + audit holdout)
                    stagnation.py (정체 감지)
                    action_optimizer.py (action_bandit Thompson sampling)
                    error_pitfalls.py (에러 시그니처 정규화 + top pitfall 조회)
@@ -80,7 +85,7 @@ cycle/           사이클 로직:
 evaluator/       결정적 k-fold CV (contract, harness, metrics)
 memory/          retriever (pgvector 검색 + MMR), transfer (cross-competition, 부분 구현)
 runtime/         격리 실행 (isolate.py → preexec_fn os.unshare(CLONE_NEWNET) + rlimit + 600s timeout → runner.py; CAP_SYS_ADMIN 없으면 rlimit+timeout만)
-store/           db.py (psycopg2 풀), s3_code.py (MinIO), fingerprint.py, schema.sql
+store/           db.py (psycopg2 풀), s3_code.py (MinIO), fingerprint.py, train_data.py (train 로딩), schema.sql
 deploy/          Dockerfile, release.sh (ops-vm 빌드+배포, semver), build.sh (mac-server dev 빌드)
 dashboard.py     Streamlit 모니터링
 runs/            생성 코드 캐시 · cold-start JSON · 제출 CSV (gitignore)
