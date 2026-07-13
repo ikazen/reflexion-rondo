@@ -256,10 +256,11 @@ Evaluator는 `metric` 텍스트를 `(callable, sign)`으로 매핑하는 레지�
 | accuracy | classification | +1 | 구현 |
 | f1 | classification | +1 | 구현 |
 | mcc | classification | +1 | TBD |
+| balanced_accuracy | classification | +1 | 구현 (BON-273, s6e6 Stellar Class 온보딩용) |
 | rmse | regression_error | -1 | 구현 |
 | mae | regression_error | -1 | 구현 |
 | rmsle | regression_error | -1 | 구현 |
-| qwk (quadratic weighted kappa) | ordinal | +1 | TBD |
+| qwk (quadratic weighted kappa) | classification | +1 | 구현 |
 | map@k | ranking | +1 | TBD |
 
 `metric_class`는 transfer 유사도에서 부류 불일치 페널티에 쓰인다 (`architecture.md` §7).
