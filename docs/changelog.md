@@ -1,5 +1,10 @@
 # 변경 이력
 
+## 문서 로직 서술 재싱크 — spec/architecture/runbook (2026-07-14)
+- spec.md §3 지표 레지스트리: `qwk`(TBD→구현됨, metric_class ordinal→classification), `balanced_accuracy`(BON-273) 신규 행 추가.
+- spec.md §4 label 규칙: `z` 기본값 1.0→실제 `LABEL_Z=2.0`(BON-194) 정정. jump 판정이 harness 절대-마진의 잠정값이며 `cycle/run.py`가 `is_significant_gain`(paired per-fold t-test, BON-247/267)으로 재확정한다는 사실 반영. 완벽점수·회귀 trivial-baseline 누수 가드 2종과 `is_noop_tie`(BON-239) 추가.
+- spec.md §5 / architecture.md §5 / runbook.md §6: "네트워크 sandbox 미구현" 서술이 stale — 프로덕션에서 `os.unshare(CLONE_NEWNET)` egress 차단 + rlimit이 이미 구현됨(ADR-017)으로 정정, 파일시스템 sandbox만 미구현 유지. 코드생성 재생성 횟수도 1회→실제 2회로 정정.
+
 ## 문서·docstring 코드 싱크 정리 (2026-07-13)
 - BON-240 반영: Coder 모델 문서 표기를 `qwen3.5:397b`(출력 토큰 과다) → `gpt-oss:120b`로 전 문서 정정(README, architecture, spec, setup, decisions ADR-016 amend).
 - `lb_score`/제출 추적 상태 정정: `raw.kaggle_submissions` 폴링(`/api/submissions/*`)이 이미 lb_score를 attempts까지 기록하는데 "미구현"으로 서술되어 있던 architecture.md·runbook.md 정정. `submission_budget` 일일 상한 enforcement만 여전히 미구현.

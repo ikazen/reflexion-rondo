@@ -256,10 +256,11 @@ Evaluator는 `metric` 텍스트를 `(callable, sign)`으로 매핑하는 레지�
 | accuracy | classification | +1 | 구현 |
 | f1 | classification | +1 | 구현 |
 | mcc | classification | +1 | TBD |
+| balanced_accuracy | classification | +1 | 구현 (BON-273, s6e6 Stellar Class 온보딩용) |
 | rmse | regression_error | -1 | 구현 |
 | mae | regression_error | -1 | 구현 |
 | rmsle | regression_error | -1 | 구현 |
-| qwk (quadratic weighted kappa) | ordinal | +1 | TBD |
+| qwk (quadratic weighted kappa) | classification | +1 | 구현 |
 | map@k | ranking | +1 | TBD |
 
 `metric_class`는 transfer 유사도에서 부류 불일치 페널티에 쓰인다 (`architecture.md` §7).
@@ -272,14 +273,16 @@ fold별 점수의 표준편차 `fold_std = sqrt(cv_fold_var)`가 측정 노이�
 delta = metric_sign * (cv_score - prev_best_cv)
 gain_vs_best = delta
 
-jump        if delta >  z * fold_std
+jump        if delta >  z * fold_std   (잠정, 아래 재판정 대상)
 regression  if delta < -z * fold_std
 neutral     otherwise
 ```
 
-- `z`: fold_std 배수. 기본 1.0, 캘리브레이션 대상(`decisions.md` TBD). 더 보수적으로 `fold_std/sqrt(k)` (표준오차)를 쓸 수 있음.
+- `z = LABEL_Z = 2.0`(`config/settings.py`). 1σ(구 기본값)는 노이즈를 상시 jump로 잘못 잡아 `reflection_impact` 검색 부스팅을 오염시켰다 — ADR-012 amend(BON-194) 방어적 기본값, 재캘리브레이션은 TBD(`decisions.md`).
+- **jump 재판정(BON-267)**: 위 절대-마진 jump는 harness가 계산한 잠정값이다. `cycle/run.py`가 eval 직후 `is_significant_gain()`(`evaluator/harness.py`, BON-247 — candidate/baseline fold_scores의 **paired per-fold t-test**, `t_stat > LABEL_Z`)로 재확정한다: 유의하면 `jump` 확정, 절대-마진만 통과하고 paired 미달이면 `neutral`로 강등. 절대-마진 단독 기준은 수렴한 대회에서 사실상 도달 불가해 실승격 attempt도 전부 neutral로 남는 문제가 있었다. `bin/run_promote_task.py`도 promotion(reflect 여부) 판단에 동일 함수를 재사용한다.
 - `prev_best_cv`가 없으면(첫 attempt) label = `neutral`, gain = null.
-- 실패 attempt(`error_trace` 존재)는 label = `error`, gain = null.
+- 실패 attempt(`error_trace` 존재)는 label = `error`, gain = null. 정적 검증 실패 외에도 두 가지 결정적 누수 가드가 `ValueError`로 error를 유발한다: (1) 완벽점수 가드 — `cv_score`가 임계(`_LEAK_PERFECT_HIGH=0.9999`/`_LEAK_PERFECT_LOW=1e-9`)를 넘으면 target leakage 의심, (2) 회귀 trivial-baseline 비율 가드(issue #4) — `regression_error` 메트릭에서 train-fold 타깃 평균만 예측하는 baseline보다 100배 이상 좋으면 스케일/타깃 누수 의심.
+- `is_noop_tie`(BON-239): `cv_score`가 직전 best와 부동소수 완전 일치하면 patch hook이 base pipeline으로 위임돼 유효 변경이 없었다는 신호. label 자체를 바꾸진 않고 attempt에 플래그로 남는다.
 
 Reflector는 이 숫자를 보고 **왜 그런 결과가 나왔는지**(교훈 본문)만 쓴다. 정성 판정은 `reflector_label`로 분리.
 
@@ -340,9 +343,9 @@ for tr_idx, va_idx in folds(seed):
 cv_score = mean(scores); cv_fold_var = var(scores)
 ```
 
-검증 게이트(실행 전): `class Patch` 존재 여부, 허용 import만, 금지 호출(`eval`/`exec`/`open`) 없음, 구현 훅의 인자 수(arity) 일치, `Patch.action_type == 배정 action_type`. 위반 시 재생성 1회, 실패면 `error_trace` 기록 후 Reflect로 진행.
+검증 게이트(실행 전): `class Patch` 존재 여부, 허용 import만, 금지 호출(`eval`/`exec`/`open`) 없음, 구현 훅의 인자 수(arity) 일치, `Patch.action_type == 배정 action_type`. 위반 시 최대 2회 재생성(`cycle/run.py:_MAX_CODE_RETRIES`), 그래도 실패면 `error_trace` 기록 후 Reflect로 진행.
 
-격리 실행: `runtime/isolate.py`가 tmpdir에 source/input/train 파일을 쓰고 `runtime/runner.py`를 subprocess로 실행한다. runner 내부에서는 생성 코드를 `exec`로 로드한다. 현재 격리 수준은 subprocess 분리 + env allowlist이며, 네트워크/파일시스템 sandbox는 미구현이다.
+격리 실행: `runtime/isolate.py`가 tmpdir에 source/input/train 파일을 쓰고 `runtime/runner.py`를 subprocess로 실행한다. runner 내부에서는 생성 코드를 `exec`로 로드한다. 프로덕션(Linux, CAP_SYS_ADMIN 있음)에서는 preexec_fn에서 `os.unshare(os.CLONE_NEWNET)`으로 network namespace를 분리해 subprocess egress를 차단하고, `RLIMIT_AS`/`RLIMIT_CPU`를 병행한다(ADR-017). CAP_SYS_ADMIN 없는 폴백(로컬 mac 등)은 env allowlist + rlimit + timeout만 적용하고 네트워크 차단은 조용히 스킵한다. 파일시스템 sandbox(예: tmpdir 밖 접근 차단)는 아직 미구현이다.
 
 ## 6. 분석 뷰 (dbt 아님 — `store/schema.sql` 내 SQL view)
 
