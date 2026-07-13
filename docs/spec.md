@@ -273,14 +273,16 @@ fold별 점수의 표준편차 `fold_std = sqrt(cv_fold_var)`가 측정 노이�
 delta = metric_sign * (cv_score - prev_best_cv)
 gain_vs_best = delta
 
-jump        if delta >  z * fold_std
+jump        if delta >  z * fold_std   (잠정, 아래 재판정 대상)
 regression  if delta < -z * fold_std
 neutral     otherwise
 ```
 
-- `z`: fold_std 배수. 기본 1.0, 캘리브레이션 대상(`decisions.md` TBD). 더 보수적으로 `fold_std/sqrt(k)` (표준오차)를 쓸 수 있음.
+- `z = LABEL_Z = 2.0`(`config/settings.py`). 1σ(구 기본값)는 노이즈를 상시 jump로 잘못 잡아 `reflection_impact` 검색 부스팅을 오염시켰다 — ADR-012 amend(BON-194) 방어적 기본값, 재캘리브레이션은 TBD(`decisions.md`).
+- **jump 재판정(BON-267)**: 위 절대-마진 jump는 harness가 계산한 잠정값이다. `cycle/run.py`가 eval 직후 `is_significant_gain()`(`evaluator/harness.py`, BON-247 — candidate/baseline fold_scores의 **paired per-fold t-test**, `t_stat > LABEL_Z`)로 재확정한다: 유의하면 `jump` 확정, 절대-마진만 통과하고 paired 미달이면 `neutral`로 강등. 절대-마진 단독 기준은 수렴한 대회에서 사실상 도달 불가해 실승격 attempt도 전부 neutral로 남는 문제가 있었다. `bin/run_promote_task.py`도 promotion(reflect 여부) 판단에 동일 함수를 재사용한다.
 - `prev_best_cv`가 없으면(첫 attempt) label = `neutral`, gain = null.
-- 실패 attempt(`error_trace` 존재)는 label = `error`, gain = null.
+- 실패 attempt(`error_trace` 존재)는 label = `error`, gain = null. 정적 검증 실패 외에도 두 가지 결정적 누수 가드가 `ValueError`로 error를 유발한다: (1) 완벽점수 가드 — `cv_score`가 임계(`_LEAK_PERFECT_HIGH=0.9999`/`_LEAK_PERFECT_LOW=1e-9`)를 넘으면 target leakage 의심, (2) 회귀 trivial-baseline 비율 가드(issue #4) — `regression_error` 메트릭에서 train-fold 타깃 평균만 예측하는 baseline보다 100배 이상 좋으면 스케일/타깃 누수 의심.
+- `is_noop_tie`(BON-239): `cv_score`가 직전 best와 부동소수 완전 일치하면 patch hook이 base pipeline으로 위임돼 유효 변경이 없었다는 신호. label 자체를 바꾸진 않고 attempt에 플래그로 남는다.
 
 Reflector는 이 숫자를 보고 **왜 그런 결과가 나왔는지**(교훈 본문)만 쓴다. 정성 판정은 `reflector_label`로 분리.
 
