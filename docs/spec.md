@@ -42,7 +42,10 @@ duration_sec      double precision,  -- 사이클 소요 시간
 code_path         text,              -- S3(MinIO) 경로. 코드 본문은 DB에 두지 않음
 retries           int,               -- 코드 재생성 횟수
 super_cycle_id    text,              -- 슈퍼사이클 묶음 id (raw.super_cycle_context 참조)
-was_promoted      boolean            -- NULL=legacy, TRUE=winner, FALSE=loser (promote 단계에서 설정)
+was_promoted      boolean,           -- NULL=legacy, TRUE=winner, FALSE=loser (promote 단계에서 설정)
+holdout_score     double precision,  -- audit holdout 점수 (BON-247, cv_score와 별도 seed)
+confirm_seed_gains jsonb,            -- 승격 후보 cross-seed 재확인 결과 (cycle/promotion.py)
+fold_scores       jsonb              -- fold별 원점수 배열 (BON-247, paired significance test 입력)
 ```
 
 ### 1.3 `raw.reflections`
@@ -79,10 +82,12 @@ size_class ('tiny' <10k / 'small' <100k / 'mid' <1M / 'large')
 
 ### 1.5 `raw.super_cycle_context`
 
-retrieve 태스크가 attempt 태스크 3개에 상태를 전달하는 임시 테이블. queue_id를 키로 upsert.
+retrieve 태스크가 attempt 태스크 3개에 상태를 전달하는 임시 테이블. `run_id`(Airflow dag_run_id)를 키로 upsert.
 
 ```sql
-queue_id          text primary key,
+run_id            text primary key,  -- BON-237: queue_id에서 변경 — queue_id는 재시도 시 재사용돼
+                                      -- context row가 덮어써지는 레이스가 있었음. run_id는 cycle마다 유일.
+queue_id          text not null,
 super_cycle_id    text not null,
 competition_id    text not null,
 prev_best_cv      double precision,
@@ -116,7 +121,9 @@ competition_id       text,
 fingerprint_snapshot json,
 code                 text,        -- Patch class 소스 (§5)
 cv_score             double,
-gain_vs_best         double
+gain_vs_best         double,
+pipeline_sha256      text,        -- BON-255: MinIO best_pipeline.py 무결성 검증용 신뢰 해시
+oof_preds            jsonb        -- BON-248: out-of-fold 예측값. bin/blend.py의 Ridge blend 입력
 ```
 
 cold-start 시 유사 fingerprint에서 검색해 그대로 baseline으로 재사용.
@@ -171,7 +178,26 @@ latest_score double precision,
 error        text
 ```
 
-### 1.11 `raw.external_ideas` (계획, 미구현) — ADR-019, BON-86
+### 1.11 `raw.kaggle_submissions`
+
+`bin/api.py`의 `/api/submissions*` 엔드포인트(§7)가 관리하는 제출 추적 테이블.
+
+```sql
+submission_id  text primary key,
+competition_id text not null,
+attempt_id     text,
+submitted_at   timestamp,
+message        text,
+csv_path       text,
+status         text default 'queued',   -- queued / complete / error / invalid 등 (Kaggle 상태 그대로)
+lb_score       double precision,        -- refresh 폴링 시 complete면 기록, attempts.lb_score로도 backfill
+error          text,
+checked_at     timestamp
+```
+
+폴링은 `POST /api/submissions/{id}/refresh` 호출로만 일어난다 — daemon에 무인 주기 폴링 루프는 없음(운영 시 cron 또는 수동 호출 필요, `runbook.md §4`).
+
+### 1.12 `raw.external_ideas` (계획, 미구현) — ADR-019, BON-86
 
 현재 `store/schema.sql`에는 아직 없다. 아래는 ADR-019의 목표 스키마다.
 
@@ -212,7 +238,7 @@ adopted_attempt_ids    text[]          -- 채택 attempt 역추적 (디버깅·�
 
 `label` (Evaluator 결정, §4): `jump` / `neutral` / `regression` / `error`.
 
-`source_kind` (`raw.external_ideas`, §1.11, ADR-019 계획):
+`source_kind` (`raw.external_ideas`, §1.12, ADR-019 계획):
 - `writeup`: 종료된 유사 fingerprint 대회 우승 writeup
 - `tips`: 대회 pinned "Tips & Tricks" 스레드
 - `solution`: gold/silver solution 스레드
@@ -330,6 +356,7 @@ cv_score = mean(scores); cv_fold_var = var(scores)
 | `reflection_impact` | 교훈별 평균 gain·점프 수 (reflexion 단계만 집계) |
 | `action_bandit_posterior` | action_type별 Beta-Bernoulli 사후 상태 |
 | `cold_start_progression` | 대회별 attempt progression과 best_so_far |
+| `holdout_cv_gap_trend` | attempt별 `cv_score - holdout_score`(overfit gap, BON-247) |
 
 **계획 (ADR-019):** `external_idea_bandit` — 외부 아이디어 채널 구현 시 추가할 사후 상태 뷰.
 
@@ -346,6 +373,7 @@ ops-vm의 daemon이 제공하는 HTTP API. `http://rondo-api.internal` (Caddy pr
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
 | GET | `/api/heartbeat` | daemon 생사 확인. `status: idle\|running` + 현재 사이클 정보 |
+| GET | `/api/health` | 의존성 헬스체크(`bin/healthcheck.py` 재사용). `overall: ok\|degraded` + 항목별 상태 |
 | GET | `/api/competitions` | 등록된 대회 목록 |
 | GET | `/api/attempts` | 최근 attempt 목록. `?competition=`, `?limit=` 파라미터 |
 | GET | `/api/attempts/{id}` | attempt 단건 상세 (코드 경로·reflection_ids 포함) |
@@ -354,6 +382,11 @@ ops-vm의 daemon이 제공하는 HTTP API. `http://rondo-api.internal` (Caddy pr
 | GET | `/api/queue` | 큐 전체 목록 (pending → running → done 순) |
 | POST | `/api/queue` | 사이클 큐 등록. body: `{competition, stage, n_cycles, priority}` |
 | PATCH | `/api/queue/{id}` | 우선순위 변경 또는 취소. body: `{priority?, status?: "cancelled"}` |
+| POST | `/api/submissions` | attempt 지정 Kaggle 제출. body: `{competition, attempt_id?, message?}` |
+| POST | `/api/submissions/auto` | 최근 window 내 대회별 best attempt 자동 선별 제출. body: `{window_hours}` |
+| GET | `/api/submissions` | 제출 이력 목록. `?competition=`, `?limit=` 파라미터 |
+| GET | `/api/submissions/{id}` | 제출 단건 상세 |
+| POST | `/api/submissions/{id}/refresh` | Kaggle 상태 1회 폴링 → `lb_score`/`status` 갱신 (§1.11) |
 
 ### 인증·노출 정책
 
@@ -373,7 +406,7 @@ cloud = Client(
     headers={"Authorization": f"Bearer {os.environ['OLLAMA_API_KEY']}"},
 )
 resp = cloud.chat(
-    model="glm-5.2",                   # Strategist. Reflector=kimi-k2.6, Coder=qwen3.5:397b (ADR-016)
+    model="glm-5.2",                   # Strategist. Reflector=kimi-k2.6, Coder=gpt-oss:120b (ADR-016)
     messages=[...],
     format=hypothesis_schema_dict,     # ollama-python: JSON Schema dict 허용
 )

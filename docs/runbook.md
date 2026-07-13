@@ -149,11 +149,12 @@ dagrun(=사이클) 하나가 실패해도 배치를 중단하지 않는다 — �
 |---|---|---|
 | `RONDO_MAX_CONSECUTIVE_FAILURES` | 연속 실패 허용 횟수 초과 시 큐 중단 | `5` |
 
-## 4. 제출 예산 게이트
+## 4. 제출·LB score 추적
 
-- `submission_budget` 테이블은 스키마에 존재한다.
-- 현재 `bin/submit.py`는 CSV 생성과 Kaggle 제출 호출을 수행하지만, 일일 제출 상한 자동 enforcement와 `lb_score` 업데이트는 아직 구현하지 않았다.
-- 운영 시에는 best 후보만 수동 제출하고, LB score는 별도 기록 절차가 추가될 때까지 수동 관리한다.
+- `POST /api/submissions` — attempt 지정 제출. `POST /api/submissions/auto` — 최근 window 내 대회별 best attempt 자동 선별 제출(이미 제출한 best는 skip).
+- `POST /api/submissions/{id}/refresh` — Kaggle 상태 1회 폴링. `complete`면 `raw.kaggle_submissions.lb_score` 갱신 + 해당 `attempt_id`의 `raw.attempts.lb_score`까지 backfill.
+- 폴링은 API 호출로만 트리거된다 — daemon에 무인 주기 폴링 루프는 없음. 운영 시 `refresh`를 주기 호출(cron 또는 수동)해야 lb_score가 갱신된다.
+- `submission_budget` 테이블은 스키마에 존재하나, 일일 제출 상한 자동 enforcement는 아직 미구현 — 현재는 `auto_submit`의 "best unchanged면 skip" 로직만 과다 제출을 억제한다.
 
 ## 5. 동시성
 
