@@ -9,7 +9,7 @@
 |---|---|---|
 | Strategist (정책) | Ollama Cloud | glm-5.2 (ADR-016) |
 | Reflector (성찰) | Ollama Cloud | kimi-k2.6 (ADR-016) |
-| Coder (실행) | Ollama Cloud | qwen3.5:397b (ADR-016) |
+| Coder (실행) | Ollama Cloud | gpt-oss:120b (ADR-016) |
 | 임베딩 | Mac Ollama 서버 | qwen3-embedding:8b (1024d, MRL) — ADR-008 |
 | Evaluator (CV · 지표 · param selection · label) | WSL2 로컬 | 결정적 코드 |
 | 생성 코드 실행 | ops-vm | subprocess 격리 (`runtime/isolate.py`), tmpdir + 600s timeout |

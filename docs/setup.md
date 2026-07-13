@@ -47,7 +47,7 @@ ollama pull qwen3-embedding:8b
 ```
 
 > 현재 코드의 기본 역할 모델은 Strategist=`glm-5.2`, Reflector=`kimi-k2.6`,
-> Coder=`qwen3.5:397b`, Embedding=`qwen3-embedding:8b`다.
+> Coder=`gpt-oss:120b`, Embedding=`qwen3-embedding:8b`다.
 > Strategist/Reflector/Coder는 Ollama Cloud를 사용하고, 임베딩만 `OLLAMA_BASE_URL`의
 > 로컬 Ollama 서버를 사용한다.
 >

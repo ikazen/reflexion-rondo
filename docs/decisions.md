@@ -85,9 +85,10 @@
 - 결정: **처음부터 3모델 분리.**
   - **Strategist**(정책, 추론 모델) — `glm-5.2` (2026-06-24 `deepseek-v4-pro`에서 변경. 대안 `deepseek-v4-pro`, `kimi-k2.6`).
   - **Reflector**(성찰, 추론 모델) — `kimi-k2.6` (대안 `glm-5`). **Strategist와 다른 패밀리**로 고정 — glm(Strategist) ≠ kimi(Reflector) 유지.
-  - **Coder**(실행, 코드 모델) — `qwen3.5:397b` (2026-07-02 `qwen3-coder-next`에서 변경. 대안 `glm-4.7`, 저비용 `devstral-small-2:24b`).
+  - **Coder**(실행, 코드 모델) — `gpt-oss:120b` (2026-07-02 `qwen3-coder-next`→`qwen3.5:397b`, 2026-07 `qwen3.5:397b`→`gpt-oss:120b` 재변경. 대안 `glm-4.7`).
 - 근거: Coder 분리는 코드 특화 모델이 컨트랙트 준수에 유리(태스크 성격). Reflector를 다른 패밀리로 두는 건 **상관된 맹점** 완화 — 같은 모델이 가설을 내고 스스로 성찰하면 자기 추론을 합리화한다. ADR-005가 채점에서 LLM을 뺐어도 Reflector의 정성 진단·generality 라벨링엔 자기편향이 남으므로 교차 패밀리가 교훈 품질을 높인다.
 - **[2026-07 amend]** BON-236: `qwen3-coder-next` deprecate 예정으로 `qwen3.5:397b`로 교체. 태그 확정 전 ops-vm에서 cloud `/api/tags` 실측 조회로 정확한 문자열 확인함(웹 검색은 `qwen3.5:397b-cloud`로 나왔으나 실제 API 응답은 bare `qwen3.5:397b` — BON-188 `glm-5.2:cloud` 접미사 오타 전례 재발 방지).
+- **[2026-07 amend]** BON-240: `qwen3.5:397b`가 동일 프롬프트에서 `qwen3-coder-next` 대비 출력 토큰 9배(reasoning 과다)로 사이클당 지연·비용이 커짐. 같은 시기 코더 전문 라인(`qwen3-coder-next`/`480b`, `devstral` 계열)이 Ollama Cloud에서 전부 내려가 `gpt-oss:120b`로 교체. `MODEL_CODER_REASONING_EFFORT`(기본 `medium`)로 reasoning 강도 조절.
 - 비용: 세 역할 모두 사이클당 1회라 분리해도 호출 수는 안 늘고 설정만 는다. 처음부터 교차 패밀리 critic을 확보하는 편이 교훈 품질에 유리하다고 보고 단계적 분리(2→3)는 두지 않는다. 단순 베이스라인이 필요하면 Reflector를 Strategist 모델로 잠시 묶을 수 있으나 기본은 3모델.
 - 주의: 모델 ID는 변동성이 크다. 확정 전 `ollama.com/search?c=cloud`에서 현재 태그 재확인.
 
@@ -202,7 +203,7 @@
 |---|---|---|
 | Strategist 모델 | glm-5.2 (대안 deepseek-v4-pro, kimi-k2.6) | ADR-016 |
 | Reflector 모델 | kimi-k2.6 (Strategist와 다른 패밀리) | ADR-016 |
-| Coder 모델 | qwen3.5:397b (대안 glm-4.7/devstral-small-2) | ADR-016 (BON-236) |
+| Coder 모델 | gpt-oss:120b (2026-07 qwen3.5:397b에서 변경, 대안 glm-4.7) | ADR-016 (BON-236, BON-240) |
 | 스토어 (검색+분석) | Postgres + pgvector (벡터 컬럼) | 확정, ADR-007 amend (BON-98) |
 | 벡터 인덱스 | 브루트포스 → 필요 시 pgvector HNSW | 승격 조건부 |
 | Ollama Cloud 요금제 | Pro($20, 동시 3) | 시작값 |
