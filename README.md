@@ -125,7 +125,7 @@ Polars API 사용 (pandas 스타일 혼용 금지). 컨트랙트 위반 코드�
 - `raw.action_bandit` — `(scope, scope_key, action_type)` Beta-Bernoulli 밴딧.
 - `raw.super_cycle_context` — retrieve → attempt 상태 전달용 임시 테이블.
 - `raw.competitions` — 대회 메타 + fingerprint JSON.
-- `raw.kaggle_submissions` — Kaggle 제출 추적 (submit_id, status, lb_score, polling 상태). `bin/api.py`의 `/api/submissions` 엔드포인트가 관리.
+- `raw.kaggle_submissions` — Kaggle 제출 추적 (submission_id, status, lb_score, checked_at). `bin/api.py`의 `/api/submissions*` 엔드포인트가 관리 (`docs/spec.md` §1.11/§7).
 
 스키마 변경 시: `store/schema.sql` 수정 후 `uv run python bin/reset.py --hard`.
 

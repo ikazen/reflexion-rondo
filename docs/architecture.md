@@ -143,7 +143,7 @@ LLM 역할 3개:
 
 목적: Strategist+Coder prior 의 천장을 외부 ML 지식으로 들어 올린다 (ADR-019). 누적 시도가 같은 모델 prior 안에 갇히지 않도록 외부 자극을 별도 채널로 주입하되, earned knowledge 풀(`raw.reflections`)을 오염시키지 않는다.
 
-- **격리된 게이트웨이**: `raw.external_ideas` 가 `raw.reflections` 와 완전 분리(목표 스키마는 `spec.md` §1.11). retrieval / `reflection_impact` 마트 / 검색 score 가중치에 안 섞임.
+- **격리된 게이트웨이**: `raw.external_ideas` 가 `raw.reflections` 와 완전 분리(목표 스키마는 `spec.md` §1.12). retrieval / `reflection_impact` 마트 / 검색 score 가중치에 안 섞임.
 - **소스 → 추출 → 게이트웨이**: 주간 systemd timer(ADR-017 daemon 흡수) 가 화이트리스트 소스(우승 writeup / pinned tips / gold·silver solution) 조회 → 추출 LLM(Strategist/Reflector 와 다른 호출) → 가드 4개(실측 수치 인용 / 다수 동의 / 조건부 진술만 / 500자 상한 + 코드 블록 분리) → `raw.external_ideas` insert (Beta(1, 1) 균일 prior).
 - **노출 = stage 게이팅 + 톰슨 샘플링**: `reflexion` Strategist 만, `applies_when` fingerprint 1차 필터 → 각 후보 θ ~ Beta(α, β) 샘플 → top-3. `bootstrap`/`exploitation` 은 외부 idea 차단 (cold-start lessons + seed_code 가 이미 외부 신호, exploitation 은 안정화 우선).
 - **승격 = 시스템 기본 루프**: 외부 idea 채택 → Coder 실행 → Evaluator 결정적 신호 → Reflector 정상 reflection. 검증된 부분만 자연히 lessons 풀로 진입. 외부 idea 자체는 `verified` 마킹 없이 영구 게이트웨이.
