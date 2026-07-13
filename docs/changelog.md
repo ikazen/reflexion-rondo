@@ -1,5 +1,13 @@
 # 변경 이력
 
+## 문서·docstring 코드 싱크 정리 (2026-07-13)
+- BON-240 반영: Coder 모델 문서 표기를 `qwen3.5:397b`(출력 토큰 과다) → `gpt-oss:120b`로 전 문서 정정(README, architecture, spec, setup, decisions ADR-016 amend).
+- `lb_score`/제출 추적 상태 정정: `raw.kaggle_submissions` 폴링(`/api/submissions/*`)이 이미 lb_score를 attempts까지 기록하는데 "미구현"으로 서술되어 있던 architecture.md·runbook.md 정정. `submission_budget` 일일 상한 enforcement만 여전히 미구현.
+- spec.md 스키마 누락 보강: `raw.kaggle_submissions`(§1.11 신설), `holdout_cv_gap_trend` 뷰, `raw.attempts.{holdout_score,confirm_seed_gains,fold_scores}`, `raw.pipelines.{pipeline_sha256,oof_preds}`, `raw.super_cycle_context` PK가 `queue_id`→`run_id`(BON-237)로 변경된 사실, `/api/health`+`/api/submissions/*` 엔드포인트 5종.
+- README 프로젝트 구조 트리를 실제 파일과 일치시킴 — 존재하지 않는 `cycle/super_cycle.py` 참조 제거, 신규 파일 6개(`bin/blend.py`, `bin/export_results.py`, `bin/rebuild_best_pipeline.py`, `bin/seed_competition_data.py`, `cycle/promotion.py`, `store/train_data.py`) 추가.
+- 죽은 코드 삭제: `main.py`(uv-init 스텁, 미참조), `bin/run_cycle.py`(Phase-0 PoC, `cycle/run.py`+`run_cycle_task.py`로 대체됨).
+- `api.md`(관측 API 설계, ~30 엔드포인트 대부분 미구현) — 코드가 아니라 gitignore된 미추적 로컬 스크래치 파일이었음이 드러나 GitHub Issue #11로 이관 후 삭제.
+
 ## 학습 신호 회복 — jump 라벨 붕괴 수정 + 코드생성 정적 가드 (2026-07-05)
 - ADR-012 amend(BON-267): label의 jump 판정을 harness 절대-마진에서 promotion과 동일한 paired 유의성 검정(`is_significant_gain`)으로 통일. 전체 7447건 attempt 중 jump 0건이던 근본원인 수정 — bandit 보상·stagnation 감지·reflection 게이트가 전부 이 label에 의존해 함께 정상화됨.
 - BON-268: `evaluator/contract.py`의 `validate_patch`에 정적 검사 2종 추가 — pandas-only API(`.groupby`/`.map_dict`/`.take`/`.apply`/`.iterrows`/`.applymap`/`.get_dummies`) 금지, candidate patch 자신의 undefined-name 검사(실행 격리 모델과 일치하는 범위로 검증). `agents/coder.py` contract 프롬프트에도 동일 금지 목록 반영.
