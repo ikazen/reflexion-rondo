@@ -52,7 +52,7 @@ Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
 3. **Promote** (`bin/run_promote_task.py`): 3개 attempt 중 `gain_vs_best` 최대값 → winner. `was_promoted=true/false` 플래그 업데이트. Reflect 호출:
    - **winner**: jump/regression/error일 때만 reflect.
    - **loser**: neutral 포함 전부 reflect ("이 시도는 효과 없었다"도 학습 신호).
-4. **Submit?**: (별도 스크립트) best 후보 → submission CSV/Kaggle. `submission_budget` 스키마는 있으나 `bin/submit.py`의 자동 예산 enforcement와 `lb_score` 기록은 아직 미구현이다.
+4. **Submit?**: (별도 스크립트) best 후보 → submission CSV/Kaggle. `raw.kaggle_submissions` + daemon API(`POST /api/submissions`, `/auto`, `/{id}/refresh`)가 제출·상태 폴링·`lb_score` 기록(attempts 테이블 backfill 포함)까지 수행한다. 다만 폴링은 API 호출로 트리거되며 자동 스케줄러는 없다 — 무인 주기 폴링 루프는 미구현. `submission_budget` 스키마는 있으나 일일 상한 자동 enforcement는 아직 미구현이다.
 
 `action_bandit`(BON-109): `reflexion` 단계 attempt 완료 시 action_type별 α/β 업데이트. jump/gain>0 → α++, regression/error → β++, neutral → 소량 양방향.
 `assign_super_cycle_actions`는 super_cycle retrieve에서만 action_type을 강제 배정한다. 정상 reflexion 사이클에서 `get_action_prior`는 LLM Strategist 프롬프트에 텍스트 prior로만 제공되며, 최종 action 선택은 LLM이 한다(advisory, regret 보장 없음 — ADR-005/014).
