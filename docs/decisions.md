@@ -195,6 +195,19 @@
 - 후속 후보: epsilon-greedy 혼합(super_cycle 내 비율 강제), contextual bandit(EDA fingerprint 피처 입력).
 - cross-ref: ADR-005(LLM-as-judge 금지), ADR-014(컨트랙트), `cycle/action_optimizer.py` docstring.
 
+## ADR-022 — 이미지 빌드는 Airflow DAG로 이관, 태그 source of truth가 daemon/task에서 갈라짐
+
+- 결정: daemon+task 이미지의 **빌드+registry push**는 airflow-stack의 `reflexion_rondo_deploy` DAG(ops 큐 docker.sock 재사용, airflow-stack decisions.md L29)가 담당한다. 이 repo의 `deploy/release.sh`는 더 이상 ops-vm에 SSH해서 빌드하지 않는다 — registry에 해당 태그가 이미 존재하는지 확인만 하고, daemon의 실제 컷오버(compose.yml 태그 bump+재시작)만 수행한다.
+- **태그의 source of truth가 이미지별로 갈라진다**: daemon은 계속 git(`deploy/compose.yml`, 이 repo)이 진실이고 release.sh가 push한다. task는 **Airflow Variable**(`rondo_task_image_version`, airflow-stack 관리)이 진실이 되고, `reflexion_rondo_deploy` DAG가 빌드 직후 즉시 bump한다 — git push도 GitDagBundle의 60초 지연도 없다.
+- 근거:
+  - **여러 repo 재사용**: reflexion-rondo뿐 아니라 다른 repo도 같은 방식(ops 큐 docker.sock)으로 이미지 배포를 하게 될 예정 — repo마다 ops-vm 상주 체크아웃+전용 SSH 키를 만드는 대신, `dags/lib/image_deploy.py`(airflow-stack) 공용 헬퍼가 매 실행마다 임시 디렉터리로 clone→build→push 한다.
+  - **신규 credential 불필요**: 이 repo가 public이라 clone에 인증이 없고, `registry.internal:5000`도 무인증(HTTP insecure, tailnet 경계로만 보호)이다. private repo가 이 메커니즘을 쓰게 되면 그때 공유 read-only PAT이 필요해진다(이 repo엔 해당 없음).
+  - **daemon은 남겨둔 이유**: daemon의 "배포"는 compose.yml 태그 bump(git write, 이 repo)+ops-vm 재시작이라 airflow-stack의 credential 경계 밖 작업이다. Airflow DAG에 이 repo의 git write credential을 새로 심는 대신, 지금처럼 사용자 로컬(WSL) git credential로 release.sh가 처리하는 편이 새 credential 없이 끝난다.
+- 트레이드오프:
+  - **DAG Versioning과의 결합 약화** (airflow-stack ADR-L27 참조): task 이미지 태그가 Variable로 빠지면서, 특정 DagRun이 정확히 어떤 이미지로 돌았는지 이제 git log가 아니라 Airflow의 rendered-template을 봐야 안다.
+  - **daemon/task 버전 불일치 창**: 두 이미지가 같은 커밋에서 함께 빌드되지만, task Variable은 즉시 반영되고 daemon은 release.sh를 별도로 돌릴 때까지 구버전으로 남을 수 있다. 둘 다 repo 전체를 COPY해 빌드하므로 코드 차이는 없지만 "지금 어느 버전이 떠있나"를 daemon/task 따로 확인해야 한다.
+- cross-ref: issue #15(release.sh 사전검증 순서 수정, 이번 daemon 전용 버전에도 유지), issue #17(release.sh 축소), airflow-stack decisions.md L29/R2.
+
 ---
 
 ## 미정 항목 (TBD)

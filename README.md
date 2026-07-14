@@ -86,7 +86,7 @@ evaluator/       결정적 k-fold CV (contract, harness, metrics)
 memory/          retriever (pgvector 검색 + MMR), transfer (cross-competition, 부분 구현)
 runtime/         격리 실행 (isolate.py → preexec_fn os.unshare(CLONE_NEWNET) + rlimit + 600s timeout → runner.py; CAP_SYS_ADMIN 없으면 rlimit+timeout만)
 store/           db.py (psycopg2 풀), s3_code.py (MinIO), fingerprint.py, train_data.py (train 로딩), schema.sql
-deploy/          Dockerfile, release.sh (ops-vm 빌드+배포, semver), build.sh (mac-server dev 빌드)
+deploy/          Dockerfile, release.sh (daemon 컷오버, semver — 빌드는 airflow-stack DAG), build.sh (mac-server dev 빌드)
 dashboard.py     Streamlit 모니터링
 runs/            생성 코드 캐시 · cold-start JSON · 제출 CSV (gitignore)
 docs/            아래 문서
@@ -136,16 +136,23 @@ Polars API 사용 (pandas 스타일 혼용 금지). 컨트랙트 위반 코드�
 
 ## 이미지 빌드 & 배포
 
-운영 배포 정본은 ops-vm에서 빌드하는 `deploy/release.sh`. WSL에서 실행하면
-ops-vm 빌드+registry push → 스모크(`bin/healthcheck.py`) → compose.yml+DAG 태그 bump+push →
-ops-vm 재시작 → heartbeat 확인까지 전 단계를 수행한다.
+이미지 2개: `reflexion-rondo/daemon` (오케스트레이션+LLM호출), `reflexion-rondo/task` (격리 실행).
+
+빌드+push는 airflow-stack의 `reflexion_rondo_deploy` DAG(ops 큐 docker.sock 재사용, 신규
+credential 불필요)가 담당한다. Airflow UI에서 `{"tag": "v1.2.27"}` conf로 트리거하면
+두 이미지를 빌드+push하고, task 이미지는 `rondo_task_image_version` Airflow Variable을
+즉시 bump한다(git push 아님).
+
+daemon의 실제 배포(compose.yml 태그 bump+재시작)는 여전히 `deploy/release.sh`가 한다 —
+DAG가 이미 registry에 올려둔 태그를 받아 존재 확인 → daemon 사전검증 → compose.yml
+bump+push → 재시작 → heartbeat 확인까지 수행한다.
 
 ```bash
-# WSL에서 실행
+# 1. Airflow UI: reflexion_rondo_deploy DAG를 {"tag": "v1.2.0"}으로 트리거 (양쪽 이미지 빌드)
+# 2. WSL에서: daemon 컷오버
 bash deploy/release.sh v1.2.0
 ```
 
-이미지 2개: `reflexion-rondo/daemon` (오케스트레이션+LLM호출), `reflexion-rondo/task` (격리 실행).
 `deploy/build.sh`는 mac-server(ARM64 네이티브) dev 빌드용 보조 스크립트 — 상세는 `docs/runbook.md`.
 
 ## 테스트
