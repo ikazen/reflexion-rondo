@@ -95,20 +95,22 @@ curl -X PATCH http://localhost:8000/api/queue/<queue_id> \
 - **airflow 모드 (운영)**: `AIRFLOW_URL` 환경변수가 있으면 Airflow DAG `reflexion_rondo_cycle` 트리거. 1 DAG run = 1 슈퍼사이클 (retrieve → attempt_0/1/2 병렬 → promote). retrieve/promote는 default 큐, attempt는 big 큐.
 - **direct 모드 (로컬 테스트)**: `AIRFLOW_URL` 없으면 daemon 프로세스 안에서 단일 `run_cycle()` attempt만 실행한다. forced action 배정, 3-way 병렬 attempt, promote/loser reflection은 실행하지 않는다.
 
-**이미지 배포 (semver)**
+**이미지 배포 (semver, issue #17 이후 2단계)**
 
-빌드 호스트: **ops-vm** (aarch64). WSL에서 `release.sh` 하나로 전 단계를 수행한다.
+1단계(빌드): airflow-stack의 `reflexion_rondo_deploy` DAG를 Airflow UI에서 `{"tag": "v1.2.0"}` conf로 트리거(Trigger DAG w/ config) — daemon+task 두 이미지를 ops-vm의 Airflow `ops` 큐(docker.sock 재사용, airflow-stack decisions.md L29)가 clone+build+push하고, 일회성 컨테이너로 사전검증까지 마친 뒤 `rondo_task_image_version` Airflow Variable을 bump한다. **task 이미지는 이 시점에 이미 라이브다** — git push도, `release.sh`도 필요 없다.
+
+2단계(daemon 컷오버): WSL에서 daemon만 실제로 배포.
 
 ```bash
-# WSL에서 실행
+# WSL에서 실행 — 1단계(DAG 빌드)가 이미 끝났다는 전제
 bash deploy/release.sh v1.2.0
 ```
 
-흐름: ops-vm 빌드+registry push → 사전검증(일회성 컨테이너로 daemon `bin/healthcheck.py` + task import 스모크) → compose.yml+DAG 태그 bump+push → ops-vm 재시작 → heartbeat 확인.
+흐름: registry에 해당 태그 존재 확인(없으면 "DAG 먼저 트리거하라" 에러) → 사전검증(일회성 컨테이너로 daemon `bin/healthcheck.py`, 컷오버 시점 재확인) → compose.yml 태그 bump+push → ops-vm 재시작 → heartbeat 확인.
 
-사전검증 실패 시 태그 bump 없이 중단된다 — registry에 이미지가 push된 것 외엔 아무 상태도 바뀌지 않는다(issue #15).
+사전검증 실패 시 태그 bump 없이 중단된다 — compose.yml도 실 daemon도 바뀌지 않는다(issue #15 순서 수정을 daemon 전용 버전으로 유지).
 
-task 이미지는 daemon처럼 "재시작"이 없다 — airflow-stack repo의 DAG 파일을 push하면 Airflow가 GitDagBundle로 60초마다 `main`을 자동 pull하므로 그 시점부터 다음 사이클에 새 태그가 반영된다. `release.sh`는 이 반영을 기다리거나 재확인하지 않는다.
+daemon과 task는 이제 독립적으로 배포된다 — 두 버전이 일시적으로 어긋날 수 있음을 인지할 것(둘 다 동일 커밋에서 빌드되므로 코드 차이는 없지만, "지금 daemon과 task가 다른 태그"인 창이 생길 수 있다).
 
 **의존성 health 수동 확인:**
 ```bash
