@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # WSL에서 실행: bash deploy/release.sh <version>
 #
-# 흐름: 가드 → ops-vm 빌드+push → compose/DAG 태그 bump → ops-vm 재시작 → 스모크 → 사후 확인
+# 흐름: 가드 → ops-vm 빌드+push → 사전검증(daemon+task, 일회성 컨테이너) → compose/DAG 태그 bump
+#       → ops-vm 재시작 → heartbeat 확인
+#
+# 사전검증을 태그 bump/재시작보다 먼저 실행한다 — 검증 실패 시 registry에 이미지는 push되지만
+# compose.yml/DAG 태그도, 실 daemon도 바뀌지 않은 채 중단된다(issue #15).
 #
 # 전제:
 #   - WSL에 ~/projects/reflexion-rondo, ~/projects/airflow-stack checkout
@@ -69,7 +73,36 @@ ssh ops-vm "
 echo "[release] pushed $DAEMON_IMG"
 echo "[release] pushed $TASK_IMG"
 
-# ---- 4. 태그 bump + push (WSL) ----------------------------------------------
+# ---- 4. 사전검증 (일회성 컨테이너, ops-vm) -----------------------------------
+# 아직 compose.yml/DAG 태그도, 실행 중인 daemon도 건드리지 않은 시점에 새 이미지를
+# 검증한다. 여기서 실패하면 registry에 push된 것 외엔 아무 상태도 바뀌지 않은 채 중단된다
+# (issue #15 — 기존엔 태그 bump+재시작 후에야 스모크가 돌아 실패해도 이미 배포된 상태였음).
+#
+# daemon: compose.yml의 rondo-daemon과 동일한 env_file/network/AIRFLOW_URL로 살아있는
+# 컨테이너를 건드리지 않는 일회성 컨테이너에서 healthcheck 실행. ollama_local은 컨테이너 내
+# Tailscale 미지원으로 항상 접근 불가 — 명시적으로 skip.
+# task: 무거운 실제 eval 대신 import 스모크로 빌드 자체가 깨졌는지만 확인 — 이 이미지는
+# CMD가 없고 DockerOperator가 매번 커맨드를 주입하는 구조라 이 이상은 과함.
+
+echo "[release] pre-flight: daemon healthcheck (throwaway container) ..."
+ssh ops-vm "
+    docker run --rm --network nexus --env-file /var/lib/rondo/.env \
+        -e AIRFLOW_URL='http://airflow-api-server-1:8080' \
+        $DAEMON_IMG uv run --no-sync python -m bin.healthcheck --skip ollama_local
+"
+
+echo "[release] pre-flight: task image import smoke ..."
+ssh ops-vm "
+    docker run --rm $TASK_IMG uv run --no-sync python -c \"
+from evaluator.harness import BasePipeline, PatchedPipeline, PipelineContext, evaluate_pipeline
+from runtime import runner
+import polars, sklearn, lightgbm, catboost, xgboost
+print('task image import OK')
+\"
+"
+
+# ---- 5. 태그 bump + push (WSL) ----------------------------------------------
+# 사전검증을 통과한 뒤에만 실행 — 여기부터는 실제 배포로 간주한다.
 
 echo "[release] updating deploy/compose.yml ..."
 sed -i "s|/daemon:[^ '\"]*|/daemon:$VERSION|g" "$REPO_DIR/deploy/compose.yml"
@@ -86,7 +119,7 @@ if ! git -C "$AIRFLOW_STACK_DIR" diff --quiet dags/reflexion_rondo_cycle.py; the
 fi
 git -C "$AIRFLOW_STACK_DIR" push --quiet
 
-# ---- 5. 재시작 (ops-vm) -----------------------------------------------------
+# ---- 6. 재시작 (ops-vm) -----------------------------------------------------
 
 echo "[release] restarting daemon ..."
 ssh ops-vm "
@@ -95,18 +128,12 @@ ssh ops-vm "
     docker compose -f deploy/compose.yml up -d
 "
 
-# ---- 6. 스모크 (실행 중인 daemon 컨테이너 안에서) ---------------------------
-# docker exec으로 실행해야 compose.yml 환경(AIRFLOW_URL 등)과 nexus 네트워크를 그대로 사용.
-# ollama_local은 컨테이너 내 Tailscale 미지원으로 항상 접근 불가 — 명시적으로 skip.
+# ---- 7. 재시작 후 확인 -------------------------------------------------------
+# daemon 이미지 자체는 이미 4에서 검증했으므로 여기서는 컴포즈 배선(volume/env/network)
+# 문제만 잡는 가벼운 heartbeat 확인으로 충분하다.
 
-echo "[release] smoke test (exec into running daemon) ..."
+echo "[release] post-restart heartbeat check ..."
 sleep 5
-ssh ops-vm "
-    CONTAINER=\$(docker compose -f ~/projects/reflexion-rondo/deploy/compose.yml ps -q rondo-daemon)
-    docker exec \"\$CONTAINER\" \
-        uv run --no-sync python -m bin.healthcheck --skip ollama_local
-"
-
-# ---- 7. 사후 확인 ------------------------------------------------------------
+ssh ops-vm "curl -sf http://localhost:8000/api/heartbeat > /dev/null"
 
 echo "[release] $VERSION deployed successfully"
