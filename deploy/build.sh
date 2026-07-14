@@ -3,7 +3,7 @@
 #
 # Usage:
 #   bash deploy/build.sh v1.1.0-dev   # dev 빌드
-#   bash deploy/build.sh v1.0.0       # stable 빌드 (정본 배포는 deploy/release.sh 경유 권장)
+#   bash deploy/build.sh v1.0.0       # stable 빌드 (정본 배포는 Airflow reflexion_rondo_deploy DAG 경유 권장, issue #17)
 #
 # BUILDX_NO_DEFAULT_ATTESTATIONS=1: Docker Engine 내장 BuildKit이 attestation 매니페스트를
 # 추가하지 않도록 억제 — OCI 인덱스 생성 방지. GC가 자식 매니페스트를 orphan으로 삭제하는
