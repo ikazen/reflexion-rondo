@@ -1,5 +1,11 @@
 # 변경 이력
 
+## release.sh 사전검증 순서 수정 (2026-07-14)
+- issue #15: 스모크가 태그 bump(compose.yml+DAG, 양쪽 repo)/daemon 재시작보다 늦게 실행되던 순서 버그 수정. 이제 daemon+task 이미지를 일회성 컨테이너로 먼저 검증하고, 통과한 뒤에만 태그 bump+재시작이 진행된다.
+- task 이미지는 이전엔 검증 대상이 아니었다(스모크는 daemon 컨테이너 exec뿐) — import 스모크로 신규 편입.
+- `docs/runbook.md` §2 "이미지 배포" 절을 실제 흐름과 일치하도록 갱신, GitDagBundle 60초 반영 지연 사실 추가.
+- `deploy/build.sh`의 존재하지 않는 `promote.sh` 참조 주석 정정.
+
 ## 문서 로직 서술 재싱크 — spec/architecture/runbook (2026-07-14)
 - spec.md §3 지표 레지스트리: `qwk`(TBD→구현됨, metric_class ordinal→classification), `balanced_accuracy`(BON-273) 신규 행 추가.
 - spec.md §4 label 규칙: `z` 기본값 1.0→실제 `LABEL_Z=2.0`(BON-194) 정정. jump 판정이 harness 절대-마진의 잠정값이며 `cycle/run.py`가 `is_significant_gain`(paired per-fold t-test, BON-247/267)으로 재확정한다는 사실 반영. 완벽점수·회귀 trivial-baseline 누수 가드 2종과 `is_noop_tie`(BON-239) 추가.

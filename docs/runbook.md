@@ -104,9 +104,11 @@ curl -X PATCH http://localhost:8000/api/queue/<queue_id> \
 bash deploy/release.sh v1.2.0
 ```
 
-흐름: ops-vm 빌드+registry push → 스모크(`bin/healthcheck.py`) → compose.yml+DAG 태그 bump+push → ops-vm 재시작 → heartbeat 확인.
+흐름: ops-vm 빌드+registry push → 사전검증(일회성 컨테이너로 daemon `bin/healthcheck.py` + task import 스모크) → compose.yml+DAG 태그 bump+push → ops-vm 재시작 → heartbeat 확인.
 
-스모크 결과 실패 시 태그 bump 없이 중단된다.
+사전검증 실패 시 태그 bump 없이 중단된다 — registry에 이미지가 push된 것 외엔 아무 상태도 바뀌지 않는다(issue #15).
+
+task 이미지는 daemon처럼 "재시작"이 없다 — airflow-stack repo의 DAG 파일을 push하면 Airflow가 GitDagBundle로 60초마다 `main`을 자동 pull하므로 그 시점부터 다음 사이클에 새 태그가 반영된다. `release.sh`는 이 반영을 기다리거나 재확인하지 않는다.
 
 **의존성 health 수동 확인:**
 ```bash
