@@ -122,6 +122,46 @@ def test_load_pipeline_skips_verification_when_sha256_none() -> None:
 
 
 # ---------------------------------------------------------------------------
+# (issue #19) attempt_only는 MinIO best_pipeline.py를 참조하지 않아야 한다
+# ---------------------------------------------------------------------------
+
+def test_load_pipeline_attempt_only_skips_minio_download() -> None:
+    """attempt_only=True면 download_best_pipeline을 아예 호출하지 않는다."""
+    source = "class Patch:\n    def build_model(self, params, ctx):\n        return 'attempt-model'\n"
+    with patch("store.s3_code.download_best_pipeline") as mock_download:
+        pipeline = _load_pipeline("s4e1", extra_source=source, attempt_only=True)
+    mock_download.assert_not_called()
+    assert pipeline.build_model({}, None) == "attempt-model"
+
+
+def test_load_pipeline_attempt_only_ignores_stale_minio_blob() -> None:
+    """고아 MinIO best_pipeline.py가 있어도 attempt_only면 extra_source의 Patch가 이긴다.
+
+    회귀 테스트 — 2026-07-17 s5e5에서 실제로 재현된 버그(orphaned best_pipeline.py가
+    --attempt-id로 지정한 attempt 코드를 조용히 덮어써 Kaggle 제출 2건이 파국났음).
+    """
+    stale_minio_source = (
+        "class Patch:\n    def build_model(self, params, ctx):\n        return 'stale-minio-model'\n"
+    )
+    attempt_source = (
+        "class Patch:\n    def build_model(self, params, ctx):\n        return 'attempt-model'\n"
+    )
+    with patch("store.s3_code.download_best_pipeline", return_value=stale_minio_source) as mock_download:
+        pipeline = _load_pipeline("s4e1", extra_source=attempt_source, attempt_only=True)
+    mock_download.assert_not_called()
+    assert pipeline.build_model({}, None) == "attempt-model"
+
+
+def test_load_pipeline_attempt_only_without_source_falls_back_to_base() -> None:
+    """attempt_only=True인데 extra_source가 없으면(방어적) BasePipeline으로 폴백한다."""
+    from evaluator.harness import BasePipeline
+    with patch("store.s3_code.download_best_pipeline") as mock_download:
+        pipeline = _load_pipeline("s4e1", extra_source=None, attempt_only=True)
+    mock_download.assert_not_called()
+    assert isinstance(pipeline, BasePipeline)
+
+
+# ---------------------------------------------------------------------------
 # (BON-249) _bagged_predict seed bagging
 # ---------------------------------------------------------------------------
 
