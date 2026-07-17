@@ -154,8 +154,15 @@ def _kaggle_submit(
     attempt_id: str | None,
     message: str,
 ) -> None:
-    """CSV 생성 + kaggle 제출. 폴링은 /refresh 엔드포인트(DAG)가 담당."""
+    """CSV 생성(캐시 우선) + kaggle 제출. 폴링은 /refresh 엔드포인트(DAG)가 담당.
+
+    GH issue #31: promote 시점에 캐싱된 CSV(store.s3_code.download_submission_csv)가
+    있으면 그걸로 바로 업로드한다 — fit 없이 수 초. 캐시 미스(비승격 attempt 등)면
+    기존대로 bin.submit 서브프로세스가 그 자리에서 fit한다(daemon 상주 ops-vm의
+    아침 CPU 스파이크 원인이던 경로 — 캐시가 이걸 대체하는 게 이번 변경의 목적).
+    """
     from store.db import connect
+    from store.s3_code import download_submission_csv
 
     def _update(fields: dict) -> None:
         c = connect(apply_schema=False)
@@ -166,25 +173,43 @@ def _kaggle_submit(
         )
         c.close()
 
-    cmd = [
-        "uv", "run", "python", "-m", "bin.submit",
-        "--competition", competition_slug,
-        "--submit", "--message", message,
-    ]
-    if attempt_id:
-        cmd += ["--attempt-id", attempt_id]
-
     _update({"status": "submitting", "checked_at": datetime.now(timezone.utc)})
+
+    cached = download_submission_csv(competition_id, attempt_id) if attempt_id else None
+    tmp_path: Path | None = None
 
     try:
         with _kaggle_home_env() as env:
             if env is None:
                 _update({"status": "error", "error": "kaggle token unavailable", "checked_at": datetime.now(timezone.utc)})
                 return
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=_SUBMIT_TIMEOUT_SEC, cwd=str(ROOT),
-                env=env,
-            )
+            if cached:
+                tmp_path = Path(tempfile.gettempdir()) / f"rondo_submit_{submission_id}.csv"
+                tmp_path.write_bytes(cached)
+                result = subprocess.run(
+                    ["uv", "run", "kaggle", "competitions", "submit",
+                     "-c", competition_id, "-f", str(tmp_path), "-m", message],
+                    capture_output=True, text=True, timeout=_SUBMIT_TIMEOUT_SEC, cwd=str(ROOT),
+                    env=env,
+                )
+                csv_path: str | None = str(tmp_path)
+            else:
+                cmd = [
+                    "uv", "run", "python", "-m", "bin.submit",
+                    "--competition", competition_slug,
+                    "--submit", "--message", message,
+                ]
+                if attempt_id:
+                    cmd += ["--attempt-id", attempt_id]
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=_SUBMIT_TIMEOUT_SEC, cwd=str(ROOT),
+                    env=env,
+                )
+                csv_path = None
+                for line in result.stdout.splitlines():
+                    if "submission saved:" in line:
+                        csv_path = line.split("submission saved:", 1)[1].strip()
+                        break
     except subprocess.TimeoutExpired:
         _update({
             "status": "error",
@@ -192,16 +217,13 @@ def _kaggle_submit(
             "checked_at": datetime.now(timezone.utc),
         })
         return
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
     if result.returncode != 0:
         _update({"status": "error", "error": result.stderr[:2000], "checked_at": datetime.now(timezone.utc)})
         return
-
-    csv_path: str | None = None
-    for line in result.stdout.splitlines():
-        if "submission saved:" in line:
-            csv_path = line.split("submission saved:", 1)[1].strip()
-            break
 
     fields: dict = {"status": "submitted", "checked_at": datetime.now(timezone.utc)}
     if csv_path:

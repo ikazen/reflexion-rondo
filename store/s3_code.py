@@ -104,6 +104,47 @@ def delete_best_pipeline(competition_id: str) -> bool:
     return deleted
 
 
+_SUBMISSIONS_PREFIX = "submissions"
+
+
+def upload_submission_csv(competition_id: str, attempt_id: str, content: bytes) -> str:
+    """GH issue #31: promote 시점에 생성한 제출 CSV 캐시.
+
+    auto-submit(매일 06:00)이 이 attempt_id로 캐시 히트하면 fit 없이 그대로 업로드한다
+    — 캐시 키에 attempt_id를 넣어 "이 attempt에 대한 예측"임을 명확히 한다.
+    """
+    key = f"{_SUBMISSIONS_PREFIX}/{competition_id}/{attempt_id}.csv"
+    try:
+        resp = requests.put(
+            f"{_ENDPOINT}/{_BUCKET}/{key}",
+            data=content,
+            headers={"Content-Type": "text/csv"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return f"s3://{_BUCKET}/{key}"
+    except Exception:
+        pass
+    local_dir = Path(__file__).parent.parent / "runs" / "submissions" / competition_id
+    local_dir.mkdir(parents=True, exist_ok=True)
+    path = local_dir / f"{attempt_id}.csv"
+    path.write_bytes(content)
+    return str(path)
+
+
+def download_submission_csv(competition_id: str, attempt_id: str) -> bytes | None:
+    """캐시된 제출 CSV 읽기. 없으면 None(캐시 미스 — 호출측이 fit 경로로 폴백)."""
+    key = f"{_SUBMISSIONS_PREFIX}/{competition_id}/{attempt_id}.csv"
+    try:
+        resp = requests.get(f"{_ENDPOINT}/{_BUCKET}/{key}", timeout=30)
+        resp.raise_for_status()
+        return resp.content
+    except Exception:
+        pass
+    path = Path(__file__).parent.parent / "runs" / "submissions" / competition_id / f"{attempt_id}.csv"
+    return path.read_bytes() if path.exists() else None
+
+
 def delete(uri: str) -> bool:
     """URI가 가리키는 파일 삭제. 성공 여부 반환."""
     if uri.startswith("s3://"):

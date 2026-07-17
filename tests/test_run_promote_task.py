@@ -174,13 +174,15 @@ class _Conn:
 
 
 def _run_promote_with_mocks(
-    confirm_result, reflect_mock, confirm_mock, eval_isolated_mock=None
+    confirm_result, reflect_mock, confirm_mock, eval_isolated_mock=None, generate_csv_mock=None
 ) -> "_Conn":
     """모든 외부 의존을 mock 처리하고 run_promote_task.main()을 1회 실행. 사용된 conn을 반환.
 
-    conn.insert_pipeline_mock / conn.upload_best_pipeline_mock / conn.eval_isolated_mock에
-    각 mock을 붙여둔다 — BON-256 merge-verify 테스트가 호출 여부를 검증할 수 있도록.
+    conn.insert_pipeline_mock / conn.upload_best_pipeline_mock / conn.eval_isolated_mock /
+    conn.generate_csv_mock / conn.upload_submission_csv_mock에 각 mock을 붙여둔다 — 호출
+    여부를 검증할 수 있도록(BON-256 merge-verify, GH issue #31 submission 캐싱).
     eval_isolated_mock 미지정 시 winner_cv(_WINNER_CV)와 일치하는 기본 성공 응답으로 채운다.
+    generate_csv_mock 미지정 시 (fake_path, winner_attempt_id, _WINNER_CV) 성공 응답으로 채운다.
     """
     fake_df = MagicMock(name="train_df")
     fake_df.drop.return_value = fake_df
@@ -198,6 +200,12 @@ def _run_promote_with_mocks(
             return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None, oof_preds=None)
         )
 
+    fake_csv_path = MagicMock(name="csv_path")
+    fake_csv_path.read_bytes.return_value = b"csv-bytes"
+    generate_csv_mock = generate_csv_mock or MagicMock(
+        return_value=(fake_csv_path, _ATTEMPT_ROWS[0][0], _WINNER_CV)
+    )
+
     argv = ["run_promote_task", "--queue-id", "qid", "--run-id", "rid", "--competition", _SLUG]
     sys.path.insert(0, str(ROOT))
     try:
@@ -207,6 +215,8 @@ def _run_promote_with_mocks(
              patch("store.s3_code.download", return_value="def f():\n    return 1\n"), \
              patch("store.s3_code.download_best_pipeline", return_value=None), \
              patch("store.s3_code.upload_best_pipeline") as upload_best_pipeline_mock, \
+             patch("bin.submit.generate_submission_csv", generate_csv_mock), \
+             patch("store.s3_code.upload_submission_csv") as upload_submission_csv_mock, \
              patch("cycle.materialize.materialize_best_pipeline", return_value="code"), \
              patch("cycle.promotion.confirm_and_measure", confirm_mock), \
              patch("agents.reflector.reflect", reflect_mock), \
@@ -227,6 +237,8 @@ def _run_promote_with_mocks(
     conn.insert_pipeline_mock = insert_pipeline_mock
     conn.upload_best_pipeline_mock = upload_best_pipeline_mock
     conn.eval_isolated_mock = eval_isolated_mock
+    conn.generate_csv_mock = generate_csv_mock
+    conn.upload_submission_csv_mock = upload_submission_csv_mock
     return conn
 
 
@@ -346,3 +358,50 @@ def test_merge_verify_eval_error_blocks_promotion() -> None:
     )
     assert conn.insert_pipeline_mock.call_count == 0
     assert conn.upload_best_pipeline_mock.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# GH issue #31: promote 시점 submission CSV 캐싱 — ops-vm 아침 CPU 스파이크 원인
+# 제거(auto-submit이 이 자리에서 fit하는 대신 캐시를 재사용하도록)
+# ---------------------------------------------------------------------------
+
+def test_submission_csv_cached_on_successful_promotion() -> None:
+    """승격 성공 시 winner attempt_id로 generate_submission_csv → upload_submission_csv가
+    호출돼야 한다 — 다음 06:00 auto-submit이 fit 없이 이 캐시를 쓸 수 있도록.
+    """
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    eval_isolated_mock = MagicMock(
+        return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None, oof_preds=None)
+    )
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
+        reflect_mock,
+        confirm_mock,
+        eval_isolated_mock=eval_isolated_mock,
+    )
+    winner_attempt_id = _ATTEMPT_ROWS[0][0]
+    conn.generate_csv_mock.assert_called_once_with(_SLUG, attempt_id=winner_attempt_id)
+    conn.upload_submission_csv_mock.assert_called_once_with(_FULL_ID, winner_attempt_id, b"csv-bytes")
+
+
+def test_submission_csv_caching_failure_does_not_block_promotion() -> None:
+    """캐싱이 실패해도(best-effort) 승격 자체는 정상 진행돼야 한다 — 캐시 미스 시
+    auto-submit이 기존 fit 경로로 폴백하므로 안전.
+    """
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    eval_isolated_mock = MagicMock(
+        return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None, oof_preds=None)
+    )
+    failing_generate_csv_mock = MagicMock(side_effect=RuntimeError("train data unavailable"))
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
+        reflect_mock,
+        confirm_mock,
+        eval_isolated_mock=eval_isolated_mock,
+        generate_csv_mock=failing_generate_csv_mock,
+    )
+    assert conn.insert_pipeline_mock.call_count == 1
+    assert conn.upload_best_pipeline_mock.call_count == 1
+    assert conn.upload_submission_csv_mock.call_count == 0
