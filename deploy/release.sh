@@ -53,9 +53,16 @@ fi
 # 기본 출력하면서, 구 Docker 전용 media type만 요청하던 이 체크가 실제로 존재하는
 # 이미지도 404로 오판했다(v1.2.27 배포 시 실측). registry에 태그는 있는데 이 체크만
 # 실패하는 상황이면 media type 협상 문제를 우선 의심할 것.
+#
+# repo path는 태그를 뗀 뒤 registry 접두어를 벗겨야 한다 — ${DAEMON_IMG#${REGISTRY}/}만
+# 쓰면 ":$VERSION"이 repo 이름에 그대로 남아 .../daemon:v1.2.27/manifests/v1.2.27 같은
+# 깨진 경로가 되고 registry가 항상 404를 반환한다(v1.2.27 배포 시 실측, 이 체크가 한
+# 번도 제대로 동작한 적 없었다는 뜻).
+IMAGE_REPO_PATH="${DAEMON_IMG%:*}"
+IMAGE_REPO_PATH="${IMAGE_REPO_PATH#${REGISTRY}/}"
 echo "[release] checking $DAEMON_IMG exists in registry ..."
 STATUS=$(curl -o /dev/null -sw "%{http_code}" \
-    "http://${REGISTRY}/v2/${DAEMON_IMG#${REGISTRY}/}/manifests/${VERSION}" \
+    "http://${REGISTRY}/v2/${IMAGE_REPO_PATH}/manifests/${VERSION}" \
     -H "Accept: application/vnd.docker.distribution.manifest.v2+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.oci.image.index.v1+json" 2>/dev/null || true)
 if [[ "$STATUS" != "200" ]]; then
     echo "ERROR: $DAEMON_IMG not found in registry (http $STATUS)"
