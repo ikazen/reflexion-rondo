@@ -112,6 +112,7 @@ def _load_pipeline(
     competition_id: str,
     extra_source: str | None = None,
     expected_sha256: str | None = None,
+    attempt_only: bool = False,
 ) -> object:
     """Load the materialized best pipeline from MinIO.
 
@@ -122,11 +123,32 @@ def _load_pipeline(
     expected_sha256: BON-255 — MinIO kaggle 버킷은 익명 write 허용이라 best_pipeline.py가
     변조될 수 있다. raw.pipelines(신뢰된 Postgres 사본)에 기록된 해시와 대조해 불일치 시
     조용히 진행하지 않고 즉시 raise한다. None이면 검증 스킵(예: --attempt-id 명시 경로).
+
+    attempt_only: issue #19 — True면 MinIO best_pipeline.py를 아예 조회하지 않고
+    extra_source만 단독으로 exec한다. --attempt-id 경로(및 confirmed pipeline 부재 시
+    auto-submit 폴백)는 애초에 신뢰 해시가 없어(expected_sha256=None) 위 무결성 검증이
+    스킵되는데, 예전엔 그 상태에서도 MinIO에 뭔가 있으면 최우선으로 fetch해 extra_source
+    뒤에 exec했다 — 같은 이름의 class Patch라 MinIO 쪽이 조용히 덮어썼다. raw.pipelines
+    행이 삭제돼도 대응 MinIO blob은 안 지워지므로, 이 경로로 고아(orphaned) blob이 특정
+    attempt 제출을 하이재킹할 수 있었다(실제로 Kaggle 제출 2건이 이렇게 파국났음,
+    2026-07-17). attempt_only=True는 그 무관한 MinIO 상태를 원천적으로 배제한다.
     """
     import sys
     sys.path.insert(0, str(ROOT))
     from store.s3_code import download_best_pipeline
     from evaluator.harness import BasePipeline, PipelineContext
+
+    if attempt_only:
+        if not extra_source:
+            return BasePipeline()
+        ns: dict = {}
+        exec(compile(extra_source, "<attempt_pipeline>", "exec"), ns)  # noqa: S102
+        patch_cls = ns.get("Patch")
+        if not patch_cls:
+            return BasePipeline()
+        methods = {h: getattr(patch_cls, h) for h in _HOOK_NAMES if hasattr(patch_cls, h)}
+        BestPipelineCls = type("BestPipeline", (BasePipeline,), methods)
+        return BestPipelineCls()
 
     best_source = download_best_pipeline(competition_id)
     if not best_source:
@@ -265,7 +287,10 @@ def main() -> None:
 
     from evaluator.harness import PipelineContext, preselect_params
     from store.train_data import load_train
-    pipeline = _load_pipeline(comp.COMPETITION_ID, extra_source=source, expected_sha256=pipeline_sha256)
+    pipeline = _load_pipeline(
+        comp.COMPETITION_ID, extra_source=source, expected_sha256=pipeline_sha256,
+        attempt_only=bool(args.attempt_id),
+    )
     ctx = PipelineContext(
         target_col=comp.TARGET,
         metric=comp.METRIC,
