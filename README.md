@@ -11,6 +11,24 @@
 성공 조건: 객관적·자동 검증 가능한 피드백 신호(CV + LB)가 있는 도메인
 → Kaggle CSV 제출형 정형 대회 (Playground Series).
 
+## 지원 대회 조건
+
+- **형식**: 단일 target 컬럼 정형 CSV. `data/<slug>/train.csv` + MinIO 시딩 필요, 제출은 CSV.
+- **task type** (3종): `binary` / `multiclass` / `regression`. (`config/settings.py`)
+- **metric** (`evaluator/metrics.py` `_REGISTRY`, task type과의 조합 제약 포함):
+
+  | metric | 방향 | metric_class | 허용 task |
+  |---|---|---|---|
+  | `auc` / `roc_auc` | ↑ | binary_proba | binary만 |
+  | `logloss` | ↓ | binary_proba | binary만 |
+  | `accuracy`, `f1`, `qwk`, `balanced_accuracy` | ↑ | classification | binary/multiclass |
+  | `rmse`, `mae`, `rmsle` | ↓ | regression_error | regression |
+
+- **multiclass는 binary_proba metric(auc/logloss) 사용 불가** — 평가 하네스가 `predict_proba[:, 1]`로 2-클래스를 가정하므로 깨진다. multiclass는 classification 계열 metric만 쓴다.
+- regression은 CV score가 mean-baseline 대비 100배 이상 좋으면 target 누수로 간주해 reject한다.
+- classification 계열 metric은 OOF를 수집하지 않아 Ridge blend(`bin/blend.py`) 대상에서 제외된다.
+- `rmsle`는 예측값을 0 이상으로 clip한다.
+
 ## 환경
 
 - Python 패키지 관리: `uv` (`uv run python ...` 형태로 실행)
