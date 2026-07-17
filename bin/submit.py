@@ -269,27 +269,27 @@ def _majority_vote(bag_preds: list[np.ndarray]) -> np.ndarray:
     return classes[counts.argmax(axis=1)]
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--competition", "-c", required=True)
-    parser.add_argument("--attempt-id", default=None, help="특정 attempt ID 앞 8자리 (참고용)")
-    parser.add_argument("--submit", action="store_true", help="Kaggle에 바로 제출")
-    parser.add_argument("--message", "-m", default=None, help="제출 메시지")
-    args = parser.parse_args()
+def generate_submission_csv(
+    competition_slug: str, attempt_id: str | None = None
+) -> tuple[Path, str, float]:
+    """best 코드 로드 → 전체 train 5-seed fit → test 예측 → CSV 저장.
 
+    (csv_path, attempt_id, cv_score) 반환. CLI(main)와 promote 훅(캐시 생성,
+    GH issue #31) 양쪽에서 재사용 — 로직은 하나만 유지.
+    """
     import sys
     sys.path.insert(0, str(ROOT))
 
-    comp = importlib.import_module(f"config.competitions.{args.competition}")
+    comp = importlib.import_module(f"config.competitions.{competition_slug}")
 
-    source, cv_score, attempt_id, pipeline_sha256 = _load_best_code(comp.COMPETITION_ID, args.attempt_id)
-    print(f"best attempt: {attempt_id[:8]}  cv={cv_score:.5f}")
+    source, cv_score, resolved_attempt_id, pipeline_sha256 = _load_best_code(comp.COMPETITION_ID, attempt_id)
+    print(f"best attempt: {resolved_attempt_id[:8]}  cv={cv_score:.5f}")
 
     from evaluator.harness import PipelineContext, preselect_params
     from store.train_data import load_train
     pipeline = _load_pipeline(
         comp.COMPETITION_ID, extra_source=source, expected_sha256=pipeline_sha256,
-        attempt_only=bool(args.attempt_id),
+        attempt_only=bool(attempt_id),
     )
     ctx = PipelineContext(
         target_col=comp.TARGET,
@@ -334,21 +334,43 @@ def main() -> None:
     preds = pipeline.postprocess_predictions(raw_preds, ctx)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    out = RUNS_DIR / f"submission_{comp.competition_id if hasattr(comp, 'competition_id') else args.competition}_{ts}.csv"
+    out = RUNS_DIR / f"submission_{competition_slug}_{ts}.csv"
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
     value_col = _submission_value_col(sample.columns, comp.TARGET)
     pl.DataFrame({id_col: test_ids, value_col: preds}).write_csv(out)
     print(f"submission saved: {out}")
 
+    return out, resolved_attempt_id, cv_score
+
+
+def upload_csv_to_kaggle(competition_id: str, csv_path: Path, message: str) -> subprocess.CompletedProcess:
+    """생성된 CSV를 Kaggle에 제출. subprocess 결과(returncode/stdout/stderr) 그대로 반환."""
+    return subprocess.run(
+        ["uv", "run", "kaggle", "competitions", "submit",
+         "-c", competition_id, "-f", str(csv_path), "-m", message],
+        capture_output=True, text=True,
+    )
+
+
+def main() -> None:
+    import sys
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--competition", "-c", required=True)
+    parser.add_argument("--attempt-id", default=None, help="특정 attempt ID 앞 8자리 (참고용)")
+    parser.add_argument("--submit", action="store_true", help="Kaggle에 바로 제출")
+    parser.add_argument("--message", "-m", default=None, help="제출 메시지")
+    args = parser.parse_args()
+
+    sys.path.insert(0, str(ROOT))
+    comp = importlib.import_module(f"config.competitions.{args.competition}")
+
+    out, attempt_id, cv_score = generate_submission_csv(args.competition, args.attempt_id)
+
     if args.submit:
-        import sys
         msg = args.message or f"reflexion best cv={cv_score:.5f} attempt={attempt_id[:8]}"
-        result = subprocess.run(
-            ["uv", "run", "kaggle", "competitions", "submit",
-             "-c", comp.COMPETITION_ID, "-f", str(out), "-m", msg],
-            capture_output=True, text=True,
-        )
+        result = upload_csv_to_kaggle(comp.COMPETITION_ID, out, msg)
         print(result.stdout or result.stderr)
         if result.returncode != 0:
             print(f"kaggle submit failed (rc={result.returncode})", file=sys.stderr)
