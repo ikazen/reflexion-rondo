@@ -1,10 +1,12 @@
-"""issue #20: runtime/isolate.py 메모리 기본값 회귀 테스트.
+"""issue #20/#27: runtime/isolate.py 메모리 기본값 회귀 테스트.
 
-근본원인: mac-server-big 워커의 Docker가 Colima VM(8GiB 고정) 안에서 돌고
-concurrency=4라, 기존 RLIMIT_AS=6GiB 기본값은 동시 4개 실행 시 이론상 24GiB를
-요구해 Python 자신의 RLIMIT_AS(catch 가능한 MemoryError)보다 VM 커널 OOM killer가
-먼저 SIGKILL — "runner exited without output.json (rc=-9)"로 원인불명 처리됐다.
-1.5GiB로 낮추면 VM 안에서 먼저 catch 가능한 MemoryError가 발생한다.
+#20에서 mac-server-big(당시 Colima VM 8GiB 고정)의 이론상 오버서브스크립션을 막으려고
+RLIMIT_AS를 6GiB→1.5GiB로 낮췄으나, RLIMIT_AS는 물리 RSS가 아니라 가상 주소공간(VSZ)
+상한이라 numpy/scipy/sklearn 등 라이브러리를 import하는 것만으로도 부족해 신규 대회
+부트스트랩 전체가 실패하는 회귀를 냈다(#27) — 물리 메모리가 남는 worker-vm에서도 실패.
+
+#27에서 mac-server Colima VM을 8→16GiB로 증설하고(실측 최대 동시성도 3이지 4가 아님을
+확인), RLIMIT_AS를 원래 값 6GiB로 복원했다.
 
 os.unshare(CLONE_NEWNET)는 CAP_SYS_ADMIN을 요구하고 테스트 프로세스 자체의
 네트워크 namespace에 영향을 줄 수 있어 건드리지 않는다 — _set_resource_limits()는
@@ -22,10 +24,10 @@ if str(ROOT) not in sys.path:
 
 from runtime.isolate import _DEFAULT_MEM_LIMIT_BYTES, _set_resource_limits
 
-_EXPECTED_DEFAULT = int(1.5 * 1024 ** 3)
+_EXPECTED_DEFAULT = 6 * 1024 ** 3
 
 
-def test_default_mem_limit_is_1_5_gib() -> None:
+def test_default_mem_limit_is_6_gib() -> None:
     assert _DEFAULT_MEM_LIMIT_BYTES == _EXPECTED_DEFAULT
 
 
