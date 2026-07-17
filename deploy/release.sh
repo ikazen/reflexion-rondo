@@ -47,11 +47,16 @@ fi
 
 # ---- 2. registry에 태그 존재 확인 --------------------------------------------
 # 빌드는 이제 이 스크립트의 일이 아니다 — reflexion_rondo_deploy DAG가 이미 만들어뒀어야 한다.
-
+#
+# Accept 헤더에 OCI 매니페스트 타입도 포함 — lib/image_deploy.py의 build_and_push가
+# 최신 buildx/BuildKit으로 OCI 포맷(application/vnd.oci.image.manifest.v1+json)을
+# 기본 출력하면서, 구 Docker 전용 media type만 요청하던 이 체크가 실제로 존재하는
+# 이미지도 404로 오판했다(v1.2.27 배포 시 실측). registry에 태그는 있는데 이 체크만
+# 실패하는 상황이면 media type 협상 문제를 우선 의심할 것.
 echo "[release] checking $DAEMON_IMG exists in registry ..."
 STATUS=$(curl -o /dev/null -sw "%{http_code}" \
     "http://${REGISTRY}/v2/${DAEMON_IMG#${REGISTRY}/}/manifests/${VERSION}" \
-    -H "Accept: application/vnd.docker.distribution.manifest.v2+json" 2>/dev/null || true)
+    -H "Accept: application/vnd.docker.distribution.manifest.v2+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.oci.image.index.v1+json" 2>/dev/null || true)
 if [[ "$STATUS" != "200" ]]; then
     echo "ERROR: $DAEMON_IMG not found in registry (http $STATUS)"
     echo "       Airflow UI에서 reflexion_rondo_deploy DAG를 {\"tag\": \"$VERSION\"}로 먼저 트리거하세요"
