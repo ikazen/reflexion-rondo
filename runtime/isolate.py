@@ -30,8 +30,26 @@ _HAVE_NEWNET = sys.platform == "linux" and hasattr(os, "CLONE_NEWNET")
 # 메모리/CPU 제한 — attempt 하나의 OOM이 컨테이너 전체를 죽이지 않도록.
 # 제한 초과 시 subprocess가 SIGKILL(RLIMIT_AS) 또는 SIGXCPU(RLIMIT_CPU)로 종료되고
 # runner output.json 없음 → _err() 경로로 error_trace에 기록.
+#
+# issue #20: 기존 6GiB 기본값은 "컨테이너가 호스트 물리 메모리를 충분히 쓴다"는 전제였는데,
+# 실측 결과 big 큐의 mac-server-big 워커는 Docker가 Colima VM(8GiB 고정) 안에서 돌고
+# concurrency=4다 — 동시 4개면 이론상 24GiB를 요구해 RLIMIT_AS(Python 프로세스 자체 한도,
+# 초과 시 catch 가능한 MemoryError)가 걸리기 전에 VM 커널 OOM killer가 먼저 SIGKILL을
+# 보낸다. 그 결과가 "runner exited without output.json (rc=-9)" — 원인불명으로 보이는
+# 에러의 92%가 이 패턴이었다. 1.5GiB로 낮추면 4개 동시 실행도 6GiB로 VM 안에 들어와
+# Python 자신의 RLIMIT_AS가 먼저 걸리므로 MemoryError로 진단 가능하게 잡힌다 — 처리량
+# 자체는 개선되지 않고(무거운 앙상블 패턴이 더 자주 이 한도에 걸릴 수 있음), 필요하면
+# EVAL_MEM_LIMIT_BYTES env var로 대회/큐별 override 가능(기존 메커니즘, 변경 없음).
+_DEFAULT_MEM_LIMIT_BYTES = int(1.5 * 1024 ** 3)
+
 try:
     import resource as _resource
+
+    def _set_resource_limits() -> None:
+        mem = int(os.environ.get("EVAL_MEM_LIMIT_BYTES", str(_DEFAULT_MEM_LIMIT_BYTES)))
+        cpu = int(os.environ.get("EVAL_CPU_LIMIT_SECS", "900"))
+        _resource.setrlimit(_resource.RLIMIT_AS, (mem, mem))
+        _resource.setrlimit(_resource.RLIMIT_CPU, (cpu, cpu))
 
     def _preexec_fn() -> None:
         if _HAVE_NEWNET and os.environ.get("EVAL_SANDBOX") != "none":
@@ -39,10 +57,7 @@ try:
                 os.unshare(os.CLONE_NEWNET)
             except OSError:
                 pass  # CAP_SYS_ADMIN 없으면 조용히 스킵 (로컬 개발 환경 등)
-        mem = int(os.environ.get("EVAL_MEM_LIMIT_BYTES", str(6 * 1024 ** 3)))
-        cpu = int(os.environ.get("EVAL_CPU_LIMIT_SECS", "900"))
-        _resource.setrlimit(_resource.RLIMIT_AS, (mem, mem))
-        _resource.setrlimit(_resource.RLIMIT_CPU, (cpu, cpu))
+        _set_resource_limits()
 
     _PREEXEC = _preexec_fn
 except (ImportError, AttributeError):
