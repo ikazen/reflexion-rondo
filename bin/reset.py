@@ -10,6 +10,9 @@ Full reset (스키마 drop 후 재생성 — 개발 중 스키마 변경 시):
 Competition-specific reset:
   uv run python bin/reset.py --competition playground-series-s4e1
 
+Confirmed pipeline만 무효화 (attempts/reflections 보존, issue #3):
+  uv run python bin/reset.py --competition playground-series-s4e1 --pipelines-only
+
 Skip confirmation:
   uv run python bin/reset.py --yes
   uv run python bin/reset.py --hard --yes
@@ -180,14 +183,70 @@ def reset_competition(competition_id: str, yes: bool) -> None:
     print("Done.")
 
 
+def reset_pipelines(competition_id: str, yes: bool) -> None:
+    """confirmed pipeline(raw.pipelines + MinIO best_pipeline.py)만 무효화.
+
+    attempts/reflections/competition 레코드는 보존한다 — 대회를 처음부터 다시 시작하지
+    않고 "지금까지의 confirmed best만 리셋해 정상 사이클이 정직하게 재승격하도록" 유도할
+    때 쓴다(issue #7의 phantom pipeline 정리가 정확히 이 케이스였다).
+
+    issue #3 근본원인: 그 정리를 raw.pipelines만 지우는 수동 SQL로 처리해서 MinIO
+    best_pipeline.py가 고아로 남았다(대응하는 Postgres 행이 없어 다음 confirmed-pipeline
+    제출 시 sha256 mismatch로 발현). reset_competition()은 이미 _best_delete를
+    raw.pipelines DELETE보다 먼저 호출해 이 문제가 없다 — 이 함수는 그 안전한 순서를
+    "부분 리셋"에도 재사용해, 앞으로 유사 정리가 수동 SQL로 새지 않도록 한다.
+    """
+    sys.path.insert(0, str(ROOT))
+    from store.db import connect
+    from store.s3_code import delete_best_pipeline as _best_delete
+
+    conn = connect(apply_schema=False)
+    count = conn.execute(
+        "select count(*) from raw.pipelines where competition_id = %s",
+        [competition_id],
+    ).fetchone()[0]
+
+    if count == 0:
+        print(f"'{competition_id}': no raw.pipelines rows — nothing to invalidate.")
+        conn.close()
+        return
+
+    print(f"Pipelines-only reset for '{competition_id}' — will delete:")
+    print(f"  {count} raw.pipelines row(s)")
+    print(f"  MinIO best_pipeline.py (if present)")
+    print(f"  attempts/reflections/competition record are PRESERVED")
+
+    if not yes and not _confirm("Proceed?"):
+        print("Aborted.")
+        conn.close()
+        sys.exit(0)
+
+    conn.execute("delete from raw.pipelines where competition_id = %s", [competition_id])
+    conn.close()
+    deleted_blob = _best_delete(competition_id)
+
+    print(f"Deleted {count} raw.pipelines row(s).")
+    print(f"MinIO best_pipeline.py {'deleted' if deleted_blob else 'was already absent'}.")
+    print("Done. Competition is cold-start for confirmed-pipeline purposes — "
+          "next successful cross-seed confirm will re-promote honestly.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Reset reflexion run state.")
     parser.add_argument("--competition", "-c", metavar="ID", help="Reset only this competition")
     parser.add_argument("--hard", action="store_true", help="Drop raw schema and recreate (dev용 스키마 변경 시)")
+    parser.add_argument(
+        "--pipelines-only", action="store_true",
+        help="raw.pipelines + MinIO best_pipeline.py만 무효화, attempts/reflections 보존 (--competition 필수)",
+    )
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
     args = parser.parse_args()
 
-    if args.competition:
+    if args.pipelines_only:
+        if not args.competition:
+            parser.error("--pipelines-only requires --competition")
+        reset_pipelines(args.competition, args.yes)
+    elif args.competition:
         reset_competition(args.competition, args.yes)
     elif args.hard:
         reset_hard(args.yes)
