@@ -132,11 +132,19 @@ def _load_pipeline(
     행이 삭제돼도 대응 MinIO blob은 안 지워지므로, 이 경로로 고아(orphaned) blob이 특정
     attempt 제출을 하이재킹할 수 있었다(실제로 Kaggle 제출 2건이 이렇게 파국났음,
     2026-07-17). attempt_only=True는 그 무관한 MinIO 상태를 원천적으로 배제한다.
+
+    issue #35: attempt_only 경로는 예전에 훅 메서드만 `type(...)`으로 새 클래스에 옮겨
+    붙였는데(methods={h: getattr(patch_cls, h) ...}), Patch가 훅 밖 클래스 속성(예:
+    s6e7 우승 attempt의 `_ordinal_orders`)에 의존하면 그 상태가 통째로 소실돼
+    AttributeError로 죽었다. 평가 경로(runtime/runner.py)는 실제 Patch() 인스턴스를
+    PatchedPipeline으로 감싸 이 문제가 없었으므로 — cv 산출은 통과하고 submit만
+    크래시하는 불일치가 생겼다. 여기도 동일하게 PatchedPipeline을 써서 인스턴스 상태를
+    보존한다.
     """
     import sys
     sys.path.insert(0, str(ROOT))
     from store.s3_code import download_best_pipeline
-    from evaluator.harness import BasePipeline, PipelineContext
+    from evaluator.harness import BasePipeline, PatchedPipeline
 
     if attempt_only:
         if not extra_source:
@@ -146,9 +154,7 @@ def _load_pipeline(
         patch_cls = ns.get("Patch")
         if not patch_cls:
             return BasePipeline()
-        methods = {h: getattr(patch_cls, h) for h in _HOOK_NAMES if hasattr(patch_cls, h)}
-        BestPipelineCls = type("BestPipeline", (BasePipeline,), methods)
-        return BestPipelineCls()
+        return PatchedPipeline(BasePipeline(), patch_cls())
 
     best_source = download_best_pipeline(competition_id)
     if not best_source:

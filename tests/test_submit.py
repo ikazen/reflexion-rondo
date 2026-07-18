@@ -5,6 +5,7 @@
 (c) 제출 값 컬럼은 sample_submission.csv의 실제 컬럼명을 따라야 한다.
 (d) NaN 중앙값 대치는 train/test 대칭이어야 한다.
 (BON-255) MinIO best_pipeline.py는 raw.pipelines.pipeline_sha256과 대조해야 한다.
+(issue #35) attempt_only 재구성은 Patch 인스턴스의 클래스 속성을 보존해야 한다.
 """
 from __future__ import annotations
 
@@ -159,6 +160,25 @@ def test_load_pipeline_attempt_only_without_source_falls_back_to_base() -> None:
         pipeline = _load_pipeline("s4e1", extra_source=None, attempt_only=True)
     mock_download.assert_not_called()
     assert isinstance(pipeline, BasePipeline)
+
+
+def test_load_pipeline_attempt_only_preserves_class_attributes() -> None:
+    """issue #35: 훅이 참조하는 클래스 속성(예: s6e7의 _ordinal_orders)이 살아있어야 한다.
+
+    이전엔 attempt_only가 훅 메서드만 type(...)으로 새 클래스에 옮겨 붙여 클래스
+    속성이 소실됐다 — 평가는 통과(runner.py는 실제 Patch() 인스턴스를 사용)하고
+    submit만 AttributeError로 크래시하는 불일치가 있었다(s6e7 실제 프로덕션 실패).
+    """
+    source = (
+        "class Patch:\n"
+        "    _ordinal_orders = {'a': ['low', 'high']}\n"
+        "    def build_model(self, params, ctx):\n"
+        "        return self._ordinal_orders['a']\n"
+    )
+    with patch("store.s3_code.download_best_pipeline") as mock_download:
+        pipeline = _load_pipeline("s4e1", extra_source=source, attempt_only=True)
+    mock_download.assert_not_called()
+    assert pipeline.build_model({}, None) == ["low", "high"]
 
 
 # ---------------------------------------------------------------------------
