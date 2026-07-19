@@ -103,9 +103,13 @@ ssh ops-vm "
 # ---- 6. 재시작 후 확인 -------------------------------------------------------
 # daemon 이미지 자체는 이미 3에서 검증했으므로 여기서는 컴포즈 배선(volume/env/network)
 # 문제만 잡는 가벼운 heartbeat 확인으로 충분하다.
+#
+# issue #33: rondo-daemon은 host 포트 매핑이 없다(nexus 브리지 내부 전용, Caddy
+# rondo-api.internal로만 노출) — localhost:8000은 ops-vm 호스트에서 항상 연결 자체가
+# 안 돼(exit 7) daemon이 정상 기동돼도 이 체크가 거짓 실패로 끝난다.
 
 echo "[release] post-restart heartbeat check ..."
 sleep 5
-ssh ops-vm "curl -sf http://localhost:8000/api/heartbeat > /dev/null"
+ssh ops-vm "curl -sf http://rondo-api.internal/api/heartbeat > /dev/null"
 
 echo "[release] $VERSION deployed successfully (daemon only — task image는 reflexion_rondo_deploy DAG로 이미 반영됨)"
