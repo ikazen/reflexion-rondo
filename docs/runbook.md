@@ -168,7 +168,7 @@ Postgres가 concurrent read를 처리한다. daemon은 단일 프로세스로 �
 
 `runtime/isolate.py`가 tmpdir를 생성하고 `runner.py`를 subprocess로 실행한다.
 
-- 타임아웃: 600초 (기본값, `DEFAULT_TIMEOUT`)
+- 타임아웃: 1200초 (기본값, `DEFAULT_TIMEOUT` — BON-275, 원래 600초에서 s5e5/s6e6 등 대형 데이터셋 대응으로 상향)
 - 타임아웃·에러 → `error_trace` 기록 → Reflect 단계가 실패에서 교훈 추출
 - 격리 수준: subprocess 분리 + env allowlist 필터링 (BON-104) + 네트워크 격리(프로덕션 CAP_SYS_ADMIN 있을 때 `os.unshare(CLONE_NEWNET)`로 egress 차단, ADR-017). CAP_SYS_ADMIN 없는 폴백은 네트워크 차단 스킵. 파일시스템 sandbox는 미구현.
 - `OMP_NUM_THREADS=2` 등 스레드 제한은 Dockerfile ENV + subprocess allowlist 양쪽에 설정.

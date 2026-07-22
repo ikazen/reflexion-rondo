@@ -1,5 +1,21 @@
 # 변경 이력
 
+## v1.2.31 — subprocess 고아 프로세스 kill + degenerate 회귀 gain 클립 + s6e7 코드생성 harness 버그 (2026-07-22)
+- #37: `bin/api.py`의 `subprocess.run` 타임아웃 처리가 `uv run`이 spawn한 손자 python 프로세스를 못 죽여 고아로 남던 문제(타임아웃 기록 후에도 CPU 85%+ 점유 실측) — `_run_in_pgroup` 헬퍼로 교체, `start_new_session=True` + 타임아웃 시 `os.killpg`로 프로세스 그룹 전체 종료.
+- #43: rmse degenerate 예측(모델이 완전히 빗나감)이 만드는 극단적 `gain_vs_best`(s6e1 실측 -105448)가 `reflection_impact` 전역 z-score(BON-195)를 오염시키던 문제 — `evaluator/harness.py`에 대칭 가드 추가(issue #4의 "100배 좋으면 raise"에 대칭으로 "100배 나쁘면 gain_vs_best 하한 클립", label 판정은 영향 없음).
+- #42: s6e7(multiclass) 에러율 65% 재진단 결과 다수가 Coder 코드 문제가 아니라 harness 자체 버그(`_encode_residual_categoricals`가 null 섞인 문자열 컬럼 정렬 시 크래시, ADR-014 amend)로 확인 — null 제외 정렬로 수정. 추가로 multiclass 라벨 왕복(round-trip) 컨트랙트 규칙과 action_type별 hook 동적 강조를 `agents/coder.py`에 반영.
+
+## v1.2.28~30 — 대회 온보딩 배치 3건 + 운영 버그 수정 (2026-07-17~19)
+- #24 (2026-07-17): 신규 대회 3개 추가 — s6e7(multiclass), s6e1(regression), s5e9(regression).
+- #25/#26 (2026-07-17): `release.sh`의 registry 태그 존재 확인이 OCI 매니페스트 타입 미인식 + repo path에 태그가 남는 버그로 늘 실패하던 문제 수정.
+- #27/#28 (2026-07-17): attempt eval `RLIMIT_AS` 기본값을 1.5GiB→6GiB로 복원(#20이 낮췄던 값 — mac-server Colima VM을 8→16GiB로 증설해 근본 해결, 신규 대회 bootstrap 전체가 SIGKILL(rc=-9)되던 원인).
+- BON-275 (2026-07-19): 제출(`bin.submit`) 타임아웃 600s→1200s 상향 — s5e5(75만 행) 5-seed bagging이 기존 값을 넘겨 매번 타임아웃.
+- #29 (2026-07-18): README에 "지원 대회 조건" 섹션 추가.
+- #31 (2026-07-18): promote 시점 submission CSV 캐싱 — 매일 auto-submit이 daemon(ops-vm, 2 OCPU)에서 매번 fit하며 CPU를 포화시키던 경로 대체.
+- #33 (2026-07-19): `release.sh` post-restart heartbeat 체크가 노출 안 된 `localhost:8000` 대신 `rondo-api.internal` 사용하도록 수정.
+- #35 (2026-07-19): `attempt_only` 재구성이 훅 메서드만 옮겨 붙이는 lossy transplant라 Patch의 훅 밖 클래스 속성이 소실되며 s6e7 auto-submit이 크래시하던 문제 수정.
+- #40 (2026-07-19): 대회 4건 온보딩 — s4e2(multiclass)/s5e7(binary)/s4e9(regression)/s6e2(binary), accuracy 메트릭 최초 실사용.
+
 ## 이미지 빌드를 Airflow DAG로 이관, release.sh는 daemon 전용으로 축소 (2026-07-14)
 - ADR-022: daemon+task 이미지 빌드+push를 airflow-stack의 `reflexion_rondo_deploy` DAG(ops 큐 docker.sock 재사용)로 이관. 여러 repo가 재사용할 공용 헬퍼(`dags/lib/image_deploy.py`, airflow-stack)라 신규 credential이 필요 없다(public repo clone 무인증, registry 무인증).
 - task 이미지 태그의 source of truth가 git(DAG 파일)에서 Airflow Variable(`rondo_task_image_version`)로 이동 — DAG가 빌드 직후 즉시 bump, git push/GitDagBundle 지연 없음.

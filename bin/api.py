@@ -50,10 +50,6 @@ ROOT = Path(__file__).resolve().parent.parent
 _MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 
 
-# ---------------------------------------------------------------------------
-# TTL 캐시 (read-only GET 엔드포인트용)
-# ---------------------------------------------------------------------------
-
 class _TTLCache:
     def __init__(self) -> None:
         self._store: dict[str, tuple[float, object]] = {}
@@ -78,10 +74,6 @@ class _TTLCache:
 
 _cache = _TTLCache()
 
-
-# ---------------------------------------------------------------------------
-# 공유 상태 (daemon 메인 루프 ↔ API 스레드)
-# ---------------------------------------------------------------------------
 
 @dataclass
 class DaemonState:
@@ -108,10 +100,6 @@ class DaemonState:
             }
 
 
-# ---------------------------------------------------------------------------
-# Pydantic 모델
-# ---------------------------------------------------------------------------
-
 class RegisterRequest(BaseModel):
     competition: str
 
@@ -137,10 +125,6 @@ class SubmitRequest(BaseModel):
 class AutoSubmitRequest(BaseModel):
     window_hours: int = 24
 
-
-# ---------------------------------------------------------------------------
-# Kaggle 제출 백그라운드 워커
-# ---------------------------------------------------------------------------
 
 _TERMINAL = frozenset({"complete", "error", "invalid"})
 # BON-275가 eval 타임아웃은 600->1200s로 올렸으나 submit은 누락 — s5e5(75만 행) 5-seed
@@ -373,10 +357,6 @@ def _poll_kaggle_once(
     return "pending", None
 
 
-# ---------------------------------------------------------------------------
-# 자동 제출 헬퍼 (create_app 밖 — 공유 가능)
-# ---------------------------------------------------------------------------
-
 def _start_submission(
     conn: PgConn,
     competition_slug: str,
@@ -453,14 +433,8 @@ def _last_submitted_attempt(conn: PgConn, competition_id: str) -> str | None:
     return row[0] if row else None
 
 
-# ---------------------------------------------------------------------------
-# 앱 팩토리
-# ---------------------------------------------------------------------------
-
 def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
     app = FastAPI(title="reflexion-rondo", version="v1")
-
-    # ---- read endpoints -----------------------------------------------
 
     @app.get("/api/heartbeat")
     def heartbeat():
@@ -615,8 +589,6 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         _cache.set(cache_key, result)
         return result
 
-    # ---- admin endpoints -----------------------------------------------
-
     @app.get("/api/queue")
     def get_queue(status: str | None = None, limit: int = 100):
         limit = min(limit, 500)
@@ -691,8 +663,6 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
             vals,
         )
         return {"queue_id": queue_id, "updated": True}
-
-    # ---- submission endpoints -----------------------------------------
 
     @app.post("/api/submissions", status_code=201)
     def submit(body: SubmitRequest):

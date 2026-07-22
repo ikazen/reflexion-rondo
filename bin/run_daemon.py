@@ -37,10 +37,6 @@ ROOT = Path(__file__).parent.parent
 _running = True
 
 
-# ---------------------------------------------------------------------------
-# Ollama Cloud 페이싱
-# ---------------------------------------------------------------------------
-
 @dataclass
 class OllamaPacer:
     """세션(5h) + 주간 사이클 한도를 추적해 Ollama Cloud 과금/429를 방지한다.
@@ -101,17 +97,14 @@ class OllamaPacer:
         week_secs = 7 * 24 * 3600
         session_secs = self.session_hours * 3600
 
-        # 주간 리셋
         if now - self._week_start >= week_secs:
             self._week_start = now
             self._week_count = 0
 
-        # 세션 리셋
         if now - self._session_start >= session_secs:
             self._session_start = now
             self._session_count = 0
 
-        # 주간 한도 체크
         if self.weekly_cycles > 0 and self._week_count >= self.weekly_cycles:
             wait = week_secs - (now - self._week_start)
             print(
@@ -122,7 +115,6 @@ class OllamaPacer:
             self._week_start = time.monotonic()
             self._week_count = 0
 
-        # 세션 한도 체크
         if self.session_cycles > 0 and self._session_count >= self.session_cycles:
             wait = session_secs - (time.monotonic() - self._session_start)
             print(
@@ -137,10 +129,6 @@ class OllamaPacer:
         self._session_count += 1
         self._week_count += 1
 
-
-# ---------------------------------------------------------------------------
-# 큐 헬퍼
-# ---------------------------------------------------------------------------
 
 def _handle_signal(sig, frame) -> None:
     global _running
@@ -184,10 +172,6 @@ def _is_cancelled(conn, queue_id: str) -> bool:
     ).fetchone()
     return row is not None and row[0] == "cancelled"
 
-
-# ---------------------------------------------------------------------------
-# 큐 아이템 처리
-# ---------------------------------------------------------------------------
 
 def _final_status(cycles_done: int, skipped: int, failed_cycles: int) -> tuple[str, str | None]:
     if cycles_done == 0 and (skipped + failed_cycles) > 0:
@@ -256,7 +240,6 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                         cycles_done=cycles_done, latest_score=latest_score)
             return
 
-        # Ollama Cloud 페이싱 — 한도 초과 시 여기서 대기
         pacer.acquire()
 
         cycle_failed = False
@@ -385,10 +368,6 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
     state.update(current_queue_id=None, current_competition=None,
                  current_cycle=0, current_n_cycles=0)
 
-
-# ---------------------------------------------------------------------------
-# 진입점
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     from config.settings import require_llm_env

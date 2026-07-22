@@ -12,7 +12,7 @@
 | Coder (실행) | Ollama Cloud | gpt-oss:120b (ADR-016) |
 | 임베딩 | Mac Ollama 서버 | qwen3-embedding:8b (1024d, MRL) — ADR-008 |
 | Evaluator (CV · 지표 · param selection · label) | WSL2 로컬 | 결정적 코드 |
-| 생성 코드 실행 | ops-vm | subprocess 격리 (`runtime/isolate.py`), tmpdir + 600s timeout |
+| 생성 코드 실행 | ops-vm | subprocess 격리 (`runtime/isolate.py`), tmpdir + 1200s timeout |
 | Memory (검색) | ops-vm | Postgres + pgvector (vector(1024), <=> 코사인) |
 | Orchestrator | ops-vm | daemon + `raw.cycle_queue` 폴링, Airflow DockerOperator 연동 |
 | Warehouse + 분석 뷰 | ops-vm | Postgres raw 스키마 (SQL view, psycopg2 경유) |
@@ -80,7 +80,7 @@ Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
 
 Coder가 만든 `class Patch`는 `runtime/isolate.py`가 subprocess로 실행한다 (ADR-013).
 - tmpdir에 source.py / input.json / train.parquet 기록 → `runtime/runner.py` subprocess 실행 → output.json 수거.
-- 타임아웃 600s. 에러·타임아웃은 `error_trace`로 기록되어 Reflector가 실패에서 교훈을 뽑는다.
+- 타임아웃 1200s(BON-275, s5e5/s6e6 등 대형 데이터셋 대응 600s→상향). 에러·타임아웃은 `error_trace`로 기록되어 Reflector가 실패에서 교훈을 뽑는다.
 - 네트워크 격리(ADR-017): 프로덕션(CAP_SYS_ADMIN 있음)에서 preexec_fn이 `os.unshare(CLONE_NEWNET)`으로 subprocess의 network namespace를 분리해 egress를 차단한다. 컨테이너 자체 네트워크는 유지(Postgres/MinIO/Ollama 접근용) — 차단은 subprocess 레벨에서만. `RLIMIT_AS`/`RLIMIT_CPU`도 병행. CAP_SYS_ADMIN 없으면(로컬 mac 등) 조용히 스킵하고 allowlist+rlimit+timeout만 적용.
 - subprocess 환경변수는 allowlist 필터링 (`OMP_NUM_THREADS` 등 포함, BON-104).
 - `OMP_NUM_THREADS=2` / `OPENBLAS_NUM_THREADS=2` / `MKL_NUM_THREADS=2` — worker-vm 2코어에서 CPU 포화 방지.

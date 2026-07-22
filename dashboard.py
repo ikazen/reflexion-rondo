@@ -24,7 +24,6 @@ except Exception as exc:
     st.error(f"DB connection failed: {exc}")
     st.stop()
 
-# --- Competition selector ---
 competitions = conn.execute(
     "select competition_id, name from raw.competitions order by start_ts desc"
 ).fetchall()
@@ -38,7 +37,6 @@ comp_options = {f"{c[0]} — {c[1]}": c[0] for c in competitions}
 selected_label = st.sidebar.selectbox("Competition", list(comp_options.keys()))
 comp_id = comp_options[selected_label]
 
-# 컬럼 존재 여부 확인
 cols = {r[0] for r in conn.execute("select column_name from information_schema.columns where table_schema='raw' and table_name='attempts'").fetchall()}
 has_duration = "duration_sec" in cols
 has_holdout = "holdout_score" in cols
@@ -47,7 +45,6 @@ _duration_col = "duration_sec" if has_duration else "null as duration_sec"
 _retries_col  = "retries"       if "retries"      in cols else "0 as retries"
 _holdout_col  = "holdout_score" if has_holdout   else "null as holdout_score"
 
-# --- Attempts ---
 attempts_df = _query_df(
     conn,
     f"""
@@ -92,7 +89,6 @@ best_so_far = _query_df(
     [comp_id],
 )
 
-# --- KPIs ---
 total = len(attempts_df)
 errors = attempts_df["has_error"].sum()
 jumps = (attempts_df["label"] == "jump").sum()
@@ -107,7 +103,6 @@ col4.metric("Best CV", f"{best_cv:.5f}" if best_cv else "-")
 
 st.divider()
 
-# --- Score progression ---
 st.subheader("CV Score Progression")
 
 has_scores = attempts_df["cv_score"].drop_nulls()
@@ -128,7 +123,6 @@ else:
 
 st.divider()
 
-# --- CV vs Holdout divergence ---
 if has_holdout:
     holdout_rows = attempts_df.filter(pl.col("holdout_score").is_not_null())
     if not holdout_rows.is_empty():
@@ -147,7 +141,6 @@ if has_holdout:
         )
         st.divider()
 
-# --- Action type & Label distribution ---
 col_left, col_right = st.columns(2)
 
 with col_left:
@@ -170,7 +163,6 @@ with col_right:
 
 st.divider()
 
-# --- reflection_impact ---
 st.subheader("Top Lessons by Impact")
 
 impact_df = _query_df(
@@ -198,7 +190,6 @@ else:
 
 st.divider()
 
-# --- Cold-start Progression (전 대회 비교) ---
 st.subheader("Cold-start Progression")
 
 csp_df = _query_df(
@@ -214,7 +205,6 @@ csp_df = _query_df(
 if csp_df.is_empty():
     st.info("No cold_start_progression data yet.")
 else:
-    # warm_start_ratio: bootstrap_best / overall_best per competition
     summary = _query_df(
         conn,
         """
@@ -242,7 +232,6 @@ else:
 
     st.caption("warm_start_ratio = bootstrap_best / overall_best (높을수록 cold-start 효과 좋음)")
 
-    # 대회별 best_so_far 추세 비교
     pivot = (
         csp_df
         .filter(pl.col("best_so_far").is_not_null())
@@ -254,7 +243,6 @@ else:
 
 st.divider()
 
-# --- Recent attempts table ---
 st.subheader("Recent Attempts")
 
 display_df = (

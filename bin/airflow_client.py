@@ -30,7 +30,6 @@ def available() -> bool:
 
 def _bearer_token() -> str:
     global _token, _token_expires
-    # 토큰이 없거나 5분 내 만료 예정이면 갱신
     if _token is None or time.time() > _token_expires - 300:
         resp = requests.post(
             f"{_AIRFLOW_URL}/auth/token",

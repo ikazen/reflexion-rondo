@@ -142,7 +142,6 @@ def main() -> None:
         sep = _CODE_HEADER_SEP + "\n"
         winner_source = winner_content.split(sep, 1)[1].strip() if sep in winner_content else winner_content
         if winner_source:
-            # train 로드 + split — cross-seed 확인 및 holdout 측정을 위해
             comp_row = conn.execute(
                 "select task_type, metric from raw.competitions where competition_id = %s",
                 [competition_id],

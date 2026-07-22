@@ -213,7 +213,6 @@ def validate_patch(source: str, action_type: str) -> list[str]:
     for method_name, unresolved in _undefined_names_in_patch(tree, patch_cls):
         errors.append(f"Patch.{method_name}: references undefined name(s): {unresolved}")
 
-    # Collect hook method names and check arity
     hook_methods: set[str] = set()
     for item in patch_cls.body:
         if not isinstance(item, ast.FunctionDef) or item.name not in _ALL_HOOKS:
@@ -226,7 +225,6 @@ def validate_patch(source: str, action_type: str) -> list[str]:
                 f"Patch.{item.name}: expected {expected} args (incl. self), got {actual}"
             )
 
-    # action_type class attribute must match
     actual_at: str | None = None
     for item in patch_cls.body:
         if isinstance(item, ast.Assign):
@@ -237,7 +235,6 @@ def validate_patch(source: str, action_type: str) -> list[str]:
     if actual_at != action_type:
         errors.append(f"Patch.action_type={actual_at!r}, expected {action_type!r}")
 
-    # No disallowed hooks
     allowed = _ALLOWED_HOOKS.get(action_type, _ALL_HOOKS)
     disallowed = hook_methods - allowed
     if disallowed:
