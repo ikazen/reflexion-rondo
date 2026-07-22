@@ -86,11 +86,8 @@ def _mask_target(df: pl.DataFrame, target: str) -> pl.DataFrame:
 def _encode_residual_categoricals(
     Xtr: pl.DataFrame, Xva: pl.DataFrame
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """issue #42: str 컬럼에 null이 섞이면 `sorted()`가 None과 str을 비교하려다
-    TypeError를 낸다(s6e7 실측: 이 한 줄이 s6e7 TypeError의 다수를 차지 — Coder 패치
-    문제가 아니라 harness 자신의 결측치 미처리 버그). null은 순서 매핑 대상이 아니므로
-    정렬 전에 제외한다 — replace_strict(default=-1)이 unseen 카테고리와 동일하게
-    null도 -1로 매핑해 이후 처리는 그대로 동작한다."""
+    """str 컬럼에 null이 섞이면 sorted()가 None/str 비교로 TypeError(#42) — null 제외 후
+    정렬, replace_strict(default=-1)로 unseen 카테고리와 동일 처리."""
     str_cols = [c for c, dt in zip(Xtr.columns, Xtr.dtypes) if dt == pl.String]
     for c in str_cols:
         values = (v for v in Xtr[c].unique().to_list() if v is not None)
@@ -438,12 +435,8 @@ def evaluate_pipeline(
         is_noop_tie = cv_score == ctx.prev_best
         delta = metric_sign * (cv_score - ctx.prev_best)
         gain_vs_best = delta
-        # issue #43: degenerate 회귀 예측(trivial baseline보다 훨씬 나쁜 cv_score)이
-        # gain_vs_best를 비정상적으로 큰 음수로 만들어(s6e1 실측 gain_vs_best=-105448,
-        # baseline rmse~8.75 대비) reflection_impact 전역 z-score(memory/retriever.py
-        # _global_gain_stats)를 오염시킨다. label(jump/regression/neutral) 판정은
-        # 클립 전 delta로 그대로 하고, 저장되는 gain_vs_best 값만 baseline
-        # _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO배 나쁜 지점으로 하한을 둔다.
+        # degenerate 회귀 cv_score의 극단적 gain_vs_best가 reflection_impact 전역
+        # z-score를 오염시킨다(#43). label 판정은 클립 전 delta 유지, 저장값만 하한 클립.
         if baseline_cv is not None and baseline_cv > 0:
             worst_plausible_cv = baseline_cv * _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO
             gain_floor = metric_sign * (worst_plausible_cv - ctx.prev_best)

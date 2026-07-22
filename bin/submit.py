@@ -207,10 +207,8 @@ def _submission_value_col(sample_columns: list[str], fallback: str) -> str:
 
 
 def _dummy_target_value(train: pl.DataFrame, target_col: str):
-    """issue #52: test 더미 타깃은 train에 실재하는 값이어야 한다 — Patch가 타깃을
-    exhaustive 매핑(replace_strict without default 등)으로 인코딩하면 타입만 맞춘
-    placeholder(0 등)는 매핑에 없어 크래시한다(s5e7 실측: `col("Personality")
-    .replace_strict([["Extrovert","Introvert"],[0,1]])`에서 incomplete mapping)."""
+    """더미 타깃은 train 실재값이어야 한다(#52) — synthetic placeholder는 Patch의
+    exhaustive target 인코딩에서 매핑 밖 값이라 크래시한다."""
     return train[target_col][0]
 
 
