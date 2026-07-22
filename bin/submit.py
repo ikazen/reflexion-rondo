@@ -206,6 +206,14 @@ def _submission_value_col(sample_columns: list[str], fallback: str) -> str:
     return sample_columns[1] if len(sample_columns) > 1 else fallback
 
 
+def _dummy_target_value(train: pl.DataFrame, target_col: str):
+    """issue #52: test 더미 타깃은 train에 실재하는 값이어야 한다 — Patch가 타깃을
+    exhaustive 매핑(replace_strict without default 등)으로 인코딩하면 타입만 맞춘
+    placeholder(0 등)는 매핑에 없어 크래시한다(s5e7 실측: `col("Personality")
+    .replace_strict([["Extrovert","Introvert"],[0,1]])`에서 incomplete mapping)."""
+    return train[target_col][0]
+
+
 def _impute_train_test_median(train_np, test_np):
     """BON-245(d): NaN 중앙값 대치를 train/test 대칭 적용. medians는 train 기준."""
     col_medians = np.nanmedian(train_np, axis=0)
@@ -313,8 +321,9 @@ def generate_submission_csv(
     test_ids = test[id_col]
     test_feat = test.drop([c for c in comp.DROP_COLS if c in test.columns])
 
-    # dummy target in test so preprocess/feature_transform work
-    test_with_dummy = test_feat.with_columns(pl.lit(0).cast(train[comp.TARGET].dtype).alias(comp.TARGET))
+    test_with_dummy = test_feat.with_columns(
+        pl.lit(_dummy_target_value(train, comp.TARGET)).cast(train[comp.TARGET].dtype).alias(comp.TARGET)
+    )
 
     params = preselect_params(pipeline, train, ctx)
     train_proc, test_proc = pipeline.preprocess(train, test_with_dummy, comp.TARGET, ctx)
