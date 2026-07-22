@@ -29,6 +29,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -147,6 +148,41 @@ _TERMINAL = frozenset({"complete", "error", "invalid"})
 _SUBMIT_TIMEOUT_SEC = 1200
 
 
+def _run_in_pgroup(
+    cmd: list[str],
+    *,
+    timeout: float,
+    cwd: str,
+    env: dict,
+) -> subprocess.CompletedProcess:
+    """subprocess.run 대체 — 타임아웃 시 프로세스 그룹 전체를 kill한다.
+
+    GH issue #37: cmd가 `uv run python -m ...`일 때 subprocess.run의 타임아웃 kill은
+    직속 자식(uv)에만 SIGKILL을 보낸다. uv가 python을 exec로 치환하지 않고 별도
+    자식으로 spawn하면 그 python 프로세스는 고아로 남아 계속 CPU를 잠식한다.
+    start_new_session=True로 자식을 새 세션(=새 프로세스 그룹) 리더로 띄우면
+    uv와 그 자식 python이 같은 그룹에 속하므로, 타임아웃 시 os.killpg로 그룹째
+    죽여 손자까지 확실히 정리한다.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        proc.communicate()  # reap
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
 def _kaggle_submit(
     submission_id: str,
     competition_id: str,
@@ -186,11 +222,10 @@ def _kaggle_submit(
             if cached:
                 tmp_path = Path(tempfile.gettempdir()) / f"rondo_submit_{submission_id}.csv"
                 tmp_path.write_bytes(cached)
-                result = subprocess.run(
+                result = _run_in_pgroup(
                     ["uv", "run", "kaggle", "competitions", "submit",
                      "-c", competition_id, "-f", str(tmp_path), "-m", message],
-                    capture_output=True, text=True, timeout=_SUBMIT_TIMEOUT_SEC, cwd=str(ROOT),
-                    env=env,
+                    timeout=_SUBMIT_TIMEOUT_SEC, cwd=str(ROOT), env=env,
                 )
                 csv_path: str | None = str(tmp_path)
             else:
@@ -201,9 +236,8 @@ def _kaggle_submit(
                 ]
                 if attempt_id:
                     cmd += ["--attempt-id", attempt_id]
-                result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=_SUBMIT_TIMEOUT_SEC, cwd=str(ROOT),
-                    env=env,
+                result = _run_in_pgroup(
+                    cmd, timeout=_SUBMIT_TIMEOUT_SEC, cwd=str(ROOT), env=env,
                 )
                 csv_path = None
                 for line in result.stdout.splitlines():
@@ -303,11 +337,10 @@ def _poll_kaggle_once(
             if env is None:
                 print("  [poll/warn] kaggle token unavailable, skipping")
                 return "pending", None
-            poll = subprocess.run(
+            poll = _run_in_pgroup(
                 ["uv", "run", "kaggle", "competitions", "submissions",
                  "-c", competition_id, "--csv"],
-                capture_output=True, text=True, timeout=30, cwd=str(ROOT),
-                env=env,
+                timeout=30, cwd=str(ROOT), env=env,
             )
         if poll.returncode != 0:
             print(f"  [poll/warn] kaggle CLI rc={poll.returncode}: {(poll.stderr or poll.stdout)[:200]!r}")
