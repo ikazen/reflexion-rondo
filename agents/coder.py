@@ -6,6 +6,7 @@ import re
 from ollama import Client
 
 from config import settings
+from evaluator.contract import _ALLOWED_HOOKS, _ALL_HOOKS
 
 _LOG = logging.getLogger(__name__)
 
@@ -66,6 +67,13 @@ class Patch:
 - Fit all transformations on train only, apply to valid (no leakage)
 - No file I/O, no network calls, no eval/exec/open
 - param_candidates MUST return between 3 and 12 dicts — never build a Cartesian product grid
+- Multiclass targets are often string labels (e.g. "Low"/"Medium"/"High"), not integers. The
+  harness scores postprocess_predictions() output against the ORIGINAL untouched string target —
+  if you encode the target to integers anywhere (preprocess/build_model), you MUST decode
+  predictions back to the original string labels in postprocess_predictions before returning.
+  Returning encoded integers crashes scoring (`ValueError: Mix of label input types`). Simplest
+  and safest: do NOT encode the target at all — sklearn/LightGBM/XGBoost/CatBoost classifiers
+  accept string class labels directly and predict() returns them unchanged.
 
 ## Polars rules (do NOT use pandas-style API)
 - String columns have dtype pl.String (NOT pl.Categorical)
@@ -136,11 +144,19 @@ class Patch:
 
 ## Rules
 - Patch.action_type MUST be exactly "bootstrap"
-- preprocess MUST encode every pl.String column to a numeric type
+- preprocess MUST encode every pl.String FEATURE column to a numeric type (do not touch the
+  target column here — leave it as-is)
 - feature_transform MUST drop the target column before returning
 - build_model MUST return a classifier when ctx.is_classification else a regressor
 - Fit all transformations on train only, apply identically to valid (no leakage)
 - No file I/O, no network calls, no eval/exec/open
+- Multiclass targets are often string labels (e.g. "Low"/"Medium"/"High"), not integers. The
+  harness scores postprocess_predictions() output against the ORIGINAL untouched string target —
+  if you encode the target to integers anywhere, you MUST decode predictions back to the
+  original string labels in postprocess_predictions before returning. Returning encoded integers
+  crashes scoring (`ValueError: Mix of label input types`). Simplest and safest: do NOT encode
+  the target at all — sklearn/LightGBM/XGBoost/CatBoost classifiers accept string class labels
+  directly and predict() returns them unchanged.
 
 ## Polars rules (do NOT use pandas-style API)
 - String columns have dtype pl.String (NOT pl.Categorical)
@@ -187,7 +203,19 @@ def generate_code(
     is_bootstrap = action_type == "bootstrap"
     contract = _BOOTSTRAP_CONTRACT if is_bootstrap else _REFLEXION_CONTRACT
 
+    # issue #42: 정적 검증(evaluator/contract.py validate_patch)이 생성 *이후*에만
+    # 컨트랙트 위반("may not implement hooks: [...]")을 잡아 같은 실수가 반복됐다
+    # (s6e7 실측: model_swap이 feature_transform을 구현하려는 시도 다수). 허용 hook을
+    # 매 호출 user 메시지에 action_type-specific으로 못박아 생성 이전 단계에서 가드.
+    allowed_hooks = sorted(_ALLOWED_HOOKS.get(action_type, _ALL_HOOKS))
+    hook_directive = (
+        f"## Allowed hooks for THIS action_type={action_type!r} (STRICT)\n"
+        f"You may implement ONLY: {allowed_hooks}. Any other hook will be rejected — "
+        f"do not implement it even if it seems like it would help."
+    )
+
     user_parts = [
+        hook_directive,
         f"## EDA Card\n{eda_card}",
         f"## Hypothesis\nAction type: {action_type}\n{hypothesis}",
     ]
