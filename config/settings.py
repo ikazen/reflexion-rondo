@@ -19,6 +19,19 @@ MODEL_EMBEDDING   = os.getenv("MODEL_EMBEDDING",    "qwen3-embedding:8b")
 # 대체 — reasoning_effort로 토큰 예산 조절 가능한 생존 모델 중 벤치 결과가 가장 나음.
 MODEL_CODER_REASONING_EFFORT = os.getenv("MODEL_CODER_REASONING_EFFORT", "medium")
 
+
+def _parse_think(raw: str) -> bool | str:
+    if raw.lower() in ("false", "0", "off"):
+        return False
+    if raw.lower() in ("true", "1", "on"):
+        return True
+    return raw  # "low"/"medium"/"high"
+
+
+# kimi-k2.6은 Ollama 'thinking' capability를 가진 reasoning 모델(#51) — hidden thinking
+# 토큰이 num_predict 예산을 잠식해 JSON 응답이 중간에 잘린다. 기본값 false로 비활성화.
+MODEL_REFLECTOR_THINK: bool | str = _parse_think(os.getenv("MODEL_REFLECTOR_THINK", "false"))
+
 # BON-193: Actor(Strategist/Coder/Reflector)는 확률적이라 attempt 간 CV 변화가
 # 교훈 효과인지 LLM 샘플링 운인지 구분이 안 됐다. temperature를 명시 고정해 최소한
 # 비결정성 자체를 문서화·재현 가능하게 한다. seed는 기본 미고정(탐색성 유지) —
