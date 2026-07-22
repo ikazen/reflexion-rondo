@@ -86,9 +86,15 @@ def _mask_target(df: pl.DataFrame, target: str) -> pl.DataFrame:
 def _encode_residual_categoricals(
     Xtr: pl.DataFrame, Xva: pl.DataFrame
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """issue #42: str 컬럼에 null이 섞이면 `sorted()`가 None과 str을 비교하려다
+    TypeError를 낸다(s6e7 실측: 이 한 줄이 s6e7 TypeError의 다수를 차지 — Coder 패치
+    문제가 아니라 harness 자신의 결측치 미처리 버그). null은 순서 매핑 대상이 아니므로
+    정렬 전에 제외한다 — replace_strict(default=-1)이 unseen 카테고리와 동일하게
+    null도 -1로 매핑해 이후 처리는 그대로 동작한다."""
     str_cols = [c for c, dt in zip(Xtr.columns, Xtr.dtypes) if dt == pl.String]
     for c in str_cols:
-        mapping = {v: i for i, v in enumerate(sorted(Xtr[c].unique().to_list()))}
+        values = (v for v in Xtr[c].unique().to_list() if v is not None)
+        mapping = {v: i for i, v in enumerate(sorted(values))}
         Xtr = Xtr.with_columns(pl.col(c).replace_strict(mapping, default=-1).cast(pl.Int32))
         Xva = Xva.with_columns(pl.col(c).replace_strict(mapping, default=-1).cast(pl.Int32))
     return Xtr, Xva

@@ -556,6 +556,30 @@ def test_harness_encodes_residual_string_columns():
     assert 0.0 <= result.cv_score <= 1.0
 
 
+def test_harness_encodes_residual_string_column_with_nulls():
+    """issue #42: str 컬럼에 null이 섞여도 크래시하면 안 된다.
+
+    s6e7 실측: _encode_residual_categoricals가 sorted()로 카테고리를 정렬하는데
+    None이 섞이면 'TypeError: <' not supported between instances of NoneType and str'로
+    죽었다(s6e7 TypeError의 다수를 차지, Coder 패치가 아니라 harness 자체 버그). null은
+    미확인 카테고리와 동일하게 -1로 인코딩돼야 한다.
+    """
+    import numpy as np
+    rng = np.random.default_rng(3)
+    n = 120
+    x = rng.standard_normal((n, 2))
+    geo = ["France" if i % 2 == 0 else None for i in range(n)]
+    geo[1] = "Spain"  # valid fold에 non-null 카테고리도 반드시 포함
+    y = ((x[:, 0] + rng.standard_normal(n) * 3.0) > 0).astype(float)
+    df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "geo": geo, "y": y})
+
+    base = BasePipeline()
+    patch = _StringColumnPatch()
+    pipeline = PatchedPipeline(base, patch)
+    result = evaluate_pipeline(pipeline, df, _ctx())  # TypeError 없이 완료돼야 함
+    assert 0.0 <= result.cv_score <= 1.0
+
+
 def test_harness_encodes_unknown_category_as_minus_one():
     """valid에만 있는 미지 카테고리가 -1로 인코딩돼 에러 없이 처리된다."""
     import numpy as np
