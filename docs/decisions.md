@@ -66,19 +66,23 @@
 - 결정: Coder가 생성한 `class Patch`는 격리 런타임에서 실행. 시간/메모리 상한, 네트워크 차단, FS 화이트리스트.
 - 대안: timeout만 적용 / 신뢰 후 직접 실행.
 - 근거: cron 무인 루프에서 LLM 생성 코드를 실행하므로 OOM·행·우발적 네트워크 접근이 워커를 죽이거나 환경을 오염시킬 수 있다. 격리 경계가 안정성과 재현성을 보장한다.
-- **현재 구현(BON-191):** `runtime/isolate.py`가 `runtime/runner.py`를 subprocess로 실행. preexec_fn에서 `os.unshare(CLONE_NEWNET)`으로 network namespace를 분리해 subprocess egress 차단(DockerOperator `cap_add=["SYS_ADMIN"]` 필요). CAP_SYS_ADMIN 없는 환경(로컬 mac 등)에선 조용히 스킵. rlimit(AS/CPU) + 600s timeout 병행. env allowlist가 시크릿 env 제거.
+- **현재 구현(BON-191):** `runtime/isolate.py`가 `runtime/runner.py`를 subprocess로 실행. preexec_fn에서 `os.unshare(CLONE_NEWNET)`으로 network namespace를 분리해 subprocess egress 차단(DockerOperator `cap_add=["SYS_ADMIN"]` 필요). CAP_SYS_ADMIN 없는 환경(로컬 mac 등)에선 조용히 스킵. rlimit(AS/CPU) + timeout 병행. env allowlist가 시크릿 env 제거.
+- amend(BON-275, 2026-07-19): 타임아웃 600s→1200s 상향. s5e5(75만 행) 5-seed bagging이 기존 600s를 넘겨 매번 타임아웃으로 실패하던 문제 — eval과 동일한 값으로 통일.
 
 ## ADR-014 — Coder 컨트랙트는 class Patch + hook 분리
 - 결정: 산출물은 `class Patch` 하나. action_type에 허용된 훅(hook)만 구현하고, 나머지는 현재 best pipeline이 fallback으로 제공한다. 훅은 `preprocess` / `feature_transform` / `param_candidates` / `build_model` / `postprocess_predictions` 5종. IO/k-fold 하니스/파라미터 선정은 Evaluator가 소유.
 - 대안: 전체 스크립트 자유 생성 / `feature_fn`+`model_fn` 두 함수 분리 (이전 방식).
 - 근거: hook 분리는 action_type 귀속을 코드 레벨로 강제하고(feature_transform만 바꾸는 게 feature_engineering), 1변경 규율을 컨트랙트로 보장한다. best pipeline을 base class로 두고 patch가 단일 훅만 override하면 cold-start seed 코드도 안전하게 재사용 가능. `validate_patch()` (AST 레벨)가 실행 전 위반을 차단한다.
 - **[2026-06 BON-113]**: `feature_fn`+`model_fn` → `class Patch` with hooks로 전환. `materialize_best_pipeline()`이 이전 best와 신규 patch를 AST 레벨에서 병합해 누적 pipeline을 유지한다.
+- **[2026-07-05 BON-268 amend]**: `validate_patch()`(AST 정적 검사)에 pandas-only API 금지(`.groupby`/`.map_dict`/`.take`/`.apply`/`.iterrows`/`.applymap`/`.get_dummies` — polars 1.41.2 실물에 `hasattr`로 대조해 확정, `value_counts`는 polars Series에 실존해 의도적으로 제외) + candidate patch 자신의 undefined-name 검사(실행 격리 모델과 동일 범위)를 추가. `agents/coder.py` 프롬프트에도 동일 금지 목록 반영.
+- **[2026-07-22 #42 amend]**: 정적 검증은 코드 생성 *이후*에만 컨트랙트 위반("action_type=X may not implement hooks: [...]")을 잡아 재시도해도 같은 실수가 반복됐다(s6e7 실측: model_swap이 feature_transform을 구현하려는 시도 다수). `agents/coder.py.generate_code()`가 `evaluator/contract.py._ALLOWED_HOOKS`(source of truth)를 직접 import해, 매 호출 user 메시지에 이번 action_type이 허용하는 hook만 동적으로 강조하도록 변경 — 생성 이전 단계 가드 추가. 같은 커밋에서 multiclass 라벨 왕복(round-trip) 규칙도 컨트랙트에 명시: 타깃을 정수로 인코딩했으면 `postprocess_predictions`에서 원래 문자열 라벨로 되돌려야 한다(`ValueError: Mix of label input types` 방지, 실측 45건).
 
 ## ADR-015 — 인과 귀속은 상관 기반으로 시작, ablation 보류
 - 결정: 자가 개선 효과는 `reflection_impact` 상관 + 1변경 규율 + 실제 채택 교훈 id로 추정. retrieval ON/OFF ablation은 도입하지 않는다.
 - 대안: 인터리브 ablation / 별도 memory-OFF 대조 대회.
 - 근거: 초기 단순성 우선. 단 이는 인과 증명이 아니라는 한계를 명시하고(`architecture.md` §4), 신호가 모호하면 ablation을 후속 과제로 승격한다.
 - **[2026-07 amend]** BON-195: 상관 기반 귀속은 "그냥 인과가 약하다" 수준을 넘어 **자기강화(rich-get-richer) 편향**을 갖는다 — avg_gain 높은 교훈이 `_apply_impact_score`에서 부스팅되어 더 자주 검색되고, 그 결과 avg_gain이 계속 유지/상승하는 루프가 생긴다. 완화책: (1) z-score를 배치 로컬이 아닌 전역(`reflection_impact` 전체) 통계로 계산해 배치 구성에 따른 흔들림 제거(`memory/retriever._global_gain_stats`), (2) `_IMPACT_W` 0.25 → 0.15로 부스팅 강도 감쇠. attempt gain을 인용된 교훈에 균등 배분하는 근본 문제(Coder 변경분과 교훈 기여분 미분리)는 미해결 — ablation 도입 시 함께 재검토.
+- **[2026-07-22 #43 amend]**: 전역 z-score 통계(위 amend)가 metric 스케일을 구분하지 않고 `avg_gain`을 pool한다는 별도 문제 발견 — rmse degenerate 예측(모델이 완전히 빗나감)이 만드는 원시 `gain_vs_best`(s6e1 실측 -105448, baseline rmse~8.75 대비)가 전역 std를 부풀려 auc/accuracy 스케일 교훈들의 z-score를 0으로 수렴시켰다. 근본 원인은 `evaluator/harness.py`에서 처리: 기존 "baseline보다 100배 좋으면 스케일 누수로 raise"(issue #4, `_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO`) 가드에 대칭으로 "100배 나쁘면 gain_vs_best를 하한 클립"을 추가(raise 아님 — label 판정은 클립 전 delta로 유지, DB에 저장되는 값만 스케일 폭주 차단). `_global_gain_stats`의 metric_class별 분리는 이 가드로 전역 std가 안정되는지 배포 후 재측정한 뒤 필요시 별도 판단(reflection_impact가 reflection_id 단위 집계라 분리가 비자명함 — 단순함 우선).
 
 ## ADR-016 — LLM 역할별 모델 배정 (Actor 분리 + Reflector 패밀리 다양성)
 - 역할 매핑: Reflexion의 **Actor = Strategist(정책) + Coder(실행)**, **Self-Reflection = Reflector**, Evaluator는 결정적 코드(ADR-005).

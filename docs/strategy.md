@@ -75,6 +75,6 @@ Strong CV + Correlation with Public LB = Gold Medal
 
 ## 5. 본 시스템에서의 활용
 
-- **Strategist 시스템 프롬프트**에 §2의 액션 카탈로그를 카드로 주입 → 가설의 action_type 분포를 안정화.
+- **action_type 배정**: 정상 사이클은 밴딧(`cycle/action_optimizer.py`) posterior가 Strategist 프롬프트에 advisory hint로만 주입되고 최종 결정은 LLM 자유(ADR-020). `super_cycle`은 `assign_super_cycle_actions`가 attempt별로 강제 배정. §2의 액션 카탈로그는 두 경로 모두에서 Strategist가 참고하는 선택지 설명으로 쓰인다.
 - **Reflector 체크리스트**: §2.1 검증 누수, §2.2 피처 누수, §3 CV-LB 상관 — 매 reflection마다 점검.
 - **Bootstrap 시드 후보**: §1의 LightGBM/CatBoost + §2.1 Stratified K-Fold + 기본 target encoding을 "도메인 무관 안전 베이스라인"으로 고정.
