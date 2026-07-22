@@ -420,11 +420,16 @@ def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None
 
 
 def _last_submitted_attempt(conn: PgConn, competition_id: str) -> str | None:
+    """issue #52: 'submitted'가 폴링 데드라인(airflow-stack autosubmit DAG, 30분)보다
+    한참 지나도(1시간) 안 풀리면 사실상 미확정 — 재제출 후보에서 제외해 영구 스킵을
+    막는다(s6e6 실측: 07-07 제출이 2주+ 'submitted'에서 안 움직여 매일 자동 제출이
+    "best unchanged"로 계속 스킵됨)."""
     row = conn.execute(
         """
         select attempt_id from raw.kaggle_submissions
         where competition_id = %s
           and status not in ('error', 'invalid', 'timeout')
+          and not (status = 'submitted' and checked_at < now() - interval '1 hour')
         order by submitted_at desc
         limit 1
         """,
