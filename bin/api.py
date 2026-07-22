@@ -139,14 +139,10 @@ def _run_in_pgroup(
     cwd: str,
     env: dict,
 ) -> subprocess.CompletedProcess:
-    """subprocess.run 대체 — 타임아웃 시 프로세스 그룹 전체를 kill한다.
+    """subprocess.run 대체 — 타임아웃 시 프로세스 그룹 전체를 kill한다(#37).
 
-    GH issue #37: cmd가 `uv run python -m ...`일 때 subprocess.run의 타임아웃 kill은
-    직속 자식(uv)에만 SIGKILL을 보낸다. uv가 python을 exec로 치환하지 않고 별도
-    자식으로 spawn하면 그 python 프로세스는 고아로 남아 계속 CPU를 잠식한다.
-    start_new_session=True로 자식을 새 세션(=새 프로세스 그룹) 리더로 띄우면
-    uv와 그 자식 python이 같은 그룹에 속하므로, 타임아웃 시 os.killpg로 그룹째
-    죽여 손자까지 확실히 정리한다.
+    uv는 python을 exec로 치환하지 않고 자식으로 spawn해, 직속 자식만 죽이면 손자가
+    고아로 남는다. start_new_session + os.killpg로 그룹째 정리한다.
     """
     proc = subprocess.Popen(
         cmd,
@@ -420,10 +416,8 @@ def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None
 
 
 def _last_submitted_attempt(conn: PgConn, competition_id: str) -> str | None:
-    """issue #52: 'submitted'가 폴링 데드라인(airflow-stack autosubmit DAG, 30분)보다
-    한참 지나도(1시간) 안 풀리면 사실상 미확정 — 재제출 후보에서 제외해 영구 스킵을
-    막는다(s6e6 실측: 07-07 제출이 2주+ 'submitted'에서 안 움직여 매일 자동 제출이
-    "best unchanged"로 계속 스킵됨)."""
+    """오래 안 풀린 'submitted'는 미확정으로 보고 제외한다(#52) — 안 그러면 재제출
+    조건이 영원히 안 걸린다."""
     row = conn.execute(
         """
         select attempt_id from raw.kaggle_submissions

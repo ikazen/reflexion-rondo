@@ -203,10 +203,8 @@ def generate_code(
     is_bootstrap = action_type == "bootstrap"
     contract = _BOOTSTRAP_CONTRACT if is_bootstrap else _REFLEXION_CONTRACT
 
-    # issue #42: 정적 검증(evaluator/contract.py validate_patch)이 생성 *이후*에만
-    # 컨트랙트 위반("may not implement hooks: [...]")을 잡아 같은 실수가 반복됐다
-    # (s6e7 실측: model_swap이 feature_transform을 구현하려는 시도 다수). 허용 hook을
-    # 매 호출 user 메시지에 action_type-specific으로 못박아 생성 이전 단계에서 가드.
+    # 정적 검증은 생성 이후에만 컨트랙트 위반을 잡아 반복된다(#42) — 허용 hook을
+    # 생성 이전 user 메시지에 action_type별로 명시.
     allowed_hooks = sorted(_ALLOWED_HOOKS.get(action_type, _ALL_HOOKS))
     hook_directive = (
         f"## Allowed hooks for THIS action_type={action_type!r} (STRICT)\n"
