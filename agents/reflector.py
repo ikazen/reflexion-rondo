@@ -167,6 +167,7 @@ Respond with ONLY a JSON object using exactly these keys:
         resp = _client().chat(
             model=settings.MODEL_REFLECTOR,
             messages=[{"role": "user", "content": user_prompt}],
+            think=settings.MODEL_REFLECTOR_THINK,
             format=_OUTPUT_SCHEMA,
             options=settings.llm_options(num_predict=4096),
         )
