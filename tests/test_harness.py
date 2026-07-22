@@ -486,6 +486,53 @@ def test_regression_phantom_guard_does_not_trip_on_honest_score():
     assert np.isfinite(result.cv_score)
 
 
+# --- degenerate 회귀 gain_vs_best 클립 가드 (issue #43) ---
+# rmse degenerate 예측(모델이 완전히 빗나간 상수를 반환하는 등)은 raise 가드(위)에
+# 걸리지 않으면서도 gain_vs_best를 비정상적으로 큰 음수로 만든다(s6e1 실측
+# gain_vs_best=-105448). 이 값이 그대로 reflection_impact에 흘러가면 전역 z-score
+# (memory/retriever.py._global_gain_stats)를 오염시킨다 — label 판정은 그대로 두고
+# 저장되는 gain_vs_best만 baseline 100배 나쁜 지점으로 하한을 둬야 한다.
+
+class _DegenerateRegressionPatch:
+    """postprocess에서 예측에 거대한 offset을 더해 rmse를 극단적으로 나쁘게 만든다."""
+
+    action_type = "feature_engineering"
+
+    def postprocess_predictions(self, preds, ctx):
+        return preds + 1e5
+
+
+def test_degenerate_regression_gain_is_clipped_not_raw():
+    """degenerate 회귀 점수의 gain_vs_best는 raw delta가 아니라 baseline 100배 하한으로 클립된다."""
+    df = _make_df_positive_target()
+    pipeline = PatchedPipeline(BasePipeline(), _DegenerateRegressionPatch())
+    ctx = PipelineContext(
+        target_col="y", metric="rmse", n_splits=3, seed=42,
+        is_classification=False, prev_best=3.0,
+    )
+    result = evaluate_pipeline(pipeline, df, ctx)
+
+    assert result.cv_score > 1000  # degenerate offset이 rmse를 압도적으로 키운다
+    raw_delta = -1 * (result.cv_score - ctx.prev_best)
+    # 클립 없이 그대로 흘렀다면 gain_vs_best가 raw_delta(수만 단위 음수)와 같아야 한다 —
+    # 클립이 동작하면 훨씬 작은(덜 극단적인) 음수로 잡힌다.
+    assert result.gain_vs_best > raw_delta
+    assert result.gain_vs_best < 0  # 여전히 명백히 나쁜 점수라는 신호는 유지
+    assert result.label == "regression"
+
+
+def test_honest_regression_gain_is_not_clipped():
+    """baseline과 비슷한 스케일의 정상 회귀 점수는 클립 가드의 영향을 받지 않는다."""
+    df = _make_df_positive_target()
+    ctx = PipelineContext(
+        target_col="y", metric="rmse", n_splits=3, seed=42,
+        is_classification=False, prev_best=100.0,  # 압도적으로 나쁜 prev_best로 확실한 jump 유도
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+    raw_delta = -1 * (result.cv_score - ctx.prev_best)
+    assert result.gain_vs_best == pytest.approx(raw_delta)
+
+
 def test_preselect_evaluates_all_candidates():
     evaluated: list[dict] = []
 
