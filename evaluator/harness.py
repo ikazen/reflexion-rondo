@@ -410,6 +410,7 @@ def evaluate_pipeline(
     # issue #4: "구현 불가 수준"의 회귀 점수 방어 가드 — trivial mean-baseline 대비
     # _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO 배 이상 좋으면 스케일/타깃 누수로 간주.
     # metric_sign<0(rmse/mae/rmsle 전부 해당)인 regression_error 메트릭에만 적용.
+    baseline_cv: float | None = None
     if metric_class == "regression_error" and metric_sign < 0 and baseline_fold_scores:
         baseline_cv = float(np.mean(baseline_fold_scores))
         if cv_score > 0 and baseline_cv / cv_score > _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO:
@@ -431,6 +432,16 @@ def evaluate_pipeline(
         is_noop_tie = cv_score == ctx.prev_best
         delta = metric_sign * (cv_score - ctx.prev_best)
         gain_vs_best = delta
+        # issue #43: degenerate 회귀 예측(trivial baseline보다 훨씬 나쁜 cv_score)이
+        # gain_vs_best를 비정상적으로 큰 음수로 만들어(s6e1 실측 gain_vs_best=-105448,
+        # baseline rmse~8.75 대비) reflection_impact 전역 z-score(memory/retriever.py
+        # _global_gain_stats)를 오염시킨다. label(jump/regression/neutral) 판정은
+        # 클립 전 delta로 그대로 하고, 저장되는 gain_vs_best 값만 baseline
+        # _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO배 나쁜 지점으로 하한을 둔다.
+        if baseline_cv is not None and baseline_cv > 0:
+            worst_plausible_cv = baseline_cv * _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO
+            gain_floor = metric_sign * (worst_plausible_cv - ctx.prev_best)
+            gain_vs_best = max(delta, gain_floor)
         if delta > LABEL_Z * fold_std:
             label = "jump"
         elif delta < -LABEL_Z * fold_std:
