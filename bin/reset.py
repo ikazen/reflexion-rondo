@@ -66,7 +66,6 @@ def reset_hard(yes: bool) -> None:
     raw.autocommit = True
     conn.close()
 
-    # 새 커넥션으로 schema.sql 적용
     connect(apply_schema=True).close()
     print("Schema dropped and recreated.")
 

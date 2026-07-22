@@ -82,7 +82,6 @@ def main() -> None:
         metric_sign=comp.METRIC_SIGN,
     )
 
-    # cold-start 준비
     cold_lessons: list[dict] = []
     seed_code: str | None = None
     if args.cold_start:
@@ -97,7 +96,6 @@ def main() -> None:
     for i in range(args.cycles):
         print(f"\n--- cycle {i + 1}/{args.cycles} (stage={args.stage}) ---")
 
-        # 첫 bootstrap 사이클에만 seed_code 주입
         this_seed = seed_code if (args.stage == "bootstrap" and i == 0) else None
 
         config = CycleConfig(

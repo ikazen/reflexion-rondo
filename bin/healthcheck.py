@@ -20,10 +20,7 @@ _RED    = "\033[31m"
 _RESET  = "\033[0m"
 
 
-# ---------------------------------------------------------------------------
-# 개별 체크 — 반환값: (True|False|None, detail_str)
-#   None → SKIP (환경변수 미설정)
-# ---------------------------------------------------------------------------
+# 개별 체크 — 반환값: (True|False|None, detail_str). None → SKIP (환경변수 미설정)
 
 def check_postgres() -> tuple[bool | None, str]:
     try:
@@ -95,10 +92,7 @@ def check_airflow() -> tuple[bool | None, str]:
         return False, str(exc)
 
 
-# ---------------------------------------------------------------------------
-# run_checks — api.py /api/health 에서도 재사용
-# ---------------------------------------------------------------------------
-
+# run_checks: bin/api.py의 /api/health 엔드포인트가 그대로 재사용한다.
 def run_checks() -> dict[str, dict]:
     """반환: {name: {"status": "pass"|"fail"|"skip", "detail": str}}"""
     checks = [
@@ -115,10 +109,6 @@ def run_checks() -> dict[str, dict]:
         results[name] = {"status": status, "detail": detail}
     return results
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def _row(label: str, ok: bool | None, detail: str) -> None:
     if ok is None:

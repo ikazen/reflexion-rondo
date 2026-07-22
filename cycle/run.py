@@ -319,7 +319,6 @@ def run_attempt_core(
     attempt_id = str(uuid.uuid4())
     attempt_start = time.monotonic()
 
-    # Strategize
     dynamic_ctx = _dynamic_eda_context(conn, config.competition_id, prev_best_cv)
     enriched_eda = config.eda_card + dynamic_ctx
     stagnation = detect_stagnation(conn, config.competition_id)
@@ -350,7 +349,6 @@ def run_attempt_core(
         prev_code = _load_best_pipeline(config.competition_id)
     action_type = "bootstrap" if (config.stage == "bootstrap" and not prev_code) else decision.action_type
 
-    # Generate + validate
     _t_codegen = time.monotonic()
     _MAX_CODE_RETRIES = 2
     pitfalls = top_error_pitfalls(conn, config.competition_id, action_type)
@@ -382,7 +380,6 @@ def run_attempt_core(
 
     _LOG.info("codegen done in %.1fs retries=%d", time.monotonic() - _t_codegen, retries)
 
-    # Evaluate
     _LOG.info("evaluating (n_splits=%d metric=%s)...", config.n_splits, config.metric)
     _t_eval = time.monotonic()
     cv_score = None
@@ -469,7 +466,6 @@ def run_attempt_core(
             # harness 절대-마진 기준은 통과했지만 paired 유의성은 미달 — 강등.
             label = "neutral"
 
-    # Save code
     code_path = _save_code(
         source,
         competition_id=config.slug or config.competition_id,
@@ -482,7 +478,6 @@ def run_attempt_core(
         error_trace=error_trace,
     )
 
-    # Persist attempt
     duration_sec = time.monotonic() - attempt_start
     row: dict = {
         "attempt_id":       attempt_id,
@@ -512,7 +507,6 @@ def run_attempt_core(
         row["was_promoted"] = was_promoted
     insert_attempt(conn, row)
 
-    # Save pipeline if improved — also materialize as new best baseline.
     # defer_promotion=True: caller (super_cycle / Airflow promote task) handles winner-only promotion.
     # _significant은 위에서 label 확정 시 이미 계산됨 (BON-267) — 재계산하지 않음.
     if not defer_promotion and _significant and not error_trace:
@@ -573,7 +567,6 @@ def run_attempt_core(
         duration_sec, attempt_id[:8], action_type, label, retries,
     )
 
-    # Action bandit update — reflexion stage only (BON-109)
     if config.stage == "reflexion":
         update_bandit(
             conn,
@@ -631,7 +624,6 @@ def run_cycle(
     conn: PgConn,
     config: CycleConfig,
 ) -> CycleResult:
-    # 1. Retrieve
     fail_summary = _recent_failure_summary(conn, config.competition_id)
     query = _build_retrieval_query(conn, config.competition_id, config.eda_card, fail_summary)
     try:
@@ -641,10 +633,8 @@ def run_cycle(
         lessons = []
     prev_best_cv = _prev_best(conn, config.competition_id)
 
-    # 2-6. Strategize → Generate → Evaluate → Persist
     data = run_attempt_core(conn, config, lessons, prev_best_cv)
 
-    # 7. Reflect (BON-96 gate inside _do_reflect)
     reflection_id = _do_reflect(conn, config.competition_id, data)
 
     return CycleResult(

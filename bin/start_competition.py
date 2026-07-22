@@ -57,7 +57,6 @@ def main() -> None:
     )
     print(f"\nraw.competitions 등록 완료: {args.id}")
 
-    # cold-start 탐색
     similar_with_dist = find_similar_competitions(conn, fp, exclude_id=args.id, k=args.k_similar)
     similar = [c for c, _ in similar_with_dist]
 
@@ -78,7 +77,6 @@ def main() -> None:
     for s in seeds:
         print(f"  {s['pipeline_id'][:8]}  cv={s['cv_score']:.5f}  from={s['competition_id']}")
 
-    # cold-start 정보 저장
     COLD_START_DIR.mkdir(parents=True, exist_ok=True)
     out_path = COLD_START_DIR / f"{args.id}.json"
     out_path.write_text(json.dumps({
