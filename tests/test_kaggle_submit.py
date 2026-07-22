@@ -21,7 +21,7 @@ ROOT = Path(__file__).parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bin.api import _kaggle_submit, _run_in_pgroup
+from bin.api import _kaggle_submit, _last_submitted_attempt, _run_in_pgroup
 
 
 @contextlib.contextmanager
@@ -118,3 +118,17 @@ def test_run_in_pgroup_returns_completed_process_on_success() -> None:
     assert result.returncode == 0
     assert "submission saved" in result.stdout
     assert result.stderr == ""
+
+
+def test_last_submitted_attempt_query_excludes_stale_submitted() -> None:
+    """issue #52: 'submitted'가 폴링 데드라인(30분)보다 한참(1시간) 지나도 안 풀리면
+    재제출 후보에서 제외돼야 한다 — s6e6이 2주+ 'submitted'에 고정돼 매일 자동 제출이
+    영구 스킵되던 실제 사례 재발 방지. 쿼리에 staleness 조건이 들어갔는지 확인."""
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = ("attempt-x",)
+    result = _last_submitted_attempt(conn, "playground-series-s6e6")
+    sql = conn.execute.call_args[0][0]
+    assert "checked_at" in sql
+    assert "'submitted'" in sql
+    assert "interval '1 hour'" in sql
+    assert result == "attempt-x"

@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import polars as pl
 import pytest
 
 ROOT = Path(__file__).parent.parent
@@ -22,6 +23,7 @@ if str(ROOT) not in sys.path:
 
 from bin.submit import (
     _bagged_predict,
+    _dummy_target_value,
     _impute_train_test_median,
     _load_best_code,
     _load_pipeline,
@@ -293,3 +295,30 @@ def test_impute_train_test_median_noop_when_no_nan() -> None:
     train_out, test_out = _impute_train_test_median(train_np, test_np)
     assert np.array_equal(train_out, train_np)
     assert np.array_equal(test_out, test_np)
+
+
+# ---------------------------------------------------------------------------
+# (issue #52) _dummy_target_value
+# ---------------------------------------------------------------------------
+# 타입만 맞춘 placeholder(예: 0)는 Patch가 타깃을 exhaustive 매핑(replace_strict without
+# default)으로 인코딩할 때 매핑에 없는 값이라 크래시한다(s5e7 실측). 더미값은 반드시
+# train에 실재하는 값이어야 어떤 인코딩 로직과도 호환된다.
+
+def test_dummy_target_value_returns_real_train_category() -> None:
+    train = pl.DataFrame({"x": [1, 2, 3], "y": ["Extrovert", "Introvert", "Extrovert"]})
+    result = _dummy_target_value(train, "y")
+    assert result in ("Extrovert", "Introvert")
+
+
+def test_dummy_target_value_is_not_a_synthetic_placeholder() -> None:
+    """실제 카테고리에 '0'이 없는 데이터셋이면 결과도 '0'이면 안 된다 — 과거 버그 재현 방지."""
+    train = pl.DataFrame({"x": [1, 2], "y": ["Extrovert", "Introvert"]})
+    result = _dummy_target_value(train, "y")
+    assert result != "0"
+    assert result != 0
+
+
+def test_dummy_target_value_works_for_numeric_target() -> None:
+    train = pl.DataFrame({"x": [1, 2, 3], "y": [10.5, 20.5, 30.5]})
+    result = _dummy_target_value(train, "y")
+    assert result == 10.5
