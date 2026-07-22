@@ -4,10 +4,15 @@ promote 시점에 캐싱된 submission CSV(store.s3_code.download_submission_csv
 fit(bin.submit 서브프로세스) 없이 캐시된 CSV를 바로 kaggle CLI로 업로드해야 한다 —
 매일 06:00 auto-submit이 ops-vm(daemon 상주, 2 OCPU)에서 매번 fit하며 CPU를 포화시키던
 경로를 대체하는 것이 이번 변경의 목적. 캐시 미스 시에는 기존 bin.submit 경로로 폴백한다.
+
+GH issue #37: _kaggle_submit은 subprocess.run 대신 _run_in_pgroup을 쓴다 — 타임아웃 시
+uv run이 spawn한 손자 python 프로세스까지 확실히 죽이기 위해서다(process group kill).
 """
 from __future__ import annotations
 
 import contextlib
+import signal
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -16,7 +21,7 @@ ROOT = Path(__file__).parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bin.api import _kaggle_submit
+from bin.api import _kaggle_submit, _run_in_pgroup
 
 
 @contextlib.contextmanager
@@ -25,13 +30,13 @@ def _fake_kaggle_home_env():
 
 
 def _run(attempt_id, cached_csv, submit_result=None):
-    """공통 mock 세트로 _kaggle_submit 1회 실행. (subprocess_run_mock, download_mock) 반환."""
+    """공통 mock 세트로 _kaggle_submit 1회 실행. (run_in_pgroup_mock, download_mock) 반환."""
     submit_result = submit_result or MagicMock(returncode=0, stdout="submission saved: /tmp/x.csv\n", stderr="")
     conn_mock = MagicMock()
     with patch("store.db.connect", return_value=conn_mock), \
          patch("bin.api._kaggle_home_env", _fake_kaggle_home_env), \
          patch("store.s3_code.download_submission_csv", return_value=cached_csv) as download_mock, \
-         patch("subprocess.run", return_value=submit_result) as run_mock:
+         patch("bin.api._run_in_pgroup", return_value=submit_result) as run_mock:
         _kaggle_submit(
             submission_id="sub-1",
             competition_id="playground-series-s4e1",
@@ -71,3 +76,45 @@ def test_no_attempt_id_skips_cache_lookup_entirely() -> None:
     cmd = run_mock.call_args.args[0]
     assert "bin.submit" in cmd
     assert "--attempt-id" not in cmd
+
+
+def test_run_in_pgroup_kills_process_group_on_timeout() -> None:
+    """GH issue #37: 타임아웃 시 os.killpg가 자식의 프로세스 그룹 전체에 호출돼야 한다.
+
+    subprocess.run은 직속 자식(uv)만 kill해 uv가 spawn한 손자 python이 고아로 남았다.
+    start_new_session=True로 띄운 뒤 os.killpg(pgid, SIGKILL)로 그룹째 죽이는지 검증.
+    """
+    fake_proc = MagicMock()
+    fake_proc.pid = 4242
+    fake_proc.communicate.side_effect = [subprocess.TimeoutExpired(cmd="x", timeout=1), ("", "")]
+
+    with patch("bin.api.subprocess.Popen", return_value=fake_proc) as popen_mock, \
+         patch("bin.api.os.getpgid", return_value=4242) as getpgid_mock, \
+         patch("bin.api.os.killpg") as killpg_mock:
+        try:
+            _run_in_pgroup(["uv", "run", "python", "-m", "bin.submit"], timeout=1, cwd="/tmp", env={})
+            raised = False
+        except subprocess.TimeoutExpired:
+            raised = True
+
+    assert raised, "timeout이 호출부로 재-raise되어야 기존 except subprocess.TimeoutExpired 처리가 동작한다"
+    popen_mock.assert_called_once()
+    assert popen_mock.call_args.kwargs["start_new_session"] is True
+    getpgid_mock.assert_called_once_with(4242)
+    killpg_mock.assert_called_once_with(4242, signal.SIGKILL)
+    assert fake_proc.communicate.call_count == 2  # 최초 시도 + kill 후 reap
+
+
+def test_run_in_pgroup_returns_completed_process_on_success() -> None:
+    """정상 종료 시 기존 subprocess.run 계약(.returncode/.stdout/.stderr)과 동일한 형태를 반환."""
+    fake_proc = MagicMock()
+    fake_proc.pid = 1
+    fake_proc.returncode = 0
+    fake_proc.communicate.return_value = ("submission saved: /tmp/x.csv\n", "")
+
+    with patch("bin.api.subprocess.Popen", return_value=fake_proc):
+        result = _run_in_pgroup(["uv", "run", "kaggle"], timeout=10, cwd="/tmp", env={})
+
+    assert result.returncode == 0
+    assert "submission saved" in result.stdout
+    assert result.stderr == ""
