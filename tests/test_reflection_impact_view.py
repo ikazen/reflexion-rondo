@@ -49,15 +49,17 @@ def test_gain_not_penalized_by_unconfirmed_winner(conn) -> None:
         # a2: 다음 super-cycle, prev_best는 여전히 0.80(a1 미확정이라 안 바뀜),
         #     cv=0.82 -> gain=0.02 (양수). 옛 뷰는 running-max(0.90 포함) 대비
         #     -0.08로 깎아 phantom 음수를 만들었다.
+        # issue #58: reflection_impact가 gain_vs_best_relative를 집계한다. auc는
+        # metric_class=binary_proba라 gain_vs_best_relative == gain_vs_best(패스스루).
         conn.execute(
             """
             INSERT INTO raw.attempts
                 (attempt_id, competition_id, run_ts, stage, cv_score, gain_vs_best,
-                 reflection_ids, super_cycle_id, was_promoted)
+                 gain_vs_best_relative, reflection_ids, super_cycle_id, was_promoted)
             VALUES
-                (%s, %s, now() - interval '3 hours', 'reflexion', 0.80, 0.00, ARRAY[%s], 'sc1', NULL),
-                (%s, %s, now() - interval '2 hours', 'reflexion', 0.90, 0.10, ARRAY[%s], 'sc1', TRUE),
-                (%s, %s, now() - interval '1 hours', 'reflexion', 0.82, 0.02, ARRAY[%s], 'sc2', NULL)
+                (%s, %s, now() - interval '3 hours', 'reflexion', 0.80, 0.00, 0.00, ARRAY[%s], 'sc1', NULL),
+                (%s, %s, now() - interval '2 hours', 'reflexion', 0.90, 0.10, 0.10, ARRAY[%s], 'sc1', TRUE),
+                (%s, %s, now() - interval '1 hours', 'reflexion', 0.82, 0.02, 0.02, ARRAY[%s], 'sc2', NULL)
             """,
             [
                 f"{competition_id}-a0", competition_id, r_base,
@@ -78,6 +80,41 @@ def test_gain_not_penalized_by_unconfirmed_winner(conn) -> None:
         assert by_id[r_next] == (0.02, 1)
         assert by_id[r_lucky] == (0.10, 1)
         assert by_id[r_base] == (0.00, 0)
+    finally:
+        conn.execute(
+            "DELETE FROM raw.attempts WHERE competition_id = %s", [competition_id]
+        )
+        conn.execute(
+            "DELETE FROM raw.competitions WHERE competition_id = %s", [competition_id]
+        )
+
+
+def test_legacy_row_without_relative_gain_excluded(conn) -> None:
+    """issue #58: gain_vs_best_relative가 없는(NULL) legacy row는 스케일을 신뢰할 수
+    없으므로 reflection_impact 집계에서 제외돼야 한다 — raw gain_vs_best로 폴백하지 않는다."""
+    competition_id = f"issue58-test-{uuid.uuid4().hex[:8]}"
+    r_legacy = f"{competition_id}-r_legacy"
+    try:
+        conn.execute(
+            "INSERT INTO raw.competitions (competition_id, name, task_type, metric, metric_sign)"
+            " VALUES (%s, 'issue #58 test', 'regression', 'rmse', -1)",
+            [competition_id],
+        )
+        conn.execute(
+            """
+            INSERT INTO raw.attempts
+                (attempt_id, competition_id, run_ts, stage, cv_score, gain_vs_best,
+                 gain_vs_best_relative, reflection_ids, super_cycle_id, was_promoted)
+            VALUES
+                (%s, %s, now(), 'reflexion', 100.0, -5000.0, NULL, ARRAY[%s], 'sc1', NULL)
+            """,
+            [f"{competition_id}-a0", competition_id, r_legacy],
+        )
+        rows = conn.execute(
+            "SELECT reflection_id FROM reflection_impact WHERE reflection_id = %s",
+            [r_legacy],
+        ).fetchall()
+        assert rows == []
     finally:
         conn.execute(
             "DELETE FROM raw.attempts WHERE competition_id = %s", [competition_id]

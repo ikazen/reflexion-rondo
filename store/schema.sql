@@ -46,6 +46,11 @@ ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS confirm_seed_gains jsonb;
 -- 기록돼 있어야 한다(raw.pipelines가 attempt_id로 join해 재사용).
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS fold_scores jsonb;
 
+-- issue #58: metric마다 gain_vs_best 스케일이 달라(rmse 원시 단위 vs auc 0~1)
+-- reflection_impact 전역 z-score가 오염된다 — regression_error는 baseline_cv로 나눈
+-- 상대값, 나머지는 gain_vs_best 그대로. reflection_impact가 이 컬럼만 집계한다.
+ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS gain_vs_best_relative double precision;
+
 -- BON-255: materialize 시 sha256 기록 — submit.py exec 전 MinIO 다운로드본과 대조해
 -- 익명 write 버킷 변조를 탐지한다. code 컬럼(raw.attempts 원본)이 아니라
 -- 실제 exec되는 materialized best_pipeline.py 내용의 해시.
@@ -146,13 +151,12 @@ WITH scored AS (
     SELECT
         competition_id,
         reflection_ids,
-        gain_vs_best   -- BON-244: 런타임 _prev_best(확정 파이프라인 raw.pipelines) 기준으로
-                       -- evaluator/harness.py가 저장한 값 재사용. 기존 running-max(was_promoted
-                       -- 기준) baseline은 cross-seed confirm 전에 마킹되는 미확정 winner를
-                       -- 포함해 이후 attempt들의 gain을 왜곡시켰다.
+        gain_vs_best_relative AS gain_vs_best   -- BON-244(baseline 재사용) + issue #58
+                       -- (metric별 스케일 상대화 — regression_error는 baseline_cv 비율,
+                       -- 나머지는 gain_vs_best와 동일). NULL인 legacy row는 아래서 제외.
     FROM stg_attempts_reflexion_only
     WHERE was_promoted IS NOT FALSE  -- NULL=legacy (promoted), TRUE=winner, FALSE=super-cycle loser excluded
-      AND gain_vs_best IS NOT NULL
+      AND gain_vs_best_relative IS NOT NULL
 ),
 per_reflection AS (
     SELECT

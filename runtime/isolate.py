@@ -83,6 +83,7 @@ class IsolatedResult:
     is_noop_tie: bool = False
     selected_params: dict | None = None
     oof_preds: list[float] | None = None
+    gain_vs_best_relative: float | None = None
 
 
 def eval_isolated(
@@ -168,6 +169,7 @@ def eval_isolated(
             is_noop_tie=out.get("is_noop_tie", False),
             selected_params=out.get("selected_params"),
             oof_preds=out.get("oof_preds"),
+            gain_vs_best_relative=out.get("gain_vs_best_relative"),
         )
 
 

@@ -533,6 +533,40 @@ def test_honest_regression_gain_is_not_clipped():
     assert result.gain_vs_best == pytest.approx(raw_delta)
 
 
+# --- gain_vs_best_relative: metric 스케일 정규화 (issue #58) ---
+
+def test_regression_error_gain_relative_is_scaled_by_baseline():
+    """regression_error는 gain_vs_best_relative = gain_vs_best / baseline_cv 여야 한다."""
+    df = _make_df_positive_target()
+    ctx = PipelineContext(
+        target_col="y", metric="rmse", n_splits=3, seed=42,
+        is_classification=False, prev_best=100.0,
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+    assert result.gain_vs_best_relative is not None
+    assert result.gain_vs_best_relative != result.gain_vs_best  # 원시값과 달라야 함(정규화됨)
+
+
+def test_classification_gain_relative_equals_raw_gain():
+    """AUC 등 이미 0~1 스케일인 metric은 gain_vs_best_relative가 gain_vs_best와 동일."""
+    df = _make_df(is_classification=True)
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42,
+        is_classification=True, prev_best=0.5,
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+    assert result.gain_vs_best_relative == result.gain_vs_best
+
+
+def test_gain_relative_is_none_when_no_prev_best():
+    """첫 attempt(prev_best 없음)는 gain_vs_best와 마찬가지로 relative도 None."""
+    df = _make_df(is_classification=True)
+    ctx = _ctx()  # prev_best 기본값 None
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+    assert result.gain_vs_best is None
+    assert result.gain_vs_best_relative is None
+
+
 def test_preselect_evaluates_all_candidates():
     evaluated: list[dict] = []
 

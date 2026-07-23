@@ -386,6 +386,7 @@ def run_attempt_core(
     cv_fold_var = 0.0
     label = "regression"
     gain_vs_best = None
+    gain_vs_best_relative = None
     feature_importance: dict | None = None
     is_noop_tie = False
     fold_scores: list[float] | None = None
@@ -411,6 +412,7 @@ def run_attempt_core(
                 cv_fold_var = iso.cv_fold_var or 0.0
                 label = iso.label or "regression"
                 gain_vs_best = iso.gain_vs_best
+                gain_vs_best_relative = iso.gain_vs_best_relative
                 feature_importance = iso.feature_importance
                 is_noop_tie = iso.is_noop_tie
                 fold_scores = iso.fold_scores
@@ -492,6 +494,7 @@ def run_attempt_core(
         "cv_fold_var":      cv_fold_var,
         "label":            label,
         "gain_vs_best":     gain_vs_best,
+        "gain_vs_best_relative": gain_vs_best_relative,
         "error_trace":      error_trace,
         "duration_sec":     round(duration_sec, 1),
         "code_path":        str(code_path),

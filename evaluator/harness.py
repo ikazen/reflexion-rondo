@@ -147,6 +147,9 @@ class EvalResult:
     selected_params: dict = field(default_factory=dict)
     # BON-248: collect_oof=True일 때만 채워지는 fold별 out-of-fold 예측 (원본 행 순서).
     oof_preds: list[float] | None = None
+    # metric마다 gain_vs_best 스케일이 달라(#58) reflection_impact 전역 z-score가
+    # 오염된다 — regression_error는 baseline_cv로 나눈 상대값, 나머지는 gain_vs_best 그대로.
+    gain_vs_best_relative: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,6 +427,7 @@ def evaluate_pipeline(
             )
 
     is_noop_tie = False
+    gain_vs_best_relative: float | None = None
     if ctx.prev_best is None:
         label = "neutral"
         gain_vs_best = None
@@ -441,6 +445,9 @@ def evaluate_pipeline(
             worst_plausible_cv = baseline_cv * _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO
             gain_floor = metric_sign * (worst_plausible_cv - ctx.prev_best)
             gain_vs_best = max(delta, gain_floor)
+        gain_vs_best_relative = gain_vs_best
+        if metric_class == "regression_error" and baseline_cv is not None and baseline_cv > 0:
+            gain_vs_best_relative = gain_vs_best / baseline_cv
         if delta > LABEL_Z * fold_std:
             label = "jump"
         elif delta < -LABEL_Z * fold_std:
@@ -475,4 +482,5 @@ def evaluate_pipeline(
         is_noop_tie=is_noop_tie,
         selected_params=selected_params,
         oof_preds=oof.tolist() if oof is not None else None,
+        gain_vs_best_relative=gain_vs_best_relative,
     )
