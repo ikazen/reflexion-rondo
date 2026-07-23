@@ -99,6 +99,65 @@ def _traffic_light(*, green: bool, red: bool) -> str:
     return "amber"
 
 
+def _replay_bandit_timeline(conn: PgConn, competition_id: str) -> list[dict]:
+    """raw.action_bandit는 현재 alpha/beta만 저장(이력 없음) — reflexion attempts를
+    run_ts 순으로 훑으며 cycle/action_optimizer.update_bandit()과 동일한 델타/decay
+    규칙을 그대로 재현해 posterior_mean 시계열을 재구성한다(B2b/B2c 공용).
+
+    검증(2026-07 s4e1 기준): 5개 action_type 중 4개는 raw.action_bandit 라이브 값과
+    소수점 5자리까지 일치. 1개(feature_engineering)는 유의미하게 어긋났는데 원인은
+    raw.attempts에 남지 않은 이력(수동 개입·과거 리셋 등)으로 추정 — attempts 테이블
+    바깥의 개입은 이 리플레이가 재현할 수 없다. 추세/방향성 참고용으로 쓰고 절대값을
+    라이브 action_bandit_posterior 대체재로 쓰지 말 것."""
+    rows = conn.execute(
+        """
+        select run_ts, action_type, label, gain_vs_best, error_trace
+        from raw.attempts
+        where competition_id = %s and stage = 'reflexion' and action_type is not null
+        order by run_ts
+        """,
+        [competition_id],
+    ).fetchall()
+    state: dict[str, tuple[float, float]] = {}
+    timeline: list[dict] = []
+    for step, (run_ts, action_type, label, gain, err) in enumerate(rows, start=1):
+        if action_type not in ACTION_TYPES:
+            continue
+        # update_bandit(cycle/action_optimizer.py:45-52)과 동일 우선순위 —
+        # error/regression이 label='jump'보다 먼저 체크된다.
+        if err is not None or label == "regression":
+            da, db = 0.0, 1.0
+        elif label == "jump":
+            da, db = 1.0, 0.0
+        elif gain is not None and gain > 0:
+            da, db = 0.5, 0.1
+        else:
+            da, db = 0.1, 0.1
+        if action_type not in state:
+            alpha, beta = 1.0 + da, 1.0 + db
+        else:
+            old_a, old_b = state[action_type]
+            alpha = 1.0 + (old_a - 1.0) * 0.95 + da
+            beta = 1.0 + (old_b - 1.0) * 0.95 + db
+        state[action_type] = (alpha, beta)
+        timeline.append({
+            "step": step,
+            "run_ts": run_ts,
+            "action_type": action_type,
+            "posterior_mean": round(alpha / (alpha + beta), 4),
+        })
+    return timeline
+
+
+def _posterior_rank_at(timeline: list[dict], cutoff_ts) -> list[str]:
+    """timeline에서 cutoff_ts 이전 각 action_type의 최신 posterior_mean으로 내림차순 순위."""
+    latest: dict[str, float] = {}
+    for row in timeline:
+        if row["run_ts"] <= cutoff_ts:
+            latest[row["action_type"]] = row["posterior_mean"]
+    return sorted(latest, key=lambda a: latest[a], reverse=True)
+
+
 @dataclass
 class DaemonState:
     current_queue_id: str | None = None
@@ -1104,6 +1163,56 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
             ],
             "cited_lessons": cited_lessons,
         }
+        _cache.set(cache_key, result)
+        return result
+
+    # ---- 관측 (#11/#67) — 밴딧 리플레이 B2b/B2c ----
+
+    @app.get("/api/bandit/timeline")
+    def get_bandit_timeline(competition: str):
+        cache_key = f"bandit_timeline:{competition}"
+        cached, hit = _cache.get(cache_key, ttl=120)
+        if hit:
+            return cached
+        result = _replay_bandit_timeline(conn, competition)
+        _cache.set(cache_key, result)
+        return result
+
+    @app.get("/api/bandit/selection")
+    def get_bandit_selection(competition: str):
+        cache_key = f"bandit_selection:{competition}"
+        cached, hit = _cache.get(cache_key, ttl=120)
+        if hit:
+            return cached
+        timeline = _replay_bandit_timeline(conn, competition)
+        sc_rows = conn.execute(
+            """
+            select super_cycle_id, created_at, assigned_actions
+            from raw.super_cycle_context
+            where competition_id = %s and assigned_actions is not null
+            order by created_at
+            """,
+            [competition],
+        ).fetchall()
+        result = []
+        for super_cycle_id, created_at, assigned_actions in sc_rows:
+            assigned = (
+                assigned_actions if isinstance(assigned_actions, list)
+                else json.loads(assigned_actions)
+            )
+            ranked = _posterior_rank_at(timeline, created_at)
+            top3_assigned = set(assigned[:3])
+            top3_ranked = set(ranked[:3])
+            concordance = (
+                len(top3_assigned & top3_ranked) / len(top3_assigned) if top3_assigned else 0.0
+            )
+            result.append({
+                "super_cycle_id": super_cycle_id,
+                "run_ts": created_at,
+                "assigned_actions": assigned,
+                "posterior_rank_at_time": ranked,
+                "concordance": round(concordance, 4),
+            })
         _cache.set(cache_key, result)
         return result
 
