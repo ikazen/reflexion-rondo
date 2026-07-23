@@ -13,7 +13,7 @@ _EMBED_RETRY_DELAYS = (1.0, 4.0, 16.0)
 # MMR: λ=0.5 — 관련성/다양성 균형. 높일수록 score 우선, 낮출수록 다양성 우선.
 _MMR_LAMBDA = 0.5
 # impact 가중 z-score 배율: multiplier = clip(1 + z * W, [0.5, 1.5])
-# BON-195: avg_gain 높은 교훈이 부스팅 -> 더 자주 검색 -> avg_gain 유지되는 자기강화
+# avg_gain 높은 교훈이 부스팅 -> 더 자주 검색 -> avg_gain 유지되는 자기강화
 # (rich-get-richer) 루프를 완화하기 위해 0.25 -> 0.15로 감쇠.
 _IMPACT_W = 0.15
 
@@ -131,7 +131,7 @@ def search_failure_lessons(
     """최근 실패(lesson_type='failure') 교훈을 코사인 무관하게 최대 k개 반환한다.
 
     error-fix 교훈은 현재 쿼리(hypothesis)와 의미가 달라 search()의 top-k*4 코사인
-    후보에 안 들 수 있음(BON-134) — 이 함수는 임베딩 없이 순수 SQL로 별도 채널을 연다.
+    후보에 안 들 수 있음 — 이 함수는 임베딩 없이 순수 SQL로 별도 채널을 연다.
     """
     rows = conn.execute(
         """
@@ -163,7 +163,7 @@ def search_failure_lessons(
 
 
 def _global_gain_stats(conn: PgConn) -> tuple[float, float]:
-    """reflection_impact 전체 avg_gain의 (mean, std) — z-score 전역 prior (BON-195).
+    """reflection_impact 전체 avg_gain의 (mean, std) — z-score 전역 prior.
 
     search()의 top-k*4 배치 안에서만 z-score를 계산하면 같은 교훈도 배치 구성에 따라
     점수가 흔들린다. 전역 통계를 쓰면 배치 무관하게 동일 교훈은 동일 z-score를 받는다.
@@ -187,7 +187,7 @@ def _apply_impact_score(
     impact 차이가 sim에 묻힘. z-score로 정규화하면 스케일 무관하게 상/하위 교훈 구분 가능.
 
     gain_mean/gain_std는 `_global_gain_stats()`로 구한 전역 통계를 넘기는 것이 기본
-    경로다(BON-195) — 생략 시 이 배치(candidates) 내부 평균/표준편차로 폴백하며,
+    경로다 — 생략 시 이 배치(candidates) 내부 평균/표준편차로 폴백하며,
     이 경우 같은 교훈도 배치 구성에 따라 z-score가 흔들릴 수 있다(호출자 책임).
 
     또한 avg_gain이 높은 교훈이 부스팅되어 더 자주 검색되고 avg_gain을 계속 유지하는

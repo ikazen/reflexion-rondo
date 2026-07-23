@@ -3,10 +3,10 @@
 이전엔 bin/run_attempt_task.py, bin/run_promote_task.py, bin/run_cycle_task.py,
 bin/run_daemon.py, bin/run_reflexion.py, bin/submit.py 6곳에 동일한 로딩 로직이
 중복돼 있었다. attempt 생성 경로와 promote(cross-seed confirm·merge-verify) 경로가
-반드시 같은 데이터를 로드해야 하므로(BON-256 merge-verify가 같은 seed·fold에서
+반드시 같은 데이터를 로드해야 하므로(merge-verify가 같은 seed·fold에서
 같은 cv_score 재현을 전제) 한 곳으로 통합한다.
 
-BON-250: comp.EXTRA_TRAIN_PATHS(기본 빈 리스트)가 설정된 대회는 Playground Series
+comp.EXTRA_TRAIN_PATHS(기본 빈 리스트)가 설정된 대회는 Playground Series
 합성 원본 데이터셋을 train에 병합한다. Patch(LLM 생성 코드)의 no-IO 원칙은 유지 —
 병합은 이 로더(config/task 레벨)에서만 일어난다.
 """

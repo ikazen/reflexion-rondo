@@ -108,7 +108,7 @@ _SUBMISSIONS_PREFIX = "submissions"
 
 
 def upload_submission_csv(competition_id: str, attempt_id: str, content: bytes) -> str:
-    """GH issue #31: promote 시점에 생성한 제출 CSV 캐시.
+    """promote 시점에 생성한 제출 CSV 캐시.
 
     auto-submit(매일 06:00)이 이 attempt_id로 캐시 히트하면 fit 없이 그대로 업로드한다
     — 캐시 키에 attempt_id를 넣어 "이 attempt에 대한 예측"임을 명확히 한다.

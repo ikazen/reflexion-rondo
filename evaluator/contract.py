@@ -4,7 +4,7 @@
 soft guard이며, 보안 경계가 아니다. `getattr(__builtins__, "ope"+"n")(...)`,
 dunder 체인(`().__class__.__bases__[0].__subclasses__()`) 등은 우회 가능하다
 (회귀 문서화: tests/test_contract.py). 실제 격리 경계는 실행 샌드박스
-(runtime/isolate.py, BON-191)가 담당한다.
+(runtime/isolate.py)가 담당한다.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ _FORBIDDEN_CALLS = frozenset({
     "eval", "exec", "open", "compile", "__import__",
 })
 
-# BON-268: pandas 관용구 혼동으로 실제 발생한 AttributeError(최근 3일 실측, 다건순)를
+# pandas 관용구 혼동으로 실제 발생한 AttributeError를
 # polars 1.41.2 실물 DataFrame/Series에 hasattr로 직접 대조해 확정한 목록 — 전부
 # DataFrame/Series 어디에도 존재하지 않아 오탐 없음. `value_counts`는 polars Series에
 # 실존하므로(DataFrame에는 없음) 제외했다 — 넣으면 정당한 호출을 오탐으로 거부한다.
@@ -83,7 +83,7 @@ def _find_patch_class(tree: ast.AST) -> ast.ClassDef | None:
     return None
 
 
-# BON-268: candidate patch 자체의 undefined-name 검사. cycle/materialize.py(BON-233)의
+# candidate patch 자체의 undefined-name 검사. cycle/materialize.py의
 # 동명 로직과 의도적으로 별도 구현이다 — materialize.py는 이미 검증된 안전 경계(merged
 # best_pipeline 손상 방지)라 이번 변경 범위에서 건드리지 않는다. 여기서는 runtime/runner.py가
 # candidate patch를 base와 완전히 분리된 빈 namespace에 exec하는 것과 정확히 같은 이름

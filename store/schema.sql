@@ -41,22 +41,22 @@ ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS was_promoted boolean;
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS holdout_score double precision;
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS confirm_seed_gains jsonb;
 
--- BON-247 선행 fix: attempt별 fold_scores 영속화 — paired per-fold 유의성 검정이
+-- attempt별 fold_scores 영속화 — paired per-fold 유의성 검정이
 -- 이전 confirmed best의 fold_scores를 참고하려면 승격 시점이 아니라 매 attempt마다
 -- 기록돼 있어야 한다(raw.pipelines가 attempt_id로 join해 재사용).
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS fold_scores jsonb;
 
--- issue #58: metric마다 gain_vs_best 스케일이 달라(rmse 원시 단위 vs auc 0~1)
+-- metric마다 gain_vs_best 스케일이 달라(rmse 원시 단위 vs auc 0~1)
 -- reflection_impact 전역 z-score가 오염된다 — regression_error는 baseline_cv로 나눈
 -- 상대값, 나머지는 gain_vs_best 그대로. reflection_impact가 이 컬럼만 집계한다.
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS gain_vs_best_relative double precision;
 
--- BON-255: materialize 시 sha256 기록 — submit.py exec 전 MinIO 다운로드본과 대조해
+-- materialize 시 sha256 기록 — submit.py exec 전 MinIO 다운로드본과 대조해
 -- 익명 write 버킷 변조를 탐지한다. code 컬럼(raw.attempts 원본)이 아니라
 -- 실제 exec되는 materialized best_pipeline.py 내용의 해시.
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS pipeline_sha256 text;
 
--- BON-248: merge-verify eval(BON-256, 승격 시 1회) 시점에 함께 뽑은 out-of-fold
+-- merge-verify eval(승격 시 1회) 시점에 함께 뽑은 out-of-fold
 -- 예측 — bin/blend.py가 파이프라인 밖에서 결정적 blend(Ridge)를 학습할 때 사용.
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS oof_preds jsonb;
 
@@ -151,9 +151,9 @@ WITH scored AS (
     SELECT
         competition_id,
         reflection_ids,
-        gain_vs_best_relative AS gain_vs_best   -- BON-244(baseline 재사용) + issue #58
-                       -- (metric별 스케일 상대화 — regression_error는 baseline_cv 비율,
-                       -- 나머지는 gain_vs_best와 동일). NULL인 legacy row는 아래서 제외.
+        gain_vs_best_relative AS gain_vs_best   -- baseline 재사용 + metric별 스케일
+                       -- 상대화(regression_error는 baseline_cv 비율, 나머지는 gain_vs_best와
+                       -- 동일). NULL인 legacy row는 아래서 제외.
     FROM stg_attempts_reflexion_only
     WHERE was_promoted IS NOT FALSE  -- NULL=legacy (promoted), TRUE=winner, FALSE=super-cycle loser excluded
       AND gain_vs_best_relative IS NOT NULL
@@ -175,8 +175,8 @@ FROM per_reflection
 GROUP BY reflection_id
 ORDER BY avg_gain DESC;
 
--- BON-110: super-cycle 공유 retrieve 컨텍스트 (retrieve task → attempt/promote tasks)
--- BON-237: PK를 queue_id -> run_id(Airflow dag_run_id)로 변경. queue_id는 같은
+-- super-cycle 공유 retrieve 컨텍스트 (retrieve task → attempt/promote tasks)
+-- PK를 queue_id -> run_id(Airflow dag_run_id)로 변경. queue_id는 같은
 -- super-cycle의 여러 cycle이 공유해서(max_active_runs=4) 동시 실행 시 서로의
 -- context row를 덮어쓰거나 훔쳐 지우는 레이스가 있었다 — run_id는 cycle마다 유일.
 -- 기존 라이브 DB의 PK 전환(queue_id -> run_id)은 이 파일이 다루지 않는 1회성 수동
@@ -194,7 +194,7 @@ CREATE TABLE IF NOT EXISTS raw.super_cycle_context (
 ALTER TABLE raw.super_cycle_context ADD COLUMN IF NOT EXISTS assigned_actions jsonb;
 ALTER TABLE raw.super_cycle_context ADD COLUMN IF NOT EXISTS run_id text;
 
--- BON-109: action_type별 Beta-Bernoulli 밴딧 (advise용, stagnation 승격)
+-- action_type별 Beta-Bernoulli 밴딧 (advise용, stagnation 승격)
 CREATE TABLE IF NOT EXISTS raw.action_bandit (
     scope       text NOT NULL,
     scope_key   text NOT NULL,
@@ -233,7 +233,7 @@ FROM raw.attempts a
 JOIN raw.competitions c USING (competition_id)
 WHERE a.cv_score IS NOT NULL;
 
--- BON-250: 고정 seed=42 fold에 수백 attempt가 최적화되면서 교훈·밴딧·전략 신호가
+-- 고정 seed=42 fold에 수백 attempt가 최적화되면서 교훈·밴딧·전략 신호가
 -- seed-42 노이즈를 학습할 위험을 감시하는 추세 뷰. overfit_gap 양수 = holdout이
 -- CV보다 나쁨(metric_sign으로 방향 통일) = drift 의심.
 CREATE OR REPLACE VIEW holdout_cv_gap_trend AS
@@ -261,7 +261,7 @@ CREATE TABLE IF NOT EXISTS raw.kaggle_submissions (
     checked_at     timestamp
 );
 
--- BON-184: hot-path indexes
+-- hot-path indexes
 CREATE INDEX IF NOT EXISTS idx_attempts_comp_ts     ON raw.attempts (competition_id, run_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_attempts_comp_action ON raw.attempts (competition_id, action_type);
 CREATE INDEX IF NOT EXISTS idx_reflections_comp_arch ON raw.reflections (competition_id, archived);

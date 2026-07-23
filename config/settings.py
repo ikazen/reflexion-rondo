@@ -13,7 +13,7 @@ MODEL_REFLECTOR   = os.getenv("MODEL_REFLECTOR",   "kimi-k2.6")
 MODEL_CODER       = os.getenv("MODEL_CODER",        "gpt-oss:120b")
 MODEL_EMBEDDING   = os.getenv("MODEL_EMBEDDING",    "qwen3-embedding:8b")
 
-# BON-240: qwen3.5:397b는 동일 프롬프트에서 qwen3-coder-next 대비 출력 토큰 9배(reasoning
+# qwen3.5:397b는 동일 프롬프트에서 qwen3-coder-next 대비 출력 토큰 9배(reasoning
 # 모델이라 긴 thinking을 뿜는데 _extract_code가 ```python 블록만 취해 전량 버려짐). 폐기
 # 공지로 코더 전문 라인(qwen3-coder-next/480b, devstral 계열)이 전부 없어져 gpt-oss:120b로
 # 대체 — reasoning_effort로 토큰 예산 조절 가능한 생존 모델 중 벤치 결과가 가장 나음.
@@ -28,11 +28,11 @@ def _parse_think(raw: str) -> bool | str:
     return raw  # "low"/"medium"/"high"
 
 
-# kimi-k2.6은 Ollama 'thinking' capability를 가진 reasoning 모델(#51) — hidden thinking
+# kimi-k2.6은 Ollama 'thinking' capability를 가진 reasoning 모델 — hidden thinking
 # 토큰이 num_predict 예산을 잠식해 JSON 응답이 중간에 잘린다. 기본값 false로 비활성화.
 MODEL_REFLECTOR_THINK: bool | str = _parse_think(os.getenv("MODEL_REFLECTOR_THINK", "false"))
 
-# BON-193: Actor(Strategist/Coder/Reflector)는 확률적이라 attempt 간 CV 변화가
+# Actor(Strategist/Coder/Reflector)는 확률적이라 attempt 간 CV 변화가
 # 교훈 효과인지 LLM 샘플링 운인지 구분이 안 됐다. temperature를 명시 고정해 최소한
 # 비결정성 자체를 문서화·재현 가능하게 한다. seed는 기본 미고정(탐색성 유지) —
 # LLM_SEED env로 실험 시에만 고정.
@@ -56,13 +56,13 @@ ACTION_TYPES: list[str] = [
     "ensemble",
 ]
 
-# BON-194: 1σ는 통계적으로 유의하지 않아 fold 노이즈가 일상적으로 "jump"로 라벨링되고
+# 1σ는 통계적으로 유의하지 않아 fold 노이즈가 일상적으로 "jump"로 라벨링되고
 # 그 노이즈가 검색 부스팅(reflection_impact)에 그대로 들어갔다. 2.0σ로 상향해 방어적
 # 기본값으로 삼는다. 대회 데이터가 쌓이면 fold_std 실측 분포로 재캘리브레이션 (ADR-012).
 LABEL_Z: float = 2.0
 
 # 승격 cross-seed 확인: 이 seed 목록 전부에서 gain_vs_best > 0 재현돼야 승격
-# BON-247: 기본값에서 42 제거 — 메인 CV seed(cycle/run.py의 config.seed)가 42라
+# 기본값에서 42 제거 — 메인 CV seed(cycle/run.py의 config.seed)가 42라
 # 2σ 게이트를 seed 42에서 통과한 후보는 seed 42 confirm을 자명하게 통과해버려
 # 실질 독립 확인이 4개가 아니라 3개뿐이었다.
 PROMOTE_CONFIRM_SEEDS: list[int] = [

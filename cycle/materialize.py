@@ -51,7 +51,7 @@ def _extract_other_toplevel_statements(source: str) -> list[str]:
     `try: import catboost; CATBOOST_AVAILABLE = True except ImportError: ...` 같은
     optional-dependency 가드 패턴은 named helper로 분류되지 않아 (`ast.Try`는
     `_extract_toplevel_helpers`의 어떤 isinstance 분기에도 안 걸림) 조용히 드롭되던
-    문제(BON-233) — union으로 보존한다. 이름 기반 override 개념이 없으므로 텍스트
+    문제 — union으로 보존한다. 이름 기반 override 개념이 없으므로 텍스트
     dedup만 하고(단순 재현), base와 patch 양쪽 모두 유지한다.
     """
     tree = ast.parse(source)
@@ -95,7 +95,7 @@ def materialize_best_pipeline(base_source: str | None, patch_source: str) -> str
     patch_helpers = _extract_toplevel_helpers(patch_source)
     # base와 patch가 동명 helper/member를 정의하면 patch가 base를 조용히 덮어쓴다.
     # base의 다른 helper가 그 이름에 의존하면 merge 후 의미가 바뀌어 CV 퇴행으로만
-    # 드러나고 엉뚱한 교훈으로 귀속될 수 있다 (BON-197). 에러로 막지 않고 경고만 남긴다
+    # 드러나고 엉뚱한 교훈으로 귀속될 수 있다. 에러로 막지 않고 경고만 남긴다
     # — override 자체는 의도적일 수 있어 가시화가 목적.
     helper_collisions = base_helpers.keys() & patch_helpers.keys()
     if helper_collisions:
@@ -185,7 +185,7 @@ def _module_level_names(tree: ast.Module) -> set[str] | None:
             # try/except, if, with 등 top-level 복합문(예: optional-dependency 가드
             # `try: import x; FLAG=True except ImportError: FLAG=False`) 내부에서
             # 조건부로 바인딩되는 이름도 모듈 스코프로 인정한다 — _validate_materialized가
-            # 이제 이런 문을 verbatim 보존하므로(BON-233) 오탐하면 안 된다.
+            # 이제 이런 문을 verbatim 보존하므로 오탐하면 안 된다.
             for n in ast.walk(node):
                 if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
                     names.add(n.id)
@@ -240,7 +240,7 @@ def _collect_loaded_names(node: ast.AST) -> set[str]:
 def _check_undefined_names(tree: ast.Module) -> None:
     """병합된 class Patch 메서드가 어디에도 정의되지 않은 이름을 참조하면 raise.
 
-    BON-197 helper collision 경고와 달리 이건 실제로 깨진 파이프라인(예: 삭제된
+    위 helper collision 경고와 달리 이건 실제로 깨진 파이프라인(예: 삭제된
     top-level helper 클래스를 build_model이 여전히 호출)이라 경고가 아니라 에러로
     막는다 — 손상된 best_pipeline이 조용히 업로드되면 안 되기 때문.
 

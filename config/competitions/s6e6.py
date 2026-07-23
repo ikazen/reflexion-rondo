@@ -10,7 +10,7 @@ IS_CLASSIFICATION = True
 DROP_COLS         = ["id"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s6e6/data/"
-EXTRA_TRAIN_PATHS: list[str] = []  # BON-250: 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
+EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
 
 EDA_CARD = """competition: playground-series-s6e6 (Predicting Stellar Class)
 task: multiclass classification (3 classes)  metric: balanced_accuracy  target: class
