@@ -10,8 +10,8 @@ _REGISTRY: dict[str, tuple] = {
     "accuracy":  (accuracy_score, +1, "classification"),
     "f1":        (f1_score,       +1, "classification"),
     "qwk":       (lambda y, p: cohen_kappa_score(y, p, weights="quadratic"), +1, "classification"),
-    # BON-273: playground-series-s6e6(Stellar Class) 온보딩용. balanced_accuracy는
-    # sklearn 표준 함수라 multiclass/binary 둘 다 native 지원(average 파라미터 불필요).
+    # balanced_accuracy는 sklearn 표준 함수라 multiclass/binary 둘 다 native 지원
+    # (average 파라미터 불필요).
     "balanced_accuracy": (balanced_accuracy_score, +1, "classification"),
     "rmse":      (root_mean_squared_error, -1, "regression_error"),
     "mae":       (mean_absolute_error, -1, "regression_error"),

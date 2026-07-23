@@ -1,6 +1,6 @@
-"""issue #3: bin/reset.py --pipelines-only 회귀 테스트.
+"""bin/reset.py --pipelines-only 회귀 테스트.
 
-근본원인: raw.pipelines 부분 정리(issue #7)를 수동 SQL로 처리해 MinIO
+근본원인: raw.pipelines 부분 정리를 수동 SQL로 처리해 MinIO
 best_pipeline.py가 고아로 남았다. reset_pipelines()는 DB delete와 MinIO delete를
 항상 함께 수행해 이 정리 경로를 하나로 강제한다.
 """

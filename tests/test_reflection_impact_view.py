@@ -1,4 +1,4 @@
-"""BON-244: reflection_impact 뷰 baseline이 런타임 _prev_best(확정 파이프라인)와
+"""reflection_impact 뷰 baseline이 런타임 _prev_best(확정 파이프라인)와
 일치하는지 실제 Postgres에서 검증. RONDO_DB_URL 미설정 시 skip — 이 repo는
 DB-backed 테스트 하네스가 없어(전부 mock) 뷰 SQL 자체의 정합은 이 테스트가 유일한 검증.
 
@@ -39,7 +39,7 @@ def test_gain_not_penalized_by_unconfirmed_winner(conn) -> None:
     try:
         conn.execute(
             "INSERT INTO raw.competitions (competition_id, name, task_type, metric, metric_sign)"
-            " VALUES (%s, 'BON-244 test', 'binary', 'auc', 1)",
+            " VALUES (%s, 'reflection_impact test', 'binary', 'auc', 1)",
             [competition_id],
         )
         # a0: baseline attempt, cv=0.80, prev_best 없음 -> gain=0.00
@@ -49,7 +49,7 @@ def test_gain_not_penalized_by_unconfirmed_winner(conn) -> None:
         # a2: 다음 super-cycle, prev_best는 여전히 0.80(a1 미확정이라 안 바뀜),
         #     cv=0.82 -> gain=0.02 (양수). 옛 뷰는 running-max(0.90 포함) 대비
         #     -0.08로 깎아 phantom 음수를 만들었다.
-        # issue #58: reflection_impact가 gain_vs_best_relative를 집계한다. auc는
+        # reflection_impact가 gain_vs_best_relative를 집계한다. auc는
         # metric_class=binary_proba라 gain_vs_best_relative == gain_vs_best(패스스루).
         conn.execute(
             """
@@ -90,14 +90,14 @@ def test_gain_not_penalized_by_unconfirmed_winner(conn) -> None:
 
 
 def test_legacy_row_without_relative_gain_excluded(conn) -> None:
-    """issue #58: gain_vs_best_relative가 없는(NULL) legacy row는 스케일을 신뢰할 수
+    """gain_vs_best_relative가 없는(NULL) legacy row는 스케일을 신뢰할 수
     없으므로 reflection_impact 집계에서 제외돼야 한다 — raw gain_vs_best로 폴백하지 않는다."""
-    competition_id = f"issue58-test-{uuid.uuid4().hex[:8]}"
+    competition_id = f"legacy-row-test-{uuid.uuid4().hex[:8]}"
     r_legacy = f"{competition_id}-r_legacy"
     try:
         conn.execute(
             "INSERT INTO raw.competitions (competition_id, name, task_type, metric, metric_sign)"
-            " VALUES (%s, 'issue #58 test', 'regression', 'rmse', -1)",
+            " VALUES (%s, 'legacy row test', 'regression', 'rmse', -1)",
             [competition_id],
         )
         conn.execute(

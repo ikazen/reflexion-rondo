@@ -22,7 +22,7 @@ from pathlib import Path
 import polars as pl
 
 _RUNNER = Path(__file__).parent / "runner.py"
-DEFAULT_TIMEOUT = 1200  # BON-275: s5e5/s6e6(기존 최대 165k행 대비 3.5~4.5배 큰 데이터)에서
+DEFAULT_TIMEOUT = 1200  # s5e5/s6e6(기존 최대 165k행 대비 3.5~4.5배 큰 데이터)에서
 # 600s 타임아웃 실측 발생 확인 후 상향
 
 _HAVE_NEWNET = sys.platform == "linux" and hasattr(os, "CLONE_NEWNET")
@@ -31,17 +31,17 @@ _HAVE_NEWNET = sys.platform == "linux" and hasattr(os, "CLONE_NEWNET")
 # 제한 초과 시 subprocess가 SIGKILL(RLIMIT_AS) 또는 SIGXCPU(RLIMIT_CPU)로 종료되고
 # runner output.json 없음 → _err() 경로로 error_trace에 기록.
 #
-# issue #20/#27: big 큐의 mac-server-big 워커는 Docker가 Colima VM 안에서 도는데,
+# big 큐의 mac-server-big 워커는 Docker가 Colima VM 안에서 도는데,
 # 원래 VM이 8GiB 고정이라 6GiB 기본값이 이론상 오버서브스크립션을 만들 수 있다고 보고
-# #20에서 1.5GiB로 낮췄었다. 하지만 RLIMIT_AS는 물리 RSS가 아니라 가상 주소공간(VSZ)
+# 한때 1.5GiB로 낮췄었다. 하지만 RLIMIT_AS는 물리 RSS가 아니라 가상 주소공간(VSZ)
 # 상한이라 numpy/scipy/sklearn/lightgbm/catboost/xgboost 같은 라이브러리는 실제 쓰는
 # 물리 메모리가 적어도 공유 라이브러리 mmap·BLAS 스레드풀 등으로 VSZ를 널찍하게 예약한다
 # — 1.5GiB는 이런 라이브러리를 import하는 것만으로도 부족해서, 물리 메모리가 12GB나
-# 남는 worker-vm에서도 신규 대회 부트스트랩 attempt 전체가 실패하는 회귀를 냈다(#27).
+# 남는 worker-vm에서도 신규 대회 부트스트랩 attempt 전체가 실패하는 회귀를 냈다.
 #
 # Airflow 실측 히스토리(super-cycle 3678건 전수 + attempt task instance 표본 1200건)로
 # 재확인한 실제 동시성은 mac-server-big 최대 3(설정 concurrency=4가 실제로 4까지 찬 적
-# 없음), worker-vm-big 최대 1 — #20이 가정한 "4개 동시" 자체가 실측과 달랐다. 근본
+# 없음), worker-vm-big 최대 1 — 가정했던 "4개 동시" 자체가 실측과 달랐다. 근본
 # 해결로 mac-server의 Colima VM을 8→16GiB로 증설했고(vz 백엔드, demand-paged라 즉시
 # 선점 아님), 이제 6GiB 기본값으로 되돌린다 — 3×6GiB=18GiB가 VSZ 기준으로는 16GiB를
 # 근소 초과하지만 실제 물리 RSS는 훨씬 낮게 쓰이므로 무해할 것으로 판단. 필요하면

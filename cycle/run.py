@@ -117,7 +117,7 @@ def _prev_best_params(conn: PgConn, competition_id: str) -> dict | None:
     """확정 파이프라인(raw.pipelines)에 연결된 attempt의 params.
 
     hyperparam_search 훅이 ctx.best_params로 현재 best 근방 로컬 서치를 할 수 있도록
-    advisory로 제공 (BON-249). 훅이 참고 안 해도 무해 — 강제 소비 아님.
+    advisory로 제공. 훅이 참고 안 해도 무해 — 강제 소비 아님.
     """
     row = conn.execute(
         """
@@ -141,7 +141,7 @@ def _prev_best_params(conn: PgConn, competition_id: str) -> dict | None:
 def _prev_best_fold_scores(conn: PgConn, competition_id: str) -> list[float] | None:
     """확정 파이프라인(raw.pipelines)에 연결된 attempt의 fold_scores.
 
-    paired per-fold 유의성 검정(is_significant_gain, BON-247)의 baseline으로 쓰인다.
+    paired per-fold 유의성 검정(is_significant_gain)의 baseline으로 쓰인다.
     같은 seed로 생성된 fold split은 결정적이라 candidate의 fold_scores와 인덱스별로
     바로 대응시킬 수 있다. 없으면(콜드스타트) None — 호출부가 절대-gain으로 폴백.
     """
@@ -299,7 +299,7 @@ def _load_best_pipeline(competition_id: str) -> str | None:
 
 
 def _retrieval_scores(lessons: list[dict]) -> list[float | None] | None:
-    """lessons의 score 목록. BON-134 failure-lesson 채널은 score 키가 없음(.get 필수)."""
+    """lessons의 score 목록. failure-lesson 채널은 score 키가 없음(.get 필수)."""
     return [l.get("score") for l in lessons] or None
 
 
@@ -424,7 +424,7 @@ def run_attempt_core(
                 )
                 if is_noop_tie:
                     _LOG.warning(
-                        "no-op tie (BON-239): cv_score exactly matches prev_best "
+                        "no-op tie: cv_score exactly matches prev_best "
                         "(action=%s) — patch made no effective change",
                         action_type,
                     )
@@ -445,7 +445,7 @@ def run_attempt_core(
         label = "error"
         _LOG.warning("failed — %s", error_trace[:200])
 
-    # BON-267: label의 jump 판정을 promotion 게이트(is_significant_gain, paired
+    # label의 jump 판정을 promotion 게이트(is_significant_gain, paired
     # per-fold t-test)와 동일 기준으로 통일한다. harness의 절대-마진 jump
     # (LABEL_Z*fold_std)는 수렴한 대회에서 사실상 도달 불가해 실제 승격 attempt도
     # 전부 label=neutral로 남았고, 그 결과 bandit/stagnation/reflection 전부가
@@ -499,7 +499,7 @@ def run_attempt_core(
         "duration_sec":     round(duration_sec, 1),
         "code_path":        str(code_path),
         "retries":          retries,
-        # BON-247 선행 fix: 다음 attempt/승격 게이트가 이 attempt의 fold_scores/params를
+        # 다음 attempt/승격 게이트가 이 attempt의 fold_scores/params를
         # 참고할 수 있도록 영속화 (이전엔 EvalResult 안에서만 존재하고 버려졌음).
         "fold_scores":      json.dumps(fold_scores) if fold_scores is not None else None,
         "params":           json.dumps(selected_params) if selected_params else None,
@@ -511,7 +511,7 @@ def run_attempt_core(
     insert_attempt(conn, row)
 
     # defer_promotion=True: caller (super_cycle / Airflow promote task) handles winner-only promotion.
-    # _significant은 위에서 label 확정 시 이미 계산됨 (BON-267) — 재계산하지 않음.
+    # _significant은 위에서 label 확정 시 이미 계산됨 — 재계산하지 않음.
     if not defer_promotion and _significant and not error_trace:
         confirm = confirm_and_measure(
             source=source,
@@ -544,7 +544,7 @@ def run_attempt_core(
             fp_val = fp_row[0] if fp_row and fp_row[0] else {}
             fp_dict = fp_val if isinstance(fp_val, dict) else json.loads(fp_val)
             # materialize 먼저 → 해시는 실제 MinIO에 올라가는 내용(submit.py가 exec하는
-            # 그 문자열) 기준이어야 한다 (BON-255). raw.pipelines.code(winner source)와는
+            # 그 문자열) 기준이어야 한다. raw.pipelines.code(winner source)와는
             # 다른 문자열이므로 순서를 바꿔 sha256을 insert_pipeline에 함께 기록한다.
             materialized = materialize_best_pipeline(prev_code, source)
             pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
@@ -598,7 +598,7 @@ def run_attempt_core(
 
 
 def _do_reflect(conn: PgConn, competition_id: str, data: _AttemptData) -> str | None:
-    """Reflect if label warrants it (BON-96 gate), or if a no-op tie was detected (BON-239) —
+    """Reflect if label warrants it, or if a no-op tie was detected —
     otherwise these zero-effect attempts silently bypass the label gate (label=neutral,
     error_trace=None) and the strategist never learns why the action had no effect."""
     if data.label not in ("jump", "regression") and data.error_trace is None and not data.is_noop_tie:

@@ -97,7 +97,7 @@ def test_generate_code_system_message_is_contract() -> None:
 
 
 def test_generate_code_reflexion_contract_declares_available_libs() -> None:
-    """BON-243: reflexion contract가 실제 설치된 라이브러리를 명시해야 한다."""
+    """reflexion contract가 실제 설치된 라이브러리를 명시해야 한다."""
     with patch("agents.coder._client") as mock_client:
         mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)
         generate_code(
@@ -113,7 +113,7 @@ def test_generate_code_reflexion_contract_declares_available_libs() -> None:
 
 
 def test_generate_code_bootstrap_contract_declares_available_libs() -> None:
-    """BON-243: bootstrap contract도 동일하게 라이브러리 가용 목록을 명시해야 한다."""
+    """bootstrap contract도 동일하게 라이브러리 가용 목록을 명시해야 한다."""
     with patch("agents.coder._client") as mock_client:
         mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)
         generate_code(
@@ -127,7 +127,7 @@ def test_generate_code_bootstrap_contract_declares_available_libs() -> None:
     assert "NOT available: tabpfn" in system_msg
 
 
-# --- issue #42: action_type별 허용 hook 동적 강조 (생성 이전 가드) ---
+# --- action_type별 허용 hook 동적 강조 (생성 이전 가드) ---
 
 def test_generate_code_injects_action_type_specific_hook_directive() -> None:
     """user 메시지에 이번 호출의 action_type이 허용하는 hook만 명시돼야 한다.
@@ -169,7 +169,7 @@ def test_generate_code_hook_directive_matches_contract_source_of_truth() -> None
     assert str(expected) in user_msg
 
 
-# --- issue #42: multiclass 라벨 왕복(round-trip) 가드 문구 ---
+# --- multiclass 라벨 왕복(round-trip) 가드 문구 ---
 
 def test_reflexion_contract_warns_about_multiclass_label_roundtrip() -> None:
     """s6e7 실측(45건): 타깃을 정수로 인코딩해놓고 postprocess에서 원복 안 해

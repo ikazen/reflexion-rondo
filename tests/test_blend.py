@@ -1,4 +1,4 @@
-"""bin/blend.py 단위 테스트 (BON-248)."""
+"""bin/blend.py 단위 테스트."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock

@@ -9,7 +9,7 @@ def test_all_lessons_have_score():
 
 
 def test_failure_lesson_without_score_key_does_not_raise():
-    """BON-134 search_failure_lessons()는 score 키를 넣지 않는다 — KeyError 회귀(BON-228) 재발 방지."""
+    """search_failure_lessons()는 score 키를 넣지 않는다 — KeyError 회귀 재발 방지."""
     lessons = [{"score": 0.9}, {"reflection_id": "r1", "lesson_type": "failure"}]
     assert _retrieval_scores(lessons) == [0.9, None]
 

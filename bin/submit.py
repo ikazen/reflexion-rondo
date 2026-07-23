@@ -24,7 +24,7 @@ _MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 RUNS_DIR = ROOT / "runs"
 CODE_SEP = "# " + "-" * 60
 
-# BON-249: 5-seed 예측 평균(bagging) — 단일 seed=42 fit 대비 거의 공짜인 LB 이득.
+# 5-seed 예측 평균(bagging) — 단일 seed=42 fit 대비 거의 공짜인 LB 이득.
 _BAG_SEEDS = [42, 101, 7, 13, 29]
 
 
@@ -36,11 +36,11 @@ def _load_best_code(
     attempt_id 지정 시: 사용자가 명시적으로 고른 attempt(미확정이어도 허용) — 의도된 escape
     hatch. pipeline_sha256은 None(무결성 검증 스킵 — raw.pipelines가 아니라 raw.attempts의
     개별 code_path라 대조할 신뢰 해시가 없음, 명시적 지정이므로 허용).
-    미지정(자동 선택) 시: BON-245(a) — confirmed 파이프라인(raw.pipelines, cross-seed 통과분)만
+    미지정(자동 선택) 시: confirmed 파이프라인(raw.pipelines, cross-seed 통과분)만
     소스로 쓴다. _load_pipeline()이 실제 제출하는 모델도 confirmed 소스에서 materialize된
     것이므로, 리포팅되는 cv_score/attempt_id도 같은 소스여야 한다. raw.attempts all-time
     max는 미확정 attempt를 가리킬 수 있어 리포팅 불일치를 낳았다.
-    pipeline_sha256은 BON-255 — MinIO best_pipeline.py 무결성 검증용 신뢰 해시(raw.pipelines,
+    pipeline_sha256은 MinIO best_pipeline.py 무결성 검증용 신뢰 해시(raw.pipelines,
     materialize 시점 기록).
     """
     import sys
@@ -118,22 +118,20 @@ def _load_pipeline(
 
     extra_source: attempt source exec'd first so helper classes defined there
     (e.g. WeightedEnsemble) are available when the stored best pipeline runs.
-    Needed for pipelines materialized before BON-184 fix (missing ClassDef support).
+    Needed for pipelines materialized before ClassDef support existed.
 
-    expected_sha256: BON-255 — MinIO kaggle 버킷은 익명 write 허용이라 best_pipeline.py가
+    expected_sha256: MinIO kaggle 버킷은 익명 write 허용이라 best_pipeline.py가
     변조될 수 있다. raw.pipelines(신뢰된 Postgres 사본)에 기록된 해시와 대조해 불일치 시
     조용히 진행하지 않고 즉시 raise한다. None이면 검증 스킵(예: --attempt-id 명시 경로).
 
-    attempt_only: issue #19 — True면 MinIO best_pipeline.py를 아예 조회하지 않고
+    attempt_only: True면 MinIO best_pipeline.py를 아예 조회하지 않고
     extra_source만 단독으로 exec한다. --attempt-id 경로(및 confirmed pipeline 부재 시
     auto-submit 폴백)는 애초에 신뢰 해시가 없어(expected_sha256=None) 위 무결성 검증이
-    스킵되는데, 예전엔 그 상태에서도 MinIO에 뭔가 있으면 최우선으로 fetch해 extra_source
-    뒤에 exec했다 — 같은 이름의 class Patch라 MinIO 쪽이 조용히 덮어썼다. raw.pipelines
-    행이 삭제돼도 대응 MinIO blob은 안 지워지므로, 이 경로로 고아(orphaned) blob이 특정
-    attempt 제출을 하이재킹할 수 있었다(실제로 Kaggle 제출 2건이 이렇게 파국났음,
-    2026-07-17). attempt_only=True는 그 무관한 MinIO 상태를 원천적으로 배제한다.
+    스킵되는데, raw.pipelines 행이 삭제돼도 대응 MinIO blob은 안 지워지므로 고아
+    (orphaned) blob이 같은 이름의 class Patch로 조용히 덮어써 특정 attempt 제출을
+    하이재킹할 수 있다. attempt_only=True는 그 무관한 MinIO 상태를 원천적으로 배제한다.
 
-    issue #35: attempt_only 경로는 예전에 훅 메서드만 `type(...)`으로 새 클래스에 옮겨
+    attempt_only 경로는 예전에 훅 메서드만 `type(...)`으로 새 클래스에 옮겨
     붙였는데(methods={h: getattr(patch_cls, h) ...}), Patch가 훅 밖 클래스 속성(예:
     s6e7 우승 attempt의 `_ordinal_orders`)에 의존하면 그 상태가 통째로 소실돼
     AttributeError로 죽었다. 평가 경로(runtime/runner.py)는 실제 Patch() 인스턴스를
@@ -159,10 +157,10 @@ def _load_pipeline(
     best_source = download_best_pipeline(competition_id)
     if not best_source:
         # confirmed pipeline(best_pipeline.py) 부재 시(예: s6e6는 merge-verify 크래시로
-        # 승격이 막힘, GH issue #1) 기존엔 BasePipeline 기본 모델로 폴백해 약한 제출을
+        # 승격이 막힘) 기존엔 BasePipeline 기본 모델로 폴백해 약한 제출을
         # 냈다. auto_submit이 넘긴 best attempt source(cross-seed confirm 통과분)에
         # Patch가 있으면 그걸로 제출한다 — 이미 격리 평가를 거친 코드라
-        # --attempt-id 명시 제출과 동일한 신뢰 수준(BON-245).
+        # --attempt-id 명시 제출과 동일한 신뢰 수준.
         if not extra_source:
             return BasePipeline()
         best_source = extra_source
@@ -176,7 +174,7 @@ def _load_pipeline(
             raise RuntimeError(
                 f"best_pipeline.py integrity check failed for {competition_id}: "
                 f"sha256 mismatch (expected {expected_sha256[:12]}…, got {actual_sha256[:12]}…) "
-                "— MinIO kaggle 버킷 변조 가능성 (BON-255). 확인 없이 exec를 중단한다."
+                "— MinIO kaggle 버킷 변조 가능성. 확인 없이 exec를 중단한다."
             )
 
     ns: dict = {}
@@ -192,7 +190,7 @@ def _load_pipeline(
 
 
 def _predict_raw(model, X, metric_class: str):
-    """BON-245(b): metric_class(evaluator/metrics.get 3번째 값) 기준으로 proba/label
+    """metric_class(evaluator/metrics.get 3번째 값) 기준으로 proba/label
     분기 — comp.IS_CLASSIFICATION 기준이면 accuracy/f1/qwk 같은 label-metric
     classification 대회에서 predict_proba를 잘못 쓰게 된다.
     """
@@ -202,18 +200,18 @@ def _predict_raw(model, X, metric_class: str):
 
 
 def _submission_value_col(sample_columns: list[str], fallback: str) -> str:
-    """BON-245(c): 제출 값 컬럼명은 sample_submission.csv의 실제 2번째 컬럼을 따른다."""
+    """제출 값 컬럼명은 sample_submission.csv의 실제 2번째 컬럼을 따른다."""
     return sample_columns[1] if len(sample_columns) > 1 else fallback
 
 
 def _dummy_target_value(train: pl.DataFrame, target_col: str):
-    """더미 타깃은 train 실재값이어야 한다(#52) — synthetic placeholder는 Patch의
+    """더미 타깃은 train 실재값이어야 한다 — synthetic placeholder는 Patch의
     exhaustive target 인코딩에서 매핑 밖 값이라 크래시한다."""
     return train[target_col][0]
 
 
 def _impute_train_test_median(train_np, test_np):
-    """BON-245(d): NaN 중앙값 대치를 train/test 대칭 적용. medians는 train 기준."""
+    """NaN 중앙값 대치를 train/test 대칭 적용. medians는 train 기준."""
     col_medians = np.nanmedian(train_np, axis=0)
     train_mask, test_mask = np.isnan(train_np), np.isnan(test_np)
     if train_mask.any():
@@ -235,7 +233,7 @@ def _bagged_predict(
     metric_class: str,
     bag_seeds: list[int] = _BAG_SEEDS,
 ) -> np.ndarray:
-    """BON-249: seed별 build_model+fit 반복 후 raw 예측 평균(bagging).
+    """seed별 build_model+fit 반복 후 raw 예측 평균(bagging).
 
     preprocess/feature_transform은 seed 무관이라 호출부에서 1회만 수행되고,
     이 함수는 이미 변환된 X_train_np/X_test_np를 받아 모델 fit만 반복한다.
@@ -256,7 +254,7 @@ def _bagged_predict(
                 best_params=ctx.best_params,
             )
             model = pipeline.build_model(params, bag_ctx)
-            # BON-246: 여기선 early stopping(harness._fit_with_early_stopping) 미적용 —
+            # 여기선 early stopping(harness._fit_with_early_stopping) 미적용 —
             # 전체 train으로 최종 fit하는 자리라 라벨 있는 held-out validation이 없음
             # (test_np는 unlabeled). 억지로 train 일부를 떼면 최종 제출 방법론 자체가
             # 바뀌므로 이번 범위에서 제외 — CV 경로(harness.py)만 적용.
@@ -286,8 +284,8 @@ def generate_submission_csv(
 ) -> tuple[Path, str, float]:
     """best 코드 로드 → 전체 train 5-seed fit → test 예측 → CSV 저장.
 
-    (csv_path, attempt_id, cv_score) 반환. CLI(main)와 promote 훅(캐시 생성,
-    GH issue #31) 양쪽에서 재사용 — 로직은 하나만 유지.
+    (csv_path, attempt_id, cv_score) 반환. CLI(main)와 promote 훅(캐시 생성)
+    양쪽에서 재사용 — 로직은 하나만 유지.
     """
     import sys
     sys.path.insert(0, str(ROOT))

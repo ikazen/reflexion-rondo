@@ -337,7 +337,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                 break
             continue
 
-        # BON-274: 사이클이 성공한 직후 무조건 "running"으로 되돌아가면, 이 사이클이
+        # 사이클이 성공한 직후 무조건 "running"으로 되돌아가면, 이 사이클이
         # 진행되는 동안(대부분의 시간, ~2분) 걸린 외부 PATCH cancelled 요청이 여기서
         # 조용히 지워지고 다음 반복의 취소 체크는 이미 복구된 "running"만 보게 된다 —
         # 사실상 취소가 실패 분기(continue로 이 호출을 건너뜀)가 아니면 절대 반영 안 됨.

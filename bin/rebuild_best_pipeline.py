@@ -1,7 +1,7 @@
 """
 best_pipeline.py 재구성 — raw.pipelines 히스토리를 시간순으로 재생(replay)한다.
 
-BON-233: materialize_best_pipeline()의 병합 결과가 손상돼(참조는 있는데 정의가
+materialize_best_pipeline()의 병합 결과가 손상돼(참조는 있는데 정의가
 없는 이름) 운영 중 best_pipeline.py가 깨지는 사고가 있었다. 정확한 손상 트리거는
 미확정이지만, raw.pipelines에 저장된 개별 attempt 코드는 전부 자기완결적이므로
 base=None부터 승격 이력을 순서대로 다시 병합하면 항상 self-consistent한 결과가

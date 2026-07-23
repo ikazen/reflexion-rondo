@@ -1,11 +1,11 @@
-"""BON-245: bin/submit.py 정확성 버그 4건 + BON-255 무결성 검증 회귀 테스트.
+"""bin/submit.py 정확성 버그 4건 + 무결성 검증 회귀 테스트.
 
 (a) 자동 선택 경로는 confirmed 파이프라인(raw.pipelines)만 소스로 써야 한다.
 (b) predict_proba 분기는 metric_class == "binary_proba" 기준이어야 한다.
 (c) 제출 값 컬럼은 sample_submission.csv의 실제 컬럼명을 따라야 한다.
 (d) NaN 중앙값 대치는 train/test 대칭이어야 한다.
-(BON-255) MinIO best_pipeline.py는 raw.pipelines.pipeline_sha256과 대조해야 한다.
-(issue #35) attempt_only 재구성은 Patch 인스턴스의 클래스 속성을 보존해야 한다.
+MinIO best_pipeline.py는 raw.pipelines.pipeline_sha256과 대조해야 한다.
+attempt_only 재구성은 Patch 인스턴스의 클래스 속성을 보존해야 한다.
 """
 from __future__ import annotations
 
@@ -97,7 +97,7 @@ def test_explicit_attempt_id_skips_hash_verification() -> None:
 
 
 # ---------------------------------------------------------------------------
-# (BON-255) _load_pipeline sha256 무결성 검증
+# _load_pipeline sha256 무결성 검증
 # ---------------------------------------------------------------------------
 
 def test_load_pipeline_raises_on_sha256_mismatch() -> None:
@@ -125,7 +125,7 @@ def test_load_pipeline_skips_verification_when_sha256_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# (issue #19) attempt_only는 MinIO best_pipeline.py를 참조하지 않아야 한다
+# attempt_only는 MinIO best_pipeline.py를 참조하지 않아야 한다
 # ---------------------------------------------------------------------------
 
 def test_load_pipeline_attempt_only_skips_minio_download() -> None:
@@ -165,7 +165,7 @@ def test_load_pipeline_attempt_only_without_source_falls_back_to_base() -> None:
 
 
 def test_load_pipeline_attempt_only_preserves_class_attributes() -> None:
-    """issue #35: 훅이 참조하는 클래스 속성(예: s6e7의 _ordinal_orders)이 살아있어야 한다.
+    """훅이 참조하는 클래스 속성(예: s6e7의 _ordinal_orders)이 살아있어야 한다.
 
     이전엔 attempt_only가 훅 메서드만 type(...)으로 새 클래스에 옮겨 붙여 클래스
     속성이 소실됐다 — 평가는 통과(runner.py는 실제 Patch() 인스턴스를 사용)하고
@@ -184,7 +184,7 @@ def test_load_pipeline_attempt_only_preserves_class_attributes() -> None:
 
 
 # ---------------------------------------------------------------------------
-# (BON-249) _bagged_predict seed bagging
+# _bagged_predict seed bagging
 # ---------------------------------------------------------------------------
 
 def _bagging_ctx():
@@ -298,7 +298,7 @@ def test_impute_train_test_median_noop_when_no_nan() -> None:
 
 
 # ---------------------------------------------------------------------------
-# (issue #52) _dummy_target_value
+# _dummy_target_value
 # ---------------------------------------------------------------------------
 # 타입만 맞춘 placeholder(예: 0)는 Patch가 타깃을 exhaustive 매핑(replace_strict without
 # default)으로 인코딩할 때 매핑에 없는 값이라 크래시한다(s5e7 실측). 더미값은 반드시

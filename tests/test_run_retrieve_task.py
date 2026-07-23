@@ -1,5 +1,5 @@
-"""bin/run_retrieve_task.py — _merge_lessons 단위 테스트 (BON-134),
-main() TTL sweep 회귀 테스트 (BON-242)."""
+"""bin/run_retrieve_task.py — _merge_lessons 단위 테스트,
+main() TTL sweep 회귀 테스트."""
 from __future__ import annotations
 
 import importlib
@@ -111,7 +111,7 @@ def _run_retrieve_with_mocks() -> "_Conn":
 
 
 def test_ttl_sweep_runs_after_retrieve() -> None:
-    """BON-242: retrieve 실행마다 오래된 super_cycle_context row TTL sweep이 나가야 한다."""
+    """retrieve 실행마다 오래된 super_cycle_context row TTL sweep이 나가야 한다."""
     conn = _run_retrieve_with_mocks()
     sweep_calls = [
         s for s in conn.executed

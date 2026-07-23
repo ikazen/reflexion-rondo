@@ -82,7 +82,7 @@ def test_is_significant_gain_zero_fold_var_zero_gain():
     assert not is_significant_gain(0.0, 0.0)
 
 
-# --- is_significant_gain paired per-fold delta (BON-247) ---
+# --- is_significant_gain paired per-fold delta ---
 
 def test_paired_mode_detects_consistent_small_improvement():
     """절대 gain은 작아도 모든 fold에서 일관되게 개선되면(분산 작음) paired 검정은 유의로 본다."""
@@ -150,7 +150,7 @@ def test_label_z_imported_from_settings():
     assert settings_LABEL_Z == harness_LABEL_Z
 
 
-# --- PipelineContext.best_params (BON-249) ---
+# --- PipelineContext.best_params ---
 
 def test_pipeline_context_best_params_defaults_to_none():
     assert _ctx().best_params is None
@@ -164,7 +164,7 @@ def test_pipeline_context_best_params_settable():
     assert ctx.best_params == {"max_depth": 4}
 
 
-# --- _fit_with_early_stopping (BON-246) ---
+# --- _fit_with_early_stopping ---
 
 _XTR, _YTR, _XVA, _YVA = np.zeros((3, 2)), np.zeros(3), np.zeros((2, 2)), np.zeros(2)
 
@@ -266,10 +266,10 @@ def test_fit_early_stopping_falls_back_on_exception():
     assert model.fit_calls == [{}]  # eval_set 시도 실패 후 plain fit로 폴백, 1회만 기록
 
 
-# --- EvalResult.selected_params 배관 (BON-247 선행 fix) ---
+# --- EvalResult.selected_params 배관 ---
 
 def test_evaluate_pipeline_returns_selected_params():
-    """preselect_params가 고른 params가 EvalResult까지 흘러나와야 ctx.best_params(BON-249)의
+    """preselect_params가 고른 params가 EvalResult까지 흘러나와야 ctx.best_params의
     데이터 소스로 쓸 수 있다 — 이전엔 evaluate_pipeline 내부에서만 쓰이고 버려졌다."""
     result = evaluate_pipeline(_SingleCandidate(), _make_df(), _ctx())
     assert result.selected_params == {"max_iter": 50}
@@ -280,7 +280,7 @@ def test_eval_result_selected_params_defaults_to_empty_dict():
     assert result.selected_params == {}
 
 
-# --- EvalResult.oof_preds / collect_oof (BON-248) ---
+# --- EvalResult.oof_preds / collect_oof ---
 
 def test_collect_oof_false_by_default_leaves_oof_preds_none():
     result = evaluate_pipeline(BasePipeline(), _make_df(), _ctx())
@@ -440,7 +440,7 @@ def test_preselect_params_scores_against_raw_target_not_log_transformed():
     assert result in pipeline.param_candidates(_ctx_rmsle())
 
 
-# --- 회귀 메트릭 phantom(구현 불가 수준 저점수) 방어 가드 (issue #4) ---
+# --- 회귀 메트릭 phantom(구현 불가 수준 저점수) 방어 가드 ---
 
 class _ScaleLeakPatch:
     """preprocess가 (작은 노이즈만 섞은) 타깃 사본을 feature로 흘리는 스케일 누수 패치.
@@ -486,12 +486,12 @@ def test_regression_phantom_guard_does_not_trip_on_honest_score():
     assert np.isfinite(result.cv_score)
 
 
-# --- degenerate 회귀 gain_vs_best 클립 가드 (issue #43) ---
+# --- degenerate 회귀 gain_vs_best 클립 가드 ---
 # rmse degenerate 예측(모델이 완전히 빗나간 상수를 반환하는 등)은 raise 가드(위)에
-# 걸리지 않으면서도 gain_vs_best를 비정상적으로 큰 음수로 만든다(s6e1 실측
-# gain_vs_best=-105448). 이 값이 그대로 reflection_impact에 흘러가면 전역 z-score
-# (memory/retriever.py._global_gain_stats)를 오염시킨다 — label 판정은 그대로 두고
-# 저장되는 gain_vs_best만 baseline 100배 나쁜 지점으로 하한을 둬야 한다.
+# 걸리지 않으면서도 gain_vs_best를 비정상적으로 큰 음수로 만든다. 이 값이 그대로
+# reflection_impact에 흘러가면 전역 z-score(memory/retriever.py._global_gain_stats)를
+# 오염시킨다 — label 판정은 그대로 두고 저장되는 gain_vs_best만 baseline 100배
+# 나쁜 지점으로 하한을 둬야 한다.
 
 class _DegenerateRegressionPatch:
     """postprocess에서 예측에 거대한 offset을 더해 rmse를 극단적으로 나쁘게 만든다."""
@@ -533,7 +533,7 @@ def test_honest_regression_gain_is_not_clipped():
     assert result.gain_vs_best == pytest.approx(raw_delta)
 
 
-# --- gain_vs_best_relative: metric 스케일 정규화 (issue #58) ---
+# --- gain_vs_best_relative: metric 스케일 정규화 ---
 
 def test_regression_error_gain_relative_is_scaled_by_baseline():
     """regression_error는 gain_vs_best_relative = gain_vs_best / baseline_cv 여야 한다."""
@@ -638,12 +638,12 @@ def test_harness_encodes_residual_string_columns():
 
 
 def test_harness_encodes_residual_string_column_with_nulls():
-    """issue #42: str 컬럼에 null이 섞여도 크래시하면 안 된다.
+    """str 컬럼에 null이 섞여도 크래시하면 안 된다.
 
-    s6e7 실측: _encode_residual_categoricals가 sorted()로 카테고리를 정렬하는데
-    None이 섞이면 'TypeError: <' not supported between instances of NoneType and str'로
-    죽었다(s6e7 TypeError의 다수를 차지, Coder 패치가 아니라 harness 자체 버그). null은
-    미확인 카테고리와 동일하게 -1로 인코딩돼야 한다.
+    _encode_residual_categoricals가 sorted()로 카테고리를 정렬하는데 None이 섞이면
+    'TypeError: <' not supported between instances of NoneType and str'로 죽었다
+    (Coder 패치가 아니라 harness 자체 버그). null은 미확인 카테고리와 동일하게
+    -1로 인코딩돼야 한다.
     """
     import numpy as np
     rng = np.random.default_rng(3)
@@ -779,7 +779,7 @@ def test_logloss_tripwire_raises_on_perfect_leak():
         evaluate_pipeline(pipeline, df, ctx)
 
 
-# --- is_noop_tie (BON-239) ---
+# --- is_noop_tie ---
 
 def test_no_prev_best_is_not_noop_tie():
     """prev_best 없음(첫 attempt)은 no-op tie 판정 대상이 아니다."""

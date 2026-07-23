@@ -65,7 +65,7 @@ def test_query_does_not_filter_cv_score():
 
 
 def test_loser_action_types_count_as_used():
-    """BON-227: 패자로 시도된 action_type도 underused_actions에서 제외돼야 한다.
+    """패자로 시도된 action_type도 underused_actions에서 제외돼야 한다.
 
     승자는 매번 hyperparam_search뿐이지만, 패자로 다른 action_type들이 이미
     시도됐다면 그것들을 '저활용'으로 다시 추천하면 안 된다.

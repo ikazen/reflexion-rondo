@@ -1,4 +1,4 @@
-"""GH issue #31: submission CSV 캐시 헬퍼 — 로컬 폴백 round-trip.
+"""submission CSV 캐시 헬퍼 — 로컬 폴백 round-trip.
 
 MINIO_ENDPOINT 미설정 테스트 환경에서는 upload/download가 항상 로컬
 runs/submissions/{competition_id}/{attempt_id}.csv 폴백을 탄다(네트워크 요청은

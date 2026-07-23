@@ -112,7 +112,7 @@ def bootstrap_seeds(
 
     cv_score는 대회마다 metric/스케일이 달라 여러 대회에 걸친 정렬 기준으로 쓸 수 없다
     (예: AUC 0.85 vs RMSE 0.3). gain_vs_best는 metric_sign으로 방향 정규화된 값이라
-    cross-competition 비교에 적합하다 (BON-199).
+    cross-competition 비교에 적합하다.
     """
     if not similar:
         return []

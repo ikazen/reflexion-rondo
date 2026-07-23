@@ -20,10 +20,10 @@ _MAX_PARAM_CANDIDATES = 12
 _LEAK_PERFECT_HIGH = 0.9999
 _LEAK_PERFECT_LOW = 1e-9
 _EARLY_STOPPING_ROUNDS = 50
-# issue #4: 회귀 error 메트릭(rmse/mae/rmsle)이 "타깃 평균만 예측하는" trivial baseline보다
+# 회귀 error 메트릭(rmse/mae/rmsle)이 "타깃 평균만 예측하는" trivial baseline보다
 # 이 배수 이상 좋으면 스케일/타깃 누수로 간주한다. s5e5 이중 log1p phantom(cv≈0.017)이
 # trivial baseline 대비 비정상적으로 큰 개선폭을 보였던 사례의 사후 안전망 — 근본 수정은
-# issue #6(raw 타깃 채점 계약). 실제 최상위 모델의 baseline 대비 개선은 대부분 수십 배
+# raw 타깃 채점 계약 정비. 실제 최상위 모델의 baseline 대비 개선은 대부분 수십 배
 # 이내이므로 100배는 정상 개선을 오탐하지 않을 만큼 충분히 관대한 임계값이다.
 _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO = 100.0
 
@@ -37,7 +37,7 @@ def is_significant_gain(
 ) -> bool:
     """gain이 fold noise보다 큰 경우만 True.
 
-    BON-247: candidate/baseline이 같은 seed·같은 fold split에서 나온 fold_scores 쌍을
+    candidate/baseline이 같은 seed·같은 fold split에서 나온 fold_scores 쌍을
     받으면 paired per-fold delta의 t-통계로 판정한다(fold 난이도가 상관되므로
     delta 분산이 절대 분산보다 훨씬 작아 더 민감) — LABEL_Z를 그대로 임계값으로 재사용.
 
@@ -86,7 +86,7 @@ def _mask_target(df: pl.DataFrame, target: str) -> pl.DataFrame:
 def _encode_residual_categoricals(
     Xtr: pl.DataFrame, Xva: pl.DataFrame
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """str 컬럼에 null이 섞이면 sorted()가 None/str 비교로 TypeError(#42) — null 제외 후
+    """str 컬럼에 null이 섞이면 sorted()가 None/str 비교로 TypeError — null 제외 후
     정렬, replace_strict(default=-1)로 unseen 카테고리와 동일 처리."""
     str_cols = [c for c, dt in zip(Xtr.columns, Xtr.dtypes) if dt == pl.String]
     for c in str_cols:
@@ -100,7 +100,7 @@ _IMPORTANCE_ACTIONS = frozenset({"feature_engineering", "preprocessing"})
 
 
 def _fit_with_early_stopping(model: object, Xtr, ytr, Xva, yva) -> None:
-    """BON-246: fold valid를 early stopping에 쓸 수 있는 estimator면 opt-in으로 활용한다.
+    """fold valid를 early stopping에 쓸 수 있는 estimator면 opt-in으로 활용한다.
 
     LightGBM/XGBoost/CatBoost는 fit()에 eval_set을 받고(라이브러리별로 콜백/kwarg가
     다름), sklearn HistGradientBoosting은 X_val/y_val을 받는다. Patch.build_model이
@@ -141,13 +141,13 @@ class EvalResult:
     gain_vs_best: float | None
     feature_importance: dict | None = None
     is_noop_tie: bool = False
-    # BON-247 선행 fix: preselect_params가 고른 params — 이전엔 evaluate_pipeline
-    # 내부에서만 쓰이고 반환되지 않아 ctx.best_params(BON-249)의 데이터 소스가
+    # preselect_params가 고른 params — 이전엔 evaluate_pipeline
+    # 내부에서만 쓰이고 반환되지 않아 ctx.best_params의 데이터 소스가
     # 항상 비어 있었다. persist까지 흘려보내 다음 attempt가 참고할 수 있게 한다.
     selected_params: dict = field(default_factory=dict)
-    # BON-248: collect_oof=True일 때만 채워지는 fold별 out-of-fold 예측 (원본 행 순서).
+    # collect_oof=True일 때만 채워지는 fold별 out-of-fold 예측 (원본 행 순서).
     oof_preds: list[float] | None = None
-    # metric마다 gain_vs_best 스케일이 달라(#58) reflection_impact 전역 z-score가
+    # metric마다 gain_vs_best 스케일이 달라 reflection_impact 전역 z-score가
     # 오염된다 — regression_error는 baseline_cv로 나눈 상대값, 나머지는 gain_vs_best 그대로.
     gain_vs_best_relative: float | None = None
 
@@ -161,7 +161,7 @@ class PipelineContext:
     is_classification: bool
     prev_best: float | None = None
     action_type: str = ""
-    # BON-249: 확정 best 파이프라인의 params — hyperparam_search 훅이 로컬 서치에
+    # 확정 best 파이프라인의 params — hyperparam_search 훅이 로컬 서치에
     # 참고할 수 있는 advisory 필드. 훅이 무시해도 무해(강제 소비 아님).
     best_params: dict | None = None
 
@@ -277,7 +277,7 @@ def preselect_params(
 
     tr = train[list(tr_idx)]
     va = train[list(va_idx)]
-    # issue #6: preprocess가 타깃을 변환(log1p 등)할 수 있으므로, 채점은 변환 이전의
+    # preprocess가 타깃을 변환(log1p 등)할 수 있으므로, 채점은 변환 이전의
     # raw 타깃(yva_raw)으로 한다. yva(변환된 값)는 early stopping의 eval_set에만 쓴다.
     # 파이프라인이 log 공간에서 학습했다면 postprocess_predictions에서 raw 스케일로
     # inverse-transform 해서 반환해야 점수가 정상적으로 나온다 — submit.py와 동일 계약.
@@ -319,7 +319,7 @@ def evaluate_pipeline(
     collect_oof: bool = False,
 ) -> EvalResult:
     """collect_oof=True면 fold별 검증 예측을 원본 행 위치에 모아 EvalResult.oof_preds로
-    반환한다(BON-248). K-fold가 전체 행을 정확히 1번씩 커버하므로 NaN 없이 꽉 찬다.
+    반환한다. K-fold가 전체 행을 정확히 1번씩 커버하므로 NaN 없이 꽉 찬다.
     attempt마다 매번 계산하면 낭비라 기본은 False — 승격 시 merge-verify eval
     (bin/run_promote_task.py)에서만 True로 호출해 추가 평가 비용 없이 확보한다.
     """
@@ -330,7 +330,7 @@ def evaluate_pipeline(
     selected_params = preselect_params(pipeline, train, ctx)
 
     fold_scores: list[float] = []
-    # issue #4: regression_error 메트릭 전용 trivial baseline(train fold 타깃 평균으로만
+    # regression_error 메트릭 전용 trivial baseline(train fold 타깃 평균으로만
     # 예측) 점수 — cv_score가 이 baseline보다 비정상적으로(수백 배) 좋으면 스케일 누수
     # 의심 신호로 쓴다. 다른 metric_class는 채우지 않는다(빈 리스트로 가드 스킵).
     baseline_fold_scores: list[float] = []
@@ -413,7 +413,7 @@ def evaluate_pipeline(
         if cv_score <= _LEAK_PERFECT_LOW:
             raise ValueError(f"suspected target leakage: perfect cv_score={cv_score:.2e} (threshold={_LEAK_PERFECT_LOW})")
 
-    # issue #4: "구현 불가 수준"의 회귀 점수 방어 가드 — trivial mean-baseline 대비
+    # "구현 불가 수준"의 회귀 점수 방어 가드 — trivial mean-baseline 대비
     # _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO 배 이상 좋으면 스케일/타깃 누수로 간주.
     # metric_sign<0(rmse/mae/rmsle 전부 해당)인 regression_error 메트릭에만 적용.
     baseline_cv: float | None = None
@@ -434,13 +434,13 @@ def evaluate_pipeline(
     else:
         # 정확히 동일한 cv_score(부동소수 16자리까지 일치)는 정상적 확률적 학습으로는
         # 사실상 불가능 — patch hook이 base로 위임/무시되어 유효 계산이 안 바뀐 신호다
-        # (BON-239: hyperparam_search의 build_model params 무시, feature_engineering의
+        # (hyperparam_search의 build_model params 무시, feature_engineering의
         # 기존 base와 동일한 재발명 등 action_type 무관하게 발생).
         is_noop_tie = cv_score == ctx.prev_best
         delta = metric_sign * (cv_score - ctx.prev_best)
         gain_vs_best = delta
         # degenerate 회귀 cv_score의 극단적 gain_vs_best가 reflection_impact 전역
-        # z-score를 오염시킨다(#43). label 판정은 클립 전 delta 유지, 저장값만 하한 클립.
+        # z-score를 오염시킨다. label 판정은 클립 전 delta 유지, 저장값만 하한 클립.
         if baseline_cv is not None and baseline_cv > 0:
             worst_plausible_cv = baseline_cv * _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO
             gain_floor = metric_sign * (worst_plausible_cv - ctx.prev_best)
@@ -454,7 +454,7 @@ def evaluate_pipeline(
             label = "regression"
         else:
             label = "neutral"
-        # BON-267: 이 절대-마진 jump는 cycle/run.py가 promotion과 동일한
+        # 이 절대-마진 jump는 cycle/run.py가 promotion과 동일한
         # is_significant_gain(paired per-fold t-test) 기준으로 최종 재판정/강등한다 —
         # 여기 label은 잠정값이다. (수렴한 대회에선 이 절대 마진에 거의 도달 못 함.)
 

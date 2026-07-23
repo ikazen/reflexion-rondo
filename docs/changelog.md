@@ -1,5 +1,15 @@
 # 변경 이력
 
+## v1.3.0 — gain_vs_best_relative: metric 스케일 정규화 (2026-07-22)
+- `reflection_impact` 전역 z-score가 metric 스케일 혼합(rmse 원시 단위 vs auc 0~1)으로 오염돼 있던 문제(mean=-4.22, std=139.19 실측) — DB wipe로는 해결 안 되는 코드 자체의 스케일 정규화 부재가 근본 원인으로 확인됨.
+- `gain_vs_best_relative` 컬럼 신설(regression_error는 `gain_vs_best / baseline_cv` 상대값, 나머지 metric_class는 `gain_vs_best` 패스스루) — `evaluator/harness.py` → `runtime/isolate.py`/`runtime/runner.py`(subprocess JSON 경계) → `cycle/run.py` → `store/schema.sql`까지 전체 파이프라인에 배관.
+- `reflection_impact` 뷰가 이 컬럼만 집계하도록 재정의 — `gain_vs_best_relative IS NULL`인 legacy row는 집계에서 제외(raw `gain_vs_best`로 폴백하지 않음).
+- 프로덕션 실측으로 정규화 검증: raw `gain_vs_best=-110.92` → `gain_vs_best_relative=-0.0014`.
+
+## v1.2.32 — Kaggle 자동 제출 gap 진단 및 수정 (2026-07-22)
+- s5e7/s6e6 자동 제출 누락 재진단: (a) `bin/submit.py` dummy target 생성이 문자열 타깃 대회에서 크래시하던 버그, (b) `raw.kaggle_submissions.status='submitted'`가 폴링 데드라인을 지나도 안 풀려 재제출이 영구 스킵되던 버그.
+- 두 경로 모두 수정 후 실제 Kaggle 제출로 종단 검증 — s5e7 LB 0.973279, s6e6 LB 0.96408로 `complete` 상태 도달 확인.
+
 ## v1.2.31 — subprocess 고아 프로세스 kill + degenerate 회귀 gain 클립 + s6e7 코드생성 harness 버그 (2026-07-22)
 - #37: `bin/api.py`의 `subprocess.run` 타임아웃 처리가 `uv run`이 spawn한 손자 python 프로세스를 못 죽여 고아로 남던 문제(타임아웃 기록 후에도 CPU 85%+ 점유 실측) — `_run_in_pgroup` 헬퍼로 교체, `start_new_session=True` + 타임아웃 시 `os.killpg`로 프로세스 그룹 전체 종료.
 - #43: rmse degenerate 예측(모델이 완전히 빗나감)이 만드는 극단적 `gain_vs_best`(s6e1 실측 -105448)가 `reflection_impact` 전역 z-score(BON-195)를 오염시키던 문제 — `evaluator/harness.py`에 대칭 가드 추가(issue #4의 "100배 좋으면 raise"에 대칭으로 "100배 나쁘면 gain_vs_best 하한 클립", label 판정은 영향 없음).
