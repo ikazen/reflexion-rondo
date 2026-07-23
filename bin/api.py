@@ -9,14 +9,25 @@
   GET  /api/attempts/{id}
   GET  /api/lessons
   GET  /api/cold-start
-  GET  /api/score/timeline           -- 관측 T3 (#67): CV 추이 + jump 마커 + holdout
-  GET  /api/reflexion-health         -- 관측 T5 (#67): 건강 신호등 4칸(#11 §6)
+  GET  /api/score/timeline           -- 관측 T3  (#67): CV 추이 + jump 마커 + holdout
+  GET  /api/reflexion-health         -- 관측 T5  (#67): 건강 신호등 4칸(#11 §6)
   GET  /api/bandit/posteriors        -- 관측 B2a (#67): posterior + 실측 가중성공률 괴리
   GET  /api/lessons/funnel           -- 관측 B3f (#67): 작성→검색→인용→양의gain 전환율
   GET  /api/lessons/dead             -- 관측 B3d (#67): 인용 0 / 음의gain 교훈
   GET  /api/lessons/duplicates       -- 관측 B3u (#67): near-duplicate 교훈 쌍
   GET  /api/errors/signatures        -- 관측 B4s (#67): 에러 시그니처·재발
   GET  /api/transfer/matrix          -- 관측 X1  (#67): 대회 간 교훈 인용 매트릭스
+  GET  /api/competitions/summary     -- 관측 T1  (#67): 대회 목록 + best_cv·상태 롤업
+  GET  /api/score                    -- 관측 T2  (#67): 점수 헤드라인(best cv/holdout/gap)
+  GET  /api/best-strategy            -- 관측 T4  (#67): best pipeline 구성·인용 교훈
+  GET  /api/bandit/timeline          -- 관측 B2b (#67): posterior 리플레이 시계열
+  GET  /api/bandit/selection         -- 관측 B2c (#67): 배정 action vs posterior 순위 concordance
+  GET  /api/lessons/generality-mix   -- 관측 B3g (#67): L1/L2/L3 비율 시계열
+  GET  /api/errors/rate-timeline     -- 관측 B4r (#67): 슈퍼사이클별 에러율 추이
+  GET  /api/errors/repeat-offenders  -- 관측 B4o (#67): pitfall 활성 후 재발 시그니처
+  GET  /api/promotions               -- 관측 B5  (#67): 승격 타임라인(누적 best)
+  GET  /api/transfer/lessons         -- 관측 X2  (#67): 범용 교훈 재사용 리더보드
+  GET  /api/transfer/fp-distance     -- 관측 X3  (#67): fingerprint 거리 vs cold-start 이득
   GET  /api/queue
   POST /api/queue
   PATCH /api/queue/{id}
@@ -25,10 +36,12 @@
   GET  /api/submissions
   GET  /api/submissions/{id}
 
-관측 엔드포인트 8개는 GH #11/#67 설계의 24개 중 건강질문 직결 우선순위 서브셋 — 나머지는 후속.
-데이터 소스는 store/schema.sql의 파생 뷰(lesson_funnel/lesson_dead/lesson_duplicates/
-bandit_calibration/error_recurrence/transfer_matrix). retrieved_ids(P1)는 forward-only라
-과거 데이터가 섞인 경우 lesson_funnel.retrieved_precise=false로 표시된다.
+관측 엔드포인트는 GH #11/#67 설계 24개 전체(대시보드 패널 #65는 후속). 데이터 소스는
+store/schema.sql의 파생 뷰(lesson_funnel/lesson_dead/lesson_duplicates/bandit_calibration/
+error_recurrence/transfer_matrix) + raw.pipelines/super_cycle_context 직접 조회 + 밴딧
+리플레이(_replay_bandit_timeline, 히스토리 테이블 없이 update_bandit 규칙 재현) +
+memory.transfer._fp_distance 재사용. retrieved_ids(P1)는 forward-only라 과거 데이터가 섞인
+경우 lesson_funnel.retrieved_precise=false로 표시된다.
 
 Postgres 연결은 호출 측(daemon)이 주입한다.
 DaemonState는 daemon 메인 루프가 갱신하고 API가 읽는 공유 객체.
@@ -59,6 +72,7 @@ from pydantic import BaseModel
 
 from config.settings import ACTION_TYPES
 from cycle.stagnation import detect_stagnation
+from memory.transfer import _fp_distance
 from store.db import PgConn
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1289,6 +1303,122 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         cols = ["error_signature", "action_type", "total", "after_active", "last_seen"]
         result = [dict(zip(cols, r)) for r in rows]
         _cache.set(cache_key, result)
+        return result
+
+    # ---- 관측 (#11/#67) — 승격 타임라인 + 전이 리더보드/fp-distance ----
+
+    @app.get("/api/promotions")
+    def get_promotions(competition: str):
+        cache_key = f"promotions:{competition}"
+        cached, hit = _cache.get(cache_key, ttl=60)
+        if hit:
+            return cached
+        rows = conn.execute(
+            """
+            select
+                a.attempt_id, a.run_ts, a.action_type, a.gain_vs_best, a.cv_score,
+                a.holdout_score, a.hypothesis,
+                max(cc.metric_sign * a.cv_score) over (
+                    order by a.run_ts rows between unbounded preceding and current row
+                ) * cc.metric_sign as cumulative_best
+            from raw.pipelines p
+            join raw.attempts a using (attempt_id)
+            join raw.competitions cc on cc.competition_id = p.competition_id
+            where p.competition_id = %s
+            order by a.run_ts
+            """,
+            [competition],
+        ).fetchall()
+        cols = [
+            "attempt_id", "run_ts", "action_type", "gain_vs_best", "cv_score",
+            "holdout_score", "hypothesis", "cumulative_best",
+        ]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set(cache_key, result)
+        return result
+
+    @app.get("/api/transfer/lessons")
+    def get_transfer_lessons(limit: int = 100):
+        limit = min(limit, 500)
+        cache_key = f"transfer_lessons:{limit}"
+        cached, hit = _cache.get(cache_key, ttl=120)
+        if hit:
+            return cached
+        rows = conn.execute(
+            """
+            select
+                r.reflection_id, r.generality, r.embedded_text, r.competition_id as source_comp,
+                count(distinct a.competition_id)
+                    filter (where a.competition_id <> r.competition_id) as reused_in_comps,
+                count(*) as total_citations,
+                coalesce(avg(a.gain_vs_best_relative), 0.0) as avg_gain
+            from raw.reflections r
+            join raw.attempts a on r.reflection_id = any(a.reflection_ids)
+            where r.generality in ('L2_class', 'L3_general') and r.archived = false
+            group by r.reflection_id, r.generality, r.embedded_text, r.competition_id
+            having count(distinct a.competition_id) filter (where a.competition_id <> r.competition_id) > 0
+            order by reused_in_comps desc, total_citations desc
+            limit %s
+            """,
+            [limit],
+        ).fetchall()
+        cols = [
+            "reflection_id", "generality", "embedded_text", "source_comp",
+            "reused_in_comps", "total_citations", "avg_gain",
+        ]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set(cache_key, result)
+        return result
+
+    @app.get("/api/transfer/fp-distance")
+    def get_fp_distance():
+        """대회별 최근접 선행 대회 + fingerprint 거리. memory/transfer.py:_fp_distance
+        재사용(순수 함수) + export_cold_start_summary(bin/export_results.py)와 동일 SQL로
+        warm_start_ratio 병합."""
+        cached, hit = _cache.get("fp_distance", ttl=300)
+        if hit:
+            return cached
+        comps = conn.execute("select competition_id, fingerprint from raw.competitions").fetchall()
+        fps = [
+            (cid, fp if isinstance(fp, dict) else json.loads(fp))
+            for cid, fp in comps if fp
+        ]
+        cold_start = conn.execute(
+            """
+            select
+                cc.competition_id,
+                max(case when p.stage = 'bootstrap' then p.best_so_far end) as bootstrap_best,
+                max(p.best_so_far) as overall_best
+            from cold_start_progression p
+            join raw.competitions cc using (competition_id)
+            group by cc.competition_id
+            """
+        ).fetchall()
+        cold_start_map = {r[0]: (r[1], r[2]) for r in cold_start}
+        result = []
+        for cid, fp in fps:
+            nearest_id, nearest_dist = None, None
+            for oid, ofp in fps:
+                if oid == cid:
+                    continue
+                d = _fp_distance(fp, ofp)
+                if nearest_dist is None or d < nearest_dist:
+                    nearest_id, nearest_dist = oid, d
+            bootstrap_best, overall_best = cold_start_map.get(cid, (None, None))
+            warm_start_ratio = (
+                round(bootstrap_best / overall_best, 4)
+                if bootstrap_best is not None and overall_best not in (None, 0)
+                else None
+            )
+            result.append({
+                "competition_id": cid,
+                "nearest_prior_comp": nearest_id,
+                "fp_distance": round(nearest_dist, 4) if nearest_dist is not None else None,
+                "warm_start_ratio": warm_start_ratio,
+                "bootstrap_best": bootstrap_best,
+                "overall_best": overall_best,
+            })
+        _cache.set("fp_distance", result)
         return result
 
     @app.get("/api/queue")
