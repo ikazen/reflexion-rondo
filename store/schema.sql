@@ -51,6 +51,13 @@ ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS fold_scores jsonb;
 -- 상대값, 나머지는 gain_vs_best 그대로. reflection_impact가 이 컬럼만 집계한다.
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS gain_vs_best_relative double precision;
 
+-- 관측 P1/P2(#66) — retrieved_ids: 검색된 전체 교훈(reflection_ids는 실제 채택분만).
+-- forward-only(과거 attempt는 원본 검색 결과가 남아있지 않아 backfill 불가).
+ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS retrieved_ids text[];
+-- error_signature: error_pitfalls._normalize_error(error_trace) 결과 영속화 — 매 조회마다
+-- on-the-fly 정규화하던 것을 저장. bin/backfill_error_signatures.py로 기존 행 소급 채움 가능.
+ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS error_signature text;
+
 -- materialize 시 sha256 기록 — submit.py exec 전 MinIO 다운로드본과 대조해
 -- 익명 write 버킷 변조를 탐지한다. code 컬럼(raw.attempts 원본)이 아니라
 -- 실제 exec되는 materialized best_pipeline.py 내용의 해시.

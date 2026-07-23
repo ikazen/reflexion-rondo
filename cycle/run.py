@@ -18,7 +18,7 @@ from agents.reflector import AttemptContext, reflect
 from agents.strategist import StrategyDecision, strategize
 from config.settings import MODEL_CODER, PROMOTE_CONFIRM_SEEDS
 from cycle.action_optimizer import get_action_prior, update_bandit
-from cycle.error_pitfalls import top_error_pitfalls
+from cycle.error_pitfalls import normalize_error, top_error_pitfalls
 from cycle.stagnation import detect_stagnation
 from cycle.materialize import materialize_best_pipeline
 from cycle.promotion import confirm_and_measure
@@ -490,12 +490,14 @@ def run_attempt_core(
         "action_type":      action_type,
         "reflection_ids":   decision.reflection_ids or None,
         "retrieval_scores": _retrieval_scores(lessons),
+        "retrieved_ids":    [l["reflection_id"] for l in lessons] or None,
         "cv_score":         cv_score,
         "cv_fold_var":      cv_fold_var,
         "label":            label,
         "gain_vs_best":     gain_vs_best,
         "gain_vs_best_relative": gain_vs_best_relative,
         "error_trace":      error_trace,
+        "error_signature":  normalize_error(error_trace) if error_trace else None,
         "duration_sec":     round(duration_sec, 1),
         "code_path":        str(code_path),
         "retries":          retries,

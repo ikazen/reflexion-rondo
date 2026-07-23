@@ -19,7 +19,7 @@ _VOLATILE = [
 _EXCEPTION_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*):\s*(.+)$")
 
 
-def _normalize_error(trace: str) -> str | None:
+def normalize_error(trace: str) -> str | None:
     for line in reversed(trace.splitlines()):
         line = line.strip()
         if not line:
@@ -61,7 +61,7 @@ def top_error_pitfalls(
 
     counter: Counter[str] = Counter()
     for (trace,) in rows:
-        sig = _normalize_error(trace)
+        sig = normalize_error(trace)
         if sig:
             counter[sig] += 1
 
