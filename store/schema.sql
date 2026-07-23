@@ -255,6 +255,168 @@ FROM raw.attempts a
 JOIN raw.competitions c USING (competition_id)
 WHERE a.holdout_score IS NOT NULL;
 
+-- #66/#67 관측 — 교훈 파이프라인 어디서 끊기나(작성→검색→인용→양의gain).
+-- retrieved/retrieve_rate는 P1(retrieved_ids) 반영 이후 데이터만 채워진다 —
+-- retrieved_precise=false면 과거 데이터가 섞여 retrieve_rate를 신뢰하지 말 것.
+CREATE OR REPLACE VIEW lesson_funnel AS
+WITH written AS (
+    SELECT competition_id, count(*) AS written
+    FROM raw.reflections
+    WHERE archived = false
+    GROUP BY competition_id
+),
+attempt_stats AS (
+    SELECT
+        competition_id,
+        count(*)                                                                    AS total_attempts,
+        count(*) FILTER (WHERE retrieved_ids IS NOT NULL
+                            AND array_length(retrieved_ids, 1) > 0)                  AS retrieved,
+        count(*) FILTER (WHERE reflection_ids IS NOT NULL
+                            AND array_length(reflection_ids, 1) > 0)                 AS cited,
+        count(*) FILTER (WHERE reflection_ids IS NOT NULL
+                            AND array_length(reflection_ids, 1) > 0
+                            AND gain_vs_best_relative > 0)                           AS positive_gain,
+        bool_or(retrieved_ids IS NOT NULL)                                          AS retrieved_precise
+    FROM raw.attempts
+    WHERE stage = 'reflexion'
+    GROUP BY competition_id
+)
+SELECT
+    coalesce(w.competition_id, s.competition_id)                  AS competition_id,
+    coalesce(w.written, 0)                                        AS written,
+    coalesce(s.total_attempts, 0)                                 AS total_attempts,
+    coalesce(s.retrieved, 0)                                      AS retrieved,
+    coalesce(s.cited, 0)                                          AS cited,
+    coalesce(s.positive_gain, 0)                                  AS positive_gain,
+    round(s.retrieved::numeric / nullif(s.total_attempts, 0), 4)  AS retrieve_rate,
+    round(s.cited::numeric / nullif(s.total_attempts, 0), 4)      AS cite_rate,
+    round(s.positive_gain::numeric / nullif(s.cited, 0), 4)       AS gain_rate,
+    coalesce(s.retrieved_precise, false)                          AS retrieved_precise
+FROM written w
+FULL OUTER JOIN attempt_stats s USING (competition_id);
+
+-- 죽은 교훈 — 검색 풀 오염원. archive_lessons.py는 times_applied>=3인 것만 정리해
+-- 인용 0회(never_cited) 교훈은 영원히 남는다(#11 §2 부수 발견).
+CREATE OR REPLACE VIEW lesson_dead AS
+SELECT
+    r.reflection_id,
+    r.competition_id,
+    r.lesson_type,
+    r.generality,
+    r.created_at,
+    coalesce(i.times_applied, 0) AS times_cited,
+    i.avg_gain,
+    CASE
+        WHEN coalesce(i.times_applied, 0) = 0 THEN 'never_cited'
+        WHEN i.avg_gain <= 0 THEN 'applied_negative'
+        ELSE null
+    END AS reason
+FROM raw.reflections r
+LEFT JOIN reflection_impact i USING (reflection_id)
+WHERE r.archived = false
+  AND (coalesce(i.times_applied, 0) = 0 OR i.avg_gain <= 0);
+
+-- near-duplicate 교훈(Reflector 패러프레이즈 남발 감시). 임계는 넉넉히(0.90) 저장해
+-- 두고 api.py가 ?threshold= 로 더 좁힌다. 2026-07-23 실측: cos_sim>0.95 686쌍.
+CREATE OR REPLACE VIEW lesson_duplicates AS
+SELECT
+    a.competition_id,
+    a.reflection_id AS reflection_id_a,
+    b.reflection_id AS reflection_id_b,
+    1 - (a.embedding <=> b.embedding) AS cos_sim
+FROM raw.reflections a
+JOIN raw.reflections b
+    ON a.reflection_id < b.reflection_id
+   AND a.competition_id = b.competition_id
+WHERE a.archived = false AND b.archived = false
+  AND 1 - (a.embedding <=> b.embedding) > 0.90;
+
+-- 밴딧 믿음(posterior_mean)과 실측 가중성공률 괴리. jump_rate가 아니라
+-- update_bandit(action_optimizer.py)과 동일한 가중치로 실측해야 구조적 gap을 피한다(#11 §5).
+CREATE OR REPLACE VIEW bandit_calibration AS
+WITH realized AS (
+    SELECT
+        competition_id AS scope_key,
+        action_type,
+        sum(CASE
+                WHEN label = 'jump' THEN 1.0
+                WHEN gain_vs_best > 0 THEN 0.5
+                WHEN label = 'regression' OR error_trace IS NOT NULL THEN 0.0
+                ELSE 0.1
+            END) AS num,
+        sum(CASE
+                WHEN label = 'jump' THEN 1.0
+                WHEN gain_vs_best > 0 THEN 0.6
+                WHEN label = 'regression' OR error_trace IS NOT NULL THEN 1.0
+                ELSE 0.2
+            END) AS den,
+        count(*)    AS picks,
+        max(run_ts) AS last_picked_ts
+    FROM raw.attempts
+    WHERE stage = 'reflexion' AND cv_score IS NOT NULL
+    GROUP BY competition_id, action_type
+)
+SELECT
+    b.scope,
+    b.scope_key,
+    b.action_type,
+    b.alpha,
+    b.beta,
+    b.posterior_mean,
+    b.alpha + b.beta - 2                                 AS net_evidence,
+    r.picks,
+    r.last_picked_ts,
+    r.num / nullif(r.den, 0)                             AS weighted_success,
+    abs(b.posterior_mean - r.num / nullif(r.den, 0))     AS calibration_gap
+FROM action_bandit_posterior b
+LEFT JOIN realized r ON r.scope_key = b.scope_key AND r.action_type = b.action_type;
+
+-- 에러 시그니처별 재발(P2 error_signature 기반). pitfall_active는 top_error_pitfalls의
+-- min_count=2와 동일 기준(2회째까지는 pitfall 미주입) — occurrences_after_active>0이면
+-- 안티패턴 루프가 안 닫힌 것(#11 §2 부수 발견).
+CREATE OR REPLACE VIEW error_recurrence AS
+WITH sigs AS (
+    SELECT
+        competition_id,
+        action_type,
+        error_signature,
+        run_ts,
+        row_number() OVER (
+            PARTITION BY competition_id, action_type, error_signature
+            ORDER BY run_ts
+        ) AS occurrence_no
+    FROM raw.attempts
+    WHERE label = 'error' AND error_signature IS NOT NULL
+)
+SELECT
+    s.competition_id,
+    s.action_type,
+    s.error_signature,
+    count(*)                                    AS total,
+    min(s.run_ts)                               AS first_seen,
+    max(s.run_ts)                               AS last_seen,
+    bool_or(s.occurrence_no >= 2)                AS pitfall_active,
+    count(*) FILTER (WHERE s.occurrence_no > 2)  AS occurrences_after_active,
+    exists (
+        SELECT 1 FROM raw.reflections r
+        JOIN raw.attempts a2 USING (attempt_id)
+        WHERE r.lesson_type = 'failure' AND r.archived = false
+          AND a2.competition_id = s.competition_id AND a2.action_type = s.action_type
+    ) AS has_avoid_lesson
+FROM sigs s
+GROUP BY s.competition_id, s.action_type, s.error_signature;
+
+-- 대회 간 교훈 전이 매트릭스(X1) — source_comp != target_comp 행이 실제 전이.
+CREATE OR REPLACE VIEW transfer_matrix AS
+SELECT
+    src.competition_id AS source_comp,
+    a.competition_id   AS target_comp,
+    count(*)            AS citations
+FROM raw.attempts a
+CROSS JOIN LATERAL unnest(a.reflection_ids) AS rid
+JOIN raw.reflections src ON src.reflection_id = rid
+GROUP BY src.competition_id, a.competition_id;
+
 CREATE TABLE IF NOT EXISTS raw.kaggle_submissions (
     submission_id  text PRIMARY KEY,
     competition_id text NOT NULL,
