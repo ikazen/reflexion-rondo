@@ -493,14 +493,43 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return result
 
     @app.get("/api/attempts")
-    def get_attempts(competition: str | None = None, limit: int = 50):
+    def get_attempts(
+        competition: str | None = None,
+        action_type: str | None = None,
+        label: str | None = None,
+        has_error: bool | None = None,
+        stage: str | None = None,
+        super_cycle_id: str | None = None,
+        limit: int = 50,
+    ):
         limit = min(limit, 500)
-        cache_key = f"attempts:{competition}:{limit}"
+        cache_key = (
+            f"attempts:{competition}:{action_type}:{label}:{has_error}:"
+            f"{stage}:{super_cycle_id}:{limit}"
+        )
         cached, hit = _cache.get(cache_key, ttl=30)
         if hit:
             return cached
-        where = "where a.competition_id = %s" if competition else ""
-        params = [competition] if competition else []
+        conditions = []
+        params: list = []
+        if competition:
+            conditions.append("a.competition_id = %s")
+            params.append(competition)
+        if action_type:
+            conditions.append("a.action_type = %s")
+            params.append(action_type)
+        if label:
+            conditions.append("a.label = %s")
+            params.append(label)
+        if has_error is not None:
+            conditions.append("a.error_trace is not null" if has_error else "a.error_trace is null")
+        if stage:
+            conditions.append("a.stage = %s")
+            params.append(stage)
+        if super_cycle_id:
+            conditions.append("a.super_cycle_id = %s")
+            params.append(super_cycle_id)
+        where = ("where " + " and ".join(conditions)) if conditions else ""
         rows = conn.execute(
             f"""
             select
@@ -508,6 +537,8 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
                 a.hypothesis, a.action_type, a.cv_score, a.cv_fold_var,
                 a.label, a.gain_vs_best, a.error_trace, a.duration_sec,
                 a.retries, a.code_path,
+                a.super_cycle_id, a.was_promoted, a.holdout_score,
+                a.error_signature, a.retrieved_ids, a.reflection_ids,
                 s.best_so_far
             from raw.attempts a
             left join score_progression s using (attempt_id)
@@ -521,7 +552,10 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
             "attempt_id", "competition_id", "run_ts", "stage",
             "hypothesis", "action_type", "cv_score", "cv_fold_var",
             "label", "gain_vs_best", "error_trace", "duration_sec",
-            "retries", "code_path", "best_so_far",
+            "retries", "code_path",
+            "super_cycle_id", "was_promoted", "holdout_score",
+            "error_signature", "retrieved_ids", "reflection_ids",
+            "best_so_far",
         ]
         result = [dict(zip(cols, r)) for r in rows]
         _cache.set(cache_key, result)
@@ -535,7 +569,8 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
                 attempt_id, competition_id, run_ts, stage,
                 hypothesis, action_type, cv_score, cv_fold_var,
                 label, gain_vs_best, error_trace, duration_sec,
-                retries, code_path, reflection_ids, retrieval_scores
+                retries, code_path, reflection_ids, retrieval_scores,
+                retrieved_ids, error_signature
             from raw.attempts
             where attempt_id = %s
             """,
@@ -548,28 +583,45 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
             "hypothesis", "action_type", "cv_score", "cv_fold_var",
             "label", "gain_vs_best", "error_trace", "duration_sec",
             "retries", "code_path", "reflection_ids", "retrieval_scores",
+            "retrieved_ids", "error_signature",
         ]
         return dict(zip(cols, row))
+
+    _LESSON_SORT_COLUMNS = {
+        "created_at": "r.created_at",
+        "avg_gain": "avg_gain",
+        "times_applied": "times_applied",
+        "jumps": "jumps",
+    }
 
     @app.get("/api/lessons")
     def get_lessons(
         competition: str | None = None,
         generality: str | None = None,
+        lesson_type: str | None = None,
+        archived: bool | None = None,
+        sort: str = "created_at",
         limit: int = 50,
     ):
         limit = min(limit, 500)
-        cache_key = f"lessons:{competition}:{generality}:{limit}"
+        cache_key = (
+            f"lessons:{competition}:{generality}:{lesson_type}:{archived}:{sort}:{limit}"
+        )
         cached, hit = _cache.get(cache_key, ttl=30)
         if hit:
             return cached
-        conditions = ["r.archived = false"]
-        params: list = []
+        sort_col = _LESSON_SORT_COLUMNS.get(sort, "r.created_at")
+        conditions = ["r.archived = false" if archived is None else "r.archived = %s"]
+        params: list = [] if archived is None else [archived]
         if competition:
             conditions.append("(r.competition_id = %s or r.generality in ('L2_class', 'L3_general'))")
             params.append(competition)
         if generality:
             conditions.append("r.generality = %s")
             params.append(generality)
+        if lesson_type:
+            conditions.append("r.lesson_type = %s")
+            params.append(lesson_type)
         where = "where " + " and ".join(conditions)
         rows = conn.execute(
             f"""
@@ -577,12 +629,17 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
                 r.reflection_id, r.created_at, r.competition_id,
                 r.embedded_text, r.full_lesson, r.generality,
                 r.label, r.gain_vs_best,
+                r.lesson_type, r.reflector_label, r.archived,
                 coalesce(i.times_applied, 0) as times_applied,
-                coalesce(i.avg_gain, 0.0) as avg_gain
+                coalesce(i.avg_gain, 0.0) as avg_gain,
+                coalesce(i.jumps, 0) as jumps,
+                coalesce(i.best_jump, 0.0) as best_jump,
+                (select count(*) from raw.attempts a2
+                 where r.reflection_id = any(a2.retrieved_ids)) as times_retrieved
             from raw.reflections r
             left join reflection_impact i using (reflection_id)
             {where}
-            order by r.created_at desc
+            order by {sort_col} desc
             limit %s
             """,
             params + [limit],
@@ -590,7 +647,9 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         cols = [
             "reflection_id", "created_at", "competition_id",
             "embedded_text", "full_lesson", "generality",
-            "label", "gain_vs_best", "times_applied", "avg_gain",
+            "label", "gain_vs_best",
+            "lesson_type", "reflector_label", "archived",
+            "times_applied", "avg_gain", "jumps", "best_jump", "times_retrieved",
         ]
         result = [dict(zip(cols, r)) for r in rows]
         _cache.set(cache_key, result)
