@@ -1,11 +1,11 @@
-"""issue #20/#27: runtime/isolate.py 메모리 기본값 회귀 테스트.
+"""runtime/isolate.py 메모리 기본값 회귀 테스트.
 
-#20에서 mac-server-big(당시 Colima VM 8GiB 고정)의 이론상 오버서브스크립션을 막으려고
+mac-server-big(당시 Colima VM 8GiB 고정)의 이론상 오버서브스크립션을 막으려고
 RLIMIT_AS를 6GiB→1.5GiB로 낮췄으나, RLIMIT_AS는 물리 RSS가 아니라 가상 주소공간(VSZ)
 상한이라 numpy/scipy/sklearn 등 라이브러리를 import하는 것만으로도 부족해 신규 대회
-부트스트랩 전체가 실패하는 회귀를 냈다(#27) — 물리 메모리가 남는 worker-vm에서도 실패.
+부트스트랩 전체가 실패하는 회귀를 냈다 — 물리 메모리가 남는 worker-vm에서도 실패.
 
-#27에서 mac-server Colima VM을 8→16GiB로 증설하고(실측 최대 동시성도 3이지 4가 아님을
+이후 mac-server Colima VM을 8→16GiB로 증설하고(실측 최대 동시성도 3이지 4가 아님을
 확인), RLIMIT_AS를 원래 값 6GiB로 복원했다.
 
 os.unshare(CLONE_NEWNET)는 CAP_SYS_ADMIN을 요구하고 테스트 프로세스 자체의
@@ -64,7 +64,7 @@ def test_set_resource_limits_cpu_default_unchanged() -> None:
     assert calls[resource.RLIMIT_CPU] == (900, 900)
 
 
-# --- eval_isolated: subprocess 격리 경계 필드 전달 (issue #58) ---
+# --- eval_isolated: subprocess 격리 경계 필드 전달 ---
 
 def test_eval_isolated_passes_through_gain_vs_best_relative() -> None:
     """subprocess(runner.py)가 쓴 output.json의 gain_vs_best_relative가 IsolatedResult로

@@ -52,7 +52,7 @@ def test_fallback_query_uses_attempts_table():
     assert "raw.attempts" in fallback_sql
 
 
-# --- _prev_best_params (BON-249) ---
+# --- _prev_best_params ---
 
 def test_prev_best_params_returns_dict_row():
     conn = _conn_seq(({"max_depth": 4},))
@@ -88,7 +88,7 @@ def test_prev_best_params_joins_attempts_and_pipelines():
     assert "raw.attempts" in sql
 
 
-# --- _prev_best_fold_scores (BON-247) ---
+# --- _prev_best_fold_scores ---
 
 def test_prev_best_fold_scores_returns_list_row():
     conn = _conn_seq(([0.9, 0.91, 0.89],))

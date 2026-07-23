@@ -21,7 +21,7 @@ _CASES = [
     ("accuracy", _Y_CLS, _P_CLS),
     ("f1",       _Y_CLS, _P_CLS),
     ("qwk",      _Y_QWK, _P_QWK),
-    ("balanced_accuracy", _Y_QWK, _P_QWK),  # BON-273: multiclass 대상, _Y_QWK가 3-class 이상 라벨 포함
+    ("balanced_accuracy", _Y_QWK, _P_QWK),  # multiclass 대상, _Y_QWK가 3-class 이상 라벨 포함
     ("rmse",     _Y_REG, _P_REG),
     ("mae",      _Y_REG, _P_REG),
     ("rmsle",    _Y_REG, _P_REG),

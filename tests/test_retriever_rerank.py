@@ -62,7 +62,7 @@ def test_impact_empty_candidates():
 
 
 def test_impact_global_stats_batch_independent():
-    """전역 (gain_mean, gain_std)를 넘기면 배치 구성이 달라도 동일 교훈의 score가 같다 (BON-195)."""
+    """전역 (gain_mean, gain_std)를 넘기면 배치 구성이 달라도 동일 교훈의 score가 같다."""
     target = _c(sim=0.7, avg_gain=0.02, seed=0)
     batch_a = [target, _c(sim=0.6, avg_gain=0.0, seed=1)]
     batch_b = [target.copy(), _c(sim=0.6, avg_gain=-0.5, seed=2), _c(sim=0.6, avg_gain=0.9, seed=3)]

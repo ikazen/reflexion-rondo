@@ -80,5 +80,5 @@ def test_action_type_passthrough() -> None:
 
 
 def test_action_catalog_does_not_advertise_uninstalled_tabpfn() -> None:
-    """BON-243: tabpfn은 pyproject.toml에 없어 model_swap→tabpfn은 100% ModuleNotFoundError."""
+    """tabpfn은 pyproject.toml에 없어 model_swap→tabpfn은 100% ModuleNotFoundError."""
     assert "tabpfn" not in _ACTION_CATALOG.lower()

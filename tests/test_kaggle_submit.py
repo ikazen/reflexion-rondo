@@ -1,11 +1,11 @@
-"""GH issue #31: _kaggle_submit 캐시 우선 경로.
+"""_kaggle_submit 캐시 우선 경로.
 
 promote 시점에 캐싱된 submission CSV(store.s3_code.download_submission_csv)가 있으면
 fit(bin.submit 서브프로세스) 없이 캐시된 CSV를 바로 kaggle CLI로 업로드해야 한다 —
 매일 06:00 auto-submit이 ops-vm(daemon 상주, 2 OCPU)에서 매번 fit하며 CPU를 포화시키던
 경로를 대체하는 것이 이번 변경의 목적. 캐시 미스 시에는 기존 bin.submit 경로로 폴백한다.
 
-GH issue #37: _kaggle_submit은 subprocess.run 대신 _run_in_pgroup을 쓴다 — 타임아웃 시
+_kaggle_submit은 subprocess.run 대신 _run_in_pgroup을 쓴다 — 타임아웃 시
 uv run이 spawn한 손자 python 프로세스까지 확실히 죽이기 위해서다(process group kill).
 """
 from __future__ import annotations
@@ -79,7 +79,7 @@ def test_no_attempt_id_skips_cache_lookup_entirely() -> None:
 
 
 def test_run_in_pgroup_kills_process_group_on_timeout() -> None:
-    """GH issue #37: 타임아웃 시 os.killpg가 자식의 프로세스 그룹 전체에 호출돼야 한다.
+    """타임아웃 시 os.killpg가 자식의 프로세스 그룹 전체에 호출돼야 한다.
 
     subprocess.run은 직속 자식(uv)만 kill해 uv가 spawn한 손자 python이 고아로 남았다.
     start_new_session=True로 띄운 뒤 os.killpg(pgid, SIGKILL)로 그룹째 죽이는지 검증.
@@ -121,7 +121,7 @@ def test_run_in_pgroup_returns_completed_process_on_success() -> None:
 
 
 def test_last_submitted_attempt_query_excludes_stale_submitted() -> None:
-    """issue #52: 'submitted'가 폴링 데드라인(30분)보다 한참(1시간) 지나도 안 풀리면
+    """'submitted'가 폴링 데드라인(30분)보다 한참(1시간) 지나도 안 풀리면
     재제출 후보에서 제외돼야 한다 — s6e6이 2주+ 'submitted'에 고정돼 매일 자동 제출이
     영구 스킵되던 실제 사례 재발 방지. 쿼리에 staleness 조건이 들어갔는지 확인."""
     conn = MagicMock()

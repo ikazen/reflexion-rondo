@@ -1,6 +1,6 @@
-"""BON-187: promote task uses slug (--competition) for module import, not DB competition_id.
-BON-210: queued promote 경로 버그 — A-1(미확인 시 reflect 전멸).
-BON-190: cross-seed 기준점 버그(A-2)는 paired 비교 도입으로 구조적으로 제거됨 —
+"""promote task uses slug (--competition) for module import, not DB competition_id.
+queued promote 경로 버그 — A-1(미확인 시 reflect 전멸).
+cross-seed 기준점 버그(A-2)는 paired 비교 도입으로 구조적으로 제거됨 —
 confirm_and_measure가 outside prev_best를 아예 받지 않고 seed마다 baseline을
 직접 재평가한다(tests/test_promotion_gate.py에서 회귀 검증).
 """
@@ -119,7 +119,7 @@ def test_promote_task_imports_by_slug_not_full_id() -> None:
         )
 
 
-# --- BON-210: A-1 / A-2 ----------------------------------------------------
+# --- A-1 / A-2 --------------------------------------------------------------
 
 _FULL_ID = "playground-series-s4e1"
 _SLUG = "s4e1"
@@ -180,7 +180,7 @@ def _run_promote_with_mocks(
 
     conn.insert_pipeline_mock / conn.upload_best_pipeline_mock / conn.eval_isolated_mock /
     conn.generate_csv_mock / conn.upload_submission_csv_mock에 각 mock을 붙여둔다 — 호출
-    여부를 검증할 수 있도록(BON-256 merge-verify, GH issue #31 submission 캐싱).
+    여부를 검증할 수 있도록(merge-verify, submission 캐싱).
     eval_isolated_mock 미지정 시 winner_cv(_WINNER_CV)와 일치하는 기본 성공 응답으로 채운다.
     generate_csv_mock 미지정 시 (fake_path, winner_attempt_id, _WINNER_CV) 성공 응답으로 채운다.
     """
@@ -258,7 +258,7 @@ def test_a1_reflect_runs_even_when_unconfirmed() -> None:
 
 
 def test_confirm_and_measure_takes_no_outside_prev_best() -> None:
-    """BON-190: confirm_and_measure는 outside prev_best를 받지 않는다 (paired 비교가
+    """confirm_and_measure는 outside prev_best를 받지 않는다 (paired 비교가
     seed마다 baseline을 직접 재평가하므로 winner 자기 CV를 기준점으로 쓰는 경로 자체가 없다).
     """
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
@@ -273,7 +273,7 @@ def test_confirm_and_measure_takes_no_outside_prev_best() -> None:
 
 
 def test_super_cycle_context_deleted_after_read() -> None:
-    """BON-111: 컨텍스트를 읽은 뒤 해당 run_id 행을 삭제해야 한다(BON-237: 키가 run_id로 변경)."""
+    """컨텍스트를 읽은 뒤 해당 run_id 행을 삭제해야 한다."""
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
     confirm_mock = MagicMock()
     conn = _run_promote_with_mocks(
@@ -286,7 +286,7 @@ def test_super_cycle_context_deleted_after_read() -> None:
 
 
 # ---------------------------------------------------------------------------
-# BON-256: merge-verify eval
+# merge-verify eval
 # ---------------------------------------------------------------------------
 
 def test_merge_verify_matching_cv_allows_promotion() -> None:
@@ -307,7 +307,7 @@ def test_merge_verify_matching_cv_allows_promotion() -> None:
 
 
 def test_merge_verify_passes_oof_preds_to_insert_pipeline() -> None:
-    """BON-248: merge-verify eval에서 뽑은 oof_preds가 insert_pipeline까지 전달돼야 한다."""
+    """merge-verify eval에서 뽑은 oof_preds가 insert_pipeline까지 전달돼야 한다."""
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
     confirm_mock = MagicMock()
     eval_isolated_mock = MagicMock(
@@ -321,7 +321,7 @@ def test_merge_verify_passes_oof_preds_to_insert_pipeline() -> None:
     )
     _, call_kwargs = conn.insert_pipeline_mock.call_args
     assert call_kwargs["oof_preds"] == [0.1, 0.2, 0.3]
-    # BON-248: collect_oof=True로 호출해야 OOF가 실제로 채워진다.
+    # collect_oof=True로 호출해야 OOF가 실제로 채워진다.
     _, eval_kwargs = conn.eval_isolated_mock.call_args
     assert eval_kwargs["collect_oof"] is True
 
@@ -361,7 +361,7 @@ def test_merge_verify_eval_error_blocks_promotion() -> None:
 
 
 # ---------------------------------------------------------------------------
-# GH issue #31: promote 시점 submission CSV 캐싱 — ops-vm 아침 CPU 스파이크 원인
+# promote 시점 submission CSV 캐싱 — ops-vm 아침 CPU 스파이크 원인
 # 제거(auto-submit이 이 자리에서 fit하는 대신 캐시를 재사용하도록)
 # ---------------------------------------------------------------------------
 

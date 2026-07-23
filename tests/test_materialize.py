@@ -185,9 +185,9 @@ def test_materialize_invalid_merge_raises():
         materialize_best_pipeline(broken_base, _PATCH)
 
 
-# --- undefined-name guard (BON-233) ---
-# 재현: s4e10 best_pipeline.py에서 build_model이 WeightedEnsemble(...)을 호출하는데
-# 그 클래스 정의가 파일 어디에도 없어 NameError가 535회 반복 발생했다.
+# --- undefined-name guard ---
+# 재현: best_pipeline.py에서 build_model이 WeightedEnsemble(...)을 호출하는데
+# 그 클래스 정의가 파일 어디에도 없어 NameError가 반복 발생했다.
 
 def test_undefined_name_dangling_reference_raises():
     broken = textwrap.dedent("""
@@ -324,8 +324,8 @@ def test_undefined_name_for_with_except_walrus_binding_ok():
     _validate_materialized(source)  # should not raise
 
 
-# --- optional-dependency 가드 보존 (BON-233) ---
-# s4e10 replay 중 발견: try/except로 조건부 바인딩하는 패턴
+# --- optional-dependency 가드 보존 ---
+# try/except로 조건부 바인딩하는 패턴
 # (`try: import catboost; FLAG=True except ImportError: FLAG=False`)이
 # _extract_toplevel_helpers의 named-helper 분류(class/def/assign)에 안 걸려
 # 조용히 드롭되고 있었다 — build_model이 FLAG를 참조하면 NameError.
@@ -381,7 +381,7 @@ def test_other_toplevel_statements_deduplicated_across_base_and_patch():
     assert result.count("CATBOOST_AVAILABLE = True") == 1
 
 
-# --- helper/member name collision (BON-197) ---
+# --- helper/member name collision ---
 
 _BASE_WITH_ENCODE = textwrap.dedent("""
     def _encode(x):

@@ -1,4 +1,4 @@
-"""BON-267: run_attempt_core의 label 확정이 promotion과 동일한 paired 유의성
+"""run_attempt_core의 label 확정이 promotion과 동일한 paired 유의성
 (is_significant_gain) 기준을 따르는지 검증한다.
 
 harness(evaluator/harness.py)가 붙인 절대-마진 label은 잠정값일 뿐이며, run_attempt_core가

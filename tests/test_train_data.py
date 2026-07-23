@@ -64,7 +64,7 @@ def test_drop_cols_applied():
 
 
 # ---------------------------------------------------------------------------
-# BON-250: EXTRA_TRAIN_PATHS 병합
+# EXTRA_TRAIN_PATHS 병합
 # ---------------------------------------------------------------------------
 
 def test_no_extra_paths_omits_is_original_column():

@@ -49,7 +49,7 @@ def test_search_failure_lessons_query_filters_lesson_type_failure():
     assert "archived = false" in sql
 
 
-# --- _global_gain_stats (BON-195) ---
+# --- _global_gain_stats ---
 
 def test_global_gain_stats_returns_mean_and_std():
     conn = _conn_one((0.01, 0.02))

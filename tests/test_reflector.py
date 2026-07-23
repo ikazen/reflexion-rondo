@@ -64,7 +64,7 @@ def _ctx(**overrides) -> AttemptContext:
 
 
 def test_format_context_includes_noop_note_when_flagged():
-    """BON-239: is_noop_tie=True면 프롬프트에 명시적 설명 요청 노트가 포함된다."""
+    """is_noop_tie=True면 프롬프트에 명시적 설명 요청 노트가 포함된다."""
     text = _format_context(_ctx(is_noop_tie=True))
     assert "bit-for-bit identical to prev_best" in text
 
