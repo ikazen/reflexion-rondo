@@ -147,6 +147,7 @@ def main() -> None:
         "fold_scores": result.fold_scores,
         "label": result.label,
         "gain_vs_best": result.gain_vs_best,
+        "gain_vs_best_relative": result.gain_vs_best_relative,
         "feature_importance": result.feature_importance,
         "is_noop_tie": result.is_noop_tie,
         "selected_params": result.selected_params,

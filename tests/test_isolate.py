@@ -62,3 +62,39 @@ def test_set_resource_limits_cpu_default_unchanged() -> None:
     import resource
     calls = {c.args[0]: c.args[1] for c in mock_setrlimit.call_args_list}
     assert calls[resource.RLIMIT_CPU] == (900, 900)
+
+
+# --- eval_isolated: subprocess 격리 경계 필드 전달 (issue #58) ---
+
+def test_eval_isolated_passes_through_gain_vs_best_relative() -> None:
+    """subprocess(runner.py)가 쓴 output.json의 gain_vs_best_relative가 IsolatedResult로
+    그대로 전달되는지 확인 — metric 스케일 정규화 필드가 격리 경계를 넘어야 한다."""
+    import json as _json
+    from unittest.mock import MagicMock
+
+    import polars as pl
+
+    from runtime.isolate import eval_isolated
+
+    def fake_run(cmd, **kwargs):
+        tmpdir = cmd[2]
+        (Path(tmpdir) / "output.json").write_text(_json.dumps({
+            "cv_score": 0.9, "cv_fold_var": 0.01, "fold_scores": [0.89, 0.9, 0.91],
+            "label": "jump", "gain_vs_best": 0.05, "gain_vs_best_relative": 0.06,
+            "error_trace": None,
+        }))
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    train = pl.DataFrame({"x": [1, 2, 3], "y": [0, 1, 0]})
+    with patch("runtime.isolate.subprocess.run", side_effect=fake_run):
+        result = eval_isolated(
+            source="class Patch:\n    pass\n", train=train, target_col="y", metric="auc",
+            prev_best=0.85, n_splits=3, seed=42, is_classification=True,
+        )
+    assert result.gain_vs_best_relative == 0.06
+
+
+def test_err_result_defaults_gain_relative_to_none() -> None:
+    from runtime.isolate import _err
+    result = _err("some failure")
+    assert result.gain_vs_best_relative is None
