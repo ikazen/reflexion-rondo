@@ -14,6 +14,7 @@ import contextlib
 import signal
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -30,12 +31,14 @@ def _fake_kaggle_home_env():
 
 
 def _run(attempt_id, cached_csv, submit_result=None):
-    """공통 mock 세트로 _kaggle_submit 1회 실행. (run_in_pgroup_mock, download_mock) 반환."""
+    """공통 mock 세트로 _kaggle_submit 1회 실행.
+    (run_in_pgroup_mock, download_mock, upload_mock) 반환."""
     submit_result = submit_result or MagicMock(returncode=0, stdout="submission saved: /tmp/x.csv\n", stderr="")
     conn_mock = MagicMock()
     with patch("store.db.connect", return_value=conn_mock), \
          patch("bin.api._kaggle_home_env", _fake_kaggle_home_env), \
          patch("store.s3_code.download_submission_csv", return_value=cached_csv) as download_mock, \
+         patch("store.s3_code.upload_submission_csv") as upload_mock, \
          patch("bin.api._run_in_pgroup", return_value=submit_result) as run_mock:
         _kaggle_submit(
             submission_id="sub-1",
@@ -44,23 +47,25 @@ def _run(attempt_id, cached_csv, submit_result=None):
             attempt_id=attempt_id,
             message="test message",
         )
-    return run_mock, download_mock
+    return run_mock, download_mock, upload_mock
 
 
 def test_cache_hit_uploads_csv_directly_without_fit() -> None:
     """캐시 히트 시 kaggle CLI를 직접 호출하고 bin.submit 서브프로세스(fit)는 안 뜬다."""
-    run_mock, download_mock = _run(attempt_id="attempt-abc", cached_csv=b"id,target\n1,0.5\n")
+    run_mock, download_mock, upload_mock = _run(attempt_id="attempt-abc", cached_csv=b"id,target\n1,0.5\n")
     download_mock.assert_called_once_with("playground-series-s4e1", "attempt-abc")
     run_mock.assert_called_once()
     cmd = run_mock.call_args.args[0]
     assert cmd[:2] == ["uv", "run"]
     assert "kaggle" in cmd
     assert "bin.submit" not in cmd
+    # 이미 캐시 히트였으니 재업로드(안전망)는 불필요.
+    upload_mock.assert_not_called()
 
 
 def test_cache_miss_falls_back_to_fit_subprocess() -> None:
     """캐시 미스면 기존대로 bin.submit 서브프로세스(fit)를 띄운다."""
-    run_mock, download_mock = _run(attempt_id="attempt-abc", cached_csv=None)
+    run_mock, download_mock, _ = _run(attempt_id="attempt-abc", cached_csv=None)
     download_mock.assert_called_once_with("playground-series-s4e1", "attempt-abc")
     run_mock.assert_called_once()
     cmd = run_mock.call_args.args[0]
@@ -69,13 +74,32 @@ def test_cache_miss_falls_back_to_fit_subprocess() -> None:
     assert "attempt-abc" in cmd
 
 
+def test_cache_miss_fit_result_is_uploaded_to_cache_as_safety_net() -> None:
+    """캐시 미스로 ops-vm에서 직접 fit한 경우, 그 결과 CSV를 캐시에 올려야 한다 —
+    promote task가 미처 선캐싱하지 못한 타이밍 갭에서도 같은 attempt의 다음 제출부턴
+    fit 없이 히트하도록 하는 안전망."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
+    tmp.write(b"id,target\n1,0.5\n")
+    tmp.close()
+    try:
+        submit_result = MagicMock(returncode=0, stdout=f"submission saved: {tmp.name}\n", stderr="")
+        _, _, upload_mock = _run(attempt_id="attempt-abc", cached_csv=None, submit_result=submit_result)
+        upload_mock.assert_called_once_with(
+            "playground-series-s4e1", "attempt-abc", b"id,target\n1,0.5\n"
+        )
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+
+
 def test_no_attempt_id_skips_cache_lookup_entirely() -> None:
     """attempt_id 미지정(수동 제출 'best')이면 캐시 조회 자체를 하지 않고 기존 경로로 간다."""
-    run_mock, download_mock = _run(attempt_id=None, cached_csv=None)
+    run_mock, download_mock, upload_mock = _run(attempt_id=None, cached_csv=None)
     download_mock.assert_not_called()
     cmd = run_mock.call_args.args[0]
     assert "bin.submit" in cmd
     assert "--attempt-id" not in cmd
+    # attempt_id가 없으면 캐시 키를 만들 수 없어 안전망 업로드도 스킵.
+    upload_mock.assert_not_called()
 
 
 def test_run_in_pgroup_kills_process_group_on_timeout() -> None:

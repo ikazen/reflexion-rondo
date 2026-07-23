@@ -264,22 +264,25 @@ def main() -> None:
                     upload_best_pipeline(competition_id, materialized)
                     print(f"[run_promote_task] best pipeline materialized for {competition_id}")
 
-                    # auto-submit(매일 06:00)이 이 자리에서 처음 5-seed
-                    # full-train fit을 하며 daemon 상주 ops-vm(2 OCPU) CPU를 포화시켰다.
-                    # promote는 이미 big 큐(worker-vm/mac-server)에서 도니 여기서 미리
-                    # 생성해 캐싱하면 fit 비용이 ops-vm 밖으로 옮겨진다. best-effort —
-                    # 실패해도 promote 자체는 성공 처리한다(캐시 미스 시 auto-submit이
-                    # 기존 fit 경로로 폴백하므로 안전).
-                    try:
-                        from bin.submit import generate_submission_csv
-                        from store.s3_code import upload_submission_csv
-                        csv_path, _, _ = generate_submission_csv(
-                            args.competition, attempt_id=winner_row[0]
-                        )
-                        upload_submission_csv(competition_id, winner_row[0], csv_path.read_bytes())
-                        print(f"[run_promote_task] submission csv cached for {winner_row[0][:8]}")
-                    except Exception as exc:
-                        print(f"[run_promote_task] submission csv caching failed (non-fatal): {exc}")
+    # auto-submit(매일 06:00)이 제출하는 건 이번 super-cycle의 확정 승격 winner가 아니라
+    # 대회 전역 best attempt(bin/api.py:_best_attempt와 동일 기준)다 — 확정 승격 여부와
+    # 무관하게 매 promote task 종료 시점마다 그 attempt의 제출 CSV를 미리 캐싱해두면
+    # ops-vm daemon이 auto-submit 시점에 fit 없이 업로드만 하게 된다(fit은 이미 big
+    # 큐에서 도는 이 promote task 쪽으로 옮겨짐). 이미 캐시돼 있으면 재fit하지 않는다.
+    # best-effort — 실패해도 promote 자체는 성공 처리한다.
+    try:
+        from bin.api import _best_attempt
+        from bin.submit import generate_submission_csv
+        from store.s3_code import download_submission_csv, upload_submission_csv
+        best = _best_attempt(conn, competition_id)
+        if best:
+            best_attempt_id, best_cv = best
+            if download_submission_csv(competition_id, best_attempt_id) is None:
+                csv_path, _, _ = generate_submission_csv(args.competition, attempt_id=best_attempt_id)
+                upload_submission_csv(competition_id, best_attempt_id, csv_path.read_bytes())
+                print(f"[run_promote_task] submission csv cached for best={best_attempt_id[:8]} cv={best_cv}")
+    except Exception as exc:
+        print(f"[run_promote_task] submission csv caching failed (non-fatal): {exc}")
 
     for i, r in enumerate(rows):
         (attempt_id, gain_vs_best, cv_score, label, error_trace,

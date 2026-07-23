@@ -174,15 +174,19 @@ class _Conn:
 
 
 def _run_promote_with_mocks(
-    confirm_result, reflect_mock, confirm_mock, eval_isolated_mock=None, generate_csv_mock=None
+    confirm_result, reflect_mock, confirm_mock, eval_isolated_mock=None, generate_csv_mock=None,
+    best_attempt_mock=None, download_submission_csv_mock=None,
 ) -> "_Conn":
     """모든 외부 의존을 mock 처리하고 run_promote_task.main()을 1회 실행. 사용된 conn을 반환.
 
     conn.insert_pipeline_mock / conn.upload_best_pipeline_mock / conn.eval_isolated_mock /
-    conn.generate_csv_mock / conn.upload_submission_csv_mock에 각 mock을 붙여둔다 — 호출
-    여부를 검증할 수 있도록(merge-verify, submission 캐싱).
+    conn.generate_csv_mock / conn.upload_submission_csv_mock / conn.best_attempt_mock /
+    conn.download_submission_csv_mock에 각 mock을 붙여둔다 — 호출 여부를 검증할 수 있도록
+    (merge-verify, submission 캐싱).
     eval_isolated_mock 미지정 시 winner_cv(_WINNER_CV)와 일치하는 기본 성공 응답으로 채운다.
     generate_csv_mock 미지정 시 (fake_path, winner_attempt_id, _WINNER_CV) 성공 응답으로 채운다.
+    best_attempt_mock 미지정 시 winner_attempt_id를 전역 best로 반환(대부분 테스트는 승격
+    winner == 전역 best로 가정). download_submission_csv_mock 미지정 시 캐시 미스(None).
     """
     fake_df = MagicMock(name="train_df")
     fake_df.drop.return_value = fake_df
@@ -205,26 +209,33 @@ def _run_promote_with_mocks(
     generate_csv_mock = generate_csv_mock or MagicMock(
         return_value=(fake_csv_path, _ATTEMPT_ROWS[0][0], _WINNER_CV)
     )
+    best_attempt_mock = best_attempt_mock or MagicMock(
+        return_value=(_ATTEMPT_ROWS[0][0], _WINNER_CV)
+    )
+    download_submission_csv_mock = download_submission_csv_mock or MagicMock(return_value=None)
 
     argv = ["run_promote_task", "--queue-id", "qid", "--run-id", "rid", "--competition", _SLUG]
     sys.path.insert(0, str(ROOT))
     try:
-        with patch.object(sys, "argv", argv), \
-             patch("store.db.connect", return_value=conn), \
-             patch("store.db.insert_pipeline") as insert_pipeline_mock, \
-             patch("store.s3_code.download", return_value="def f():\n    return 1\n"), \
-             patch("store.s3_code.download_best_pipeline", return_value=None), \
-             patch("store.s3_code.upload_best_pipeline") as upload_best_pipeline_mock, \
-             patch("bin.submit.generate_submission_csv", generate_csv_mock), \
-             patch("store.s3_code.upload_submission_csv") as upload_submission_csv_mock, \
-             patch("cycle.materialize.materialize_best_pipeline", return_value="code"), \
-             patch("cycle.promotion.confirm_and_measure", confirm_mock), \
-             patch("agents.reflector.reflect", reflect_mock), \
-             patch("evaluator.harness.is_significant_gain", return_value=True), \
-             patch("evaluator.harness.split_audit_holdout", return_value=(fake_df, fake_df)), \
-             patch("runtime.isolate.eval_isolated", eval_isolated_mock), \
-             patch("polars.read_csv", return_value=fake_df), \
-             patch("importlib.import_module", side_effect=fake_import):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(sys, "argv", argv))
+            stack.enter_context(patch("store.db.connect", return_value=conn))
+            insert_pipeline_mock = stack.enter_context(patch("store.db.insert_pipeline"))
+            stack.enter_context(patch("store.s3_code.download", return_value="def f():\n    return 1\n"))
+            stack.enter_context(patch("store.s3_code.download_best_pipeline", return_value=None))
+            upload_best_pipeline_mock = stack.enter_context(patch("store.s3_code.upload_best_pipeline"))
+            stack.enter_context(patch("bin.submit.generate_submission_csv", generate_csv_mock))
+            upload_submission_csv_mock = stack.enter_context(patch("store.s3_code.upload_submission_csv"))
+            stack.enter_context(patch("store.s3_code.download_submission_csv", download_submission_csv_mock))
+            stack.enter_context(patch("bin.api._best_attempt", best_attempt_mock))
+            stack.enter_context(patch("cycle.materialize.materialize_best_pipeline", return_value="code"))
+            stack.enter_context(patch("cycle.promotion.confirm_and_measure", confirm_mock))
+            stack.enter_context(patch("agents.reflector.reflect", reflect_mock))
+            stack.enter_context(patch("evaluator.harness.is_significant_gain", return_value=True))
+            stack.enter_context(patch("evaluator.harness.split_audit_holdout", return_value=(fake_df, fake_df)))
+            stack.enter_context(patch("runtime.isolate.eval_isolated", eval_isolated_mock))
+            stack.enter_context(patch("polars.read_csv", return_value=fake_df))
+            stack.enter_context(patch("importlib.import_module", side_effect=fake_import))
             import bin.run_promote_task as rpt
             importlib.reload(rpt)
             try:
@@ -239,6 +250,8 @@ def _run_promote_with_mocks(
     conn.eval_isolated_mock = eval_isolated_mock
     conn.generate_csv_mock = generate_csv_mock
     conn.upload_submission_csv_mock = upload_submission_csv_mock
+    conn.best_attempt_mock = best_attempt_mock
+    conn.download_submission_csv_mock = download_submission_csv_mock
     return conn
 
 
@@ -365,10 +378,48 @@ def test_merge_verify_eval_error_blocks_promotion() -> None:
 # 제거(auto-submit이 이 자리에서 fit하는 대신 캐시를 재사용하도록)
 # ---------------------------------------------------------------------------
 
-def test_submission_csv_cached_on_successful_promotion() -> None:
-    """승격 성공 시 winner attempt_id로 generate_submission_csv → upload_submission_csv가
-    호출돼야 한다 — 다음 06:00 auto-submit이 fit 없이 이 캐시를 쓸 수 있도록.
+def test_submission_csv_cached_using_global_best_attempt() -> None:
+    """캐싱은 이번 super-cycle의 승격 winner가 아니라 대회 전역 best attempt
+    (bin.api._best_attempt) 기준으로 이뤄져야 한다 — auto-submit이 실제로 제출하는
+    attempt와 캐시 키가 일치해야 캐시가 쓸모 있다.
     """
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    eval_isolated_mock = MagicMock(
+        return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None, oof_preds=None)
+    )
+    global_best_id = "gbest000"  # 이번 super-cycle winner(w0000000)와 다른 attempt
+    best_attempt_mock = MagicMock(return_value=(global_best_id, 0.90))
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
+        reflect_mock,
+        confirm_mock,
+        eval_isolated_mock=eval_isolated_mock,
+        best_attempt_mock=best_attempt_mock,
+    )
+    conn.generate_csv_mock.assert_called_once_with(_SLUG, attempt_id=global_best_id)
+    conn.upload_submission_csv_mock.assert_called_once_with(_FULL_ID, global_best_id, b"csv-bytes")
+
+
+def test_submission_csv_cached_even_when_promotion_not_confirmed() -> None:
+    """cross-seed 미확인으로 이번 super-cycle이 승격되지 않아도, 전역 best attempt
+    캐싱은 승격 여부와 무관하게 실행돼야 한다(캐싱은 확정 승격 분기 밖으로 이동됨)."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None),
+        reflect_mock,
+        confirm_mock,
+    )
+    winner_attempt_id = _ATTEMPT_ROWS[0][0]
+    conn.generate_csv_mock.assert_called_once_with(_SLUG, attempt_id=winner_attempt_id)
+    conn.upload_submission_csv_mock.assert_called_once_with(_FULL_ID, winner_attempt_id, b"csv-bytes")
+    assert conn.insert_pipeline_mock.call_count == 0  # 승격 자체는 여전히 스킵됨
+
+
+def test_submission_csv_cache_skipped_when_already_present() -> None:
+    """전역 best attempt의 캐시가 이미 있으면 재fit(generate_submission_csv)하지 않는다 —
+    슈퍼사이클마다 같은 best를 반복 fit하지 않기 위한 멱등 가드."""
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
     confirm_mock = MagicMock()
     eval_isolated_mock = MagicMock(
@@ -379,10 +430,10 @@ def test_submission_csv_cached_on_successful_promotion() -> None:
         reflect_mock,
         confirm_mock,
         eval_isolated_mock=eval_isolated_mock,
+        download_submission_csv_mock=MagicMock(return_value=b"already-cached"),
     )
-    winner_attempt_id = _ATTEMPT_ROWS[0][0]
-    conn.generate_csv_mock.assert_called_once_with(_SLUG, attempt_id=winner_attempt_id)
-    conn.upload_submission_csv_mock.assert_called_once_with(_FULL_ID, winner_attempt_id, b"csv-bytes")
+    assert conn.generate_csv_mock.call_count == 0
+    assert conn.upload_submission_csv_mock.call_count == 0
 
 
 def test_submission_csv_caching_failure_does_not_block_promotion() -> None:
