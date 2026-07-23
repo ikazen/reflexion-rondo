@@ -9,6 +9,14 @@
   GET  /api/attempts/{id}
   GET  /api/lessons
   GET  /api/cold-start
+  GET  /api/score/timeline           -- 관측 T3 (#67): CV 추이 + jump 마커 + holdout
+  GET  /api/reflexion-health         -- 관측 T5 (#67): 건강 신호등 4칸(#11 §6)
+  GET  /api/bandit/posteriors        -- 관측 B2a (#67): posterior + 실측 가중성공률 괴리
+  GET  /api/lessons/funnel           -- 관측 B3f (#67): 작성→검색→인용→양의gain 전환율
+  GET  /api/lessons/dead             -- 관측 B3d (#67): 인용 0 / 음의gain 교훈
+  GET  /api/lessons/duplicates       -- 관측 B3u (#67): near-duplicate 교훈 쌍
+  GET  /api/errors/signatures        -- 관측 B4s (#67): 에러 시그니처·재발
+  GET  /api/transfer/matrix          -- 관측 X1  (#67): 대회 간 교훈 인용 매트릭스
   GET  /api/queue
   POST /api/queue
   PATCH /api/queue/{id}
@@ -16,6 +24,11 @@
   POST /api/submissions/auto
   GET  /api/submissions
   GET  /api/submissions/{id}
+
+관측 엔드포인트 8개는 GH #11/#67 설계의 24개 중 건강질문 직결 우선순위 서브셋 — 나머지는 후속.
+데이터 소스는 store/schema.sql의 파생 뷰(lesson_funnel/lesson_dead/lesson_duplicates/
+bandit_calibration/error_recurrence/transfer_matrix). retrieved_ids(P1)는 forward-only라
+과거 데이터가 섞인 경우 lesson_funnel.retrieved_precise=false로 표시된다.
 
 Postgres 연결은 호출 측(daemon)이 주입한다.
 DaemonState는 daemon 메인 루프가 갱신하고 API가 읽는 공유 객체.
@@ -44,6 +57,8 @@ import polars as pl
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from config.settings import ACTION_TYPES
+from cycle.stagnation import detect_stagnation
 from store.db import PgConn
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -73,6 +88,15 @@ class _TTLCache:
 
 
 _cache = _TTLCache()
+
+
+def _traffic_light(*, green: bool, red: bool) -> str:
+    """#11 §6 신호등 판정 — red가 green보다 우선."""
+    if red:
+        return "red"
+    if green:
+        return "green"
+    return "amber"
 
 
 @dataclass
@@ -593,6 +617,276 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         ).fetchall()
         cols = ["competition_id", "attempt_no", "run_ts", "stage", "cv_score", "best_so_far"]
         result = [dict(zip(cols, r)) for r in rows]
+        _cache.set(cache_key, result)
+        return result
+
+    # ---- 관측 (#11/#67) — 건강질문 직결 8개, 데이터는 store/schema.sql 파생 뷰 ----
+
+    @app.get("/api/score/timeline")
+    def get_score_timeline(competition: str, limit: int = 2000):
+        limit = min(limit, 5000)
+        cache_key = f"score_timeline:{competition}:{limit}"
+        cached, hit = _cache.get(cache_key, ttl=30)
+        if hit:
+            return cached
+        rows = conn.execute(
+            """
+            select s.attempt_no, s.run_ts, s.cv_score, s.best_so_far, s.label,
+                   (s.label = 'jump') as is_jump, h.holdout_score
+            from score_progression s
+            left join holdout_cv_gap_trend h using (attempt_id)
+            where s.competition_id = %s
+            order by s.attempt_no
+            limit %s
+            """,
+            [competition, limit],
+        ).fetchall()
+        cols = ["attempt_no", "run_ts", "cv_score", "best_so_far", "label", "is_jump", "holdout_score"]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set(cache_key, result)
+        return result
+
+    @app.get("/api/bandit/posteriors")
+    def get_bandit_posteriors(competition: str):
+        cache_key = f"bandit_posteriors:{competition}"
+        cached, hit = _cache.get(cache_key, ttl=60)
+        if hit:
+            return cached
+        rows = conn.execute(
+            """
+            select action_type, alpha, beta, posterior_mean, net_evidence,
+                   picks, last_picked_ts, weighted_success, calibration_gap
+            from bandit_calibration
+            where scope = 'local' and scope_key = %s
+            order by posterior_mean desc
+            """,
+            [competition],
+        ).fetchall()
+        cols = [
+            "action_type", "alpha", "beta", "posterior_mean", "net_evidence",
+            "picks", "last_picked_ts", "weighted_success", "calibration_gap",
+        ]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set(cache_key, result)
+        return result
+
+    @app.get("/api/lessons/funnel")
+    def get_lessons_funnel(competition: str):
+        cache_key = f"lessons_funnel:{competition}"
+        cached, hit = _cache.get(cache_key, ttl=30)
+        if hit:
+            return cached
+        row = conn.execute(
+            """
+            select competition_id, written, total_attempts, retrieved, cited, positive_gain,
+                   retrieve_rate, cite_rate, gain_rate, retrieved_precise
+            from lesson_funnel
+            where competition_id = %s
+            """,
+            [competition],
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="no funnel data for competition")
+        cols = [
+            "competition_id", "written", "total_attempts", "retrieved", "cited", "positive_gain",
+            "retrieve_rate", "cite_rate", "gain_rate", "retrieved_precise",
+        ]
+        result = dict(zip(cols, row))
+        _cache.set(cache_key, result)
+        return result
+
+    @app.get("/api/lessons/dead")
+    def get_lessons_dead(competition: str, limit: int = 200):
+        limit = min(limit, 1000)
+        cache_key = f"lessons_dead:{competition}:{limit}"
+        cached, hit = _cache.get(cache_key, ttl=30)
+        if hit:
+            return cached
+        rows = conn.execute(
+            """
+            select reflection_id, competition_id, lesson_type, generality, created_at,
+                   times_cited, avg_gain, reason
+            from lesson_dead
+            where competition_id = %s
+            order by times_cited asc, created_at asc
+            limit %s
+            """,
+            [competition, limit],
+        ).fetchall()
+        cols = [
+            "reflection_id", "competition_id", "lesson_type", "generality", "created_at",
+            "times_cited", "avg_gain", "reason",
+        ]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set(cache_key, result)
+        return result
+
+    @app.get("/api/lessons/duplicates")
+    def get_lessons_duplicates(competition: str, threshold: float = 0.95, limit: int = 200):
+        limit = min(limit, 1000)
+        cache_key = f"lessons_duplicates:{competition}:{threshold}:{limit}"
+        cached, hit = _cache.get(cache_key, ttl=120)
+        if hit:
+            return cached
+        rows = conn.execute(
+            """
+            select competition_id, reflection_id_a, reflection_id_b, cos_sim
+            from lesson_duplicates
+            where competition_id = %s and cos_sim >= %s
+            order by cos_sim desc
+            limit %s
+            """,
+            [competition, threshold, limit],
+        ).fetchall()
+        cols = ["competition_id", "reflection_id_a", "reflection_id_b", "cos_sim"]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set(cache_key, result)
+        return result
+
+    @app.get("/api/errors/signatures")
+    def get_error_signatures(competition: str, limit: int = 100):
+        limit = min(limit, 500)
+        cache_key = f"error_signatures:{competition}:{limit}"
+        cached, hit = _cache.get(cache_key, ttl=60)
+        if hit:
+            return cached
+        rows = conn.execute(
+            """
+            select action_type, error_signature, total, first_seen, last_seen,
+                   pitfall_active, occurrences_after_active, has_avoid_lesson
+            from error_recurrence
+            where competition_id = %s
+            order by total desc
+            limit %s
+            """,
+            [competition, limit],
+        ).fetchall()
+        cols = [
+            "action_type", "error_signature", "total", "first_seen", "last_seen",
+            "pitfall_active", "occurrences_after_active", "has_avoid_lesson",
+        ]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set(cache_key, result)
+        return result
+
+    @app.get("/api/transfer/matrix")
+    def get_transfer_matrix():
+        cached, hit = _cache.get("transfer_matrix", ttl=120)
+        if hit:
+            return cached
+        rows = conn.execute(
+            "select source_comp, target_comp, citations from transfer_matrix order by citations desc"
+        ).fetchall()
+        cols = ["source_comp", "target_comp", "citations"]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set("transfer_matrix", result)
+        return result
+
+    @app.get("/api/reflexion-health")
+    def get_reflexion_health(competition: str):
+        """#11 §6 건강 신호등 4칸(T5). /api/health(의존성 헬스체크)와 경로 충돌 피하려 개명."""
+        cache_key = f"reflexion_health:{competition}"
+        cached, hit = _cache.get(cache_key, ttl=60)
+        if hit:
+            return cached
+
+        funnel = conn.execute(
+            "select cite_rate, retrieved_precise from lesson_funnel where competition_id = %s",
+            [competition],
+        ).fetchone()
+        cite_rate = float(funnel[0]) if funnel and funnel[0] is not None else 0.0
+        citation_rate_approx = not bool(funnel[1]) if funnel else True
+
+        label_rows = conn.execute(
+            """
+            select label from raw.attempts
+            where competition_id = %s and stage = 'reflexion'
+            order by run_ts desc limit 10
+            """,
+            [competition],
+        ).fetchall()
+        jumps_last10 = sum(1 for (label,) in label_rows if label == "jump")
+
+        bandit_rows = conn.execute(
+            "select posterior_mean, calibration_gap from bandit_calibration where scope_key = %s",
+            [competition],
+        ).fetchall()
+        posteriors = [float(r[0]) for r in bandit_rows if r[0] is not None]
+        gaps = [float(r[1]) for r in bandit_rows if r[1] is not None]
+        posterior_spread = (max(posteriors) - min(posteriors)) if posteriors else 0.0
+        calibration_gap = max(gaps) if gaps else 0.0
+
+        error_rows = conn.execute(
+            """
+            select total, occurrences_after_active, pitfall_active
+            from error_recurrence where competition_id = %s
+            """,
+            [competition],
+        ).fetchall()
+        active = [r for r in error_rows if r[2]]
+        active_total = sum(r[0] for r in active)
+        repeat_after_pitfall_rate = (
+            sum(r[1] for r in active) / active_total if active_total else 0.0
+        )
+
+        # 최근/이전 절반 에러율 비교로 방향만 판정 — 신호등 용도라 선형회귀는 과함.
+        recent_labels = conn.execute(
+            """
+            select (label = 'error') as is_error from raw.attempts
+            where competition_id = %s and stage = 'reflexion'
+            order by run_ts desc limit 200
+            """,
+            [competition],
+        ).fetchall()
+        error_rate_slope = 0
+        if len(recent_labels) >= 20:
+            mid = len(recent_labels) // 2
+            recent = [e for (e,) in recent_labels[:mid]]
+            earlier = [e for (e,) in recent_labels[mid:]]
+            recent_rate = sum(recent) / len(recent)
+            earlier_rate = sum(earlier) / len(earlier)
+            error_rate_slope = -1 if recent_rate < earlier_rate else (1 if recent_rate > earlier_rate else 0)
+
+        stagnation = detect_stagnation(conn, competition)
+        action_coverage = len(ACTION_TYPES) - len(stagnation.underused_actions)
+
+        result = {
+            "competition_id": competition,
+            "accumulation": {
+                "status": _traffic_light(
+                    green=(cite_rate >= 0.30 and jumps_last10 >= 1),
+                    red=(cite_rate < 0.10 or (jumps_last10 == 0 and stagnation.is_stagnant)),
+                ),
+                "jumps_last10": jumps_last10,
+                "citation_rate": round(cite_rate, 4),
+                "citation_rate_approx": citation_rate_approx,
+            },
+            "bandit": {
+                "status": _traffic_light(
+                    green=(posterior_spread >= 0.15 and calibration_gap <= 0.15),
+                    red=(posterior_spread < 0.05 or calibration_gap > 0.30),
+                ),
+                "posterior_spread": round(posterior_spread, 4),
+                "calibration_gap": round(calibration_gap, 4),
+            },
+            "antipattern": {
+                "status": _traffic_light(
+                    green=(error_rate_slope < 0 and repeat_after_pitfall_rate <= 0.20),
+                    red=(repeat_after_pitfall_rate > 0.50),
+                ),
+                "error_rate_slope": error_rate_slope,
+                "repeat_after_pitfall_rate": round(repeat_after_pitfall_rate, 4),
+            },
+            "exploration": {
+                "status": _traffic_light(
+                    green=(action_coverage >= 3),
+                    red=(stagnation.is_stagnant and action_coverage <= 1),
+                ),
+                "action_coverage": action_coverage,
+                "actions_total": len(ACTION_TYPES),
+                "is_stagnant": stagnation.is_stagnant,
+            },
+        }
         _cache.set(cache_key, result)
         return result
 
