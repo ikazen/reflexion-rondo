@@ -138,7 +138,10 @@ SELECT
 FROM raw.attempts a
 JOIN raw.competitions c USING (competition_id);
 
-DROP VIEW IF EXISTS reflection_impact;
+-- CASCADE 필요: lesson_dead(#67)가 reflection_impact를 참조해서 CASCADE 없이는 두 번째
+-- apply_schema부터 "cannot drop view ... other objects depend on it"로 실패한다(#69).
+-- lesson_dead는 이 파일 뒤쪽에서 CREATE OR REPLACE로 다시 만들어지므로 안전하다.
+DROP VIEW IF EXISTS reflection_impact CASCADE;
 DROP VIEW IF EXISTS stg_attempts_reflexion_only;
 DROP VIEW IF EXISTS stg_attempts;
 
