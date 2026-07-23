@@ -2,7 +2,7 @@
 
 Reads shared context from raw.super_cycle_context, runs one attempt.
 
-BON-237: context lookup key is --run-id (Airflow dag_run_id), not --queue-id —
+context lookup key is --run-id (Airflow dag_run_id), not --queue-id —
 see run_retrieve_task.py docstring.
 
 Usage (container):

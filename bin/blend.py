@@ -3,8 +3,8 @@
 Usage:
     uv run python -m bin.blend --competition s4e1 [--n-top 5]
 
-Reflexion 루프의 귀속 규율(BON-96 등)은 그대로 유지 — 블렌딩은 파이프라인 밖,
-최종 제출용 가중치만 계산한다(BON-248). submit.py 연결은 범위 밖 — 가중치를
+Reflexion 루프의 귀속 규율은 그대로 유지 — 블렌딩은 파이프라인 밖,
+최종 제출용 가중치만 계산한다. submit.py 연결은 범위 밖 — 가중치를
 runs/blend/{competition_id}_weights.json에 저장하는 데까지가 이번 범위.
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ def fetch_oof_candidates(
 
     "최근 N개"가 아니라 "상위 성능 N개"로 정의한다 — raw.pipelines에 recency
     컬럼(created_at 등)이 없고, 앙상블 다양성 관점에서도 상위 성능이 더 타당하다.
-    oof_preds가 없는 pipeline(BON-248 이전에 승격된 것 등)은 자동 제외된다.
+    oof_preds가 없는(OOF 수집 이전에 승격된 것 등) pipeline은 자동 제외된다.
     """
     rows = conn.execute(
         """

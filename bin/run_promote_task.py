@@ -1,9 +1,9 @@
 """Super-cycle promote step — Airflow task 4 of 4.
 
-Picks winner from 3 attempts, updates was_promoted, reflects winner (BON-96 gate).
+Picks winner from 3 attempts, updates was_promoted, reflects winner.
 cross-seed confirmation + audit holdout 측정 후 confirmed=True일 때만 승격.
 
-BON-237: context lookup/delete key is --run-id (Airflow dag_run_id), not --queue-id.
+context lookup/delete key is --run-id (Airflow dag_run_id), not --queue-id.
 queue_id is shared by every cycle of the same super-cycle (max_active_runs=4 lets
 several run concurrently) — keying by queue_id let a later cycle's retrieve
 overwrite an earlier cycle's context row, and whichever promote ran first would
@@ -21,8 +21,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
-# BON-256: 병합본(materialize_best_pipeline 산출물) cv_score가 winner 자신의 기록된
-# cv_score와 크게 다르면 병합 손상(BON-197/233류) 신호 — 같은 seed·fold라 결정적
+# 병합본(materialize_best_pipeline 산출물) cv_score가 winner 자신의 기록된
+# cv_score와 크게 다르면 병합 손상 신호 — 같은 seed·fold라 결정적
 # 재현이면 거의 bit-identical해야 한다. 부동소수 연산차만 허용하는 엄격한 허용오차.
 _MERGE_VERIFY_TOLERANCE = 1e-6
 
@@ -63,9 +63,9 @@ def main() -> None:
 
     super_cycle_id, competition_id = ctx_row
 
-    # BON-111: 컨텍스트를 다 읽은 시점이라 즉시 삭제 — 이후 모든 return 경로를
+    # 컨텍스트를 다 읽은 시점이라 즉시 삭제 — 이후 모든 return 경로를
     # 일괄 커버(no attempts/no winner 포함). ON CONFLICT UPDATE라 재실행 시 재삽입 정상.
-    # BON-237: run_id로 삭제 — queue_id는 같은 super-cycle의 다른(동시 실행) cycle과
+    # run_id로 삭제 — queue_id는 같은 super-cycle의 다른(동시 실행) cycle과
     # 공유되므로 그 키로 지우면 다른 cycle의 아직 안 읽은 context까지 지워버린다.
     conn.execute(
         "DELETE FROM raw.super_cycle_context WHERE run_id = %s",
@@ -123,7 +123,7 @@ def main() -> None:
     winner_code_path = winner_row[9]
     winner_fold_scores = winner_row[10]
 
-    # BON-247: paired per-fold 검정용 metric_sign + baseline fold_scores.
+    # paired per-fold 검정용 metric_sign + baseline fold_scores.
     # 이 시점엔 comp 모듈을 아직 import 안 했으므로(뒤에서 필요할 때 import) DB에서 바로 조회.
     _sign_row = conn.execute(
         "select metric_sign from raw.competitions where competition_id = %s",
@@ -204,12 +204,12 @@ def main() -> None:
                 fp_val = fp_row[0] if fp_row and fp_row[0] else {}
                 fp_dict = fp_val if isinstance(fp_val, dict) else _json.loads(fp_val)
                 # materialize 먼저 → 해시는 실제 MinIO 업로드 내용(submit.py가 exec하는
-                # 문자열) 기준 (BON-255). raw.pipelines.code(winner source)와는 다른 문자열.
+                # 문자열) 기준. raw.pipelines.code(winner source)와는 다른 문자열.
                 materialized = materialize_best_pipeline(current_best, winner_source)
                 pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
 
-                # BON-256: merge-verify — 병합본을 실제로 1회 평가해 winner 자신의 cv_score와
-                # 어긋나지 않는지 확인(정적 AST 검증만으로는 BON-197/233류 손상을 못 잡음).
+                # merge-verify — 병합본을 실제로 1회 평가해 winner 자신의 cv_score와
+                # 어긋나지 않는지 확인(정적 AST 검증만으로는 병합 손상을 못 잡음).
                 # train90 없으면(train 로드 실패) 확인 불가 — 기존 confirm/holdout 스킵과
                 # 같은 원칙으로 검증을 건너뛰고 진행(보수적으로 막지 않음, 기존 동작 유지).
                 merge_ok = True
@@ -224,12 +224,12 @@ def main() -> None:
                         n_splits=n_splits,
                         seed=42,
                         is_classification=is_classification,
-                        collect_oof=True,  # BON-248: 이 1회 eval에 얹어 OOF 확보(추가 비용 없음)
+                        collect_oof=True,  # 이 1회 eval에 얹어 OOF 확보(추가 비용 없음)
                     )
                     if merge_eval.error_trace or merge_eval.cv_score is None:
                         merge_ok = False
-                        # GH issue #1: [:200] 절단이 Airflow 로그에서 실제 예외를 가려
-                        # s6e6 merge-verify 반복 실패의 원인을 못 잡았다. 전체 출력.
+                        # [:200] 절단이 Airflow 로그에서 실제 예외를 가려 원인을 못 잡은
+                        # 전례가 있어 전체 출력.
                         print(
                             "[run_promote_task] merge-verify 실패(평가 에러) — 승격 스킵 "
                             f"competition={competition_id} winner={winner_row[0][:8]}\n"
@@ -264,7 +264,7 @@ def main() -> None:
                     upload_best_pipeline(competition_id, materialized)
                     print(f"[run_promote_task] best pipeline materialized for {competition_id}")
 
-                    # GH issue #31: auto-submit(매일 06:00)이 이 자리에서 처음 5-seed
+                    # auto-submit(매일 06:00)이 이 자리에서 처음 5-seed
                     # full-train fit을 하며 daemon 상주 ops-vm(2 OCPU) CPU를 포화시켰다.
                     # promote는 이미 big 큐(worker-vm/mac-server)에서 도니 여기서 미리
                     # 생성해 캐싱하면 fit 비용이 ops-vm 밖으로 옮겨진다. best-effort —

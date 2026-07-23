@@ -10,7 +10,7 @@ Full reset (스키마 drop 후 재생성 — 개발 중 스키마 변경 시):
 Competition-specific reset:
   uv run python bin/reset.py --competition playground-series-s4e1
 
-Confirmed pipeline만 무효화 (attempts/reflections 보존, issue #3):
+Confirmed pipeline만 무효화 (attempts/reflections 보존):
   uv run python bin/reset.py --competition playground-series-s4e1 --pipelines-only
 
 Skip confirmation:
@@ -187,9 +187,9 @@ def reset_pipelines(competition_id: str, yes: bool) -> None:
 
     attempts/reflections/competition 레코드는 보존한다 — 대회를 처음부터 다시 시작하지
     않고 "지금까지의 confirmed best만 리셋해 정상 사이클이 정직하게 재승격하도록" 유도할
-    때 쓴다(issue #7의 phantom pipeline 정리가 정확히 이 케이스였다).
+    때 쓴다(phantom pipeline 정리가 정확히 이 케이스였다).
 
-    issue #3 근본원인: 그 정리를 raw.pipelines만 지우는 수동 SQL로 처리해서 MinIO
+    근본원인: 그 정리를 raw.pipelines만 지우는 수동 SQL로 처리해서 MinIO
     best_pipeline.py가 고아로 남았다(대응하는 Postgres 행이 없어 다음 confirmed-pipeline
     제출 시 sha256 mismatch로 발현). reset_competition()은 이미 _best_delete를
     raw.pipelines DELETE보다 먼저 호출해 이 문제가 없다 — 이 함수는 그 안전한 순서를

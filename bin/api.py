@@ -127,7 +127,7 @@ class AutoSubmitRequest(BaseModel):
 
 
 _TERMINAL = frozenset({"complete", "error", "invalid"})
-# BON-275가 eval 타임아웃은 600->1200s로 올렸으나 submit은 누락 — s5e5(75만 행) 5-seed
+# eval 타임아웃은 600->1200s로 올렸으나 submit은 누락 — s5e5(75만 행) 5-seed
 # bagging이 600s를 넘겨 매번 타임아웃으로 실패했다. eval과 동일하게 상향.
 _SUBMIT_TIMEOUT_SEC = 1200
 
@@ -172,7 +172,7 @@ def _kaggle_submit(
 ) -> None:
     """CSV 생성(캐시 우선) + kaggle 제출. 폴링은 /refresh 엔드포인트(DAG)가 담당.
 
-    GH issue #31: promote 시점에 캐싱된 CSV(store.s3_code.download_submission_csv)가
+    promote 시점에 캐싱된 CSV(store.s3_code.download_submission_csv)가
     있으면 그걸로 바로 업로드한다 — fit 없이 수 초. 캐시 미스(비승격 attempt 등)면
     기존대로 bin.submit 서브프로세스가 그 자리에서 fit한다(daemon 상주 ops-vm의
     아침 CPU 스파이크 원인이던 경로 — 캐시가 이걸 대체하는 게 이번 변경의 목적).

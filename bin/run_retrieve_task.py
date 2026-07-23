@@ -3,7 +3,7 @@
 Generates super_cycle_id, fetches lessons + prev_best_cv,
 stores in raw.super_cycle_context for attempt/promote tasks to read.
 
-BON-237: context is keyed by --run-id (Airflow dag_run_id, unique per cycle),
+context is keyed by --run-id (Airflow dag_run_id, unique per cycle),
 not --queue-id (shared by every cycle of the same super-cycle queue item —
 keying by queue_id let concurrent cycles clobber/steal each other's context row).
 
@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 
-_ERROR_LESSON_K = 3  # BON-134: 코사인 무관 강제 포함할 최근 failure 교훈 수
+_ERROR_LESSON_K = 3  # 코사인 무관 강제 포함할 최근 failure 교훈 수
 
 
 def _merge_lessons(lessons: list[dict], extra: list[dict]) -> list[dict]:
@@ -101,7 +101,7 @@ def main() -> None:
          json.dumps(lessons), json.dumps(assigned_actions)],
     )
 
-    # BON-242: promote 스킵(attempt 하드 실패) 시 row 가 영구 누수되므로
+    # promote 스킵(attempt 하드 실패) 시 row 가 영구 누수되므로
     # retrieve 에서 매 사이클 TTL 청소. 실패해도 retrieve 자체는 성공시킨다.
     try:
         conn.execute(
