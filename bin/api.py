@@ -949,6 +949,164 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         _cache.set(cache_key, result)
         return result
 
+    # ---- 관측 (#11/#67) — 상위 레이어 T1/T2/T4 ----
+    # best_cv 계산은 cycle/run.py:_prev_best와 동일 로직: 확정 pipelines 우선,
+    # 없으면(cold-start) attempts max로 폴백.
+    _BEST_CV_SQL = """
+        coalesce(
+            (select max(p.cv_score * cc.metric_sign) * cc.metric_sign
+             from raw.pipelines p where p.competition_id = cc.competition_id and p.cv_score is not null),
+            (select max(a.cv_score * cc.metric_sign) * cc.metric_sign
+             from raw.attempts a where a.competition_id = cc.competition_id and a.cv_score is not null)
+        )
+    """
+
+    @app.get("/api/competitions/summary")
+    def get_competitions_summary():
+        cached, hit = _cache.get("competitions_summary", ttl=60)
+        if hit:
+            return cached
+        rows = conn.execute(
+            f"""
+            select
+                cc.competition_id, cc.name, cc.task_type, cc.metric,
+                {_BEST_CV_SQL} as best_cv,
+                (select count(*) from raw.attempts a where a.competition_id = cc.competition_id) as n_attempts,
+                (select count(*) from raw.pipelines p where p.competition_id = cc.competition_id) as n_pipelines,
+                (select count(*) from raw.attempts a where a.competition_id = cc.competition_id and a.label = 'jump') as n_jumps,
+                (select count(*) from raw.attempts a where a.competition_id = cc.competition_id and a.label = 'error') as n_errors,
+                (select max(a.run_ts) from raw.attempts a where a.competition_id = cc.competition_id) as last_run_ts,
+                (select q.status from raw.cycle_queue q where q.competition = cc.competition_id
+                 order by q.created_at desc limit 1) as queue_status
+            from raw.competitions cc
+            order by cc.competition_id
+            """
+        ).fetchall()
+        cols = [
+            "competition_id", "name", "task_type", "metric", "best_cv",
+            "n_attempts", "n_pipelines", "n_jumps", "n_errors", "last_run_ts", "queue_status",
+        ]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set("competitions_summary", result)
+        return result
+
+    @app.get("/api/score")
+    def get_score(competition: str):
+        cache_key = f"score:{competition}"
+        cached, hit = _cache.get(cache_key, ttl=30)
+        if hit:
+            return cached
+        row = conn.execute(
+            f"""
+            select
+                {_BEST_CV_SQL} as best_cv,
+                (select max(a.holdout_score) from raw.attempts a
+                 where a.competition_id = cc.competition_id and a.was_promoted is true) as best_holdout,
+                (select avg(cc.metric_sign * (a.cv_score - a.holdout_score)) from raw.attempts a
+                 where a.competition_id = cc.competition_id and a.was_promoted is true
+                   and a.holdout_score is not null) as cv_minus_holdout,
+                (select count(*) from raw.attempts a where a.competition_id = cc.competition_id) as n_attempts,
+                (select count(*) from raw.attempts a where a.competition_id = cc.competition_id and a.label = 'jump') as n_jumps,
+                (select count(*) from raw.attempts a where a.competition_id = cc.competition_id and a.label = 'error') as n_errors,
+                (select round(count(*) filter (where a.label = 'error')::numeric / nullif(count(*), 0), 4)
+                 from raw.attempts a where a.competition_id = cc.competition_id and a.stage = 'reflexion') as error_rate,
+                (select attempt_no from score_progression
+                 where competition_id = cc.competition_id and label = 'jump'
+                 order by attempt_no desc limit 1) as last_jump_attempt_no
+            from raw.competitions cc
+            where cc.competition_id = %s
+            """,
+            [competition],
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="competition not found")
+        cols = [
+            "best_cv", "best_holdout", "cv_minus_holdout", "n_attempts",
+            "n_jumps", "n_errors", "error_rate", "last_jump_attempt_no",
+        ]
+        result = dict(zip(cols, row))
+        result["competition_id"] = competition
+        stagnation = detect_stagnation(conn, competition)
+        result["is_stagnant"] = stagnation.is_stagnant
+        result["stagnant_for"] = stagnation.stagnant_for
+        _cache.set(cache_key, result)
+        return result
+
+    @app.get("/api/best-strategy")
+    def get_best_strategy(competition: str):
+        cache_key = f"best_strategy:{competition}"
+        cached, hit = _cache.get(cache_key, ttl=60)
+        if hit:
+            return cached
+        best = conn.execute(
+            """
+            select p.pipeline_id, p.cv_score, a.holdout_score
+            from raw.pipelines p
+            join raw.competitions c using (competition_id)
+            join raw.attempts a using (attempt_id)
+            where p.competition_id = %s and p.cv_score is not null
+            order by c.metric_sign * p.cv_score desc
+            limit 1
+            """,
+            [competition],
+        ).fetchone()
+        if not best:
+            raise HTTPException(status_code=404, detail="no promoted pipeline for competition")
+        pipeline_id, best_cv, best_holdout = best
+        n_promotions, last_promoted_ts = conn.execute(
+            "select count(*), max(a.run_ts) from raw.pipelines p join raw.attempts a using (attempt_id) "
+            "where p.competition_id = %s",
+            [competition],
+        ).fetchone()
+        contributing = conn.execute(
+            """
+            select a.action_type, count(*) as promotions, sum(a.gain_vs_best) as total_gain
+            from raw.pipelines p join raw.attempts a using (attempt_id)
+            where p.competition_id = %s
+            group by a.action_type order by promotions desc
+            """,
+            [competition],
+        ).fetchall()
+        cited_ids = [
+            r[0] for r in conn.execute(
+                """
+                select distinct rid
+                from raw.pipelines p join raw.attempts a using (attempt_id), unnest(a.reflection_ids) rid
+                where p.competition_id = %s
+                """,
+                [competition],
+            ).fetchall()
+        ]
+        cited_lessons = []
+        if cited_ids:
+            cited_lessons = [
+                {"reflection_id": r[0], "lesson_type": r[1], "generality": r[2],
+                 "embedded_text": r[3], "avg_gain": r[4]}
+                for r in conn.execute(
+                    """
+                    select r.reflection_id, r.lesson_type, r.generality, r.embedded_text,
+                           coalesce(i.avg_gain, 0.0)
+                    from raw.reflections r left join reflection_impact i using (reflection_id)
+                    where r.reflection_id = any(%s::text[])
+                    """,
+                    [cited_ids],
+                ).fetchall()
+            ]
+        result = {
+            "competition_id": competition,
+            "pipeline_id": pipeline_id,
+            "best_cv": best_cv,
+            "best_holdout": best_holdout,
+            "n_promotions": n_promotions,
+            "last_promoted_ts": last_promoted_ts,
+            "contributing_actions": [
+                {"action_type": r[0], "promotions": r[1], "total_gain": r[2]} for r in contributing
+            ],
+            "cited_lessons": cited_lessons,
+        }
+        _cache.set(cache_key, result)
+        return result
+
     @app.get("/api/queue")
     def get_queue(status: str | None = None, limit: int = 100):
         limit = min(limit, 500)
