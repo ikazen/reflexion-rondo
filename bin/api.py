@@ -1216,6 +1216,81 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         _cache.set(cache_key, result)
         return result
 
+    # ---- 관측 (#11/#67) — 교훈 generality-mix + 에러 rate-timeline/repeat-offenders ----
+
+    @app.get("/api/lessons/generality-mix")
+    def get_generality_mix(competition: str, bucket: str = "week"):
+        if bucket not in ("day", "week"):
+            raise HTTPException(status_code=422, detail="bucket must be 'day' or 'week'")
+        cache_key = f"generality_mix:{competition}:{bucket}"
+        cached, hit = _cache.get(cache_key, ttl=60)
+        if hit:
+            return cached
+        rows = conn.execute(
+            """
+            select
+                date_trunc(%s, created_at) as bucket_ts,
+                count(*) filter (where generality = 'L1_local') as l1_local,
+                count(*) filter (where generality = 'L2_class') as l2_class,
+                count(*) filter (where generality = 'L3_general') as l3_general
+            from raw.reflections
+            where competition_id = %s or generality in ('L2_class', 'L3_general')
+            group by bucket_ts
+            order by bucket_ts
+            """,
+            [bucket, competition],
+        ).fetchall()
+        cols = ["bucket_ts", "l1_local", "l2_class", "l3_general"]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set(cache_key, result)
+        return result
+
+    @app.get("/api/errors/rate-timeline")
+    def get_error_rate_timeline(competition: str):
+        cache_key = f"error_rate_timeline:{competition}"
+        cached, hit = _cache.get(cache_key, ttl=60)
+        if hit:
+            return cached
+        rows = conn.execute(
+            """
+            select
+                super_cycle_id, min(run_ts) as run_ts, count(*) as n_attempts,
+                count(*) filter (where label = 'error') as n_errors,
+                round(count(*) filter (where label = 'error')::numeric / count(*), 4) as error_rate
+            from raw.attempts
+            where competition_id = %s and super_cycle_id is not null
+            group by super_cycle_id
+            order by run_ts
+            """,
+            [competition],
+        ).fetchall()
+        cols = ["super_cycle_id", "run_ts", "n_attempts", "n_errors", "error_rate"]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set(cache_key, result)
+        return result
+
+    @app.get("/api/errors/repeat-offenders")
+    def get_repeat_offenders(competition: str, limit: int = 100):
+        limit = min(limit, 500)
+        cache_key = f"repeat_offenders:{competition}:{limit}"
+        cached, hit = _cache.get(cache_key, ttl=60)
+        if hit:
+            return cached
+        rows = conn.execute(
+            """
+            select error_signature, action_type, total, occurrences_after_active, last_seen
+            from error_recurrence
+            where competition_id = %s and occurrences_after_active > 0
+            order by occurrences_after_active desc
+            limit %s
+            """,
+            [competition, limit],
+        ).fetchall()
+        cols = ["error_signature", "action_type", "total", "after_active", "last_seen"]
+        result = [dict(zip(cols, r)) for r in rows]
+        _cache.set(cache_key, result)
+        return result
+
     @app.get("/api/queue")
     def get_queue(status: str | None = None, limit: int = 100):
         limit = min(limit, 500)
