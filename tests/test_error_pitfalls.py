@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from cycle.error_pitfalls import _normalize_error, top_error_pitfalls
+from cycle.error_pitfalls import normalize_error, top_error_pitfalls
 
 
 _CATEGORICAL_TRACE = """\
@@ -38,7 +38,7 @@ _CONTRACT_TRACE = "action_type mismatch: expected feature_engineering, got prepr
 
 
 def test_normalize_categorical_to_signature() -> None:
-    sig = _normalize_error(_CATEGORICAL_TRACE)
+    sig = normalize_error(_CATEGORICAL_TRACE)
     assert sig is not None
     assert "France" not in sig
     assert sig.startswith("ValueError:")
@@ -48,31 +48,31 @@ def test_normalize_categorical_to_signature() -> None:
 def test_normalize_same_signature_across_values() -> None:
     trace_spain = _CATEGORICAL_TRACE.replace("'France'", "'Spain'")
     trace_germany = _CATEGORICAL_TRACE.replace("'France'", "'Germany'")
-    assert _normalize_error(_CATEGORICAL_TRACE) == _normalize_error(trace_spain)
-    assert _normalize_error(_CATEGORICAL_TRACE) == _normalize_error(trace_germany)
+    assert normalize_error(_CATEGORICAL_TRACE) == normalize_error(trace_spain)
+    assert normalize_error(_CATEGORICAL_TRACE) == normalize_error(trace_germany)
 
 
 def test_normalize_catboost_error() -> None:
-    sig = _normalize_error(_CATBOOST_TRACE)
+    sig = normalize_error(_CATBOOST_TRACE)
     assert sig is not None
     assert "CatBoostError" in sig
 
 
 def test_normalize_syntax_error_excluded() -> None:
-    assert _normalize_error(_SYNTAX_TRACE) is None
+    assert normalize_error(_SYNTAX_TRACE) is None
 
 
 def test_normalize_indentation_error_excluded() -> None:
-    assert _normalize_error(_INDENTATION_TRACE) is None
+    assert normalize_error(_INDENTATION_TRACE) is None
 
 
 def test_normalize_contract_violation_excluded() -> None:
-    assert _normalize_error(_CONTRACT_TRACE) is None
+    assert normalize_error(_CONTRACT_TRACE) is None
 
 
 def test_normalize_volatile_numbers_removed() -> None:
     trace = "Traceback:\nValueError: expected 3 got 7"
-    sig = _normalize_error(trace)
+    sig = normalize_error(trace)
     assert sig is not None
     assert "3" not in sig
     assert "7" not in sig
