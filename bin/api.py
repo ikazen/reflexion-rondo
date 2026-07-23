@@ -178,7 +178,7 @@ def _kaggle_submit(
     아침 CPU 스파이크 원인이던 경로 — 캐시가 이걸 대체하는 게 이번 변경의 목적).
     """
     from store.db import connect
-    from store.s3_code import download_submission_csv
+    from store.s3_code import download_submission_csv, upload_submission_csv
 
     def _update(fields: dict) -> None:
         c = connect(apply_schema=False)
@@ -238,6 +238,14 @@ def _kaggle_submit(
     if result.returncode != 0:
         _update({"status": "error", "error": result.stderr[:2000], "checked_at": datetime.now(timezone.utc)})
         return
+
+    # 캐시 미스로 여기서 직접 fit한 경우 — 결과를 캐시에 올려두면 같은 attempt의
+    # 다음 제출부턴 fit 없이 히트한다(promote task가 미리 캐싱하지 못한 타이밍 갭 대비 안전망).
+    if not cached and csv_path and attempt_id:
+        try:
+            upload_submission_csv(competition_id, attempt_id, Path(csv_path).read_bytes())
+        except Exception as exc:
+            print(f"  [submit] submission csv cache upload failed (non-fatal): {exc}")
 
     fields: dict = {"status": "submitted", "checked_at": datetime.now(timezone.utc)}
     if csv_path:
