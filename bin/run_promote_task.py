@@ -270,6 +270,7 @@ def main() -> None:
     # ops-vm daemon이 auto-submit 시점에 fit 없이 업로드만 하게 된다(fit은 이미 big
     # 큐에서 도는 이 promote task 쪽으로 옮겨짐). 이미 캐시돼 있으면 재fit하지 않는다.
     # best-effort — 실패해도 promote 자체는 성공 처리한다.
+    best = None
     try:
         from bin.api import _best_attempt
         from bin.submit import generate_submission_csv
@@ -282,7 +283,14 @@ def main() -> None:
                 upload_submission_csv(competition_id, best_attempt_id, csv_path.read_bytes())
                 print(f"[run_promote_task] submission csv cached for best={best_attempt_id[:8]} cv={best_cv}")
     except Exception as exc:
-        print(f"[run_promote_task] submission csv caching failed (non-fatal): {exc}")
+        # competition_id/attempt_id를 문구에 남겨 daemon 로그에서 대회 단위로
+        # grep 가능하게 한다 — 이 블록이 조용히 죽어 auto-submit 실패가 다음날
+        # 06:00까지 안 보이던 사고(#71)의 재발 방지.
+        best_attempt_id = best[0] if best else None
+        print(
+            f"[run_promote_task] submission csv caching failed for {competition_id} "
+            f"(best_attempt={best_attempt_id[:8] if best_attempt_id else 'unknown'}, non-fatal): {exc}"
+        )
 
     for i, r in enumerate(rows):
         (attempt_id, gain_vs_best, cv_score, label, error_trace,
