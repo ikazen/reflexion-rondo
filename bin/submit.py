@@ -27,6 +27,16 @@ CODE_SEP = "# " + "-" * 60
 # 5-seed 예측 평균(bagging) — 단일 seed=42 fit 대비 거의 공짜인 LB 이득.
 _BAG_SEEDS = [42, 101, 7, 13, 29]
 
+# LightGBM/XGBoost/CatBoost가 생성자에서 받는 early-stopping 관련 키.
+# param_candidates()가 CV 경로(harness._fit_with_early_stopping, eval_set 있음)를
+# 염두에 두고 넣은 값인데, 이 모듈은 전체 train으로 최종 fit해 eval_set이 없다 —
+# LightGBM은 이 키가 있으면 eval_set 유무와 무관하게 조기종료 콜백을 등록해버려
+# fit()이 죽는다(#71). _fit_full_train()의 재시도 폴백에서만 제거해 쓴다.
+_EARLY_STOPPING_KEYS = frozenset({
+    "early_stopping_rounds", "early_stopping_round", "early_stopping",
+    "n_iter_no_change", "callbacks", "od_wait", "od_type", "validation_fraction",
+})
+
 
 def _load_best_code(
     competition_id: str, attempt_id: str | None
@@ -223,6 +233,26 @@ def _impute_train_test_median(train_np, test_np):
     return train_np, test_np
 
 
+def _fit_full_train(pipeline: object, params: dict, ctx: object, X: np.ndarray, y: np.ndarray) -> object:
+    """params로 build_model+fit. eval_set 없이 죽으면(#71) early-stopping 키를
+    벗긴 params로 한 번 더 시도한다. HistGradientBoosting/CatBoost처럼 eval_set
+    없이도 내부 검증 분할로 동작하는 estimator는 첫 시도가 그대로 성공하므로
+    건드리지 않는다 — 실패할 때만 개입해 방법론을 조용히 안 바꾼다.
+    """
+    model = pipeline.build_model(params, ctx)
+    try:
+        model.fit(X, y)
+        return model
+    except Exception:
+        stripped = {k: v for k, v in params.items() if k not in _EARLY_STOPPING_KEYS}
+        if stripped == params:
+            raise
+        print(f"  [submit] fit failed with early-stopping params, retrying without: {sorted(set(params) - set(stripped))}")
+        model = pipeline.build_model(stripped, ctx)
+        model.fit(X, y)
+        return model
+
+
 def _bagged_predict(
     pipeline: object,
     params: dict,
@@ -253,12 +283,13 @@ def _bagged_predict(
                 action_type=ctx.action_type,
                 best_params=ctx.best_params,
             )
-            model = pipeline.build_model(params, bag_ctx)
             # 여기선 early stopping(harness._fit_with_early_stopping) 미적용 —
             # 전체 train으로 최종 fit하는 자리라 라벨 있는 held-out validation이 없음
             # (test_np는 unlabeled). 억지로 train 일부를 떼면 최종 제출 방법론 자체가
             # 바뀌므로 이번 범위에서 제외 — CV 경로(harness.py)만 적용.
-            model.fit(X_train_np, y_train)
+            # 다만 params가 생성자 인자로 early-stopping 키를 담고 있으면(#71,
+            # eval_set 없이 fit이 죽음) _fit_full_train이 그 키만 벗겨 재시도한다.
+            model = _fit_full_train(pipeline, params, bag_ctx, X_train_np, y_train)
             bag_preds.append(_predict_raw(model, X_test_np, metric_class))
     if metric_class == "classification":
         # discrete label 예측(멀티클래스 문자열 라벨 포함, s6e6)은 평균이 의미 없다 —
