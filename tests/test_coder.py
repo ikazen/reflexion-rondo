@@ -177,3 +177,45 @@ def test_reflexion_contract_warns_about_multiclass_label_roundtrip() -> None:
     from agents.coder import _REFLEXION_CONTRACT, _BOOTSTRAP_CONTRACT
     assert "Mix of label input types" in _REFLEXION_CONTRACT
     assert "Mix of label input types" in _BOOTSTRAP_CONTRACT
+
+
+# --- #74: s6e7 ensemble action_type 70% 크래시 가드 문구 ---
+
+def test_contracts_replace_strict_example_has_default() -> None:
+    """replace_strict 예시 자체에 default= 가 없으면 Coder가 그대로 베껴 unseen
+    카테고리/null 있는 fold에서 `incomplete mapping` 크래시가 난다(#74 실측
+    11건). 예시 코드 자체를 고쳐야 재발이 막힌다."""
+    from agents.coder import _REFLEXION_CONTRACT, _BOOTSTRAP_CONTRACT
+    assert "replace_strict(mapping, default=" in _REFLEXION_CONTRACT
+    assert "replace_strict(mapping, default=" in _BOOTSTRAP_CONTRACT
+
+
+def test_contracts_warn_xgboost_needs_encoded_labels() -> None:
+    """XGBoost의 sklearn wrapper는 문자열 라벨을 못 받는데(#74 실측 12건,
+    `ValueError: Invalid classes inferred`) 기존 contract는 "모든 라이브러리가
+    문자열을 받는다"고 잘못 안내하고 있었다 — XGBoost 예외를 명시해야 한다.
+    기존 라벨 왕복 경고 문구는 회귀 없이 유지돼야 한다."""
+    from agents.coder import _REFLEXION_CONTRACT, _BOOTSTRAP_CONTRACT
+    for contract in (_REFLEXION_CONTRACT, _BOOTSTRAP_CONTRACT):
+        assert "XGBoost" in contract
+        assert "Invalid classes inferred" in contract
+        assert "Mix of label input types" in contract
+
+
+def test_contracts_warn_against_explicit_super_call() -> None:
+    """Coder가 생성하는 wrapper 클래스가 명시적 super(ClassName, self)를 쓰면
+    harness의 동적 클래스 로딩과 충돌해 크래시한다(#74 실측 3건,
+    `TypeError: super(type, obj): obj must be an instance or subtype of type`)."""
+    from agents.coder import _REFLEXION_CONTRACT, _BOOTSTRAP_CONTRACT
+    assert "super()" in _REFLEXION_CONTRACT
+    assert "super()" in _BOOTSTRAP_CONTRACT
+
+
+def test_contracts_warn_estimator_receives_numpy_not_dataframe() -> None:
+    """harness는 model.fit()/predict()를 항상 numpy 배열로 호출하는데 Coder가
+    생성한 ensemble wrapper가 DataFrame을 가정하고 .to_numpy()를 호출해
+    크래시하는 패턴(#74 실측 15건, `AttributeError: 'numpy.ndarray' object has
+    no attribute 'to_numpy'`)."""
+    from agents.coder import _REFLEXION_CONTRACT, _BOOTSTRAP_CONTRACT
+    assert "to_numpy" in _REFLEXION_CONTRACT
+    assert "to_numpy" in _BOOTSTRAP_CONTRACT

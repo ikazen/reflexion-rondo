@@ -71,16 +71,33 @@ class Patch:
   harness scores postprocess_predictions() output against the ORIGINAL untouched string target —
   if you encode the target to integers anywhere (preprocess/build_model), you MUST decode
   predictions back to the original string labels in postprocess_predictions before returning.
-  Returning encoded integers crashes scoring (`ValueError: Mix of label input types`). Simplest
-  and safest: do NOT encode the target at all — sklearn/LightGBM/XGBoost/CatBoost classifiers
-  accept string class labels directly and predict() returns them unchanged.
+  Returning encoded integers crashes scoring (`ValueError: Mix of label input types`).
+  LightGBM/CatBoost/sklearn classifiers accept string class labels directly and predict() returns
+  them unchanged — simplest and safest for those. XGBoost's sklearn wrapper is the exception: it
+  REQUIRES integer labels 0..n-1 and raises `ValueError: Invalid classes inferred` on strings —
+  if you use XGBoost for a multiclass target, encode y to 0..n-1 (fit the mapping on train only)
+  and decode predictions back to the original strings in postprocess_predictions.
+- The harness always calls build_model()'s fit()/predict()/predict_proba() with numpy arrays
+  (never a polars DataFrame), on every CV fold. If your Patch defines a custom estimator/wrapper
+  class (e.g. for ensemble), its fit(self, X, y) and predict(self, X) MUST accept numpy arrays
+  directly — do NOT call X.to_numpy() or any DataFrame-only method on them, that raises
+  `AttributeError: 'numpy.ndarray' object has no attribute 'to_numpy'`.
+- If your Patch defines its own class (e.g. an ensemble wrapper), never call the explicit two-arg
+  `super(ClassName, self)` — use zero-arg `super()` only. The harness loads Patch dynamically and
+  explicit super() calls can raise `TypeError: super(type, obj): obj must be an instance or
+  subtype of type` when the class identity doesn't match at runtime.
+- Do not use removed/deprecated sklearn constructor kwargs from memory (e.g. LogisticRegression's
+  old `multi_class` argument no longer exists) — if unsure whether a kwarg is still valid, omit it
+  and rely on the estimator's default.
 
 ## Polars rules (do NOT use pandas-style API)
 - String columns have dtype pl.String (NOT pl.Categorical)
-- Correct ordinal encoding for pl.String columns:
+- Correct ordinal encoding for pl.String columns (always pass default= — unmapped values, e.g. an
+  unseen category or null in a CV fold, otherwise crash with `InvalidOperationError: incomplete
+  mapping specified for replace_strict`):
     mapping = {v: i for i, v in enumerate(sorted(train[col].unique().to_list()))}
-    train = train.with_columns(pl.col(col).replace_strict(mapping).cast(pl.Int32))
-    valid = valid.with_columns(pl.col(col).replace_strict(mapping).cast(pl.Int32))
+    train = train.with_columns(pl.col(col).replace_strict(mapping, default=-1).cast(pl.Int32))
+    valid = valid.with_columns(pl.col(col).replace_strict(mapping, default=-1).cast(pl.Int32))
 - pl.concat requires identical schemas
 - No inplace mutations
 - clip() takes positional args: expr.clip(lower_bound, upper_bound)
@@ -154,16 +171,33 @@ class Patch:
   harness scores postprocess_predictions() output against the ORIGINAL untouched string target —
   if you encode the target to integers anywhere, you MUST decode predictions back to the
   original string labels in postprocess_predictions before returning. Returning encoded integers
-  crashes scoring (`ValueError: Mix of label input types`). Simplest and safest: do NOT encode
-  the target at all — sklearn/LightGBM/XGBoost/CatBoost classifiers accept string class labels
-  directly and predict() returns them unchanged.
+  crashes scoring (`ValueError: Mix of label input types`).
+  LightGBM/CatBoost/sklearn classifiers accept string class labels directly and predict() returns
+  them unchanged — simplest and safest for those. XGBoost's sklearn wrapper is the exception: it
+  REQUIRES integer labels 0..n-1 and raises `ValueError: Invalid classes inferred` on strings —
+  if you use XGBoost for a multiclass target, encode y to 0..n-1 (fit the mapping on train only)
+  and decode predictions back to the original strings in postprocess_predictions.
+- The harness always calls build_model()'s fit()/predict()/predict_proba() with numpy arrays
+  (never a polars DataFrame), on every CV fold. If your Patch defines a custom estimator/wrapper
+  class, its fit(self, X, y) and predict(self, X) MUST accept numpy arrays directly — do NOT call
+  X.to_numpy() or any DataFrame-only method on them, that raises `AttributeError: 'numpy.ndarray'
+  object has no attribute 'to_numpy'`.
+- If your Patch defines its own class, never call the explicit two-arg `super(ClassName, self)` —
+  use zero-arg `super()` only. The harness loads Patch dynamically and explicit super() calls can
+  raise `TypeError: super(type, obj): obj must be an instance or subtype of type` when the class
+  identity doesn't match at runtime.
+- Do not use removed/deprecated sklearn constructor kwargs from memory (e.g. LogisticRegression's
+  old `multi_class` argument no longer exists) — if unsure whether a kwarg is still valid, omit it
+  and rely on the estimator's default.
 
 ## Polars rules (do NOT use pandas-style API)
 - String columns have dtype pl.String (NOT pl.Categorical)
-- Correct ordinal encoding for pl.String columns:
+- Correct ordinal encoding for pl.String columns (always pass default= — unmapped values, e.g. an
+  unseen category or null in a CV fold, otherwise crash with `InvalidOperationError: incomplete
+  mapping specified for replace_strict`):
     mapping = {v: i for i, v in enumerate(sorted(train[col].unique().to_list()))}
-    train = train.with_columns(pl.col(col).replace_strict(mapping).cast(pl.Int32))
-    valid = valid.with_columns(pl.col(col).replace_strict(mapping).cast(pl.Int32))
+    train = train.with_columns(pl.col(col).replace_strict(mapping, default=-1).cast(pl.Int32))
+    valid = valid.with_columns(pl.col(col).replace_strict(mapping, default=-1).cast(pl.Int32))
 - pl.concat requires identical schemas
 - No inplace mutations
 - clip() takes positional args: expr.clip(lower_bound, upper_bound)
