@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 import warnings
 from dataclasses import dataclass, field
 
@@ -97,6 +98,40 @@ def _encode_residual_categoricals(
     return Xtr, Xva
 
 _IMPORTANCE_ACTIONS = frozenset({"feature_engineering", "preprocessing"})
+
+_MAX_BUILD_MODEL_RETRIES = 3
+_UNEXPECTED_KWARG_RE = re.compile(r"unexpected keyword argument '(\w+)'")
+_MULTIPLE_KWARG_RE = re.compile(r"got multiple values for keyword argument '(\w+)'")
+
+
+def _build_model_safe(pipeline: object, params: dict, ctx: object) -> object:
+    """build_model()이 존재하지 않거나 제거된 kwarg를 params로 받아 생성자에서
+    TypeError로 죽으면, 그 kwarg 하나만 벗기고 재시도한다(#74 후속).
+
+    프롬프트에 특정 kwarg(예: LogisticRegression의 구 `multi_class`)를 명시적으로
+    경고해도 Coder가 재생성했다 — LLM의 stale API 지식이 텍스트 지시보다 강해서
+    프롬프트만으로는 이 클래스의 문제가 수렴하지 않는다. build_model()이 params를
+    `**params`로 그대로 언패킹하는 흔한 패턴에서는 여기서 잡힌다.
+
+    범위 밖: Coder가 생성한 wrapper 클래스 자신의 fit() 메서드 몸체 안에서
+    내부적으로 하는 하위 모델 호출(예: ensemble wrapper가 자기 fit() 안에서
+    `LGBMClassifier().fit(X, y, verbose=False)`를 잘못 호출)은 harness가 볼 수
+    없는 exec된 코드 내부라 이 함수로 못 잡는다 — 그건 라이브러리 자체를
+    몽키패치해야 하는 훨씬 큰 범위라 #74 후속 이슈로 남겨둠.
+    """
+    current = dict(params)
+    last_exc: TypeError | None = None
+    for _ in range(_MAX_BUILD_MODEL_RETRIES):
+        try:
+            return pipeline.build_model(current, ctx)
+        except TypeError as exc:
+            msg = str(exc)
+            m = _UNEXPECTED_KWARG_RE.search(msg) or _MULTIPLE_KWARG_RE.search(msg)
+            if not m or m.group(1) not in current:
+                raise
+            current = {k: v for k, v in current.items() if k != m.group(1)}
+            last_exc = exc
+    raise last_exc
 
 
 def _fit_with_early_stopping(model: object, Xtr, ytr, Xva, yva) -> None:
@@ -297,7 +332,7 @@ def preselect_params(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         for params in candidates:
-            model = pipeline.build_model(params, ctx)
+            model = _build_model_safe(pipeline, params, ctx)
             _fit_with_early_stopping(model, Xtr_np, ytr, Xva_np, yva)
             if metric_class == "binary_proba":
                 raw_preds = model.predict_proba(Xva_np)[:, 1]
@@ -365,7 +400,7 @@ def evaluate_pipeline(
         Xtr_np = Xtr.to_numpy()
         Xva_np = Xva.to_numpy()
 
-        model = pipeline.build_model(selected_params, ctx)
+        model = _build_model_safe(pipeline, selected_params, ctx)
         _fit_with_early_stopping(model, Xtr_np, ytr, Xva_np, yva)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)

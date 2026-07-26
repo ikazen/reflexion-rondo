@@ -12,6 +12,8 @@ from evaluator.harness import (
     _LEAK_PERFECT_HIGH,
     _EARLY_STOPPING_ROUNDS,
     _fit_with_early_stopping,
+    _build_model_safe,
+    _MAX_BUILD_MODEL_RETRIES,
 )
 from runtime.runner import _eval_holdout
 
@@ -264,6 +266,75 @@ def test_fit_early_stopping_falls_back_on_exception():
     model = _RaisingModel()
     _fit_with_early_stopping(model, _XTR, _YTR, _XVA, _YVA)
     assert model.fit_calls == [{}]  # eval_set 시도 실패 후 plain fit로 폴백, 1회만 기록
+
+
+# --- _build_model_safe (#74 후속: stale kwarg 프롬프트 경고가 안 먹혀 런타임 안전망 추가) ---
+
+class _BuildModelRejectsKwarg:
+    """LogisticRegression(multi_class=...) 흉내 — 특정 kwarg가 있으면 TypeError."""
+    def __init__(self, bad_key: str, exc_message: str):
+        self.bad_key = bad_key
+        self.exc_message = exc_message
+        self.calls: list[dict] = []
+
+    def build_model(self, params, ctx):
+        self.calls.append(dict(params))
+        if self.bad_key in params:
+            raise TypeError(self.exc_message)
+        return {"built_with": dict(params)}
+
+
+def test_build_model_safe_strips_unexpected_kwarg_and_retries():
+    pipeline = _BuildModelRejectsKwarg(
+        "multi_class", "LogisticRegression.__init__() got an unexpected keyword argument 'multi_class'"
+    )
+    result = _build_model_safe(pipeline, {"C": 1.0, "multi_class": "multinomial"}, _ctx())
+    assert result == {"built_with": {"C": 1.0}}
+    assert len(pipeline.calls) == 2
+    assert pipeline.calls[0] == {"C": 1.0, "multi_class": "multinomial"}
+    assert pipeline.calls[1] == {"C": 1.0}
+
+
+def test_build_model_safe_strips_multiple_values_kwarg():
+    pipeline = _BuildModelRejectsKwarg(
+        "verbose", "CatBoostClassifier() got multiple values for keyword argument 'verbose'"
+    )
+    result = _build_model_safe(pipeline, {"iterations": 100, "verbose": False}, _ctx())
+    assert result == {"built_with": {"iterations": 100}}
+
+
+def test_build_model_safe_no_retry_when_fit_succeeds():
+    pipeline = _BuildModelRejectsKwarg("multi_class", "unused")
+    _build_model_safe(pipeline, {"C": 1.0}, _ctx())
+    assert len(pipeline.calls) == 1
+
+
+def test_build_model_safe_reraises_unrelated_typeerror():
+    """kwarg 이름을 못 뽑아내는(패턴 불일치) TypeError는 조용히 삼키지 않고 그대로 올린다."""
+    class _Unrelated:
+        def build_model(self, params, ctx):
+            raise TypeError("something else entirely")
+
+    with pytest.raises(TypeError, match="something else entirely"):
+        _build_model_safe(_Unrelated(), {"C": 1.0}, _ctx())
+
+
+def test_build_model_safe_reraises_when_retries_exhausted():
+    """계속 새로운 bad kwarg가 나오면 _MAX_BUILD_MODEL_RETRIES에서 포기하고 마지막
+    예외를 올린다 — 무한 루프 방지."""
+    class _AlwaysRejects:
+        def __init__(self):
+            self.calls = 0
+
+        def build_model(self, params, ctx):
+            self.calls += 1
+            raise TypeError(f"got an unexpected keyword argument 'k{self.calls}'")
+
+    pipeline = _AlwaysRejects()
+    params = {f"k{i}": i for i in range(1, 6)}
+    with pytest.raises(TypeError):
+        _build_model_safe(pipeline, params, _ctx())
+    assert pipeline.calls == _MAX_BUILD_MODEL_RETRIES
 
 
 # --- EvalResult.selected_params 배관 ---
