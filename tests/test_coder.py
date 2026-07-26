@@ -219,3 +219,14 @@ def test_contracts_warn_estimator_receives_numpy_not_dataframe() -> None:
     from agents.coder import _REFLEXION_CONTRACT, _BOOTSTRAP_CONTRACT
     assert "to_numpy" in _REFLEXION_CONTRACT
     assert "to_numpy" in _BOOTSTRAP_CONTRACT
+
+
+def test_contracts_ordinal_encoding_example_drops_nulls_before_sorting() -> None:
+    """v1.4.3 배포 검증 중 실측: replace_strict에 default=를 추가했지만 그 앞의
+    sorted(train[col].unique().to_list())는 여전히 null-unsafe했다 — null이
+    섞인 unique() 결과를 sorted()에 넘기면 `TypeError: '<' not supported
+    between instances of 'NoneType' and 'str'`로 크래시한다(#74 후속). 정석
+    예시 자체가 drop_nulls()를 거쳐야 재발이 막힌다."""
+    from agents.coder import _REFLEXION_CONTRACT, _BOOTSTRAP_CONTRACT
+    assert "drop_nulls().unique()" in _REFLEXION_CONTRACT
+    assert "drop_nulls().unique()" in _BOOTSTRAP_CONTRACT

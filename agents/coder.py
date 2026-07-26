@@ -92,10 +92,12 @@ class Patch:
 
 ## Polars rules (do NOT use pandas-style API)
 - String columns have dtype pl.String (NOT pl.Categorical)
-- Correct ordinal encoding for pl.String columns (always pass default= — unmapped values, e.g. an
-  unseen category or null in a CV fold, otherwise crash with `InvalidOperationError: incomplete
-  mapping specified for replace_strict`):
-    mapping = {v: i for i, v in enumerate(sorted(train[col].unique().to_list()))}
+- Correct ordinal encoding for pl.String columns — drop_nulls() before unique()/sorted() (a raw
+  train[col].unique().to_list() can contain None, and sorted() then raises `TypeError: '<' not
+  supported between instances of 'NoneType' and 'str'`), and always pass default= to
+  replace_strict (unmapped values, e.g. an unseen category or a null, otherwise crash with
+  `InvalidOperationError: incomplete mapping specified for replace_strict`):
+    mapping = {v: i for i, v in enumerate(sorted(train[col].drop_nulls().unique().to_list()))}
     train = train.with_columns(pl.col(col).replace_strict(mapping, default=-1).cast(pl.Int32))
     valid = valid.with_columns(pl.col(col).replace_strict(mapping, default=-1).cast(pl.Int32))
 - pl.concat requires identical schemas
@@ -192,10 +194,12 @@ class Patch:
 
 ## Polars rules (do NOT use pandas-style API)
 - String columns have dtype pl.String (NOT pl.Categorical)
-- Correct ordinal encoding for pl.String columns (always pass default= — unmapped values, e.g. an
-  unseen category or null in a CV fold, otherwise crash with `InvalidOperationError: incomplete
-  mapping specified for replace_strict`):
-    mapping = {v: i for i, v in enumerate(sorted(train[col].unique().to_list()))}
+- Correct ordinal encoding for pl.String columns — drop_nulls() before unique()/sorted() (a raw
+  train[col].unique().to_list() can contain None, and sorted() then raises `TypeError: '<' not
+  supported between instances of 'NoneType' and 'str'`), and always pass default= to
+  replace_strict (unmapped values, e.g. an unseen category or a null, otherwise crash with
+  `InvalidOperationError: incomplete mapping specified for replace_strict`):
+    mapping = {v: i for i, v in enumerate(sorted(train[col].drop_nulls().unique().to_list()))}
     train = train.with_columns(pl.col(col).replace_strict(mapping, default=-1).cast(pl.Int32))
     valid = valid.with_columns(pl.col(col).replace_strict(mapping, default=-1).cast(pl.Int32))
 - pl.concat requires identical schemas
