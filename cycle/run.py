@@ -138,12 +138,27 @@ def _prev_best_params(conn: PgConn, competition_id: str) -> dict | None:
     return val if isinstance(val, dict) else json.loads(val)
 
 
-def _prev_best_fold_scores(conn: PgConn, competition_id: str) -> list[float] | None:
+def _prev_best_fold_scores(
+    conn: PgConn, competition_id: str, exclude_attempt_id: str | None = None
+) -> list[float] | None:
     """확정 파이프라인(raw.pipelines)에 연결된 attempt의 fold_scores.
 
     paired per-fold 유의성 검정(is_significant_gain)의 baseline으로 쓰인다.
     같은 seed로 생성된 fold split은 결정적이라 candidate의 fold_scores와 인덱스별로
-    바로 대응시킬 수 있다. 없으면(콜드스타트) None — 호출부가 절대-gain으로 폴백.
+    바로 대응시킬 수 있다.
+
+    확정 파이프라인이 없으면(콜드스타트) _prev_best()와 동일한 철학(BON-267)으로
+    raw.attempts 전체 최고 cv_score의 fold_scores를 부트스트랩 baseline으로 쓴다 —
+    그러지 않으면 paired 검정이 영원히 비활성화되고 절대-margin 폴백(사실상 도달
+    불가, 7447건 중 jump 0건 실측)만 남아 확정 승격이 하나도 없는 대회는 영원히
+    승격이 안 되는 자기강화 데드락에 빠진다(#73).
+
+    exclude_attempt_id: 폴백 조회 시 이 attempt는 후보에서 제외한다. 호출 시점에
+    비교 대상(candidate) attempt가 이미 raw.attempts에 커밋돼 있으면(예:
+    bin/run_promote_task.py — super-cycle attempts를 다 읽은 뒤 winner를 비교) 콜드스타트
+    상태에서 winner 자신이 곧 역대 최고 attempt인 경우가 흔해 자기 자신과 비교하는
+    퇴화 케이스가 생긴다(delta 전부 0 → 조용히 False). cycle/run.py 자체 호출은 현재
+    attempt가 아직 미커밋이라 이 인자 없이도 안전.
     """
     row = conn.execute(
         """
@@ -158,6 +173,26 @@ def _prev_best_fold_scores(conn: PgConn, competition_id: str) -> list[float] | N
         """,
         [competition_id],
     ).fetchone()
+    if row and row[0]:
+        val = row[0]
+        return val if isinstance(val, list) else json.loads(val)
+
+    fallback_query = """
+        select a.fold_scores
+        from raw.attempts a
+        join raw.competitions c using (competition_id)
+        where a.competition_id = %s
+          and a.cv_score is not null
+          and a.error_trace is null
+          and a.fold_scores is not null
+    """
+    params: list = [competition_id]
+    if exclude_attempt_id:
+        fallback_query += " and a.attempt_id != %s"
+        params.append(exclude_attempt_id)
+    fallback_query += " order by c.metric_sign * a.cv_score desc limit 1"
+
+    row = conn.execute(fallback_query, params).fetchone()
     if not row or not row[0]:
         return None
     val = row[0]

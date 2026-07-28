@@ -80,6 +80,9 @@ def confirm_and_measure(
     )
 
 
+_ERROR_TRUNCATE_LEN = 500
+
+
 def _baseline_cv(
     *,
     best_source: str | None,
@@ -90,10 +93,12 @@ def _baseline_cv(
     is_classification: bool,
     seed: int,
     action_type: str,
-) -> float | None:
-    """best pipeline(또는 BasePipeline)을 seed 고정으로 단독 평가해 cv_score 반환.
+) -> tuple[float | None, str | None]:
+    """best pipeline(또는 BasePipeline)을 seed 고정으로 단독 평가해 (cv_score, error) 반환.
 
-    에러 시 None 반환 → 호출부에서 보수적으로 승격 거부.
+    에러 시 cv_score=None → 호출부에서 보수적으로 승격 거부. error는 seed_gains에
+    남겨 진단 가능하게 한다(#73 — 이전엔 bool로 뭉개져 s6e6 confirm 실패가 "재현
+    안 됨"인지 "크래시"인지 DB만 봐선 구분 불가능했다).
     """
     src = best_source if best_source else _NOOP_PATCH
     res = eval_isolated(
@@ -110,8 +115,9 @@ def _baseline_cv(
     )
     if res.error_trace or res.cv_score is None:
         _LOG.warning("baseline eval failed seed=%d err=%s", seed, bool(res.error_trace))
-        return None
-    return res.cv_score
+        err = (res.error_trace or "unknown (cv_score is None with no error_trace)")
+        return None, err[:_ERROR_TRUNCATE_LEN]
+    return res.cv_score, None
 
 
 def _cross_seed_confirm(
@@ -132,7 +138,7 @@ def _cross_seed_confirm(
     seed_gains: dict = {}
 
     for cseed in confirm_seeds:
-        base_cv = _baseline_cv(
+        base_cv, base_err = _baseline_cv(
             best_source=best_source,
             train90=train90,
             target_col=target_col,
@@ -143,7 +149,13 @@ def _cross_seed_confirm(
             action_type=action_type,
         )
         if base_cv is None:
-            _LOG.info("cross-seed=%d baseline eval 실패 → 승격 취소", cseed)
+            _LOG.warning("cross-seed=%d baseline eval 실패 → 승격 취소: %s", cseed, base_err)
+            seed_gains[str(cseed)] = {
+                "baseline_cv": None,
+                "candidate_cv": None,
+                "gain": None,
+                "error": f"baseline: {base_err}",
+            }
             return False, seed_gains
 
         cand = eval_isolated(
@@ -163,10 +175,11 @@ def _cross_seed_confirm(
             "baseline_cv": base_cv,
             "candidate_cv": cand.cv_score,
             "gain": cand.gain_vs_best,
+            "error": (cand.error_trace or "")[:_ERROR_TRUNCATE_LEN] or None,
         }
 
         if cand.error_trace or cand.gain_vs_best is None or cand.gain_vs_best <= 0:
-            _LOG.info(
+            _LOG.warning(
                 "cross-seed=%d 미재현 → 승격 취소 (baseline=%.6f candidate=%s gain=%s err=%s)",
                 cseed, base_cv, cand.cv_score, cand.gain_vs_best, bool(cand.error_trace),
             )

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import logging
 import sys
 from pathlib import Path
 
@@ -28,6 +29,12 @@ _MERGE_VERIFY_TOLERANCE = 1e-6
 
 
 def main() -> None:
+    # 이 프로세스는 Airflow DockerOperator가 별도 실행하는 진입점이라 부모의
+    # 로깅 설정을 상속받지 않는다 — basicConfig 없이는 cycle/promotion.py의
+    # 게이트 실패 로그(_LOG.warning 등)가 lastResort 핸들러에 의존하게 되는데,
+    # 그마저도 없던 기간엔 INFO 로그가 전부 조용히 사라졌다(#73).
+    logging.basicConfig(level=logging.INFO)
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--queue-id", required=True)
     parser.add_argument("--run-id", required=True)
@@ -104,7 +111,7 @@ def main() -> None:
     print(f"[run_promote_task] super_cycle={super_cycle_id[:8]} n_attempts={len(rows)}")
     for i, r in enumerate(rows):
         winner_mark = "*" if i == winner_idx else " "
-        print(f"  [{winner_mark}{i}] {r[0][:8]} action={r[9]} cv={r[2]} gain={r[1]} label={r[3]}")
+        print(f"  [{winner_mark}{i}] {r[0][:8]} action={r[6]} cv={r[2]} gain={r[1]} label={r[3]}")
 
     if winner_idx is None:
         print("  -> all errored, no winner")
@@ -130,14 +137,25 @@ def main() -> None:
         [competition_id],
     ).fetchone()
     _metric_sign = _sign_row[0] if _sign_row and _sign_row[0] is not None else 1
-    _baseline_fold_scores = _prev_best_fold_scores(conn, competition_id)
+    _baseline_fold_scores = _prev_best_fold_scores(
+        conn, competition_id, exclude_attempt_id=winner_row[0]
+    )
 
-    if is_significant_gain(
+    _stage1_significant = is_significant_gain(
         winner_gain, winner_cv_fold_var,
         candidate_fold_scores=winner_fold_scores,
         baseline_fold_scores=_baseline_fold_scores,
         metric_sign=_metric_sign,
-    ) and not winner_error and winner_code_path:
+    )
+    print(
+        f"[run_promote_task] gate stage1: significant={_stage1_significant} "
+        f"gain={winner_gain} cv_fold_var={winner_cv_fold_var} "
+        f"candidate_folds={len(winner_fold_scores) if winner_fold_scores else 0} "
+        f"baseline_folds={len(_baseline_fold_scores) if _baseline_fold_scores else 0} "
+        f"has_error={bool(winner_error)} has_code={bool(winner_code_path)}"
+    )
+
+    if _stage1_significant and not winner_error and winner_code_path:
         winner_content = _code_download(winner_code_path) or ""
         sep = _CODE_HEADER_SEP + "\n"
         winner_source = winner_content.split(sep, 1)[1].strip() if sep in winner_content else winner_content

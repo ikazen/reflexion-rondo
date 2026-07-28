@@ -95,10 +95,17 @@ def test_first_seed_fails_not_confirmed():
 
 
 def test_error_trace_not_confirmed():
-    """candidate error_trace 있으면 confirmed=False."""
+    """candidate error_trace 있으면 confirmed=False, seed_gains에 error가 남는다(#73).
+
+    이전엔 seed_gains에 baseline_cv/candidate_cv/gain만 기록해 "gain<=0으로 재현
+    안 됨"과 "크래시로 평가 자체가 실패함"을 DB(raw.attempts.confirm_seed_gains)만
+    보고는 구분할 수 없었다(s6e6 64475b93 실사고).
+    """
     with patch("cycle.promotion.eval_isolated", side_effect=_paired_side_effect(candidate_result=_err())):
         result = confirm_and_measure(**_COMMON, holdout10=None, confirm_seeds=[7])
     assert result.confirmed is False
+    assert result.seed_gains["7"]["error"] == "RuntimeError"
+    assert result.seed_gains["7"]["candidate_cv"] is None
 
 
 def test_second_seed_fails_not_confirmed():
@@ -178,10 +185,17 @@ def test_seed_gains_recorded():
         assert entry["baseline_cv"] == pytest.approx(0.84)
         assert entry["candidate_cv"] == pytest.approx(0.851)
         assert entry["gain"] == pytest.approx(0.011)
+        assert entry["error"] is None
 
 
 def test_baseline_eval_error_not_confirmed():
-    """baseline eval 에러 → confirmed=False."""
+    """baseline eval 에러 → confirmed=False, 그 seed도 seed_gains에 기록된다(#73).
+
+    이전엔 baseline 실패 시 seed_gains에 아무것도 안 남기고 바로 return했다 —
+    confirm_seeds가 [7]뿐이면 seed_gains 전체가 빈 dict가 됐고, confirm_and_measure가
+    빈 dict를 None으로 접어버려(구 코드) "confirm이 아예 안 돎"과 "confirm이 돌았는데
+    baseline에서 크래시함"이 DB상 똑같이 보였다.
+    """
     def _se(*args, **kwargs):
         if kwargs.get("best_source") is None:
             return _err()
@@ -190,6 +204,9 @@ def test_baseline_eval_error_not_confirmed():
     with patch("cycle.promotion.eval_isolated", side_effect=_se):
         result = confirm_and_measure(**_COMMON, holdout10=None, confirm_seeds=[7])
     assert result.confirmed is False
+    assert result.seed_gains is not None
+    assert result.seed_gains["7"]["baseline_cv"] is None
+    assert "RuntimeError" in result.seed_gains["7"]["error"]
 
 
 def test_best_source_none_uses_noop_patch():
