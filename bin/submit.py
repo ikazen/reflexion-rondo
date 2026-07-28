@@ -40,16 +40,18 @@ _EARLY_STOPPING_KEYS = frozenset({
 
 def _load_best_code(
     competition_id: str, attempt_id: str | None
-) -> tuple[str, float, str, str | None]:
-    """(code_source, cv_score, attempt_id, pipeline_sha256) 반환.
+) -> tuple[str, float, str, str | None, object | None]:
+    """(code_source, cv_score, attempt_id, pipeline_sha256, run_ts) 반환.
 
     attempt_id 지정 시: 사용자가 명시적으로 고른 attempt(미확정이어도 허용) — 의도된 escape
     hatch. pipeline_sha256은 None(무결성 검증 스킵 — raw.pipelines가 아니라 raw.attempts의
-    개별 code_path라 대조할 신뢰 해시가 없음, 명시적 지정이므로 허용).
+    개별 code_path라 대조할 신뢰 해시가 없음, 명시적 지정이므로 허용). run_ts는 이 attempt의
+    cv_score가 측정된 시점 — 그 시점까지 승격된 base pipeline을 재생(#80)할 기준점으로 쓴다.
     미지정(자동 선택) 시: confirmed 파이프라인(raw.pipelines, cross-seed 통과분)만
     소스로 쓴다. _load_pipeline()이 실제 제출하는 모델도 confirmed 소스에서 materialize된
     것이므로, 리포팅되는 cv_score/attempt_id도 같은 소스여야 한다. raw.attempts all-time
-    max는 미확정 attempt를 가리킬 수 있어 리포팅 불일치를 낳았다.
+    max는 미확정 attempt를 가리킬 수 있어 리포팅 불일치를 낳았다. run_ts는 이 경로에선
+    불필요(None) — MinIO best_pipeline.py가 이미 그 시점의 base를 담고 있다.
     pipeline_sha256은 MinIO best_pipeline.py 무결성 검증용 신뢰 해시(raw.pipelines,
     materialize 시점 기록).
     """
@@ -60,20 +62,21 @@ def _load_best_code(
 
     if attempt_id:
         row = conn.execute(
-            "select code_path, cv_score, attempt_id from raw.attempts where attempt_id like %s",
-            [f"{attempt_id}%"],
+            "select code_path, cv_score, attempt_id, run_ts from raw.attempts"
+            " where attempt_id like %s and competition_id = %s",
+            [f"{attempt_id}%", competition_id],
         ).fetchone()
         conn.close()
         if not row:
             raise ValueError(f"No valid attempt found for {competition_id}")
-        code_path, cv_score, aid = row
+        code_path, cv_score, aid, run_ts = row
         from store.s3_code import download as _code_download
         content = _code_download(code_path)
         if not content:
             raise FileNotFoundError(f"code not found: {code_path}")
         sep = CODE_SEP + "\n"
         source = content.split(sep, 1)[1].strip() if sep in content else content.strip()
-        return source, cv_score, aid, None
+        return source, cv_score, aid, None, run_ts
 
     row = conn.execute(
         """
@@ -94,7 +97,7 @@ def _load_best_code(
             "use --attempt-id to submit an unconfirmed attempt explicitly"
         )
     source, cv_score, aid, pipeline_sha256 = row
-    return source.strip(), cv_score, aid, pipeline_sha256
+    return source.strip(), cv_score, aid, pipeline_sha256, None
 
 
 def _read_csv(comp: object, name: str) -> pl.DataFrame:
@@ -123,6 +126,7 @@ def _load_pipeline(
     extra_source: str | None = None,
     expected_sha256: str | None = None,
     attempt_only: bool = False,
+    base_source: str | None = None,
 ) -> object:
     """Load the materialized best pipeline from MinIO.
 
@@ -140,6 +144,15 @@ def _load_pipeline(
     스킵되는데, raw.pipelines 행이 삭제돼도 대응 MinIO blob은 안 지워지므로 고아
     (orphaned) blob이 같은 이름의 class Patch로 조용히 덮어써 특정 attempt 제출을
     하이재킹할 수 있다. attempt_only=True는 그 무관한 MinIO 상태를 원천적으로 배제한다.
+
+    base_source: attempt_only=True일 때 patch가 그 위에서 실행돼야 할 base pipeline
+    소스(cycle.materialize.replay_best_pipeline로 raw.pipelines에서 재생 — MinIO가
+    아니라 Postgres 신뢰 사본이라 위 하이재킹 우려와 무관하다). 평가 경로
+    (runtime/runner.py:_load_best_pipeline_class)가 base+patch 위에서 cv_score를
+    측정하는데, 여기서 base 없이 patch만 실행하면(#80) hook을 하나만 오버라이드하는
+    attempt(예: param_candidates만 바꾼 하이퍼파라미터 탐색)가 나머지 hook에서
+    BasePipeline 기본 모델로 조용히 떨어져 평가와 전혀 다른(대개 훨씬 나쁜) 예측을
+    제출하게 된다. None이면(재생 이력 없음 등) 기존대로 BasePipeline()에 patch만 적용.
 
     attempt_only 경로는 예전에 훅 메서드만 `type(...)`으로 새 클래스에 옮겨
     붙였는데(methods={h: getattr(patch_cls, h) ...}), Patch가 훅 밖 클래스 속성(예:
@@ -162,7 +175,15 @@ def _load_pipeline(
         patch_cls = ns.get("Patch")
         if not patch_cls:
             return BasePipeline()
-        return PatchedPipeline(BasePipeline(), patch_cls())
+        base = BasePipeline()
+        if base_source:
+            base_ns: dict = {}
+            exec(compile(base_source, "<replayed_best_pipeline>", "exec"), base_ns)  # noqa: S102
+            base_patch_cls = base_ns.get("Patch")
+            if base_patch_cls:
+                methods = {h: getattr(base_patch_cls, h) for h in _HOOK_NAMES if hasattr(base_patch_cls, h)}
+                base = type("ReplayedBase", (BasePipeline,), methods)()
+        return PatchedPipeline(base, patch_cls())
 
     best_source = download_best_pipeline(competition_id)
     if not best_source:
@@ -323,14 +344,36 @@ def generate_submission_csv(
 
     comp = importlib.import_module(f"config.competitions.{competition_slug}")
 
-    source, cv_score, resolved_attempt_id, pipeline_sha256 = _load_best_code(comp.COMPETITION_ID, attempt_id)
+    source, cv_score, resolved_attempt_id, pipeline_sha256, run_ts = _load_best_code(
+        comp.COMPETITION_ID, attempt_id
+    )
     print(f"best attempt: {resolved_attempt_id[:8]}  cv={cv_score:.5f}")
+
+    # attempt_only 경로(--attempt-id 명시 또는 auto-submit 폴백)는 patch가 그 attempt
+    # 평가 시점까지 승격된 base 위에서 실행돼야 cv_score와 같은 예측이 나온다(#80).
+    # raw.pipelines(Postgres 신뢰 사본)에서 그 시점 이전 승격분만 재생 — MinIO
+    # 조회는 여전히 하지 않는다(고아 blob 하이재킹 방지, #19/#21 유지).
+    base_source = None
+    if attempt_id:
+        from cycle.materialize import replay_best_pipeline
+        from store.db import connect as _connect
+        _conn = _connect(apply_schema=False)
+        try:
+            base_source, _, replayed_count = replay_best_pipeline(
+                _conn, comp.COMPETITION_ID, before_run_ts=run_ts
+            )
+        finally:
+            _conn.close()
+        if base_source:
+            print(f"base pipeline replayed from raw.pipelines: {replayed_count} promoted pipeline(s)")
+        else:
+            print("no prior promoted pipeline to replay — base is BasePipeline()")
 
     from evaluator.harness import PipelineContext, preselect_params
     from store.train_data import load_train
     pipeline = _load_pipeline(
         comp.COMPETITION_ID, extra_source=source, expected_sha256=pipeline_sha256,
-        attempt_only=bool(attempt_id),
+        attempt_only=bool(attempt_id), base_source=base_source,
     )
     ctx = PipelineContext(
         target_col=comp.TARGET,

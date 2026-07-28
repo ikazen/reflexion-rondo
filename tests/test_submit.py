@@ -47,7 +47,7 @@ def test_auto_select_queries_pipelines_not_attempts() -> None:
     """attempt_id 미지정 시 raw.pipelines를 조회하고 raw.attempts는 조회하지 않는다."""
     conn = _conn_with(("code text", 0.91, "attempt-123", "abc123sha"))
     with patch("store.db.connect", return_value=conn):
-        source, cv_score, aid, sha = _load_best_code("s4e1", None)
+        source, cv_score, aid, sha, run_ts = _load_best_code("s4e1", None)
     sql = conn.execute.call_args.args[0]
     assert "raw.pipelines" in sql
     assert "raw.attempts" not in sql
@@ -55,6 +55,7 @@ def test_auto_select_queries_pipelines_not_attempts() -> None:
     assert cv_score == 0.91
     assert aid == "attempt-123"
     assert sha == "abc123sha"
+    assert run_ts is None
 
 
 def test_auto_select_returns_code_directly_without_s3_download() -> None:
@@ -76,24 +77,41 @@ def test_auto_select_raises_when_no_confirmed_pipeline() -> None:
 
 def test_explicit_attempt_id_still_uses_attempts_and_s3() -> None:
     """--attempt-id 지정 시 기존처럼 raw.attempts + S3 다운로드 경로를 그대로 쓴다."""
-    conn = _conn_with(("path/to/code.py", 0.80, "attempt-999"))
+    import datetime
+    run_ts = datetime.datetime(2026, 7, 28, 3, 15, 1)
+    conn = _conn_with(("path/to/code.py", 0.80, "attempt-999", run_ts))
     with patch("store.db.connect", return_value=conn), \
          patch("store.s3_code.download", return_value="header\n" + ("# " + "-" * 60) + "\nsource here") as mock_download:
-        source, cv_score, aid, sha = _load_best_code("s4e1", "attempt-999")
+        source, cv_score, aid, sha, resolved_run_ts = _load_best_code("s4e1", "attempt-999")
     sql = conn.execute.call_args.args[0]
     assert "raw.attempts" in sql
     mock_download.assert_called_once_with("path/to/code.py")
     assert source == "source here"
     assert cv_score == 0.80
     assert aid == "attempt-999"
+    assert resolved_run_ts == run_ts
+
+
+def test_explicit_attempt_id_filters_by_competition() -> None:
+    """--attempt-id는 competition_id로도 필터해야 한다 — prefix만으로는 다른 대회 attempt와 충돌할 수 있다."""
+    import datetime
+    conn = _conn_with(("path/to/code.py", 0.80, "attempt-999", datetime.datetime(2026, 7, 28)))
+    with patch("store.db.connect", return_value=conn), \
+         patch("store.s3_code.download", return_value="src"):
+        _load_best_code("s4e1", "attempt-999")
+    sql = conn.execute.call_args.args[0]
+    params = conn.execute.call_args.args[1]
+    assert "competition_id = %s" in sql
+    assert "s4e1" in params
 
 
 def test_explicit_attempt_id_skips_hash_verification() -> None:
     """--attempt-id 명시 경로는 raw.pipelines 대조 해시가 없어 pipeline_sha256=None (의도된 escape hatch)."""
-    conn = _conn_with(("path/to/code.py", 0.80, "attempt-999"))
+    import datetime
+    conn = _conn_with(("path/to/code.py", 0.80, "attempt-999", datetime.datetime(2026, 7, 28)))
     with patch("store.db.connect", return_value=conn), \
          patch("store.s3_code.download", return_value="src"):
-        *_, sha = _load_best_code("s4e1", "attempt-999")
+        *_, sha, _ = _load_best_code("s4e1", "attempt-999")
     assert sha is None
 
 
@@ -182,6 +200,110 @@ def test_load_pipeline_attempt_only_preserves_class_attributes() -> None:
         pipeline = _load_pipeline("s4e1", extra_source=source, attempt_only=True)
     mock_download.assert_not_called()
     assert pipeline.build_model({}, None) == ["low", "high"]
+
+
+# ---------------------------------------------------------------------------
+# attempt_only + base_source — #80 회귀 테스트
+#
+# param_candidates만 오버라이드하는 attempt(하이퍼파라미터 탐색)를 base 없이
+# 제출하면 build_model/preprocess 등 나머지 hook이 BasePipeline 기본값으로
+# 떨어져 cv_score와 무관한(대개 훨씬 나쁜) 예측을 낸다 — s4e12 실사고(#80).
+# ---------------------------------------------------------------------------
+
+def test_load_pipeline_attempt_only_with_base_source_inherits_unoverridden_hooks() -> None:
+    """base_source가 있으면 patch가 오버라이드하지 않은 hook은 base에서 온다."""
+    base_source = (
+        "class Patch:\n"
+        "    def build_model(self, params, ctx):\n"
+        "        return 'base-model'\n"
+        "    def postprocess_predictions(self, preds, ctx):\n"
+        "        return 'base-postprocess'\n"
+    )
+    attempt_source = (
+        "class Patch:\n"
+        "    def param_candidates(self, ctx):\n"
+        "        return [{'lr': 0.1}]\n"
+    )
+    with patch("store.s3_code.download_best_pipeline") as mock_download:
+        pipeline = _load_pipeline(
+            "s4e1", extra_source=attempt_source, attempt_only=True, base_source=base_source,
+        )
+    mock_download.assert_not_called()  # base_source는 raw.pipelines 재생분 — MinIO 조회는 여전히 없다
+    assert pipeline.param_candidates(None) == [{"lr": 0.1}]  # patch가 이긴다
+    assert pipeline.build_model({}, None) == "base-model"  # base로 상속
+    assert pipeline.postprocess_predictions(None, None) == "base-postprocess"  # base로 상속
+
+
+def test_load_pipeline_attempt_only_without_base_source_falls_back_to_base_pipeline() -> None:
+    """base_source가 없으면(재생 이력 없음) 기존과 동일하게 BasePipeline()에 patch만 적용."""
+    from evaluator.harness import BasePipeline
+    attempt_source = (
+        "class Patch:\n"
+        "    def param_candidates(self, ctx):\n"
+        "        return [{'lr': 0.1}]\n"
+    )
+    pipeline = _load_pipeline(
+        "s4e1", extra_source=attempt_source, attempt_only=True, base_source=None,
+    )
+    assert pipeline.param_candidates(None) == [{"lr": 0.1}]
+    assert isinstance(pipeline.base, BasePipeline)
+    assert type(pipeline.base) is BasePipeline
+
+
+def test_load_pipeline_attempt_only_base_source_without_patch_falls_back() -> None:
+    """base_source에 Patch 클래스가 없으면(방어적) BasePipeline()으로 폴백한다."""
+    pipeline = _load_pipeline(
+        "s4e1",
+        extra_source="class Patch:\n    def param_candidates(self, ctx):\n        return []\n",
+        attempt_only=True,
+        base_source="x = 1\n",
+    )
+    from evaluator.harness import BasePipeline
+    assert type(pipeline.base) is BasePipeline
+
+
+# ---------------------------------------------------------------------------
+# cycle.materialize.replay_best_pipeline
+# ---------------------------------------------------------------------------
+
+def test_replay_best_pipeline_folds_history_in_run_ts_order() -> None:
+    from cycle.materialize import replay_best_pipeline
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = [
+        ("pid-1", "2026-07-26T00:00:00", "class Patch:\n    def build_model(self, p, c):\n        return 1\n", "sha1"),
+        ("pid-2", "2026-07-27T00:00:00", "class Patch:\n    def preprocess(self, tr, va, t, c):\n        return tr, va\n", "sha2"),
+    ]
+    best, last_sha, count = replay_best_pipeline(conn, "s4e1")
+    assert count == 2
+    assert last_sha == "sha2"
+    assert "def build_model" in best
+    assert "def preprocess" in best
+
+
+def test_replay_best_pipeline_filters_by_before_run_ts() -> None:
+    """before_run_ts를 주면 SQL에 그 조건이 들어가야 한다 — 재생 결과가 attempt 평가
+    시점 이후 승격분을 섞으면 안 되므로."""
+    from cycle.materialize import replay_best_pipeline
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    import datetime
+    cutoff = datetime.datetime(2026, 7, 28)
+    replay_best_pipeline(conn, "s4e1", before_run_ts=cutoff)
+    sql = conn.execute.call_args.args[0]
+    params = conn.execute.call_args.args[1]
+    assert "run_ts <" in sql
+    assert cutoff in params
+
+
+def test_replay_best_pipeline_no_history_returns_none() -> None:
+    from cycle.materialize import replay_best_pipeline
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    best, last_sha, count = replay_best_pipeline(conn, "s4e1")
+    assert (best, last_sha, count) == (None, None, 0)
 
 
 # ---------------------------------------------------------------------------
