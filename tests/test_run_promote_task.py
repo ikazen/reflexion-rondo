@@ -285,6 +285,27 @@ def test_confirm_and_measure_takes_no_outside_prev_best() -> None:
     assert "prev_best" not in confirm_mock.call_args.kwargs
 
 
+def test_prev_best_fold_scores_excludes_winner_attempt() -> None:
+    """콜드스타트 상태에서 winner 자신과 비교하는 자기-비교 퇴화 케이스를 막기 위해
+    winner attempt_id를 exclude_attempt_id로 넘겨 _prev_best_fold_scores를 호출해야
+    한다(#73) — winner의 super-cycle attempts는 이미 raw.attempts에 커밋돼 있으므로
+    콜드스타트(확정 승격 0건) 대회에서는 winner 자신이 곧 폴백 쿼리의 "최고 attempt"가
+    될 수 있다.
+    """
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    fold_scores_mock = MagicMock(return_value=None)
+    with patch("cycle.run._prev_best_fold_scores", fold_scores_mock):
+        _run_promote_with_mocks(
+            SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None),
+            reflect_mock,
+            confirm_mock,
+        )
+    assert fold_scores_mock.call_count == 1
+    _, kwargs = fold_scores_mock.call_args
+    assert kwargs.get("exclude_attempt_id") == _ATTEMPT_ROWS[0][0]
+
+
 def test_super_cycle_context_deleted_after_read() -> None:
     """컨텍스트를 읽은 뒤 해당 run_id 행을 삭제해야 한다."""
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
