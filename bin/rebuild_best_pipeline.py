@@ -25,43 +25,21 @@ ROOT = Path(__file__).parent.parent
 
 def rebuild(competition_id: str, dry_run: bool) -> str:
     sys.path.insert(0, str(ROOT))
-    from cycle.materialize import materialize_best_pipeline
+    from cycle.materialize import replay_best_pipeline
     from store.db import connect
     from store.s3_code import upload_best_pipeline
 
     conn = connect(apply_schema=False)
-    rows = conn.execute(
-        """
-        SELECT p.pipeline_id, a.run_ts, a.action_type, p.code
-        FROM raw.pipelines p
-        JOIN raw.attempts a USING (attempt_id)
-        WHERE p.competition_id = %s
-        ORDER BY a.run_ts ASC
-        """,
-        [competition_id],
-    ).fetchall()
-    conn.close()
+    try:
+        best, _, count = replay_best_pipeline(conn, competition_id)
+    finally:
+        conn.close()
 
-    if not rows:
+    if not best:
         print(f"no raw.pipelines rows for competition_id={competition_id!r} — nothing to rebuild")
         sys.exit(1)
 
-    print(f"replaying {len(rows)} promoted pipeline(s) for {competition_id} ...")
-    best: str | None = None
-    for pipeline_id, run_ts, action_type, code in rows:
-        try:
-            best = materialize_best_pipeline(best, code)
-        except Exception as exc:
-            print(
-                f"REPLAY FAILED at pipeline_id={pipeline_id} run_ts={run_ts} "
-                f"action_type={action_type}: {exc}",
-                file=sys.stderr,
-            )
-            print("stopping — manual investigation needed for this pipeline_id.", file=sys.stderr)
-            sys.exit(1)
-        print(f"  ok  {run_ts} {action_type:16s} {pipeline_id[:8]}")
-
-    assert best is not None  # rows is non-empty, loop always assigns
+    print(f"replayed {count} promoted pipeline(s) for {competition_id}")
 
     if dry_run:
         print("\n--dry-run: not uploading. Result below:\n")

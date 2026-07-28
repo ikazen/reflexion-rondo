@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import ast
 import builtins
+import hashlib
 import logging
 import textwrap
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from store.db import PgConn
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +163,60 @@ def materialize_best_pipeline(base_source: str | None, patch_source: str) -> str
     result = "\n".join(parts)
     _validate_materialized(result)
     return result
+
+
+def replay_best_pipeline(
+    conn: "PgConn", competition_id: str, before_run_ts=None
+) -> tuple[str | None, str | None, int]:
+    """raw.pipelines 히스토리를 시간순 재생해 materialized base pipeline을 재구성한다.
+
+    bin/rebuild_best_pipeline.py의 복구 로직과 동일한 재생 패턴을 공용화한 것 —
+    거기서는 MinIO best_pipeline.py 손상 복구용, 여기서는 attempt 제출 시 평가
+    시점의 base를 정확히 재현하는 용도(#80). before_run_ts를 주면 그 시각 이전에
+    승격된 pipeline만 재생한다 — attempt의 cv_score는 그 시점까지의 base 위에서
+    측정됐으므로 이후 승격분을 섞으면 안 된다.
+
+    반환: (materialized_source, 마지막 행의 pipeline_sha256, 재생한 pipeline 수).
+    승격 이력이 없으면 (None, None, 0).
+    """
+    query = """
+        SELECT p.pipeline_id, a.run_ts, p.code, p.pipeline_sha256
+        FROM raw.pipelines p
+        JOIN raw.attempts a USING (attempt_id)
+        WHERE p.competition_id = %s
+    """
+    params: list = [competition_id]
+    if before_run_ts is not None:
+        query += " AND a.run_ts < %s"
+        params.append(before_run_ts)
+    query += " ORDER BY a.run_ts ASC"
+
+    rows = conn.execute(query, params).fetchall()
+    if not rows:
+        return None, None, 0
+
+    best: str | None = None
+    last_sha256: str | None = None
+    for pipeline_id, run_ts, code, pipeline_sha256 in rows:
+        try:
+            best = materialize_best_pipeline(best, code)
+        except Exception as exc:
+            raise RuntimeError(
+                f"replay failed at pipeline_id={pipeline_id} run_ts={run_ts} "
+                f"(competition_id={competition_id}): {exc}"
+            ) from exc
+        last_sha256 = pipeline_sha256
+
+    assert best is not None  # rows non-empty, loop always assigns
+    actual_sha256 = hashlib.sha256(best.encode()).hexdigest()
+    if last_sha256 and actual_sha256 != last_sha256:
+        logger.warning(
+            "replay_best_pipeline: 재생 결과 sha256이 마지막 승격분의 신뢰 해시와 다르다 "
+            "(competition_id=%s) — 평가 당시 MinIO blob이 손상됐을 가능성. "
+            "재생본이 vanilla BasePipeline보다는 낫다고 판단해 그대로 사용한다.",
+            competition_id,
+        )
+    return best, last_sha256, len(rows)
 
 
 _SAFE_NAMES = frozenset(dir(builtins)) | {"self", "cls", "__class__"}
