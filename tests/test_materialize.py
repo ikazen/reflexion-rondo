@@ -454,6 +454,88 @@ def test_no_collision_no_warning(caplog):
     assert not any("collision" in rec.message for rec in caplog.records)
 
 
+# --- nested class members in Patch (ensemble wrapper 패턴) ---
+# 재현: ensemble action_type이 build_model에서 참조하는 wrapper 클래스를 Patch 안에
+# 중첩 정의하는 패턴 — cross-seed confirm까지 통과한 뒤 materialize 단계에서만
+# 그 클래스가 사라져 merge-verify가 AttributeError로 크래시했다(#83).
+
+_PATCH_WITH_NESTED_CLASS = textwrap.dedent("""
+    class Patch:
+        action_type = "ensemble"
+        changed_stages = ["build_model"]
+        rationale = "weighted ensemble"
+
+        class _EnsembleRegressor:
+            def __init__(self, models, weights):
+                self.models = models
+                self.weights = weights
+
+        def build_model(self, params, ctx):
+            return self._EnsembleRegressor([1, 2], [0.5, 0.5])
+""").strip()
+
+
+def _nested_class_names(src: str) -> set[str]:
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "Patch":
+            return {n.name for n in node.body if isinstance(n, ast.ClassDef)}
+    return set()
+
+
+def test_nested_class_preserved_in_patch():
+    result = materialize_best_pipeline(None, _PATCH_WITH_NESTED_CLASS)
+    assert "_EnsembleRegressor" in _nested_class_names(result)
+
+
+def test_nested_class_usable_after_materialize():
+    """중첩 클래스가 병합본에서도 실제로 인스턴스화 가능해야 한다 — 정적 존재만으론 부족."""
+    result = materialize_best_pipeline(None, _PATCH_WITH_NESTED_CLASS)
+    ns: dict = {}
+    exec(compile(result, "<test>", "exec"), ns)  # noqa: S102
+    patch = ns["Patch"]()
+    model = patch.build_model(params={}, ctx=None)
+    assert model.weights == [0.5, 0.5]
+
+
+def test_nested_class_from_base_preserved_when_patch_doesnt_touch_it():
+    patch_only_feature = textwrap.dedent("""
+        class Patch:
+            action_type = "feature_engineering"
+            changed_stages = ["feature"]
+            rationale = "unrelated change"
+
+            def feature_transform(self, train, valid, target, ctx):
+                return train, valid
+    """).strip()
+    result = materialize_best_pipeline(_PATCH_WITH_NESTED_CLASS, patch_only_feature)
+    assert "_EnsembleRegressor" in _nested_class_names(result)
+    assert "build_model" in _method_names(result)
+
+
+def test_nested_class_collision_patch_wins_with_warning(caplog):
+    base_with_nested = textwrap.dedent("""
+        class Patch:
+            action_type = "ensemble"
+            changed_stages = ["build_model"]
+            rationale = "base ensemble"
+
+            class _EnsembleRegressor:
+                def __init__(self):
+                    self.tag = "base"
+
+            def build_model(self, params, ctx):
+                return self._EnsembleRegressor()
+    """).strip()
+    with caplog.at_level("WARNING", logger="cycle.materialize"):
+        result = materialize_best_pipeline(base_with_nested, _PATCH_WITH_NESTED_CLASS)
+    assert any("_EnsembleRegressor" in rec.message for rec in caplog.records)
+    ns: dict = {}
+    exec(compile(result, "<test>", "exec"), ns)  # noqa: S102
+    model = ns["Patch"]().build_model(params={}, ctx=None)
+    assert model.weights == [0.5, 0.5]  # patch 정의가 이겨야 함(base의 tag=only 버전 아님)
+
+
 def test_multi_target_assign_emitted_once():
     patch = textwrap.dedent("""
         import polars as pl

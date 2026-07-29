@@ -82,7 +82,11 @@ def _extract_class_members(source: str) -> dict[str, ast.stmt]:
         if isinstance(node, ast.ClassDef) and node.name == "Patch":
             result: dict[str, ast.stmt] = {}
             for item in node.body:
-                if isinstance(item, ast.FunctionDef):
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    # ClassDef 포함: ensemble action_type 등이 build_model에서 참조하는
+                    # wrapper 클래스를 Patch 안에 중첩 정의하는 패턴이 흔한데, 예전엔 여기서
+                    # 빠뜨려 병합본에서만 그 클래스가 사라졌다(cross-seed는 patch source를
+                    # 그대로 exec하니 통과, merge-verify에서만 AttributeError로 드러남).
                     result[item.name] = item
                 elif isinstance(item, ast.Assign):
                     for target in item.targets:
