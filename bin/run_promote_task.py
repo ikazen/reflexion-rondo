@@ -278,6 +278,7 @@ def main() -> None:
                             gain_vs_best=winner_gain,
                             pipeline_sha256=pipeline_sha256,
                             oof_preds=merge_oof_preds,
+                            materialized_code=materialized,
                         )
                     upload_best_pipeline(competition_id, materialized)
                     print(f"[run_promote_task] best pipeline materialized for {competition_id}")

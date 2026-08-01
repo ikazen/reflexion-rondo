@@ -67,6 +67,12 @@ ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS pipeline_sha256 text;
 -- 예측 — bin/blend.py가 파이프라인 밖에서 결정적 blend(Ridge)를 학습할 때 사용.
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS oof_preds jsonb;
 
+-- 승격 시점의 병합본(materialized best_pipeline.py) 전문 스냅샷 — Postgres 신뢰 사본.
+-- replay(patch 히스토리를 현재 materialize 로직으로 재병합)는 materialize가 바뀔 때마다
+-- 당시 병합본과 달라져(#89: sha 불일치 → 제출 크래시/조용한 열화) 평가 시점 base를
+-- 재현할 수 없다. submit.py attempt 경로는 이 스냅샷을 base로 쓴다.
+ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS materialized_code text;
+
 CREATE TABLE IF NOT EXISTS raw.submission_budget (
     competition_id  text,
     day             date,
