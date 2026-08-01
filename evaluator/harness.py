@@ -136,6 +136,29 @@ def _check_preprocess_target_leak(
     return tr_real, va_real
 
 
+def dummy_target_value(train: pl.DataFrame, target_col: str):
+    """실제 추론(test) 시점과 동일하게 쓸 더미 타깃 값 — train 실재값이어야 한다.
+
+    synthetic placeholder(0, NaN 등)는 Patch의 exhaustive target 인코딩에서
+    매핑 밖 값이라 크래시한다(bin/submit.py에서 실측). bin/submit.py와
+    cycle/promotion.py(audit holdout)가 이 함수를 공유해 "추론 시점에 타깃이
+    어떻게 보이는가"를 한 곳에서 정의한다 — 각자 다르게 구현하면 holdout이
+    실제 제출 조건을 재현하지 못한다(GH #96/#98).
+    """
+    return train[target_col][0]
+
+
+def replace_with_dummy_target(df: pl.DataFrame, target_col: str, train: pl.DataFrame) -> pl.DataFrame:
+    """df(test 또는 holdout)의 타깃 컬럼을 dummy_target_value로 교체한 새 프레임 반환.
+
+    _mask_target(null)과 달리 실제 train 값이라 preprocess 훅의 exhaustive target
+    인코딩 등이 크래시하지 않는다 — bin/submit.py의 실제 추론 조건과 동일.
+    """
+    return df.with_columns(
+        pl.lit(dummy_target_value(train, target_col)).cast(train[target_col].dtype).alias(target_col)
+    )
+
+
 def _encode_residual_categoricals(
     Xtr: pl.DataFrame, Xva: pl.DataFrame
 ) -> tuple[pl.DataFrame, pl.DataFrame]:

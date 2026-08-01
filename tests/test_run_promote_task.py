@@ -260,7 +260,7 @@ def test_a1_reflect_runs_even_when_unconfirmed() -> None:
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
     confirm_mock = MagicMock()
     _run_promote_with_mocks(
-        SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None),
+        SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None, holdout_regressed=False),
         reflect_mock,
         confirm_mock,
     )
@@ -277,7 +277,7 @@ def test_confirm_and_measure_takes_no_outside_prev_best() -> None:
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
     confirm_mock = MagicMock()
     _run_promote_with_mocks(
-        SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None),
+        SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None, holdout_regressed=False),
         reflect_mock,
         confirm_mock,
     )
@@ -297,7 +297,7 @@ def test_prev_best_fold_scores_excludes_winner_attempt() -> None:
     fold_scores_mock = MagicMock(return_value=None)
     with patch("cycle.run._prev_best_fold_scores", fold_scores_mock):
         _run_promote_with_mocks(
-            SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None),
+            SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None, holdout_regressed=False),
             reflect_mock,
             confirm_mock,
         )
@@ -311,7 +311,7 @@ def test_super_cycle_context_deleted_after_read() -> None:
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
     confirm_mock = MagicMock()
     conn = _run_promote_with_mocks(
-        SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None),
+        SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None, holdout_regressed=False),
         reflect_mock,
         confirm_mock,
     )
@@ -331,7 +331,7 @@ def test_merge_verify_matching_cv_allows_promotion() -> None:
         return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None, oof_preds=[0.1, 0.2, 0.3])
     )
     conn = _run_promote_with_mocks(
-        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
         reflect_mock,
         confirm_mock,
         eval_isolated_mock=eval_isolated_mock,
@@ -348,7 +348,7 @@ def test_merge_verify_passes_oof_preds_to_insert_pipeline() -> None:
         return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None, oof_preds=[0.1, 0.2, 0.3])
     )
     conn = _run_promote_with_mocks(
-        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
         reflect_mock,
         confirm_mock,
         eval_isolated_mock=eval_isolated_mock,
@@ -368,7 +368,7 @@ def test_merge_verify_mismatched_cv_blocks_promotion() -> None:
         return_value=SimpleNamespace(cv_score=_WINNER_CV - 0.3, error_trace=None, oof_preds=None)
     )
     conn = _run_promote_with_mocks(
-        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
         reflect_mock,
         confirm_mock,
         eval_isolated_mock=eval_isolated_mock,
@@ -385,7 +385,7 @@ def test_merge_verify_eval_error_blocks_promotion() -> None:
         return_value=SimpleNamespace(cv_score=None, error_trace="NameError: WeightedEnsemble", oof_preds=None)
     )
     conn = _run_promote_with_mocks(
-        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
         reflect_mock,
         confirm_mock,
         eval_isolated_mock=eval_isolated_mock,
@@ -412,7 +412,7 @@ def test_submission_csv_cached_using_global_best_attempt() -> None:
     global_best_id = "gbest000"  # 이번 super-cycle winner(w0000000)와 다른 attempt
     best_attempt_mock = MagicMock(return_value=(global_best_id, 0.90))
     conn = _run_promote_with_mocks(
-        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
         reflect_mock,
         confirm_mock,
         eval_isolated_mock=eval_isolated_mock,
@@ -428,7 +428,7 @@ def test_submission_csv_cached_even_when_promotion_not_confirmed() -> None:
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
     confirm_mock = MagicMock()
     conn = _run_promote_with_mocks(
-        SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None),
+        SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None, holdout_regressed=False),
         reflect_mock,
         confirm_mock,
     )
@@ -447,7 +447,7 @@ def test_submission_csv_cache_skipped_when_already_present() -> None:
         return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None, oof_preds=None)
     )
     conn = _run_promote_with_mocks(
-        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
         reflect_mock,
         confirm_mock,
         eval_isolated_mock=eval_isolated_mock,
@@ -468,7 +468,7 @@ def test_submission_csv_caching_failure_does_not_block_promotion() -> None:
     )
     failing_generate_csv_mock = MagicMock(side_effect=RuntimeError("train data unavailable"))
     conn = _run_promote_with_mocks(
-        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None),
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
         reflect_mock,
         confirm_mock,
         eval_isolated_mock=eval_isolated_mock,

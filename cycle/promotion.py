@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 import polars as pl
 
+from evaluator.metrics import get as get_metric
 from runtime.isolate import eval_isolated
 
 _LOG = logging.getLogger(__name__)
@@ -24,6 +25,10 @@ class ConfirmResult:
     confirmed: bool
     holdout_score: float | None
     seed_gains: dict | None = field(default=None)
+    # 현재 best(또는 콜드스타트면 BasePipeline) 대비 holdout이 악화됐는지(#98).
+    # confirmed는 이미 이 값을 반영해 AND 결합돼 있다 — 별도 필드로 노출하는 건
+    # 승격 거부 사유(cross-seed 미재현 vs holdout 악화)를 로그/DB에서 구분하기 위함.
+    holdout_regressed: bool = False
 
 
 def confirm_and_measure(
@@ -40,11 +45,19 @@ def confirm_and_measure(
     confirm_seeds: list[int],
     action_type: str = "",
 ) -> ConfirmResult:
-    """Cross-seed paired 재현 확인 + audit holdout 1회 측정.
+    """Cross-seed paired 재현 확인 + audit holdout 1회 측정·게이트.
 
     cross-seed: 각 seed에서 베이스라인(best pipeline)도 같은 seed로 재평가해
     paired gain(candidate@seed - baseline@seed) > 0이어야 confirmed=True.
     holdout: holdout10 있으면 train90으로 fit, holdout10 측정 → holdout_score.
+    후보뿐 아니라 현재 best(콜드스타트면 BasePipeline)도 같은 holdout으로 측정해
+    비교한다 — 후보가 더 나쁘면(holdout_regressed) confirmed를 강제로 False로
+    떨어뜨린다(#98). cross-seed confirm은 seed만 바꾼 CV라 preprocess의 valid-target
+    의존 누수(#96/#97)처럼 seed 불변인 문제를 못 잡는다 — holdout은
+    _eval_holdout(runtime/runner.py)이 dummy target으로 실제 추론 조건을 재현하므로
+    이런 누수를 값 자체(0.02배 CV 개선 vs 5배 LB 악화 같은)로 걸러낼 수 있다.
+    baseline holdout을 측정 못 하면(에러) 비교 근거가 없으므로 보수적으로
+    regressed=False로 두고 막지 않는다 — 정보 없음과 악화 확인은 다르다.
     """
     confirmed, seed_gains = _cross_seed_confirm(
         source=source,
@@ -59,6 +72,7 @@ def confirm_and_measure(
     )
 
     holdout_score: float | None = None
+    holdout_regressed = False
     if holdout10 is not None:
         holdout_score = _measure_holdout(
             source=source,
@@ -72,11 +86,35 @@ def confirm_and_measure(
             is_classification=is_classification,
             action_type=action_type,
         )
+        if holdout_score is not None:
+            baseline_holdout_score = _measure_holdout(
+                source=best_source if best_source else _NOOP_PATCH,
+                best_source=None,
+                train90=train90,
+                holdout10=holdout10,
+                target_col=target_col,
+                metric=metric,
+                n_splits=n_splits,
+                seed=seed,
+                is_classification=is_classification,
+                action_type=action_type,
+            )
+            if baseline_holdout_score is not None:
+                _, metric_sign, _ = get_metric(metric)
+                holdout_regressed = (
+                    metric_sign * holdout_score < metric_sign * baseline_holdout_score
+                )
+                if holdout_regressed:
+                    _LOG.warning(
+                        "holdout 악화로 승격 거부: candidate=%.6f baseline=%.6f",
+                        holdout_score, baseline_holdout_score,
+                    )
 
     return ConfirmResult(
-        confirmed=confirmed,
+        confirmed=confirmed and not holdout_regressed,
         holdout_score=holdout_score,
         seed_gains=seed_gains if seed_gains else None,
+        holdout_regressed=holdout_regressed,
     )
 
 

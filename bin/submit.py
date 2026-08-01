@@ -236,10 +236,10 @@ def _submission_value_col(sample_columns: list[str], fallback: str) -> str:
     return sample_columns[1] if len(sample_columns) > 1 else fallback
 
 
-def _dummy_target_value(train: pl.DataFrame, target_col: str):
-    """더미 타깃은 train 실재값이어야 한다 — synthetic placeholder는 Patch의
-    exhaustive target 인코딩에서 매핑 밖 값이라 크래시한다."""
-    return train[target_col][0]
+# evaluator.harness.dummy_target_value와 동일 로직 — audit holdout(cycle/promotion.py)이
+# 실제 제출과 같은 추론 조건을 재현하려면 이 값 산출 방식이 두 경로에서 반드시
+# 일치해야 한다(GH #96/#98), 그래서 harness가 단일 소스다.
+from evaluator.harness import dummy_target_value as _dummy_target_value
 
 
 def _impute_train_test_median(train_np, test_np):

@@ -34,9 +34,18 @@ def _eval_holdout(
     """train90으로 fit, holdout10으로 1회 측정. audit holdout 전용.
 
     CV 결과와 독립적으로 일반화 성능을 추정한다. 실패 시 None 반환(caller가 무시).
+
+    holdout10의 타깃은 preprocess에 넘기기 전 bin/submit.py와 동일한 더미 상수로
+    치환한다(evaluator.harness.replace_with_dummy_target) — test.csv에 타깃이
+    아예 없어 dummy로 채우는 실제 제출 조건을 그대로 재현해야 preprocess 훅의
+    valid-target 의존 누수(GH #96)를 이 holdout이 실제로 걸러낼 수 있다(#98).
+    이전엔 real target을 그대로 넘겨 누수를 그대로 재현했다 — s5e10 실측:
+    holdout_score(0.02135)가 cv_score(0.02151)와 거의 같아 전혀 못 걸렀다.
+    dummy는 상수라 feature_transform이 읽어도 정보 누수가 없으므로, 여기서부터는
+    submit.py와 동일하게 별도 마스킹 없이 그대로 흘린다.
     """
     import warnings
-    from evaluator.harness import _mask_target, _strip_target, _encode_residual_categoricals, preselect_params
+    from evaluator.harness import _strip_target, _encode_residual_categoricals, preselect_params, replace_with_dummy_target
     from evaluator.metrics import get as get_metric
 
     fn, _, metric_class = get_metric(ctx.metric)
@@ -45,9 +54,10 @@ def _eval_holdout(
     # 타깃(yho_raw)으로 한다 — evaluator/harness.py의 evaluate_pipeline/preselect_params와
     # 동일 계약.
     yho_raw = holdout10[ctx.target_col].to_numpy()
-    tr2, ho2 = pipeline.preprocess(train90, holdout10, ctx.target_col, ctx)
+    holdout10_dummy = replace_with_dummy_target(holdout10, ctx.target_col, train90)
+    tr2, ho2 = pipeline.preprocess(train90, holdout10_dummy, ctx.target_col, ctx)
     ytr = tr2[ctx.target_col].to_numpy()
-    Xtr, Xho = pipeline.feature_transform(tr2, _mask_target(ho2, ctx.target_col), ctx.target_col, ctx)
+    Xtr, Xho = pipeline.feature_transform(tr2, ho2, ctx.target_col, ctx)
     Xtr = _strip_target(Xtr, ctx.target_col)
     Xho = _strip_target(Xho, ctx.target_col)
     Xtr, Xho = _encode_residual_categoricals(Xtr, Xho)
