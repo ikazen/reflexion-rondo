@@ -19,11 +19,27 @@ import polars as pl
 _MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 
 
+_MAX_TRAIN_ROWS_SEED = 42  # 고정 — attempt 평가와 promote(cross-seed confirm·merge-verify)가
+# 반드시 같은 표본을 봐야 cv_score가 재현된다(materialize.py의 replay 전제와 동일 이유).
+
+
 def _load_csv(comp: object, filename: str) -> pl.DataFrame:
     s3_path = getattr(comp, "S3_DATA_PATH", None)
     if s3_path and _MINIO_ENDPOINT:
         return pl.read_csv(f"{_MINIO_ENDPOINT}/kaggle/{s3_path}{filename}")
     return pl.read_csv(comp.DATA_DIR / filename)
+
+
+def _stratified_sample(df: pl.DataFrame, target_col: str, n: int, seed: int) -> pl.DataFrame:
+    """target_col 클래스 비율을 유지한 채 대략 n행으로 축소한다(분류 전용).
+
+    회귀(연속형) 타깃에는 부적합 — 호출부가 comp.IS_CLASSIFICATION으로 분기해서만
+    쓴다. group별 fraction 샘플이라 반올림으로 정확히 n행은 아닐 수 있다(무시할
+    수준 오차, s4e7처럼 수백만 행 규모에서 문제되지 않음).
+    """
+    frac = n / df.height
+    parts = [group.sample(fraction=frac, seed=seed) for _, group in df.group_by(target_col, maintain_order=True)]
+    return pl.concat(parts)
 
 
 def load_train(comp: object) -> pl.DataFrame:
@@ -38,21 +54,32 @@ def load_train(comp: object) -> pl.DataFrame:
     (`is_original` 플래그로 구분). target 컬럼명이 base와 동일하다고 가정한다 —
     다르면 해당 원본 행의 target은 null이 되어 사실상 버려진다(opt-in 기능이라
     현재는 이름 매핑을 지원하지 않음, 필요해지면 후속 확장).
+
+    comp.MAX_TRAIN_ROWS(opt-in, 기본 없음)가 설정돼 있고 로드된 행 수가 그보다 크면
+    고정 seed로 축소한다 — s4e7(1150만행) 100-cycle 큐가 전량 OOM(GH #84)했던
+    대응책. 분류(IS_CLASSIFICATION=True)면 클래스 비율을 보존하는 층화 샘플링,
+    아니면 단순 랜덤 샘플. 미설정 대회는 동작 완전 불변(EXTRA_TRAIN_PATHS와 동일
+    opt-in 원칙).
     """
     train = _load_csv(comp, "train.csv").drop(comp.DROP_COLS)
 
     extra_paths = getattr(comp, "EXTRA_TRAIN_PATHS", None) or []
-    if not extra_paths:
-        # EXTRA_TRAIN_PATHS 미설정 시 is_original 컬럼조차 추가하지 않는다 —
-        # 기존 대회의 스키마·동작을 완전히 불변으로 유지(opt-in 원칙).
-        return train
+    if extra_paths:
+        train = train.with_columns(pl.lit(False).alias("is_original"))
+        base_cols = set(train.columns) - {"is_original"}
+        frames = [train]
+        for path in extra_paths:
+            extra = _load_csv(comp, path)
+            common_cols = [c for c in extra.columns if c in base_cols]
+            extra = extra.select(common_cols).with_columns(pl.lit(True).alias("is_original"))
+            frames.append(extra)
+        train = pl.concat(frames, how="diagonal_relaxed")
 
-    train = train.with_columns(pl.lit(False).alias("is_original"))
-    base_cols = set(train.columns) - {"is_original"}
-    frames = [train]
-    for path in extra_paths:
-        extra = _load_csv(comp, path)
-        common_cols = [c for c in extra.columns if c in base_cols]
-        extra = extra.select(common_cols).with_columns(pl.lit(True).alias("is_original"))
-        frames.append(extra)
-    return pl.concat(frames, how="diagonal_relaxed")
+    max_rows = getattr(comp, "MAX_TRAIN_ROWS", None)
+    if max_rows and train.height > max_rows:
+        if getattr(comp, "IS_CLASSIFICATION", False):
+            train = _stratified_sample(train, comp.TARGET, max_rows, seed=_MAX_TRAIN_ROWS_SEED)
+        else:
+            train = train.sample(n=max_rows, seed=_MAX_TRAIN_ROWS_SEED)
+
+    return train
