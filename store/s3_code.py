@@ -44,7 +44,9 @@ def download(uri: str) -> str | None:
         try:
             resp = requests.get(f"{_ENDPOINT}/{bucket}/{key}", timeout=30)
             resp.raise_for_status()
-            return resp.text
+            # resp.text 금지: charset 없는 text/*는 requests가 ISO-8859-1로 디코드해
+            # 비ASCII 소스가 mojibake로 변형된다(#92) — 업로드가 UTF-8이므로 명시 디코드.
+            return resp.content.decode("utf-8")
         except Exception:
             return None
     path = Path(uri)
@@ -81,7 +83,8 @@ def download_best_pipeline(competition_id: str) -> str | None:
     try:
         resp = requests.get(f"{_ENDPOINT}/{_BUCKET}/{key}", timeout=30)
         resp.raise_for_status()
-        return resp.text
+        # #92: download()와 동일 — UTF-8 명시 디코드 (resp.text는 ISO-8859-1 mojibake)
+        return resp.content.decode("utf-8")
     except Exception:
         pass
     path = Path(__file__).parent.parent / "runs" / "best" / f"{competition_id}_best_pipeline.py"
