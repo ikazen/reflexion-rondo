@@ -260,8 +260,13 @@ def _fit_full_train(pipeline: object, params: dict, ctx: object, X: np.ndarray, 
     벗긴 params로 한 번 더 시도한다. HistGradientBoosting/CatBoost처럼 eval_set
     없이도 내부 검증 분할로 동작하는 estimator는 첫 시도가 그대로 성공하므로
     건드리지 않는다 — 실패할 때만 개입해 방법론을 조용히 안 바꾼다.
+
+    build_model은 harness의 _build_model_safe로 호출한다(#94) — 평가 경로(#79)와
+    동일한 stale/중복 kwarg 스트립. 이게 빠지면 merge-verify를 통과한 병합본이
+    제출에서만 크래시하는 평가/제출 비대칭이 생긴다.
     """
-    model = pipeline.build_model(params, ctx)
+    from evaluator.harness import _build_model_safe
+    model = _build_model_safe(pipeline, params, ctx)
     try:
         model.fit(X, y)
         return model
@@ -270,7 +275,7 @@ def _fit_full_train(pipeline: object, params: dict, ctx: object, X: np.ndarray, 
         if stripped == params:
             raise
         print(f"  [submit] fit failed with early-stopping params, retrying without: {sorted(set(params) - set(stripped))}")
-        model = pipeline.build_model(stripped, ctx)
+        model = _build_model_safe(pipeline, stripped, ctx)
         model.fit(X, y)
         return model
 

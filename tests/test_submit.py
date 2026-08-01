@@ -598,3 +598,27 @@ def test_dummy_target_value_works_for_numeric_target() -> None:
     train = pl.DataFrame({"x": [1, 2, 3], "y": [10.5, 20.5, 30.5]})
     result = _dummy_target_value(train, "y")
     assert result == 10.5
+
+
+def test_fit_full_train_strips_duplicate_kwarg_like_eval_path() -> None:
+    """#94: build_model이 중복/stale kwarg TypeError로 죽으면 평가 경로(#79
+    _build_model_safe)와 동일하게 그 kwarg를 벗겨 재시도해야 한다 — 안 그러면
+    merge-verify를 통과한 병합본이 제출에서만 크래시한다 (s5e4 실사고)."""
+    ctx = _bagging_ctx()
+    working_model = MagicMock()
+
+    def build_model(params, _ctx):
+        if "random_state" in params:
+            raise TypeError(
+                "lightgbm.sklearn.LGBMRegressor() got multiple values for keyword argument 'random_state'"
+            )
+        return working_model
+
+    pipeline = MagicMock()
+    pipeline.build_model.side_effect = build_model
+
+    params = {"n_estimators": 100, "random_state": 42}
+    model = _fit_full_train(pipeline, params, ctx, np.zeros((2, 1)), np.zeros(2))
+
+    assert model is working_model
+    working_model.fit.assert_called_once()
