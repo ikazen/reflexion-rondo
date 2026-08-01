@@ -34,3 +34,22 @@ def test_upload_then_download_roundtrips_local_fallback() -> None:
 
 def test_download_missing_returns_none() -> None:
     assert download_submission_csv("test-comp-31-missing", "no-such-attempt") is None
+
+
+def test_download_decodes_utf8_regardless_of_content_type_charset() -> None:
+    """#92: charset 없는 text/plain을 requests가 ISO-8859-1로 디코드해 비ASCII
+    소스가 mojibake 되던 회귀 — sha256 검증(승격/제출/백필)이 전부 어긋난다."""
+    from unittest.mock import MagicMock, patch
+
+    source = "class Patch:\n    pass\n# 한글 주석 — mojibake 검증\n"
+    resp = MagicMock()
+    resp.content = source.encode("utf-8")
+    resp.raise_for_status.return_value = None
+    # 실제 requests처럼 charset 부재 시 latin-1로 잘못 디코드된 .text를 흉내낸다
+    resp.text = source.encode("utf-8").decode("iso-8859-1")
+
+    from store import s3_code
+
+    with patch.object(s3_code.requests, "get", return_value=resp):
+        assert s3_code.download("s3://bucket/key.py") == source
+        assert s3_code.download_best_pipeline("comp-x") == source
