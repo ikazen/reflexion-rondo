@@ -102,6 +102,7 @@ def _client_for_auto_submit(monkeypatch, *, active_competitions, best, last, sig
 
     conn = MagicMock()
     conn.execute.return_value.fetchall.return_value = [(c,) for c in active_competitions]
+    conn.execute.return_value.fetchone.return_value = (None,)  # auto_submit_paused_reason 없음(#104)
     app = create_app(conn, DaemonState())
     return TestClient(app)
 
