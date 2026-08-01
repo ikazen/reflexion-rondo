@@ -197,6 +197,69 @@ def test_undefined_name_resolved_via_import_or_toplevel_helper_ok():
     assert not any("undefined name" in e for e in errs)
 
 
+# --- preprocess valid-target 직접 참조 정적 가드 (#97, GH #96) ---
+# s5e10 승격 패턴(valid[target]로 quantile bin 생성)을 재생성 왕복 전에 값싸게
+# 미리 걸러낸다. 본체는 evaluator.harness._check_preprocess_target_leak(런타임
+# 동등성 검사) — 이건 흔한 패턴에 대한 보조 lint.
+
+def test_preprocess_subscript_valid_target_read_caught():
+    source = (
+        'class Patch:\n'
+        '    action_type = "preprocessing"\n'
+        '    changed_stages = ["preprocess"]\n'
+        '    rationale = "quantile bin from valid target"\n'
+        '    def preprocess(self, train, valid, target, ctx):\n'
+        '        y_valid = valid[target]\n'
+        '        return train, valid\n'
+    )
+    errs = validate_patch(source, "preprocessing")
+    assert any("target leakage" in e for e in errs)
+
+
+def test_preprocess_get_column_valid_target_read_caught():
+    source = (
+        'class Patch:\n'
+        '    action_type = "preprocessing"\n'
+        '    changed_stages = ["preprocess"]\n'
+        '    rationale = "quantile bin from valid target via get_column"\n'
+        '    def preprocess(self, train, valid, target, ctx):\n'
+        '        y_valid = valid.get_column(target)\n'
+        '        return train, valid\n'
+    )
+    errs = validate_patch(source, "preprocessing")
+    assert any("target leakage" in e for e in errs)
+
+
+def test_preprocess_train_target_read_not_flagged():
+    """train[target] 참조는 정상 — preprocess가 train 통계를 쓰는 것은 흔한 정당한 용도."""
+    source = (
+        'class Patch:\n'
+        '    action_type = "preprocessing"\n'
+        '    changed_stages = ["preprocess"]\n'
+        '    rationale = "bin edges from train target only"\n'
+        '    def preprocess(self, train, valid, target, ctx):\n'
+        '        y_train = train[target]\n'
+        '        return train, valid\n'
+    )
+    errs = validate_patch(source, "preprocessing")
+    assert not any("target leakage" in e for e in errs)
+
+
+def test_preprocess_valid_index_by_other_column_not_flagged():
+    """valid[some_other_col] 참조는 target과 무관하므로 오탐이 없어야 한다."""
+    source = (
+        'class Patch:\n'
+        '    action_type = "preprocessing"\n'
+        '    changed_stages = ["preprocess"]\n'
+        '    rationale = "unrelated column access"\n'
+        '    def preprocess(self, train, valid, target, ctx):\n'
+        '        geo = valid["geo"]\n'
+        '        return train, valid\n'
+    )
+    errs = validate_patch(source, "preprocessing")
+    assert not any("target leakage" in e for e in errs)
+
+
 def test_star_import_skips_undefined_name_check():
     """star import가 있으면 무엇이 바인딩되는지 알 수 없어 미탐지를 택한다
     (cycle/materialize.py의 동일 원칙과 일치, 오탐 방지 우선)."""
