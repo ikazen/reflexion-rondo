@@ -72,6 +72,7 @@ from pydantic import BaseModel
 
 from config.settings import ACTION_TYPES
 from cycle.stagnation import detect_stagnation
+from evaluator.harness import is_significant_gain
 from memory.transfer import _fp_distance
 from store.db import PgConn
 
@@ -535,6 +536,63 @@ def _last_submitted_attempt(conn: PgConn, competition_id: str) -> str | None:
         [competition_id],
     ).fetchone()
     return row[0] if row else None
+
+
+def _attempt_gain_inputs(
+    conn: PgConn, attempt_id: str
+) -> tuple[float, float, list[float] | None] | None:
+    row = conn.execute(
+        "select cv_score, cv_fold_var, fold_scores from raw.attempts where attempt_id = %s",
+        [attempt_id],
+    ).fetchone()
+    if not row or row[0] is None:
+        return None
+    cv_score, cv_fold_var, fold_scores = row
+    return cv_score, cv_fold_var, fold_scores
+
+
+def _submission_gain_significant(
+    conn: PgConn,
+    competition_id: str,
+    candidate_attempt_id: str,
+    baseline_attempt_id: str,
+) -> bool:
+    """candidate가 baseline(직전 유효 제출) 대비 fold noise를 넘는 실제 개선인지 (#87).
+
+    기존 auto-submit 게이트는 best attempt_id가 바뀌었는지만 봐서 fold noise 수준
+    (실측 0.07~0.49σ)의 CV 차이로도 재제출됐고, LB는 사실상 랜덤워크했다(완료 제출
+    연속쌍 20건 중 ΔCV/ΔLB 방향 일치 55% — 동전 던지기 수준. s6e7 07-25는 0.07σ
+    차이로 재제출해 LB가 그 폭의 14배를 반대 방향으로 잃었다). 승격 게이트
+    (cycle/run.py, BON-267)와 동일한 is_significant_gain(paired per-fold t-test)을
+    재사용해 두 게이트의 기준을 통일한다.
+
+    LB 자체는 게이트 입력으로 쓰지 않는다 — public split 노이즈가 있어 절대 기준으로
+    삼지 않고, 이 CV 유의성 검정만 통과하면 직전 LB가 더 좋았어도 교체를 허용한다.
+
+    필요한 attempt 데이터가 없으면(과거 데이터 결손 등) fail-open으로 True를 반환한다 —
+    #73에서 겪은 것처럼 데이터 결손이 게이트를 영구 폐쇄하는 자기강화 데드락을 피하기 위함.
+    """
+    row = conn.execute(
+        "select metric_sign from raw.competitions where competition_id = %s",
+        [competition_id],
+    ).fetchone()
+    metric_sign = row[0] if row else 1
+
+    candidate = _attempt_gain_inputs(conn, candidate_attempt_id)
+    baseline = _attempt_gain_inputs(conn, baseline_attempt_id)
+    if candidate is None or baseline is None:
+        return True
+
+    cand_cv, cand_fold_var, cand_folds = candidate
+    base_cv, _base_fold_var, base_folds = baseline
+    gain = metric_sign * (cand_cv - base_cv)
+    return is_significant_gain(
+        gain,
+        cand_fold_var,
+        candidate_fold_scores=cand_folds,
+        baseline_fold_scores=base_folds,
+        metric_sign=metric_sign,
+    )
 
 
 def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
@@ -1539,6 +1597,12 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
             last = _last_submitted_attempt(conn, competition_id)
             if last == best_attempt_id:
                 skipped.append({"competition": competition_id, "reason": "best unchanged"})
+                continue
+
+            if last is not None and not _submission_gain_significant(
+                conn, competition_id, best_attempt_id, last
+            ):
+                skipped.append({"competition": competition_id, "reason": "gain not significant"})
                 continue
 
             msg = f"auto cv={best_cv:.5f} attempt={best_attempt_id[:8]}"
