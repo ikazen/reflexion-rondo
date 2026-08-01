@@ -11,6 +11,10 @@ CREATE TABLE IF NOT EXISTS raw.competitions (
     start_ts        timestamp,
     fingerprint     jsonb
 );
+-- cv↔LB 발산 트립와이어(#104)가 채운다. NULL이면 정상 — auto_submit이 이 값이
+-- 있으면 해당 대회 제출을 건너뛴다. 수동 조사 후 사람이 직접 NULL로 되돌려야
+-- 재개된다(자동 해제 없음 — 근본 원인 미해결 상태로 계속 제출되는 게 더 위험).
+ALTER TABLE raw.competitions ADD COLUMN IF NOT EXISTS auto_submit_paused_reason text;
 
 CREATE TABLE IF NOT EXISTS raw.attempts (
     attempt_id       text PRIMARY KEY,
@@ -443,6 +447,43 @@ CREATE TABLE IF NOT EXISTS raw.kaggle_submissions (
     error          text,
     checked_at     timestamp
 );
+
+-- cv↔LB 정합성(#104) — 완료된 제출을 시간순으로 이어 delta_cv/delta_lb를 계산한다.
+-- 둘 다 metric_sign을 곱해 "개선이면 양수"로 방향을 통일했다. diverged=true는
+-- cv는 개선인데 LB는 악화된 제출 — s5e10(GH #96)/s4e12(GH #80) 패턴의 관측 근거.
+-- 실시간 차단은 이 뷰가 아니라 bin/api.py:refresh_submission_row의 트립와이어가
+-- 담당(승격 시점에 즉시 invalid_reason/auto_submit_paused_reason을 채움) — 이 뷰는
+-- 그 판정의 사후 관측·검증용.
+CREATE OR REPLACE VIEW cv_lb_calibration AS
+WITH ordered AS (
+    SELECT
+        s.submission_id,
+        s.competition_id,
+        s.submitted_at,
+        s.attempt_id,
+        a.cv_score,
+        s.lb_score,
+        c.metric_sign,
+        lag(a.cv_score) OVER (PARTITION BY s.competition_id ORDER BY s.submitted_at) AS prev_cv,
+        lag(s.lb_score) OVER (PARTITION BY s.competition_id ORDER BY s.submitted_at) AS prev_lb
+    FROM raw.kaggle_submissions s
+    JOIN raw.competitions c USING (competition_id)
+    LEFT JOIN raw.attempts a ON a.attempt_id = s.attempt_id
+    WHERE s.status = 'complete' AND s.lb_score IS NOT NULL
+)
+SELECT
+    submission_id,
+    competition_id,
+    submitted_at,
+    attempt_id,
+    cv_score,
+    lb_score,
+    CASE WHEN prev_cv IS NOT NULL THEN metric_sign * (cv_score - prev_cv) END AS delta_cv,
+    CASE WHEN prev_lb IS NOT NULL THEN metric_sign * (lb_score - prev_lb) END AS delta_lb,
+    (prev_cv IS NOT NULL AND prev_lb IS NOT NULL
+        AND metric_sign * (cv_score - prev_cv) > 0
+        AND metric_sign * (lb_score - prev_lb) < 0) AS diverged
+FROM ordered;
 
 -- hot-path indexes
 CREATE INDEX IF NOT EXISTS idx_attempts_comp_ts     ON raw.attempts (competition_id, run_ts DESC);

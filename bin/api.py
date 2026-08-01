@@ -35,6 +35,7 @@
   POST /api/submissions/auto
   GET  /api/submissions
   GET  /api/submissions/{id}
+  GET  /api/cv-lb-calibration        -- cv↔LB 발산 관측 (#104, 24개 설계 밖 추가분)
 
 관측 엔드포인트는 GH #11/#67 설계 24개 전체(대시보드 패널 #65는 후속). 데이터 소스는
 store/schema.sql의 파생 뷰(lesson_funnel/lesson_dead/lesson_duplicates/bandit_calibration/
@@ -595,6 +596,69 @@ def _submission_gain_significant(
     )
 
 
+def _detect_cv_lb_divergence(
+    conn: PgConn, competition_id: str, attempt_id: str, lb_score: float, submitted_at,
+) -> str | None:
+    """이번 완료 제출의 cv_score를 직전 완료 제출의 cv/LB와 비교한다(#104).
+
+    cv는 개선인데 LB가 악화됐으면(s5e10 GH #96, s4e12 GH #80과 같은 패턴) 사유
+    문자열을 반환 — cross-seed confirm은 seed만 바꾼 CV라 이런 발산은 못 잡고,
+    holdout 게이트(#98)도 사후 실측(실제 LB)만큼 확실하진 않다. 이건 그 실제
+    LB 신호 자체로 잡는 마지막 방어선.
+    """
+    cur_row = conn.execute(
+        "select cv_score from raw.attempts where attempt_id = %s", [attempt_id]
+    ).fetchone()
+    if not cur_row or cur_row[0] is None:
+        return None
+    cv_score = cur_row[0]
+
+    prev_row = conn.execute(
+        """
+        select a.cv_score, s.lb_score, c.metric_sign
+        from raw.kaggle_submissions s
+        join raw.competitions c using (competition_id)
+        join raw.attempts a on a.attempt_id = s.attempt_id
+        where s.competition_id = %s
+          and s.status = 'complete'
+          and s.lb_score is not null
+          and s.submitted_at < %s
+          and a.cv_score is not null
+        order by s.submitted_at desc
+        limit 1
+        """,
+        [competition_id, submitted_at],
+    ).fetchone()
+    if not prev_row:
+        return None
+    prev_cv, prev_lb, metric_sign = prev_row
+
+    delta_cv = metric_sign * (cv_score - prev_cv)
+    delta_lb = metric_sign * (lb_score - prev_lb)
+    if delta_cv > 0 and delta_lb < 0:
+        return (
+            f"cv_lb_divergence: cv improved {delta_cv:+.6f} but LB regressed {delta_lb:+.6f} "
+            f"(prev_cv={prev_cv:.6f} prev_lb={prev_lb:.6f} cv={cv_score:.6f} lb={lb_score:.6f})"
+        )
+    return None
+
+
+def _apply_cv_lb_divergence_tripwire(
+    conn: PgConn, competition_id: str, attempt_id: str, reason: str,
+) -> None:
+    """원천 pipeline을 격리하고(#99 invalid_reason과 동일 컬럼) 대회 auto-submit을
+    중단한다. 자동 해제 없음 — 사람이 원인을 확인하고 raw.competitions.
+    auto_submit_paused_reason을 직접 NULL로 되돌려야 재개된다."""
+    conn.execute(
+        "update raw.pipelines set invalid_reason = %s where attempt_id = %s and invalid_reason is null",
+        [reason, attempt_id],
+    )
+    conn.execute(
+        "update raw.competitions set auto_submit_paused_reason = %s where competition_id = %s",
+        [reason, competition_id],
+    )
+
+
 def refresh_submission_row(conn: PgConn, submission_id: str) -> dict | None:
     """제출 1건을 kaggle에서 1회 재조회해 상태를 갱신한다. 없는 submission_id면 None.
 
@@ -650,6 +714,14 @@ def refresh_submission_row(conn: PgConn, submission_id: str) -> dict | None:
             "update raw.attempts set lb_score = %s where attempt_id like %s and lb_score is null",
             [lb_score, f"{rec['attempt_id']}%"],
         )
+        divergence_reason = _detect_cv_lb_divergence(
+            conn, rec["competition_id"], rec["attempt_id"], lb_score, rec["submitted_at"],
+        )
+        if divergence_reason:
+            _apply_cv_lb_divergence_tripwire(
+                conn, rec["competition_id"], rec["attempt_id"], divergence_reason,
+            )
+            fields["divergence"] = divergence_reason
 
     rec.update(fields)
     return rec
@@ -1648,6 +1720,17 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
                 skipped.append({"competition": competition_id, "reason": "no config"})
                 continue
 
+            paused_row = conn.execute(
+                "select auto_submit_paused_reason from raw.competitions where competition_id = %s",
+                [competition_id],
+            ).fetchone()
+            if paused_row and paused_row[0]:
+                # cv-lb 발산 트립와이어(#104)가 걸어둔 것 — 자동 해제 없음, 사람이
+                # 원인 확인 후 raw.competitions.auto_submit_paused_reason을 직접
+                # NULL로 되돌려야 재개된다.
+                skipped.append({"competition": competition_id, "reason": f"auto-submit paused: {paused_row[0]}"})
+                continue
+
             best = _best_attempt(conn, competition_id)
             if not best:
                 skipped.append({"competition": competition_id, "reason": "no valid attempt"})
@@ -1695,6 +1778,31 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         cols = [
             "submission_id", "competition_id", "attempt_id", "submitted_at",
             "message", "csv_path", "status", "lb_score", "error", "checked_at",
+        ]
+        return [dict(zip(cols, r)) for r in rows]
+
+    @app.get("/api/cv-lb-calibration")
+    def get_cv_lb_calibration(competition: str | None = None, limit: int = 50):
+        """cv_lb_calibration 뷰(#104) — cv↔LB 부호 일치 관측. 실시간 차단은 이
+        엔드포인트가 아니라 refresh_submission_row의 트립와이어가 담당하고,
+        여기는 그 판정의 사후 관측·검증용."""
+        limit = min(limit, 200)
+        where = "where competition_id = %s" if competition else ""
+        params = [competition] if competition else []
+        rows = conn.execute(
+            f"""
+            select submission_id, competition_id, submitted_at, attempt_id,
+                   cv_score, lb_score, delta_cv, delta_lb, diverged
+            from cv_lb_calibration
+            {where}
+            order by submitted_at desc
+            limit %s
+            """,
+            params + [limit],
+        ).fetchall()
+        cols = [
+            "submission_id", "competition_id", "submitted_at", "attempt_id",
+            "cv_score", "lb_score", "delta_cv", "delta_lb", "diverged",
         ]
         return [dict(zip(cols, r)) for r in rows]
 
