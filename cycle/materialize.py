@@ -169,8 +169,53 @@ def materialize_best_pipeline(base_source: str | None, patch_source: str) -> str
     return result
 
 
-def replay_best_pipeline(
+def load_base_snapshot(
     conn: "PgConn", competition_id: str, before_run_ts=None
+) -> tuple[str | None, str]:
+    """attempt 평가 시점의 base pipeline 소스를 Postgres 신뢰 사본에서 가져온다.
+
+    1순위는 해당 시점 이전 마지막 승격 행의 materialized_code(승격 당시 병합본
+    스냅샷). 스냅샷이 없는 과거 이력이면 replay 폴백 — 단 strict_sha로 재생해,
+    재생 결과가 승격 당시 병합본과 다르면 진행하지 않고 raise한다(#89: 평가와
+    다른 base로 제출하면 크래시하거나 조용히 열화된 예측이 제출된다).
+
+    반환: (base_source | None, 출처 설명). 승격 이력이 없으면 (None, ...).
+    """
+    query = """
+        SELECT p.materialized_code, p.pipeline_sha256
+        FROM raw.pipelines p
+        JOIN raw.attempts a USING (attempt_id)
+        WHERE p.competition_id = %s
+    """
+    params: list = [competition_id]
+    if before_run_ts is not None:
+        query += " AND a.run_ts < %s"
+        params.append(before_run_ts)
+    query += " ORDER BY a.run_ts DESC LIMIT 1"
+
+    row = conn.execute(query, params).fetchone()
+    if not row:
+        return None, "no promoted pipeline"
+
+    snapshot, trusted_sha = row
+    if snapshot:
+        actual = hashlib.sha256(snapshot.encode()).hexdigest()
+        if trusted_sha and actual != trusted_sha:
+            raise RuntimeError(
+                f"load_base_snapshot: materialized_code 스냅샷의 sha256이 신뢰 해시와 다르다 "
+                f"(competition_id={competition_id}, expected {trusted_sha[:12]}…, got {actual[:12]}…) "
+                "— Postgres 스냅샷 손상. 확인 없이 진행하지 않는다."
+            )
+        return snapshot, "materialized_code snapshot"
+
+    best, _, count = replay_best_pipeline(
+        conn, competition_id, before_run_ts=before_run_ts, strict_sha=True
+    )
+    return best, f"replay fallback ({count} promoted pipeline(s), sha verified)"
+
+
+def replay_best_pipeline(
+    conn: "PgConn", competition_id: str, before_run_ts=None, strict_sha: bool = False
 ) -> tuple[str | None, str | None, int]:
     """raw.pipelines 히스토리를 시간순 재생해 materialized base pipeline을 재구성한다.
 
@@ -214,10 +259,17 @@ def replay_best_pipeline(
     assert best is not None  # rows non-empty, loop always assigns
     actual_sha256 = hashlib.sha256(best.encode()).hexdigest()
     if last_sha256 and actual_sha256 != last_sha256:
+        # 재현 실패의 주원인은 blob 손상이 아니라 materialize 로직 자체의 변경(#83 등)
+        # — 과거 레이어를 현재 로직으로 재병합하면 당시 병합본과 다른 코드가 된다(#89).
+        if strict_sha:
+            raise RuntimeError(
+                f"replay_best_pipeline: 재생 결과 sha256이 마지막 승격분의 신뢰 해시와 다르다 "
+                f"(competition_id={competition_id}) — 평가 시점 병합본을 재현할 수 없다. "
+                "이 base로 제출하면 평가와 다른 예측이 나가므로 중단한다(#89)."
+            )
         logger.warning(
             "replay_best_pipeline: 재생 결과 sha256이 마지막 승격분의 신뢰 해시와 다르다 "
-            "(competition_id=%s) — 평가 당시 MinIO blob이 손상됐을 가능성. "
-            "재생본이 vanilla BasePipeline보다는 낫다고 판단해 그대로 사용한다.",
+            "(competition_id=%s) — 복구 용도로만 사용할 것.",
             competition_id,
         )
     return best, last_sha256, len(rows)

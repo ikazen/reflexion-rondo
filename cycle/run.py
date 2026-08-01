@@ -596,6 +596,7 @@ def run_attempt_core(
                     cv_score=cv_score,
                     gain_vs_best=gain_vs_best,
                     pipeline_sha256=pipeline_sha256,
+                    materialized_code=materialized,
                 )
             _best_pipeline_upload(config.competition_id, materialized)
             _LOG.info("best pipeline materialized (gain=%+.5f)", gain_vs_best)
