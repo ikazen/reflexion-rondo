@@ -137,9 +137,9 @@ def main() -> None:
         [competition_id],
     ).fetchone()
     _metric_sign = _sign_row[0] if _sign_row and _sign_row[0] is not None else 1
-    _baseline_fold_scores = _prev_best_fold_scores(
-        conn, competition_id, exclude_attempt_id=winner_row[0]
-    )
+    # exclude_attempt_id로 winner 자신과의 자기비교를 막던 것은 phantom-max 폴백
+    # 전용 안전장치였다(#73) — 폴백 자체를 제거(#102)하며 인자도 함께 정리.
+    _baseline_fold_scores = _prev_best_fold_scores(conn, competition_id)
 
     _stage1_significant = is_significant_gain(
         winner_gain, winner_cv_fold_var,
