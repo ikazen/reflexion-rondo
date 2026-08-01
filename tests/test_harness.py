@@ -518,9 +518,13 @@ class _ScaleLeakPatch:
 
     _make_df_positive_target은 irreducible noise(std=3)가 있어 leak 없이는 완전한
     0-residual이 나올 수 없다 — 그래서 leak feature의 잔차(noise std=0.05)가 기존
-    perfect-score tripwire(_LEAK_PERFECT_LOW=1e-9)는 피해가면서도, trivial
-    mean-baseline 대비는 압도적으로 좋은 점수를 내 새 가드
-    (_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO)에 걸려야 한다.
+    perfect-score tripwire(_LEAK_PERFECT_LOW=1e-9)는 피해간다.
+
+    _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO 가드를 노리고 만든 픽스처였으나, valid의
+    "leaked" 컬럼이 valid[target] 의존이라 _check_preprocess_target_leak(#97, GH #96
+    s5e10 사후 도입)이 그보다 먼저, 더 구체적으로 잡는다 — fold_scores 계산 전 단계라
+    ratio 가드는 아예 도달하지 못한다. 두 가드 다 유효하나 이 픽스처로는 이제
+    target-leak 가드만 검증 가능(아래 테스트 docstring 참고).
     """
     action_type = "feature_engineering"
 
@@ -542,10 +546,15 @@ class _ScaleLeakPatch:
 
 
 def test_regression_phantom_guard_trips_on_scale_leak():
-    """trivial baseline 대비 압도적으로 좋은 회귀 점수는 스케일 누수로 reject되어야 한다."""
+    """preprocess에서 valid[target] 의존 피처를 흘리면 거부돼야 한다.
+
+    #97 이전엔 이 케이스가 _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO(결과 기반 사후 감지)로
+    잡혔지만, 이제 _check_preprocess_target_leak(메커니즘 자체를 직접 감지)가 fold_scores
+    계산도 하기 전에 먼저 잡는다 — 더 이른 시점에 더 구체적인 원인으로 거부.
+    """
     df = _make_df_positive_target()
     pipeline = PatchedPipeline(BasePipeline(), _ScaleLeakPatch())
-    with pytest.raises(ValueError, match="suspected scale leakage"):
+    with pytest.raises(ValueError, match="suspected target leakage in preprocess"):
         evaluate_pipeline(pipeline, df, _ctx_rmse())
 
 
@@ -848,6 +857,71 @@ def test_logloss_tripwire_raises_on_perfect_leak():
     pipeline = PatchedPipeline(BasePipeline(), _PerfectLoglossLeakyViaPreprocessPatch())
     with pytest.raises(ValueError, match="suspected target leakage"):
         evaluate_pipeline(pipeline, df, ctx)
+
+
+# --- _check_preprocess_target_leak (#97, GH #96) ---
+# s5e10 확정 승격 파이프라인이 preprocess에서 valid[target]으로 quantile bin을 만들어
+# CV가 2.6배 "개선"됐지만 LB는 5배 악화됐다. feature_transform과 달리 preprocess는
+# _mask_target을 못 받으므로(타깃 변환이 정당한 용도라) 별도 동등성 검사로 잡는다.
+
+class _QuantileBinTargetLeakPatch:
+    """s5e10 실제 승격 파이프라인과 동일한 패턴: valid[target]으로 10-quantile bin을
+    만들어 feature로 흘린다."""
+    action_type = "preprocessing"
+
+    def preprocess(self, train, valid, target, ctx):
+        import numpy as np
+        y_train = train[target].to_numpy()
+        edges = np.quantile(y_train, np.linspace(0, 1, 11))
+        edges = np.unique(edges)
+
+        def to_bins(arr):
+            return pl.Series(np.digitize(arr, edges, right=False) - 1).cast(pl.Int32)
+
+        train = train.with_columns(to_bins(y_train).alias("target_bin"))
+        valid = valid.with_columns(to_bins(valid[target].to_numpy()).alias("target_bin"))
+        return train, valid
+
+
+def test_preprocess_quantile_bin_target_leak_raises():
+    df = _make_df_positive_target()
+    pipeline = PatchedPipeline(BasePipeline(), _QuantileBinTargetLeakPatch())
+    with pytest.raises(ValueError, match="suspected target leakage in preprocess"):
+        evaluate_pipeline(pipeline, df, _ctx_rmse())
+
+
+def test_preprocess_log1p_target_transform_is_not_flagged_as_leak():
+    """preprocess가 타깃 자체를 log1p 변환하는 정당한 용도는 leak 판정에서 제외돼야 한다.
+
+    타깃 컬럼 자체의 변환은 real/masked 비교에서 타깃 컬럼을 제외하므로 걸리지 않는다 —
+    이 테스트가 실패하면 정당한 preprocess 용도까지 오탐으로 막게 된 것.
+    """
+    df = _make_df_positive_target()
+    result = evaluate_pipeline(
+        PatchedPipeline(BasePipeline(), _Log1pWithInversePatch()), df, _ctx_rmsle()
+    )
+    assert 0.0 < result.cv_score < 0.5
+
+
+class _PreprocessCrashesOnMaskedTargetPatch:
+    """preprocess가 valid[target] 첫 값을 int()로 변환해 새 컬럼을 만드는 패치.
+
+    마스킹(null) 버전에서는 int(None)이 TypeError를 던진다 — 산출물 비교 이전에
+    마스킹 재실행 자체가 크래시하는 경로 검증.
+    """
+    action_type = "preprocessing"
+
+    def preprocess(self, train, valid, target, ctx):
+        first_val = int(valid[target][0])
+        valid = valid.with_columns(pl.lit(first_val).alias("first_val"))
+        return train, valid
+
+
+def test_preprocess_crash_on_masked_target_is_treated_as_leak():
+    df = _make_df_positive_target()
+    pipeline = PatchedPipeline(BasePipeline(), _PreprocessCrashesOnMaskedTargetPatch())
+    with pytest.raises(ValueError, match="suspected target leakage in preprocess"):
+        evaluate_pipeline(pipeline, df, _ctx_rmse())
 
 
 # --- is_noop_tie ---

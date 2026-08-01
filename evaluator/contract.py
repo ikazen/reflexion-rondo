@@ -181,6 +181,41 @@ def _undefined_names_in_patch(tree: ast.Module, patch_cls: ast.ClassDef) -> list
     return broken
 
 
+_VALID_TARGET_READ_ATTRS = frozenset({"get_column", "select"})
+
+
+def _preprocess_reads_valid_target(item: ast.FunctionDef) -> bool:
+    """preprocess(self, train, valid, target, ctx) 안에서 valid[target] 스타일로
+    검증 split의 타깃 컬럼을 직접 읽는지 정적으로 확인.
+
+    이름 기반 lint다(파일 상단 docstring 참고) — 실제 격리 경계는
+    evaluator.harness._check_preprocess_target_leak의 런타임 동등성 검사가 담당하고,
+    이건 그 전에 흔한 패턴(GH #96, s5e10)을 값싸게 미리 걸러 재생성 왕복을 줄이는
+    보조 장치. valid/target 파라미터명은 시그니처 위치(arity 검사로 이미 5개 고정)로
+    가져오므로 LLM이 다른 이름을 써도 그대로 대응된다.
+    """
+    args = item.args.args
+    if len(args) < 4:
+        return False
+    valid_param, target_param = args[2].arg, args[3].arg
+
+    for node in ast.walk(item):
+        if isinstance(node, ast.Subscript):
+            if (
+                isinstance(node.value, ast.Name) and node.value.id == valid_param
+                and isinstance(node.slice, ast.Name) and node.slice.id == target_param
+            ):
+                return True
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if (
+                isinstance(node.func.value, ast.Name) and node.func.value.id == valid_param
+                and node.func.attr in _VALID_TARGET_READ_ATTRS
+                and any(isinstance(a, ast.Name) and a.id == target_param for a in node.args)
+            ):
+                return True
+    return False
+
+
 def validate_patch(source: str, action_type: str) -> list[str]:
     """AST-level validation for Patch class. Returns list of error strings (empty = OK)."""
     errors: list[str] = []
@@ -223,6 +258,12 @@ def validate_patch(source: str, action_type: str) -> list[str]:
         if actual != expected:
             errors.append(
                 f"Patch.{item.name}: expected {expected} args (incl. self), got {actual}"
+            )
+        if item.name == "preprocess" and _preprocess_reads_valid_target(item):
+            errors.append(
+                "Patch.preprocess: reads the validation split's target column directly "
+                "(valid[target] or similar) — this is target leakage even if used to "
+                "derive a feature (e.g. quantile bins), not just raw passthrough"
             )
 
     actual_at: str | None = None

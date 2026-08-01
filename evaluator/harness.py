@@ -24,9 +24,12 @@ _EARLY_STOPPING_ROUNDS = 50
 # 회귀 error 메트릭(rmse/mae/rmsle)이 "타깃 평균만 예측하는" trivial baseline보다
 # 이 배수 이상 좋으면 스케일/타깃 누수로 간주한다. s5e5 이중 log1p phantom(cv≈0.017)이
 # trivial baseline 대비 비정상적으로 큰 개선폭을 보였던 사례의 사후 안전망 — 근본 수정은
-# raw 타깃 채점 계약 정비. 실제 최상위 모델의 baseline 대비 개선은 대부분 수십 배
-# 이내이므로 100배는 정상 개선을 오탐하지 않을 만큼 충분히 관대한 임계값이다.
-_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO = 100.0
+# raw 타깃 채점 계약 정비. preprocess 훅의 valid-target 직접 참조는
+# _check_preprocess_target_leak가 전담해서 걸러내지만, 그건 "훅이 target 컬럼을 읽었는가"
+# 만 보는 메커니즘 검사라 다른 경로의 스케일/누수(예: postprocess_predictions의 잘못된
+# 역변환)는 못 잡는다 — 이 비율 가드가 그 결과 기반 2차 방어. 100배는 s5e5 사례
+# (baseline/candidate 수백 배) 이후로도 여유가 커 10배로 낮춘다.
+_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO = 10.0
 
 
 def is_significant_gain(
@@ -77,11 +80,60 @@ def _mask_target(df: pl.DataFrame, target: str) -> pl.DataFrame:
     """feature_transform 직전 valid fold의 타깃을 null로 교체해 파생 피처 누수를 차단한다.
 
     yva는 반드시 이 호출 전 va2에서 캡처할 것.
-    preprocess 단계는 타깃 변환(log1p 등)이 정당하므로 마스킹 대상 외.
+    preprocess 단계는 타깃 변환(log1p 등)이 정당하므로 마스킹 대상 외 —
+    대신 _check_preprocess_target_leak이 별도 경로로 검사한다.
     """
     if target not in df.columns:
         return df
     return df.with_columns(pl.lit(None, dtype=df[target].dtype).alias(target))
+
+
+def _check_preprocess_target_leak(
+    pipeline: "BasePipeline | PatchedPipeline",
+    tr: pl.DataFrame,
+    va: pl.DataFrame,
+    ctx: "PipelineContext",
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """preprocess 훅이 valid split의 타깃 값에 의존하는 피처를 만드는지 검사.
+
+    preprocess는 feature_transform과 달리 타깃 변환(log1p 등)이 정당해 valid의
+    타깃을 무조건 마스킹할 수 없다(위 _mask_target 주석) — 그래서 직접 금지 대신
+    같은 입력을 타깃 유무만 다르게 두 번 호출해 valid 쪽 산출물이 갈리는지 보는
+    간접 방식을 쓴다: 실제 valid와 _mask_target(valid) 버전 각각으로 preprocess를
+    호출해 결과가 다르면(또는 마스킹 버전이 크래시하면) valid의 타깃을 읽어 파생시킨
+    것으로 판정한다. s5e10 확정 승격 파이프라인(GH #96)이 valid[target]로 10-quantile
+    빈을 직접 만들어 CV는 2.6배 좋아지고 LB는 5배 나빠졌던 사례의 재발 방지.
+
+    cross-seed confirm과 마찬가지로 동일 입력 재호출이 결정적이라는 전제(fold split이
+    seed 고정, 모델도 ctx.seed 기반)에 의존한다 — preprocess가 통제 안 된 RNG를 쓰면
+    오탐 가능하나, 그런 훅은 애초에 재현성 게이트 전체를 통과 못 한다.
+
+    실제(비마스킹) 호출 결과 (tr2, va2)를 반환한다 — 호출부(evaluate_pipeline)가
+    fold 0에서 같은 입력으로 preprocess를 또 부르지 않고 재사용해, 이 검사가 있어도
+    fold 0당 preprocess 호출이 2회(실제+마스킹)로 끝나고 3회가 되지 않는다. 실제
+    호출이 크래시하면 여기서 그대로 전파한다 — 이 검사가 없었어도 호출부에서
+    발생했을 동일한 에러이므로 별도로 감싸지 않는다.
+    """
+    target = ctx.target_col
+    tr_real, va_real = pipeline.preprocess(tr, va, target, ctx)
+
+    try:
+        _tr_masked, va_masked = pipeline.preprocess(tr, _mask_target(va, target), target, ctx)
+    except Exception as exc:
+        raise ValueError(
+            "suspected target leakage in preprocess: masked-valid re-run crashed "
+            f"({exc!r}) — hook likely depends on the validation split's target values"
+        ) from exc
+
+    real_cols = [c for c in va_real.columns if c != target]
+    masked_cols = [c for c in va_masked.columns if c != target]
+    if real_cols != masked_cols or not va_real.select(real_cols).equals(va_masked.select(masked_cols)):
+        raise ValueError(
+            "suspected target leakage in preprocess: validation split's post-preprocess "
+            "features differ depending on whether the target is masked — hook reads the "
+            "target column directly on the validation split"
+        )
+    return tr_real, va_real
 
 
 def _encode_residual_categoricals(
@@ -381,7 +433,7 @@ def evaluate_pipeline(
         else None
     )
 
-    for tr_idx, va_idx in _make_folds(y, ctx):
+    for fold_idx, (tr_idx, va_idx) in enumerate(_make_folds(y, ctx)):
         tr = train[list(tr_idx)]
         va = train[list(va_idx)]
         # preprocess가 타깃을 변환(log1p 등)할 수 있으므로 채점은 변환 이전의 raw
@@ -389,7 +441,12 @@ def evaluate_pipeline(
         yva_raw = va[ctx.target_col].to_numpy()
         ytr_raw = tr[ctx.target_col].to_numpy()
 
-        tr2, va2 = pipeline.preprocess(tr, va, ctx.target_col, ctx)
+        if fold_idx == 0:
+            # 검사가 어차피 실제 입력으로 preprocess를 1회 호출하므로 그 결과를
+            # 재사용 — 따로 또 부르면 fold 0만 preprocess가 3번(검사 2번+본 호출) 돈다.
+            tr2, va2 = _check_preprocess_target_leak(pipeline, tr, va, ctx)
+        else:
+            tr2, va2 = pipeline.preprocess(tr, va, ctx.target_col, ctx)
         ytr = tr2[ctx.target_col].to_numpy()
         yva = va2[ctx.target_col].to_numpy()
         Xtr, Xva = pipeline.feature_transform(tr2, _mask_target(va2, ctx.target_col), ctx.target_col, ctx)
