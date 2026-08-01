@@ -25,7 +25,7 @@ import polars as pl
 
 import bin.airflow_client as airflow_client
 from bin.api import DaemonState, create_app
-from cycle.run import CycleConfig, run_cycle
+from cycle.run import CycleConfig, establish_bootstrap_baseline, run_cycle
 from memory.retriever import EmbeddingUnavailableError
 from store.db import connect, ensure_competition
 from store.train_data import load_train
@@ -364,6 +364,29 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                     **({"error": err} if err else {}))
         suffix = f" ({failed_cycles} failed)" if failed_cycles else ""
         print(f"[daemon] queue_id={qid} {status} latest_score={latest_score}{suffix}")
+
+        # bootstrap 배치가 최소 1 cycle이라도 성공했으면 baseline 확립을 시도한다(#100).
+        # 이미 확정 파이프라인이 있으면(재부트스트랩 등) establish_bootstrap_baseline이
+        # 내부에서 스킵한다 — airflow 모드는 train이 로드 안 돼 있으므로 여기서 새로 읽는다.
+        # 실패해도 daemon 루프 자체는 계속돼야 하므로 예외를 여기서 흡수한다.
+        if stage == "bootstrap" and cycles_done > 0:
+            try:
+                bootstrap_train = train if train is not None else load_train(comp)
+                established = establish_bootstrap_baseline(
+                    conn,
+                    competition_id=comp.COMPETITION_ID,
+                    train=bootstrap_train,
+                    target_col=comp.TARGET,
+                    metric=comp.METRIC,
+                    n_splits=getattr(comp, "N_SPLITS", 5),
+                    is_classification=comp.IS_CLASSIFICATION,
+                )
+                print(
+                    f"[daemon] queue_id={qid} bootstrap baseline "
+                    f"{'established' if established else 'not established (existing baseline or not confirmed)'}"
+                )
+            except Exception as exc:
+                print(f"[daemon] queue_id={qid} bootstrap baseline establishment failed: {exc}")
 
     state.update(current_queue_id=None, current_competition=None,
                  current_cycle=0, current_n_cycles=0)

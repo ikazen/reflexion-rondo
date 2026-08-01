@@ -23,7 +23,7 @@ from cycle.stagnation import detect_stagnation
 from cycle.materialize import materialize_best_pipeline
 from cycle.promotion import confirm_and_measure
 from evaluator.contract import validate_patch
-from evaluator.harness import is_significant_gain
+from evaluator.harness import is_significant_gain, split_audit_holdout
 from evaluator.metrics import get as get_metric
 from memory.retriever import EmbeddingUnavailableError, search
 from runtime.isolate import eval_isolated
@@ -200,6 +200,119 @@ def _prev_best_fold_scores(
         return None
     val = row[0]
     return val if isinstance(val, list) else json.loads(val)
+
+
+def establish_bootstrap_baseline(
+    conn: PgConn,
+    competition_id: str,
+    train: pl.DataFrame,
+    target_col: str,
+    metric: str,
+    n_splits: int,
+    is_classification: bool,
+) -> bool:
+    """bootstrap 배치 종료 시 최고 attempt를 BasePipeline 대비 검증해 확정 baseline으로 승격한다.
+
+    확정 파이프라인(raw.pipelines)이 하나도 없는 신규 대회는 _prev_best/
+    _prev_best_fold_scores가 baseline을 못 찾아 승격 게이트가 영원히 비활성화되는
+    콜드스타트 데드락에 빠졌었다(#73의 phantom-max 폴백은 그 임시 봉합이었고, 실제
+    재측정 없는 attempt 최고값을 baseline으로 썼다 — #100/#102로 폴백 자체를
+    걷어내고 이 함수로 대체한다). bootstrap 배치 끝에 최고 attempt를 실제로
+    cross-seed confirm + holdout 게이트(confirm_and_measure, best_source=None →
+    BasePipeline 대비)를 통과시켜야만 baseline이 된다 — 재측정 없이 그냥 채택하지 않는다.
+
+    이미 확정 파이프라인이 있으면(재부트스트랩 등) 아무것도 하지 않고 False 반환.
+    반환값은 이번 호출로 새로 baseline이 확립됐는지 여부.
+    """
+    existing = conn.execute(
+        "select 1 from raw.pipelines where competition_id = %s and invalid_reason is null limit 1",
+        [competition_id],
+    ).fetchone()
+    if existing:
+        return False
+
+    row = conn.execute(
+        """
+        select a.attempt_id, a.cv_score, a.code_path
+        from raw.attempts a
+        join raw.competitions c using (competition_id)
+        where a.competition_id = %s
+          and a.cv_score is not null
+          and a.error_trace is null
+        order by c.metric_sign * a.cv_score desc
+        limit 1
+        """,
+        [competition_id],
+    ).fetchone()
+    if not row:
+        return False
+    attempt_id, cv_score, code_path = row
+    if not code_path:
+        return False
+
+    content = _code_download(code_path) or ""
+    sep = _CODE_HEADER_SEP + "\n"
+    source = content.split(sep, 1)[1].strip() if sep in content else content.strip()
+    if not source:
+        return False
+
+    train90, holdout10 = split_audit_holdout(train, target_col, is_classification)
+
+    confirm = confirm_and_measure(
+        source=source,
+        best_source=None,
+        train90=train90,
+        holdout10=holdout10,
+        target_col=target_col,
+        metric=metric,
+        n_splits=n_splits,
+        seed=42,
+        is_classification=is_classification,
+        confirm_seeds=PROMOTE_CONFIRM_SEEDS,
+    )
+    if confirm.holdout_score is not None:
+        conn.execute(
+            "update raw.attempts set holdout_score = %s where attempt_id = %s",
+            [confirm.holdout_score, attempt_id],
+        )
+    if confirm.seed_gains:
+        conn.execute(
+            "update raw.attempts set confirm_seed_gains = %s where attempt_id = %s",
+            [json.dumps(confirm.seed_gains), attempt_id],
+        )
+    if not confirm.confirmed:
+        reason = "holdout 악화" if confirm.holdout_regressed else "cross-seed 미재현"
+        _LOG.info("bootstrap baseline 미확립 — %s (%s)", competition_id, reason)
+        return False
+
+    fp_row = conn.execute(
+        "select fingerprint from raw.competitions where competition_id = %s",
+        [competition_id],
+    ).fetchone()
+    fp_val = fp_row[0] if fp_row and fp_row[0] else {}
+    fp_dict = fp_val if isinstance(fp_val, dict) else json.loads(fp_val)
+
+    materialized = materialize_best_pipeline(None, source)
+    pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
+    with conn.transaction():
+        insert_pipeline(
+            conn,
+            pipeline_id=str(uuid.uuid4()),
+            attempt_id=attempt_id,
+            competition_id=competition_id,
+            fingerprint_snapshot=fp_dict,
+            code=source,
+            cv_score=cv_score,
+            gain_vs_best=None,
+            pipeline_sha256=pipeline_sha256,
+            materialized_code=materialized,
+        )
+    _best_pipeline_upload(competition_id, materialized)
+    _LOG.info(
+        "bootstrap baseline 확립 — competition=%s cv=%.6f attempt=%s",
+        competition_id, cv_score, attempt_id[:8],
+    )
+    return True
 
 
 def _last_hypothesis(conn: PgConn, competition_id: str) -> str | None:
