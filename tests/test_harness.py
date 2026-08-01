@@ -790,7 +790,8 @@ def test_target_masking_blocks_derived_feature_leakage():
 class _HoldoutSelfTargetLeakPatch:
     """feature_transform이 각 split의 자기 타깃을 피처(leak)로 복사한다.
 
-    holdout 마스킹이 없으면 holdout에서 leak==label로 생존해 near-perfect가 된다.
+    holdout의 타깃이 실제 값 그대로 남아있으면 holdout에서 leak==label로 생존해
+    near-perfect가 된다.
     """
     action_type = "feature_engineering"
 
@@ -801,14 +802,45 @@ class _HoldoutSelfTargetLeakPatch:
 
 
 def test_eval_holdout_masks_target_derived_leakage():
-    """_eval_holdout이 holdout 타깃을 마스킹해 파생 피처 누수를 차단함을 검증.
+    """_eval_holdout이 holdout 타깃을 dummy 상수로 치환해 파생 피처 누수를 차단함을 검증.
 
-    수정 전(마스킹 없음)이면 holdout_score가 near-perfect(>0.9999)라 이 테스트가 실패한다.
+    #98 이전엔 별도 _mask_target(null)로 막았다 — 지금은 holdout10을 preprocess에
+    넘기기 전 replace_with_dummy_target으로 치환(bin/submit.py와 동일 조건)해서
+    같은 효과를 낸다. 수정 전(치환 없이 real target 그대로)이면 holdout_score가
+    near-perfect(>0.9999)라 이 테스트가 실패한다.
     """
     df = _make_df_with_strings(n=300)
     ctx = _ctx()
     train90, holdout10 = split_audit_holdout(df, "y", is_classification=True)
     pipeline = PatchedPipeline(BasePipeline(), _HoldoutSelfTargetLeakPatch())
+    score = _eval_holdout(pipeline, train90, holdout10, ctx)
+    assert score is not None
+    assert score < _LEAK_PERFECT_HIGH
+
+
+class _HoldoutPreprocessSelfTargetLeakPatch:
+    """preprocess가 각 split의 자기 타깃을 피처(leak)로 복사한다 — s5e10(GH #96)과
+    같은 경로(feature_transform이 아니라 preprocess에서 valid 타깃을 직접 참조).
+
+    #98 이전엔 _eval_holdout이 real target을 그대로 preprocess에 넘겨 이 경로를
+    전혀 못 막았다(s5e10 실측: holdout_score 0.02135 ≈ cv_score 0.02151). 지금은
+    holdout10이 dummy 상수로 치환된 뒤 preprocess를 타므로 near-perfect가 나오면 안 된다.
+    """
+    action_type = "preprocessing"
+
+    def preprocess(self, train, valid, target, ctx):
+        tr_out = train.with_columns(pl.col(target).alias("leak"))
+        va_out = valid.with_columns(pl.col(target).alias("leak"))
+        return tr_out, va_out
+
+
+def test_eval_holdout_dummy_target_blocks_preprocess_leak():
+    """#98: holdout의 타깃을 dummy 상수로 치환해 preprocess 경로의 valid-target
+    직접 참조 leak도 near-perfect를 만들지 못하게 한다."""
+    df = _make_df_with_strings(n=300)
+    ctx = _ctx()
+    train90, holdout10 = split_audit_holdout(df, "y", is_classification=True)
+    pipeline = PatchedPipeline(BasePipeline(), _HoldoutPreprocessSelfTargetLeakPatch())
     score = _eval_holdout(pipeline, train90, holdout10, ctx)
     assert score is not None
     assert score < _LEAK_PERFECT_HIGH

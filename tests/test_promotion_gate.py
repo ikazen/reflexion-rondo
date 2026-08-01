@@ -209,6 +209,105 @@ def test_baseline_eval_error_not_confirmed():
     assert "RuntimeError" in result.seed_gains["7"]["error"]
 
 
+# --- holdout_regressed 게이트 (#98) ---
+# candidate holdout이 baseline(현재 best 또는 콜드스타트면 BasePipeline) holdout보다
+# 나쁘면 cross-seed confirm을 통과해도 confirmed=False로 강제한다 — cross-seed는
+# seed만 바꾼 CV라 preprocess의 valid-target 의존 누수(#96/#97)처럼 seed 불변인
+# 문제를 못 잡지만, holdout은 dummy target으로 실제 추론 조건을 재현해 잡을 수 있다.
+
+def test_holdout_worse_than_baseline_blocks_confirmation():
+    """candidate holdout이 baseline holdout보다 나쁘면 cross-seed 통과해도 confirmed=False."""
+    def _se(*args, **kwargs):
+        if kwargs.get("holdout_data") is not None:
+            # baseline 쪽 eval은 best_source=None, prev_best=None으로 호출됨(_measure_holdout)
+            if kwargs.get("best_source") is None:
+                return _ok_with_holdout(holdout_score=0.90)  # baseline이 더 좋음
+            return _ok_with_holdout(holdout_score=0.80)  # candidate가 더 나쁨
+        if kwargs.get("best_source") is None:
+            return _baseline()
+        return _ok()
+
+    with patch("cycle.promotion.eval_isolated", side_effect=_se):
+        result = confirm_and_measure(**_COMMON, holdout10=_df(), confirm_seeds=[7])
+    assert result.holdout_regressed is True
+    assert result.confirmed is False
+
+
+def test_holdout_better_than_baseline_keeps_confirmation():
+    """candidate holdout이 baseline holdout보다 좋으면 cross-seed 결과 그대로 유지."""
+    def _se(*args, **kwargs):
+        if kwargs.get("holdout_data") is not None:
+            if kwargs.get("best_source") is None:
+                return _ok_with_holdout(holdout_score=0.80)  # baseline
+            return _ok_with_holdout(holdout_score=0.90)  # candidate가 더 좋음
+        if kwargs.get("best_source") is None:
+            return _baseline()
+        return _ok()
+
+    with patch("cycle.promotion.eval_isolated", side_effect=_se):
+        result = confirm_and_measure(**_COMMON, holdout10=_df(), confirm_seeds=[7])
+    assert result.holdout_regressed is False
+    assert result.confirmed is True
+
+
+def test_holdout_regressed_respects_metric_sign():
+    """rmse처럼 낮을수록 좋은 metric(metric_sign=-1)에서 candidate가 baseline보다
+    수치가 더 크면(즉 더 나쁘면) regressed=True여야 한다."""
+    def _se(*args, **kwargs):
+        if kwargs.get("holdout_data") is not None:
+            if kwargs.get("best_source") is None:
+                return _ok_with_holdout(holdout_score=1.0)  # baseline rmse
+            return _ok_with_holdout(holdout_score=5.0)  # candidate rmse가 더 나쁨(더 큼)
+        if kwargs.get("best_source") is None:
+            return _baseline()
+        return _ok()
+
+    common_rmse = {**_COMMON, "metric": "rmse"}
+    with patch("cycle.promotion.eval_isolated", side_effect=_se):
+        result = confirm_and_measure(**common_rmse, holdout10=_df(), confirm_seeds=[7])
+    assert result.holdout_regressed is True
+    assert result.confirmed is False
+
+
+def test_baseline_holdout_eval_error_does_not_block():
+    """baseline holdout eval이 실패하면(에러) 비교 근거가 없으므로 막지 않는다 —
+    정보 없음과 악화 확인은 다르다."""
+    def _se(*args, **kwargs):
+        if kwargs.get("holdout_data") is not None:
+            if kwargs.get("best_source") is None:
+                return _err()  # baseline holdout eval 실패
+            return _ok_with_holdout(holdout_score=0.5)
+        if kwargs.get("best_source") is None:
+            return _baseline()
+        return _ok()
+
+    with patch("cycle.promotion.eval_isolated", side_effect=_se):
+        result = confirm_and_measure(**_COMMON, holdout10=_df(), confirm_seeds=[7])
+    assert result.holdout_regressed is False
+    assert result.confirmed is True
+
+
+def test_holdout_baseline_uses_best_source_or_noop_patch():
+    """baseline holdout eval의 source는 best_source(콜드스타트면 _NOOP_PATCH)여야 한다."""
+    captured: list[dict] = []
+
+    def _se(*args, **kwargs):
+        captured.append(dict(kwargs))
+        if kwargs.get("holdout_data") is not None:
+            return _ok_with_holdout(holdout_score=0.5)
+        if kwargs.get("best_source") is None:
+            return _baseline()
+        return _ok()
+
+    with patch("cycle.promotion.eval_isolated", side_effect=_se):
+        confirm_and_measure(**_COMMON, holdout10=_df(), confirm_seeds=[7])
+
+    holdout_calls = [c for c in captured if c.get("holdout_data") is not None]
+    assert len(holdout_calls) == 2  # candidate + baseline
+    baseline_holdout_call = next(c for c in holdout_calls if c.get("best_source") is None)
+    assert baseline_holdout_call["source"] == _COMMON["best_source"]
+
+
 def test_best_source_none_uses_noop_patch():
     """best_source=None일 때 baseline eval은 _NOOP_PATCH source로 호출된다.
 

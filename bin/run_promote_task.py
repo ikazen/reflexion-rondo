@@ -209,7 +209,8 @@ def main() -> None:
                         [_json.dumps(confirm.seed_gains), winner_row[0]],
                     )
                 if not confirm.confirmed:
-                    print(f"[run_promote_task] cross-seed 미확인 — 승격 스킵 winner={winner_row[0][:8]}")
+                    reason = "holdout 악화" if confirm.holdout_regressed else "cross-seed 미확인"
+                    print(f"[run_promote_task] {reason} — 승격 스킵 winner={winner_row[0][:8]}")
                     # 승격만 스킵 — 아래 promotion 가드(confirm.confirmed)가 막고, reflect 루프는 계속 실행
             else:
                 confirm = None

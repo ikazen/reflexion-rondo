@@ -601,7 +601,8 @@ def run_attempt_core(
             _best_pipeline_upload(config.competition_id, materialized)
             _LOG.info("best pipeline materialized (gain=%+.5f)", gain_vs_best)
         else:
-            _LOG.info("cross-seed 미확인 — 승격 스킵 (gain=%+.5f)", gain_vs_best)
+            reason = "holdout 악화" if confirm.holdout_regressed else "cross-seed 미확인"
+            _LOG.info("%s — 승격 스킵 (gain=%+.5f)", reason, gain_vs_best)
 
     _LOG.info(
         "persist done — total %.1fs attempt_id=%s action=%s label=%s retries=%d",
