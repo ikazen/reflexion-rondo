@@ -75,6 +75,16 @@ def test_auto_select_raises_when_no_confirmed_pipeline() -> None:
             _load_best_code("s4e1", None)
 
 
+def test_auto_select_query_excludes_invalid_reason() -> None:
+    """격리된(GH #96 타깃 누수 등, #99) pipeline은 자동 제출 후보에서 제외돼야 한다 —
+    부풀려진 cv_score로 계속 "최고"로 뽑히면 안 된다."""
+    conn = _conn_with(("code text", 0.91, "attempt-123", "abc123sha"))
+    with patch("store.db.connect", return_value=conn):
+        _load_best_code("s4e1", None)
+    sql = conn.execute.call_args.args[0]
+    assert "invalid_reason" in sql.lower()
+
+
 def test_explicit_attempt_id_still_uses_attempts_and_s3() -> None:
     """--attempt-id 지정 시 기존처럼 raw.attempts + S3 다운로드 경로를 그대로 쓴다."""
     import datetime
@@ -295,6 +305,19 @@ def test_replay_best_pipeline_filters_by_before_run_ts() -> None:
     params = conn.execute.call_args.args[1]
     assert "run_ts <" in sql
     assert cutoff in params
+
+
+def test_replay_best_pipeline_excludes_invalid_reason() -> None:
+    """격리된(GH #96 타깃 누수 등, #99) pipeline은 replay에서 건너뛰어야 한다 —
+    그래야 bin/rebuild_best_pipeline.py 재구성과 제출 replay 폴백 둘 다 누수를 다시
+    섞어넣지 않는다."""
+    from cycle.materialize import replay_best_pipeline
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    replay_best_pipeline(conn, "s4e1")
+    sql = conn.execute.call_args.args[0]
+    assert "invalid_reason IS NULL" in sql
 
 
 def test_replay_best_pipeline_no_history_returns_none() -> None:

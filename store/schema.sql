@@ -73,6 +73,11 @@ ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS oof_preds jsonb;
 -- 재현할 수 없다. submit.py attempt 경로는 이 스냅샷을 base로 쓴다.
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS materialized_code text;
 
+-- 승격 후 사후 발견된 결함(preprocess valid-target 누수 등, GH #96/#97) 표기 —
+-- NULL이면 유효. 삭제하지 않고 조회 경로(_prev_best, blend 후보, replay 등)에서만
+-- 제외해 이력을 보존한다. bin/quarantine_leaks.py가 스캔해서 채운다.
+ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS invalid_reason text;
+
 CREATE TABLE IF NOT EXISTS raw.submission_budget (
     competition_id  text,
     day             date,

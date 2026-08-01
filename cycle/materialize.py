@@ -227,12 +227,18 @@ def replay_best_pipeline(
 
     반환: (materialized_source, 마지막 행의 pipeline_sha256, 재생한 pipeline 수).
     승격 이력이 없으면 (None, None, 0).
+
+    invalid_reason이 표기된(GH #96 타깃 누수 등, #99 격리) 행은 건너뛴다 — 그 행이
+    바꾼 hook은 병합에서 빠지고, 그 이후 승격분은 건너뛴 상태 위에 그대로 이어붙는다.
+    삭제가 아니라 스킵이라 이후 legitimate 승격이 quarantine된 hook을 참조하지 않는
+    한(각 승격은 자기 완결적 patch라 일반적으로 문제 없음) 안전한 소급 롤백이 된다.
     """
     query = """
         SELECT p.pipeline_id, a.run_ts, p.code, p.pipeline_sha256
         FROM raw.pipelines p
         JOIN raw.attempts a USING (attempt_id)
         WHERE p.competition_id = %s
+          AND p.invalid_reason IS NULL
     """
     params: list = [competition_id]
     if before_run_ts is not None:

@@ -35,6 +35,15 @@ def test_fetch_oof_candidates_query_filters_null_oof_and_orders_by_cv():
     assert "metric_sign * p.cv_score DESC" in sql
 
 
+def test_fetch_oof_candidates_query_excludes_invalid_reason():
+    """격리된(GH #96 타깃 누수 등, #99) pipeline은 blend 후보에서 제외돼야 한다 —
+    부풀려진 cv_score가 blend 가중치를 오염시키면 안 된다."""
+    conn = _conn_with([])
+    fetch_oof_candidates(conn, "s4e1", 5)
+    sql = conn.execute.call_args.args[0]
+    assert "invalid_reason IS NULL" in sql
+
+
 def test_build_oof_matrix_skips_length_mismatch():
     candidates = [
         ("p1", [0.1, 0.2, 0.3], 0.9),
