@@ -1,0 +1,154 @@
+"""auto-submit 유의성 게이트 (#87).
+
+기존 auto-submit은 best attempt_id가 바뀌었는지만 보고 재제출해, fold noise 수준
+(실측 0.07~0.49σ)의 CV 차이로도 재제출되어 LB가 사실상 랜덤워크했다(s6e7 07-25:
+0.07σ 차이로 재제출했는데 LB는 그 폭의 14배를 반대 방향으로 잃음). 승격 게이트
+(cycle/run.py)와 동일한 is_significant_gain을 재사용해 제출 게이트도 같은 기준으로
+맞춘다 — _submission_gain_significant가 그 판정, auto_submit이 실제 게이트 삽입 지점.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock
+
+ROOT = Path(__file__).parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from bin.api import DaemonState, _submission_gain_significant, create_app  # noqa: E402
+
+
+def _conn_for(metric_sign, candidate_row, baseline_row):
+    """metric_sign 조회 1회 → candidate attempt 조회 1회 → baseline attempt 조회 1회
+    순서로 conn.execute가 호출된다는 가정 하에 side_effect로 순서대로 값을 흘려보낸다."""
+    conn = MagicMock()
+    results = [
+        MagicMock(fetchone=MagicMock(return_value=(metric_sign,))),
+        MagicMock(fetchone=MagicMock(return_value=candidate_row)),
+        MagicMock(fetchone=MagicMock(return_value=baseline_row)),
+    ]
+    conn.execute.side_effect = results
+    return conn
+
+
+# --- _submission_gain_significant ---
+
+def test_noise_level_gain_is_not_significant():
+    """s6e7 07-25 재현: cv 차이가 fold_std의 0.07배뿐이면 유의하지 않다."""
+    conn = _conn_for(
+        metric_sign=1,
+        candidate_row=(0.949607, 0.001182 ** 2, None),
+        baseline_row=(0.949523, 0.001220 ** 2, None),
+    )
+    assert not _submission_gain_significant(conn, "playground-series-s6e7", "cand", "base")
+
+
+def test_large_gain_is_significant():
+    """gain이 LABEL_Z*fold_std 임계값을 넘으면(절대-margin 폴백) 유의하다."""
+    from config.settings import LABEL_Z
+
+    fold_std = 0.001
+    conn = _conn_for(
+        metric_sign=1,
+        candidate_row=(0.900 + LABEL_Z * fold_std + 0.0005, fold_std ** 2, None),
+        baseline_row=(0.900, fold_std ** 2, None),
+    )
+    assert _submission_gain_significant(conn, "playground-series-s6e6", "cand", "base")
+
+
+def test_paired_fold_scores_used_when_available():
+    """fold_scores가 있으면 절대-margin이 아니라 paired t-test로 판정한다."""
+    conn = _conn_for(
+        metric_sign=1,
+        candidate_row=(0.902, 0.01, [0.901, 0.902, 0.900, 0.903]),
+        baseline_row=(0.900, 0.01, [0.899, 0.900, 0.898, 0.901]),
+    )
+    assert _submission_gain_significant(conn, "comp", "cand", "base")
+
+
+def test_regression_metric_sign_flips_direction():
+    """rmse(sign=-1)처럼 낮을수록 좋은 메트릭에서 candidate가 baseline보다 낮으면 개선."""
+    conn = _conn_for(
+        metric_sign=-1,
+        candidate_row=(8.753040, 0.020774 ** 2, None),
+        baseline_row=(8.755803, 0.019499 ** 2, None),
+    )
+    # ΔCV=0.13σ 수준(s6e1 07-19 재현) — 유의하지 않아야 함
+    assert not _submission_gain_significant(conn, "playground-series-s6e1", "cand", "base")
+
+
+def test_missing_attempt_data_fails_open():
+    """attempt 데이터가 없으면(과거 결손 등) 게이트를 막지 않는다 — #73의 데드락 재발 방지."""
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.side_effect = [(1,), None, (0.9, 0.01, None)]
+    assert _submission_gain_significant(conn, "comp", "cand", "base")
+
+
+# --- /api/submissions/auto 엔드포인트 — skip 사유 배선 확인 ---
+
+def _client_for_auto_submit(monkeypatch, *, active_competitions, best, last, significant):
+    import bin.api as api_mod
+
+    monkeypatch.setattr(api_mod, "_competition_id_to_slug", lambda: {c: c for c in active_competitions})
+    monkeypatch.setattr(api_mod, "_best_attempt", lambda conn, cid: best)
+    monkeypatch.setattr(api_mod, "_last_submitted_attempt", lambda conn, cid: last)
+    monkeypatch.setattr(
+        api_mod, "_submission_gain_significant", lambda conn, cid, cand, base: significant
+    )
+    monkeypatch.setattr(api_mod, "_start_submission", lambda *a, **k: "sub-1")
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = [(c,) for c in active_competitions]
+    app = create_app(conn, DaemonState())
+    return TestClient(app)
+
+
+def test_auto_submit_skips_when_gain_not_significant(monkeypatch):
+    """s6e7 07-25 케이스: best attempt는 바뀌었지만 gain이 fold noise 이하 → skip."""
+    client = _client_for_auto_submit(
+        monkeypatch,
+        active_competitions=["playground-series-s6e7"],
+        best=("cand-attempt", 0.949607),
+        last="base-attempt",
+        significant=False,
+    )
+    resp = client.post("/api/submissions/auto", json={"window_hours": 24})
+    body = resp.json()
+    assert body["submitted"] == []
+    assert body["skipped"] == [
+        {"competition": "playground-series-s6e7", "reason": "gain not significant"}
+    ]
+
+
+def test_auto_submit_submits_when_gain_significant(monkeypatch):
+    """gain이 유의하면 이전과 동일하게 제출을 진행한다 — s6e6처럼 실제 개선인 경우 회귀 방지."""
+    client = _client_for_auto_submit(
+        monkeypatch,
+        active_competitions=["playground-series-s6e6"],
+        best=("cand-attempt", 0.96423),
+        last="base-attempt",
+        significant=True,
+    )
+    resp = client.post("/api/submissions/auto", json={"window_hours": 24})
+    body = resp.json()
+    assert body["skipped"] == []
+    assert len(body["submitted"]) == 1
+    assert body["submitted"][0]["attempt_id"] == "cand-attempt"
+
+
+def test_auto_submit_first_submission_skips_gain_check(monkeypatch):
+    """직전 유효 제출이 없으면(콜드스타트) 유의성 검정 없이 그대로 제출한다."""
+    client = _client_for_auto_submit(
+        monkeypatch,
+        active_competitions=["playground-series-s4e1"],
+        best=("cand-attempt", 0.89),
+        last=None,
+        significant=False,  # 호출되면 안 됨 — 콜드스타트는 게이트 자체를 건너뛴다
+    )
+    resp = client.post("/api/submissions/auto", json={"window_hours": 24})
+    body = resp.json()
+    assert body["skipped"] == []
+    assert len(body["submitted"]) == 1
