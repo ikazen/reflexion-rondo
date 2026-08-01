@@ -146,8 +146,9 @@ def _load_pipeline(
     하이재킹할 수 있다. attempt_only=True는 그 무관한 MinIO 상태를 원천적으로 배제한다.
 
     base_source: attempt_only=True일 때 patch가 그 위에서 실행돼야 할 base pipeline
-    소스(cycle.materialize.replay_best_pipeline로 raw.pipelines에서 재생 — MinIO가
-    아니라 Postgres 신뢰 사본이라 위 하이재킹 우려와 무관하다). 평가 경로
+    소스(cycle.materialize.load_base_snapshot — raw.pipelines.materialized_code
+    스냅샷 우선, MinIO가 아니라 Postgres 신뢰 사본이라 위 하이재킹 우려와 무관하다,
+    #89). 평가 경로
     (runtime/runner.py:_load_best_pipeline_class)가 base+patch 위에서 cv_score를
     측정하는데, 여기서 base 없이 patch만 실행하면(#80) hook을 하나만 오버라이드하는
     attempt(예: param_candidates만 바꾼 하이퍼파라미터 탐색)가 나머지 hook에서
@@ -351,23 +352,24 @@ def generate_submission_csv(
 
     # attempt_only 경로(--attempt-id 명시 또는 auto-submit 폴백)는 patch가 그 attempt
     # 평가 시점까지 승격된 base 위에서 실행돼야 cv_score와 같은 예측이 나온다(#80).
-    # raw.pipelines(Postgres 신뢰 사본)에서 그 시점 이전 승격분만 재생 — MinIO
-    # 조회는 여전히 하지 않는다(고아 blob 하이재킹 방지, #19/#21 유지).
+    # base는 raw.pipelines.materialized_code(승격 당시 병합본의 Postgres 신뢰 사본)
+    # 우선, 스냅샷 없는 과거 이력만 strict replay 폴백(#89) — MinIO 조회는 여전히
+    # 하지 않는다(고아 blob 하이재킹 방지, #19/#21 유지).
     base_source = None
     if attempt_id:
-        from cycle.materialize import replay_best_pipeline
+        from cycle.materialize import load_base_snapshot
         from store.db import connect as _connect
         _conn = _connect(apply_schema=False)
         try:
-            base_source, _, replayed_count = replay_best_pipeline(
+            base_source, base_origin = load_base_snapshot(
                 _conn, comp.COMPETITION_ID, before_run_ts=run_ts
             )
         finally:
             _conn.close()
         if base_source:
-            print(f"base pipeline replayed from raw.pipelines: {replayed_count} promoted pipeline(s)")
+            print(f"base pipeline loaded: {base_origin}")
         else:
-            print("no prior promoted pipeline to replay — base is BasePipeline()")
+            print("no prior promoted pipeline — base is BasePipeline()")
 
     from evaluator.harness import PipelineContext, preselect_params
     from store.train_data import load_train

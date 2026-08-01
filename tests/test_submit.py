@@ -306,6 +306,86 @@ def test_replay_best_pipeline_no_history_returns_none() -> None:
     assert (best, last_sha, count) == (None, None, 0)
 
 
+def test_replay_best_pipeline_strict_sha_raises_on_mismatch() -> None:
+    """strict_sha면 재생본이 승격 당시 병합본과 다를 때 진행하지 않는다(#89) —
+    평가와 다른 base로 제출하면 크래시(s5e4)하거나 조용히 열화된 예측이
+    제출된다(s5e10)."""
+    from cycle.materialize import replay_best_pipeline
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = [
+        ("pid-1", "2026-07-26T00:00:00",
+         "class Patch:\n    def build_model(self, p, c):\n        return 1\n",
+         "not-the-real-sha"),
+    ]
+    with pytest.raises(RuntimeError, match="sha256"):
+        replay_best_pipeline(conn, "s4e1", strict_sha=True)
+
+
+# ---------------------------------------------------------------------------
+# cycle.materialize.load_base_snapshot — #89
+# ---------------------------------------------------------------------------
+
+def test_load_base_snapshot_prefers_materialized_code() -> None:
+    import hashlib
+    from cycle.materialize import load_base_snapshot
+
+    snapshot = "class Patch:\n    def build_model(self, p, c):\n        return 1\n"
+    sha = hashlib.sha256(snapshot.encode()).hexdigest()
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = (snapshot, sha)
+    src, origin = load_base_snapshot(conn, "s4e1")
+    assert src == snapshot
+    assert "snapshot" in origin
+
+
+def test_load_base_snapshot_raises_on_corrupt_snapshot() -> None:
+    from cycle.materialize import load_base_snapshot
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = ("class Patch:\n    pass\n", "0" * 64)
+    with pytest.raises(RuntimeError, match="sha256"):
+        load_base_snapshot(conn, "s4e1")
+
+
+def test_load_base_snapshot_no_history_returns_none() -> None:
+    from cycle.materialize import load_base_snapshot
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None
+    src, _ = load_base_snapshot(conn, "s4e1")
+    assert src is None
+
+
+def test_load_base_snapshot_falls_back_to_strict_replay_when_snapshot_missing() -> None:
+    """스냅샷 없는 과거 이력은 replay 폴백을 쓰되 반드시 strict_sha로 재생한다."""
+    from cycle import materialize
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = (None, "sha-old")
+    with patch.object(
+        materialize, "replay_best_pipeline", return_value=("merged", "sha-old", 3)
+    ) as mock_replay:
+        src, origin = materialize.load_base_snapshot(conn, "s4e1")
+    assert src == "merged"
+    assert mock_replay.call_args.kwargs["strict_sha"] is True
+
+
+def test_load_base_snapshot_passes_before_run_ts() -> None:
+    """attempt 평가 시점 이후 승격분이 base에 섞이면 안 된다 — SQL 컷오프 확인."""
+    import datetime
+    from cycle.materialize import load_base_snapshot
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None
+    cutoff = datetime.datetime(2026, 7, 28)
+    load_base_snapshot(conn, "s4e1", before_run_ts=cutoff)
+    sql = conn.execute.call_args.args[0]
+    params = conn.execute.call_args.args[1]
+    assert "run_ts <" in sql
+    assert cutoff in params
+
+
 # ---------------------------------------------------------------------------
 # _bagged_predict seed bagging
 # ---------------------------------------------------------------------------
