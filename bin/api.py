@@ -595,6 +595,66 @@ def _submission_gain_significant(
     )
 
 
+def refresh_submission_row(conn: PgConn, submission_id: str) -> dict | None:
+    """제출 1건을 kaggle에서 1회 재조회해 상태를 갱신한다. 없는 submission_id면 None.
+
+    `/api/submissions/{id}/refresh` 엔드포인트와 bin/run_daemon.py의 자동 재폴링
+    스윕(#103)이 공유하는 단일 구현 — 이전엔 엔드포인트 안에만 있어서 daemon이
+    주기적으로 재확인할 방법이 없었고, 업로드 직후 1회 pending으로 남으면
+    사용자가 수동으로 이 엔드포인트를 호출하기 전까진 영영 갱신 안 됐다(GH #96
+    s5e10 사후조사에서 3일간 무증상이었던 이유).
+    """
+    row = conn.execute(
+        """
+        select submission_id, competition_id, attempt_id,
+               submitted_at, message, csv_path, status, lb_score, error, checked_at
+        from raw.kaggle_submissions
+        where submission_id = %s
+        """,
+        [submission_id],
+    ).fetchone()
+    if not row:
+        return None
+    cols = [
+        "submission_id", "competition_id", "attempt_id", "submitted_at",
+        "message", "csv_path", "status", "lb_score", "error", "checked_at",
+    ]
+    rec = dict(zip(cols, row))
+
+    if rec["status"] in _TERMINAL:
+        return rec
+
+    kaggle_status, lb_score = _poll_kaggle_once(rec["competition_id"], rec["message"])
+    if kaggle_status == "pending":
+        conn.execute(
+            "update raw.kaggle_submissions set checked_at = %s where submission_id = %s",
+            [datetime.now(timezone.utc), submission_id],
+        )
+        rec["checked_at"] = datetime.now(timezone.utc)
+        return rec
+
+    fields: dict = {"status": kaggle_status, "checked_at": datetime.now(timezone.utc)}
+    if kaggle_status == "complete" and lb_score is not None:
+        fields["lb_score"] = lb_score
+    elif kaggle_status in ("error", "invalid"):
+        fields["error"] = f"kaggle: {kaggle_status}"
+
+    sets = ", ".join(f"{k} = %s" for k in fields)
+    conn.execute(
+        f"update raw.kaggle_submissions set {sets} where submission_id = %s",
+        list(fields.values()) + [submission_id],
+    )
+
+    if kaggle_status == "complete" and lb_score is not None and rec.get("attempt_id"):
+        conn.execute(
+            "update raw.attempts set lb_score = %s where attempt_id like %s and lb_score is null",
+            [lb_score, f"{rec['attempt_id']}%"],
+        )
+
+    rec.update(fields)
+    return rec
+
+
 def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
     app = FastAPI(title="reflexion-rondo", version="v1")
 
@@ -1659,54 +1719,9 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
 
     @app.post("/api/submissions/{submission_id}/refresh")
     def refresh_submission(submission_id: str):
-        row = conn.execute(
-            """
-            select submission_id, competition_id, attempt_id,
-                   submitted_at, message, csv_path, status, lb_score, error, checked_at
-            from raw.kaggle_submissions
-            where submission_id = %s
-            """,
-            [submission_id],
-        ).fetchone()
-        if not row:
+        rec = refresh_submission_row(conn, submission_id)
+        if rec is None:
             raise HTTPException(status_code=404, detail="submission not found")
-        cols = [
-            "submission_id", "competition_id", "attempt_id", "submitted_at",
-            "message", "csv_path", "status", "lb_score", "error", "checked_at",
-        ]
-        rec = dict(zip(cols, row))
-
-        if rec["status"] in _TERMINAL:
-            return rec
-
-        kaggle_status, lb_score = _poll_kaggle_once(rec["competition_id"], rec["message"])
-        if kaggle_status == "pending":
-            conn.execute(
-                "update raw.kaggle_submissions set checked_at = %s where submission_id = %s",
-                [datetime.now(timezone.utc), submission_id],
-            )
-            rec["checked_at"] = datetime.now(timezone.utc)
-            return rec
-
-        fields: dict = {"status": kaggle_status, "checked_at": datetime.now(timezone.utc)}
-        if kaggle_status == "complete" and lb_score is not None:
-            fields["lb_score"] = lb_score
-        elif kaggle_status in ("error", "invalid"):
-            fields["error"] = f"kaggle: {kaggle_status}"
-
-        sets = ", ".join(f"{k} = %s" for k in fields)
-        conn.execute(
-            f"update raw.kaggle_submissions set {sets} where submission_id = %s",
-            list(fields.values()) + [submission_id],
-        )
-
-        if kaggle_status == "complete" and lb_score is not None and rec.get("attempt_id"):
-            conn.execute(
-                "update raw.attempts set lb_score = %s where attempt_id like %s and lb_score is null",
-                [lb_score, f"{rec['attempt_id']}%"],
-            )
-
-        rec.update(fields)
         return rec
 
     return app

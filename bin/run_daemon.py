@@ -24,7 +24,7 @@ from pathlib import Path
 import polars as pl
 
 import bin.airflow_client as airflow_client
-from bin.api import DaemonState, create_app
+from bin.api import DaemonState, create_app, refresh_submission_row
 from cycle.run import CycleConfig, establish_bootstrap_baseline, run_cycle
 from memory.retriever import EmbeddingUnavailableError
 from store.db import connect, ensure_competition
@@ -177,6 +177,63 @@ def _final_status(cycles_done: int, skipped: int, failed_cycles: int) -> tuple[s
     if cycles_done == 0 and (skipped + failed_cycles) > 0:
         return "failed", f"all cycles unsuccessful — {failed_cycles} failed, {skipped} skipped"
     return "done", None
+
+
+# LB 자동 재폴링 (#103) — 이전엔 업로드 직후 1회 pending으로 남으면 사용자가
+# `POST /api/submissions/{id}/refresh`를 수동 호출하기 전까진 영영 갱신 안 됐다
+# (GH #96 s5e10 사후조사에서 승격 후 3일간 무증상이었던 이유). daemon 루프가 유휴
+# 틱마다 raw.kaggle_submissions를 훑어 스스로 재확인한다.
+_SUBMISSION_SWEEP_INTERVAL_SEC = 60  # 이 주기로만 훑는다 — daemon 루프 자체는 10s poll
+_last_submission_sweep: float = 0.0
+
+
+def _submission_refresh_due(submitted_at: datetime, checked_at, now: datetime) -> bool:
+    """제출 경과 시간에 따라 재확인 간격을 늘리는 백오프.
+
+    Kaggle 채점은 보통 분 단위지만 드물게 몇 시간 걸린다 — 갓 제출된 건 자주,
+    오래 pending인 건 뜸하게 확인해 불필요한 kaggle CLI 호출을 아낀다.
+    """
+    if checked_at is None:
+        return True
+    elapsed_since_submit = (now - submitted_at).total_seconds()
+    if elapsed_since_submit < 600:
+        interval = 120       # 첫 10분: 2분 간격
+    elif elapsed_since_submit < 3600:
+        interval = 600       # 1시간까지: 10분 간격
+    elif elapsed_since_submit < 6 * 3600:
+        interval = 1800      # 6시간까지: 30분 간격
+    else:
+        interval = 7200       # 그 이후: 2시간 간격
+    return (now - checked_at).total_seconds() >= interval
+
+
+def _sweep_stale_submissions(conn) -> None:
+    global _last_submission_sweep
+    now_mono = time.monotonic()
+    if now_mono - _last_submission_sweep < _SUBMISSION_SWEEP_INTERVAL_SEC:
+        return
+    _last_submission_sweep = now_mono
+
+    rows = conn.execute(
+        """
+        select submission_id, submitted_at, checked_at
+        from raw.kaggle_submissions
+        where status in ('submitted', 'pending')
+        """
+    ).fetchall()
+
+    now = datetime.now(timezone.utc)
+    for submission_id, submitted_at, checked_at in rows:
+        if not _submission_refresh_due(submitted_at, checked_at, now):
+            continue
+        try:
+            rec = refresh_submission_row(conn, submission_id)
+            if rec and rec.get("status") == "complete":
+                print(f"[daemon] submission {submission_id[:8]} refreshed → complete lb={rec.get('lb_score')}")
+            elif rec and rec.get("status") in ("error", "invalid"):
+                print(f"[daemon] submission {submission_id[:8]} refreshed → {rec['status']}")
+        except Exception as exc:
+            print(f"[daemon] submission {submission_id[:8]} refresh failed: {exc}")
 
 
 def _run_api(state: DaemonState) -> None:
@@ -428,6 +485,7 @@ def main() -> None:
     print("[daemon] started — polling raw.cycle_queue")
 
     while _running:
+        _sweep_stale_submissions(conn)
         item = _pop_pending(conn)
         if item is None:
             time.sleep(POLL_INTERVAL)
