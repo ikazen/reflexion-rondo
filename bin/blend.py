@@ -38,6 +38,8 @@ def fetch_oof_candidates(
     "최근 N개"가 아니라 "상위 성능 N개"로 정의한다 — raw.pipelines에 recency
     컬럼(created_at 등)이 없고, 앙상블 다양성 관점에서도 상위 성능이 더 타당하다.
     oof_preds가 없는(OOF 수집 이전에 승격된 것 등) pipeline은 자동 제외된다.
+    invalid_reason이 표기된(GH #96 타깃 누수 등, #99 격리) pipeline도 제외된다 —
+    누수 pipeline의 부풀려진 cv_score가 blend 가중치를 오염시키면 안 된다.
     """
     rows = conn.execute(
         """
@@ -46,6 +48,7 @@ def fetch_oof_candidates(
         JOIN raw.competitions c USING (competition_id)
         WHERE p.competition_id = %s
           AND p.oof_preds IS NOT NULL
+          AND p.invalid_reason IS NULL
         ORDER BY c.metric_sign * p.cv_score DESC
         LIMIT %s
         """,

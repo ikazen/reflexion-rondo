@@ -162,3 +162,28 @@ def test_prev_best_fold_scores_joins_attempts_and_pipelines():
     sql: str = conn.execute.call_args_list[0][0][0]
     assert "raw.pipelines" in sql
     assert "raw.attempts" in sql
+
+
+# --- invalid_reason 격리 필터 (#99, GH #96) ---
+# 누수로 격리(bin/quarantine_leaks.py)된 pipeline은 baseline/advisory 어디에도
+# 쓰이면 안 된다 — 부풀려진 cv_score가 다시 게이트를 오염시키기 때문.
+
+def test_prev_best_query_excludes_invalid_reason():
+    conn = _conn_seq((0.9,))
+    _prev_best(conn, "s4e1")
+    sql: str = conn.execute.call_args_list[0][0][0]
+    assert "invalid_reason" in sql.lower()
+
+
+def test_prev_best_params_query_excludes_invalid_reason():
+    conn = _conn_seq(({"a": 1},))
+    _prev_best_params(conn, "s4e1")
+    sql: str = conn.execute.call_args_list[0][0][0]
+    assert "invalid_reason" in sql.lower()
+
+
+def test_prev_best_fold_scores_primary_query_excludes_invalid_reason():
+    conn = _conn_seq(([0.9],))
+    _prev_best_fold_scores(conn, "s4e1")
+    sql: str = conn.execute.call_args_list[0][0][0]
+    assert "invalid_reason" in sql.lower()

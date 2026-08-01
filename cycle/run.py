@@ -93,6 +93,7 @@ def _prev_best(conn: PgConn, competition_id: str) -> float | None:
         join raw.competitions c using (competition_id)
         where p.competition_id = %s
           and p.cv_score is not null
+          and p.invalid_reason is null
         """,
         [competition_id],
     ).fetchone()
@@ -127,6 +128,7 @@ def _prev_best_params(conn: PgConn, competition_id: str) -> dict | None:
         join raw.attempts a using (attempt_id)
         where p.competition_id = %s
           and p.cv_score is not null
+          and p.invalid_reason is null
         order by c.metric_sign * p.cv_score desc
         limit 1
         """,
@@ -168,6 +170,7 @@ def _prev_best_fold_scores(
         join raw.attempts a using (attempt_id)
         where p.competition_id = %s
           and p.cv_score is not null
+          and p.invalid_reason is null
         order by c.metric_sign * p.cv_score desc
         limit 1
         """,
