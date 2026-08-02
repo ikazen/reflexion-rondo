@@ -33,6 +33,11 @@ _PANDAS_ONLY_ATTRS = frozenset({
 _ALL_HOOKS = frozenset({
     "preprocess", "feature_transform", "param_candidates",
     "build_model", "postprocess_predictions",
+    # ensemble_spec(#74) — 선언형 앙상블. build_model 대신 "무엇을 조합할지"만
+    # 반환하면 harness가 생성·적합·결합을 전담한다(evaluator/harness.py 참고).
+    # ensemble/bootstrap에 자동 포함(둘 다 _ALL_HOOKS를 그대로 씀); 단일 변경
+    # 원칙(ADR-006)이 적용되는 4개 제한 action_type에는 포함 안 됨.
+    "ensemble_spec",
 })
 
 _ALLOWED_HOOKS: dict[str, frozenset[str]] = {
@@ -50,6 +55,7 @@ _HOOK_ARITY = {
     "param_candidates":         2,
     "build_model":              3,
     "postprocess_predictions":  3,
+    "ensemble_spec":            2,
 }
 
 

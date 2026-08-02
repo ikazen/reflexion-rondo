@@ -28,7 +28,8 @@ Your Patch overrides only the hook(s) assigned. All other hooks fall back to the
   model_swap           -> build_model only
   preprocessing        -> preprocess only
   hyperparam_search    -> param_candidates only
-  ensemble             -> any hooks needed (combine models: build_model + postprocess_predictions typical)
+  ensemble             -> ensemble_spec (STRONGLY PREFERRED, see below) or any hooks needed for a
+                          hand-written combination (build_model + postprocess_predictions typical)
 
 ## Required Patch structure
 ```python
@@ -49,6 +50,7 @@ class Patch:
   def param_candidates(self, ctx) -> list[dict]  # MUST return 3–12 dicts — Cartesian grid forbidden
   def build_model(self, params: dict, ctx) -> sklearn_estimator
   def postprocess_predictions(self, preds, ctx) -> preds
+  def ensemble_spec(self, ctx) -> dict   # ensemble action_type only, see below
 
 ## ctx attributes
   ctx.target_col: str
@@ -59,6 +61,45 @@ class Patch:
 ## Available libraries
 - Available: scikit-learn, lightgbm, xgboost, catboost, imbalanced-learn (imblearn), optuna, polars
 - NOT available: tabpfn, pandas — importing these fails
+
+## ensemble action_type — use ensemble_spec, not a hand-written wrapper class
+For ensemble, implement `ensemble_spec(self, ctx) -> dict` instead of writing a custom
+estimator/wrapper class by hand. The harness builds, fits (with early stopping where
+supported), and combines the member models itself:
+
+```python
+class Patch:
+    action_type = "ensemble"
+    changed_stages = ["ensemble_spec"]
+    rationale = "blend lgbm and xgboost"
+
+    def ensemble_spec(self, ctx) -> dict:
+        return {
+            "members": [
+                {"model": "lgbm", "params": {"n_estimators": 300, "learning_rate": 0.05}},
+                {"model": "xgboost", "params": {"max_depth": 6}},
+            ],
+            "method": "weighted_average",   # or "majority_vote" for discrete-label metrics
+            "weights": [0.6, 0.4],          # optional — omit for equal weights
+        }
+```
+- Allowed model names: lgbm, xgboost, catboost, hgb, random_forest, ridge — the harness picks
+  the classifier or regressor variant automatically from ctx.is_classification. Do NOT write
+  "LGBMClassifier" etc, just the short name.
+- params are passed straight to that model's constructor (same values you'd put in build_model).
+- method: "weighted_average" for regression or probability-based metrics (auc/logloss), or
+  "majority_vote" for discrete-label metrics (accuracy/f1/qwk/balanced_accuracy). If omitted,
+  the harness picks a sensible default from the metric.
+- If you implement ensemble_spec, do NOT also implement build_model — ensemble_spec replaces it.
+  You may still implement preprocess/feature_transform/postprocess_predictions alongside it.
+- This is strongly preferred over a hand-written ensemble wrapper class. Wrapper classes have
+  repeatedly failed in production from bugs the harness cannot see inside exec'd code: incorrect
+  `super()` usage, stale/removed constructor kwargs hardcoded from memory, and member models
+  reconstructed incorrectly inside the wrapper's own fit(). ensemble_spec avoids all of these
+  because the harness — not generated code — constructs and fits every member.
+- Only fall back to a hand-written build_model/wrapper class if ensemble_spec genuinely cannot
+  express what you need (e.g. a stacking meta-model on out-of-fold predictions) — expect that
+  path to be less reliable.
 
 ## Rules
 - Only implement the hook(s) allowed for your action_type

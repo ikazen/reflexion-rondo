@@ -275,3 +275,45 @@ def test_star_import_skips_undefined_name_check():
     )
     errs = validate_patch(source, "model_swap")
     assert not any("undefined name" in e for e in errs)
+
+
+# --- ensemble_spec 훅 (#74) ---
+
+_VALID_ENSEMBLE_SPEC = """
+class Patch:
+    action_type = "ensemble"
+    changed_stages = ["ensemble_spec"]
+    rationale = "declarative ensemble of lgbm + xgboost"
+
+    def ensemble_spec(self, ctx):
+        return {"members": [{"model": "lgbm"}, {"model": "xgboost"}]}
+""".strip()
+
+
+def test_ensemble_spec_allowed_for_ensemble_action_type():
+    assert validate_patch(_VALID_ENSEMBLE_SPEC, "ensemble") == []
+
+
+def test_ensemble_spec_allowed_for_bootstrap_action_type():
+    source = _VALID_ENSEMBLE_SPEC.replace('action_type = "ensemble"', 'action_type = "bootstrap"')
+    assert validate_patch(source, "bootstrap") == []
+
+
+def test_ensemble_spec_disallowed_for_model_swap():
+    """단일 변경 원칙(ADR-006)이 적용되는 제한 action_type에는 ensemble_spec도 허용 안 됨."""
+    source = _VALID_ENSEMBLE_SPEC.replace('action_type = "ensemble"', 'action_type = "model_swap"')
+    errs = validate_patch(source, "model_swap")
+    assert any("may not implement hooks" in e and "ensemble_spec" in e for e in errs)
+
+
+def test_ensemble_spec_wrong_arity_caught():
+    source = (
+        'class Patch:\n'
+        '    action_type = "ensemble"\n'
+        '    changed_stages = ["ensemble_spec"]\n'
+        '    rationale = "wrong arity"\n'
+        '    def ensemble_spec(self, ctx, extra_arg):\n'
+        '        return {"members": []}\n'
+    )
+    errs = validate_patch(source, "ensemble")
+    assert any("ensemble_spec" in e and "expected 2 args" in e for e in errs)

@@ -230,3 +230,17 @@ def test_contracts_ordinal_encoding_example_drops_nulls_before_sorting() -> None
     from agents.coder import _REFLEXION_CONTRACT, _BOOTSTRAP_CONTRACT
     assert "drop_nulls().unique()" in _REFLEXION_CONTRACT
     assert "drop_nulls().unique()" in _BOOTSTRAP_CONTRACT
+
+
+def test_contract_prefers_ensemble_spec_over_wrapper_class() -> None:
+    """#74 — 자유형 ensemble wrapper 클래스가 반복적으로 겪은 버그(super() 오용,
+    stale kwarg, to_numpy 등)는 전부 harness가 볼 수 없는 exec된 클래스 몸체
+    안에서 발생한다. ensemble_spec 선언형 대안을 prompt가 강하게 권고해야
+    Coder가 애초에 그 클래스를 덜 쓰게 유도된다."""
+    from agents.coder import _REFLEXION_CONTRACT
+    assert "ensemble_spec" in _REFLEXION_CONTRACT
+    assert "STRONGLY PREFERRED" in _REFLEXION_CONTRACT or "strongly preferred" in _REFLEXION_CONTRACT.lower()
+    for model_name in ("lgbm", "xgboost", "catboost", "hgb", "random_forest", "ridge"):
+        assert model_name in _REFLEXION_CONTRACT
+    assert "weighted_average" in _REFLEXION_CONTRACT
+    assert "majority_vote" in _REFLEXION_CONTRACT
