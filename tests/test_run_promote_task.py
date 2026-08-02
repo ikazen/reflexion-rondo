@@ -359,6 +359,47 @@ def test_merge_verify_passes_oof_preds_to_insert_pipeline() -> None:
     assert eval_kwargs["collect_oof"] is True
 
 
+def test_promotion_triggers_blend_recompute() -> None:
+    """승격 성공 시 compute_and_store_blend가 train90(merge-verify와 같은
+    provenance)·comp.TARGET·comp.METRIC으로 호출돼야 한다(#75)."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    eval_isolated_mock = MagicMock(
+        return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None, oof_preds=[0.1, 0.2, 0.3])
+    )
+    with patch("bin.blend.compute_and_store_blend") as blend_mock:
+        conn = _run_promote_with_mocks(
+            SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
+            reflect_mock,
+            confirm_mock,
+            eval_isolated_mock=eval_isolated_mock,
+        )
+    assert conn.insert_pipeline_mock.call_count == 1
+    blend_mock.assert_called_once()
+    args = blend_mock.call_args.args
+    assert args[1] == _FULL_ID
+    assert args[3] == "target"  # _fake_comp_module의 TARGET
+    assert args[4] == "auc"     # _fake_comp_module의 METRIC
+
+
+def test_blend_recompute_failure_does_not_block_promotion() -> None:
+    """blend 재계산이 실패해도 이미 완료된 승격 자체는 영향받지 않는다 — best-effort."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    eval_isolated_mock = MagicMock(
+        return_value=SimpleNamespace(cv_score=_WINNER_CV, error_trace=None, oof_preds=[0.1, 0.2, 0.3])
+    )
+    with patch("bin.blend.compute_and_store_blend", side_effect=RuntimeError("boom")):
+        conn = _run_promote_with_mocks(
+            SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
+            reflect_mock,
+            confirm_mock,
+            eval_isolated_mock=eval_isolated_mock,
+        )
+    assert conn.insert_pipeline_mock.call_count == 1
+    assert conn.upload_best_pipeline_mock.call_count == 1
+
+
 def test_merge_verify_mismatched_cv_blocks_promotion() -> None:
     """병합본 cv_score가 winner cv_score와 크게 다르면(병합 손상 의심) 승격을 스킵한다."""
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))

@@ -91,6 +91,72 @@ def fit_blend(oof_matrix: np.ndarray, target: np.ndarray) -> tuple[np.ndarray, f
     return model.coef_, float(model.intercept_)
 
 
+def _store_blend_weights(conn, result: dict) -> None:
+    conn.execute(
+        """
+        INSERT INTO raw.blend_weights
+            (competition_id, pipeline_ids, weights, intercept, blend_cv_score, metric, generated_at)
+        VALUES (%s, %s::jsonb, %s::jsonb, %s, %s, %s, %s)
+        ON CONFLICT (competition_id) DO UPDATE SET
+            pipeline_ids   = EXCLUDED.pipeline_ids,
+            weights        = EXCLUDED.weights,
+            intercept      = EXCLUDED.intercept,
+            blend_cv_score = EXCLUDED.blend_cv_score,
+            metric         = EXCLUDED.metric,
+            generated_at   = EXCLUDED.generated_at
+        """,
+        [
+            result["competition_id"], json.dumps(result["pipeline_ids"]),
+            json.dumps(result["weights"]), result["intercept"], result["blend_cv_score"],
+            result["metric"], result["generated_at"],
+        ],
+    )
+
+
+def compute_and_store_blend(
+    conn, competition_id: str, train: "object", target_col: str, metric: str,
+    n_top: int = DEFAULT_N_TOP,
+) -> dict | None:
+    """확정 파이프라인(#99 격리분 제외) 상위 n_top의 OOF로 blend 가중치를 재계산해
+    raw.blend_weights에 upsert한다(#75).
+
+    이전엔 이 계산이 CLI(`uv run python -m bin.blend`)로만 수동 실행됐고, 확정
+    파이프라인이 2개 미만인 대회가 많아(#73/#100/#101로 해소 중) 사실상 죽은
+    레버였다 — 이 함수를 승격 시점마다 호출해 자동 최신화한다.
+
+    최소 2개 pipeline이 없거나 OOF 길이가 train과 안 맞는 pipeline뿐이면(과거
+    다른 train 크기로 평가된 것 등) 조용히 None을 반환한다 — 승격 흐름 자체를
+    막으면 안 되는 best-effort 훅이라 예외를 던지지 않는다. train은 후보들의
+    oof_preds가 실제로 어떤 데이터로 생성됐는지에 맞춰 호출부가 골라 넘긴다
+    (예: bin/run_promote_task.py는 merge-verify가 쓴 train90).
+    """
+    candidates = fetch_oof_candidates(conn, competition_id, n_top)
+    if len(candidates) < 2:
+        return None
+
+    target = train[target_col].to_numpy().astype(float)
+    oof_matrix, used_ids = build_oof_matrix(candidates, len(target))
+    if oof_matrix.shape[1] < 2:
+        return None
+
+    weights, intercept = fit_blend(oof_matrix, target)
+    fn, _metric_sign, _metric_class = get_metric(metric)
+    blend_preds = oof_matrix @ weights + intercept
+    blend_score = float(fn(target, blend_preds))
+
+    result = {
+        "competition_id": competition_id,
+        "pipeline_ids": used_ids,
+        "weights": weights.tolist(),
+        "intercept": intercept,
+        "blend_cv_score": blend_score,
+        "metric": metric,
+        "generated_at": datetime.now(timezone.utc),
+    }
+    _store_blend_weights(conn, result)
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--competition", "-c", required=True)
@@ -99,47 +165,31 @@ def main() -> None:
 
     comp = importlib.import_module(f"config.competitions.{args.competition}")
     conn = connect(apply_schema=False)
+    try:
+        train = load_train(comp)
+        result = compute_and_store_blend(
+            conn, comp.COMPETITION_ID, train, comp.TARGET, comp.METRIC, args.n_top,
+        )
+    finally:
+        conn.close()
 
-    candidates = fetch_oof_candidates(conn, comp.COMPETITION_ID, args.n_top)
-    conn.close()
-    if len(candidates) < 2:
+    if result is None:
         print(
-            f"[blend] {comp.COMPETITION_ID}: oof_preds 보유 pipeline이 {len(candidates)}개뿐 "
-            "— blend에는 최소 2개 필요. 중단."
+            f"[blend] {comp.COMPETITION_ID}: 후보 부족(확정 파이프라인 2개 미만 또는 "
+            "OOF 길이 불일치) — blend 중단."
         )
         sys.exit(1)
 
-    train = load_train(comp)
-    target = train[comp.TARGET].to_numpy().astype(float)
-
-    oof_matrix, used_ids = build_oof_matrix(candidates, len(target))
-    if oof_matrix.shape[1] < 2:
-        print(f"[blend] 길이 일치하는 pipeline이 {oof_matrix.shape[1]}개뿐 — blend 중단.")
-        sys.exit(1)
-
-    weights, intercept = fit_blend(oof_matrix, target)
-
-    fn, metric_sign, metric_class = get_metric(comp.METRIC)
-    blend_preds = oof_matrix @ weights + intercept
-    blend_score = float(fn(target, blend_preds))
-
-    print(f"[blend] {comp.COMPETITION_ID}: {len(used_ids)}개 pipeline 사용, "
-          f"blend_cv_score={blend_score:.6f}")
-    for pid, w in zip(used_ids, weights):
+    print(f"[blend] {comp.COMPETITION_ID}: {len(result['pipeline_ids'])}개 pipeline 사용, "
+          f"blend_cv_score={result['blend_cv_score']:.6f}")
+    for pid, w in zip(result["pipeline_ids"], result["weights"]):
         print(f"  {pid[:8]}: weight={w:.6f}")
+    print(f"[blend] weights stored in raw.blend_weights (competition_id={comp.COMPETITION_ID})")
 
     BLEND_DIR.mkdir(parents=True, exist_ok=True)
     out_path = BLEND_DIR / f"{comp.COMPETITION_ID}_weights.json"
-    out_path.write_text(json.dumps({
-        "competition_id": comp.COMPETITION_ID,
-        "pipeline_ids": used_ids,
-        "weights": weights.tolist(),
-        "intercept": intercept,
-        "blend_cv_score": blend_score,
-        "metric": comp.METRIC,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }, indent=2))
-    print(f"[blend] weights saved: {out_path}")
+    out_path.write_text(json.dumps({**result, "generated_at": result["generated_at"].isoformat()}, indent=2))
+    print(f"[blend] weights also saved locally: {out_path}")
 
 
 if __name__ == "__main__":
