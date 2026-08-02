@@ -14,6 +14,12 @@ from evaluator.harness import (
     _fit_with_early_stopping,
     _build_model_safe,
     _MAX_BUILD_MODEL_RETRIES,
+    _ENSEMBLE_MODEL_REGISTRY,
+    _resolve_ensemble_model_class,
+    _build_ensemble_member,
+    _combine_predictions,
+    _weighted_majority_vote,
+    _fit_predict_ensemble,
 )
 from runtime.runner import _eval_holdout
 
@@ -1068,3 +1074,186 @@ def test_tripwire_rejects_perfect_classification_score():
     pipeline = PatchedPipeline(base, _DirectLeakPatch())
     with pytest.raises(ValueError, match="suspected target leakage"):
         evaluate_pipeline(pipeline, df, ctx)
+
+
+# --- ensemble_spec: 선언형 앙상블 (#74) ---
+# #42 fix 이후에도 자유형 ensemble wrapper 클래스의 크래시율이 70%→55%에서
+# 멈춘 근본 원인(harness가 볼 수 없는 exec된 클래스 몸체 내부의 super() 오용·
+# stale kwarg·하위 모델 재구성 실패)에 대한 구조적 대안 — LLM은 "무엇을 조합할지"만
+# 선언하고 harness가 생성·적합·결합을 전담한다.
+
+def _reg_ctx() -> PipelineContext:
+    return PipelineContext(target_col="y", metric="rmse", n_splits=3, seed=42, is_classification=False)
+
+
+def test_resolve_ensemble_model_class_known_names():
+    from sklearn.linear_model import Ridge, RidgeClassifier
+    assert _resolve_ensemble_model_class("ridge", is_classification=False) is Ridge
+    assert _resolve_ensemble_model_class("ridge", is_classification=True) is RidgeClassifier
+
+
+def test_resolve_ensemble_model_class_unknown_name_raises():
+    with pytest.raises(ValueError, match="unknown member model"):
+        _resolve_ensemble_model_class("not_a_real_model", is_classification=False)
+
+
+def test_ensemble_model_registry_covers_common_libraries():
+    """실제로 자유형 ensemble 사고에 등장했던 라이브러리(lgbm/xgboost/catboost)가
+    레지스트리에 있어야 declarative 대안이 실질적 대체가 된다."""
+    assert {"lgbm", "xgboost", "catboost", "hgb"}.issubset(_ENSEMBLE_MODEL_REGISTRY)
+
+
+def test_build_ensemble_member_defaults_random_state_to_ctx_seed():
+    model = _build_ensemble_member("ridge", {}, _reg_ctx())
+    assert model.random_state == 42
+
+
+def test_build_ensemble_member_respects_explicit_random_state():
+    model = _build_ensemble_member("ridge", {"random_state": 7}, _reg_ctx())
+    assert model.random_state == 7
+
+
+def test_build_ensemble_member_strips_stale_kwarg_and_retries():
+    """생성자에 없는 kwarg(LLM의 stale API 지식)가 params에 섞여도 _construct_with_
+    kwarg_retry가 벗기고 재시도한다 — _build_model_safe와 동일 안전망 공유."""
+    model = _build_ensemble_member("ridge", {"multi_class": "ovr"}, _reg_ctx())
+    assert not hasattr(model, "multi_class")
+
+
+def test_combine_predictions_weighted_average():
+    preds = [np.array([1.0, 2.0, 3.0]), np.array([3.0, 4.0, 5.0])]
+    combined = _combine_predictions(preds, "weighted_average", [1.0, 1.0], "regression_error")
+    assert combined.tolist() == pytest.approx([2.0, 3.0, 4.0])
+
+
+def test_combine_predictions_weighted_average_respects_weights():
+    preds = [np.array([0.0]), np.array([10.0])]
+    combined = _combine_predictions(preds, "weighted_average", [3.0, 1.0], "regression_error")
+    assert combined[0] == pytest.approx(2.5)  # (3*0 + 1*10) / 4
+
+
+def test_combine_predictions_unknown_method_raises():
+    preds = [np.array([1.0]), np.array([2.0])]
+    with pytest.raises(ValueError, match="unknown method"):
+        _combine_predictions(preds, "bogus_method", [1.0, 1.0], "regression_error")
+
+
+def test_weighted_majority_vote_picks_higher_weighted_label():
+    preds = [np.array(["a", "a", "b"]), np.array(["b", "b", "b"])]
+    combined = _weighted_majority_vote(preds, weights=[1.0, 3.0])
+    # 각 행에서 member2(가중치 3)가 전부 'b'를 찍으므로 'b'가 항상 이긴다.
+    assert combined.tolist() == ["b", "b", "b"]
+
+
+def test_weighted_majority_vote_equal_weights_majority_wins():
+    preds = [np.array(["a"]), np.array(["a"]), np.array(["b"])]
+    combined = _weighted_majority_vote(preds, weights=[1.0, 1.0, 1.0])
+    assert combined.tolist() == ["a"]
+
+
+def test_fit_predict_ensemble_empty_members_raises():
+    with pytest.raises(ValueError, match="non-empty"):
+        _fit_predict_ensemble(
+            {"members": []}, np.zeros((4, 2)), np.zeros(4), np.zeros((2, 2)), np.zeros(2),
+            _reg_ctx(), "regression_error",
+        )
+
+
+def test_fit_predict_ensemble_weights_length_mismatch_raises():
+    spec = {"members": [{"model": "ridge"}, {"model": "ridge"}], "weights": [1.0]}
+    with pytest.raises(ValueError, match="weights length"):
+        _fit_predict_ensemble(
+            spec, np.zeros((4, 2)), np.zeros(4), np.zeros((2, 2)), np.zeros(2),
+            _reg_ctx(), "regression_error",
+        )
+
+
+def test_fit_predict_ensemble_regression_end_to_end():
+    rng = np.random.default_rng(0)
+    Xtr = rng.standard_normal((60, 3))
+    ytr = Xtr[:, 0] * 2 + rng.standard_normal(60) * 0.01
+    Xva = rng.standard_normal((20, 3))
+    yva = Xva[:, 0] * 2
+
+    spec = {
+        "members": [{"model": "ridge"}, {"model": "ridge", "params": {"alpha": 5.0}}],
+        "method": "weighted_average",
+        "weights": [0.7, 0.3],
+    }
+    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xva, yva, _reg_ctx(), "regression_error")
+    assert preds.shape == (20,)
+    # 신호가 강한 데이터라 예측이 실제 타깃과 대체로 같은 부호/스케일이어야 함
+    assert np.corrcoef(preds, yva)[0, 1] > 0.8
+
+
+# --- ensemble_spec 배선: PatchedPipeline / preselect_params / evaluate_pipeline ---
+
+class _EnsembleSpecPatch:
+    action_type = "ensemble"
+
+    def ensemble_spec(self, ctx):
+        return {"members": [{"model": "ridge"}, {"model": "random_forest", "params": {"n_estimators": 10}}]}
+
+
+def test_base_pipeline_ensemble_spec_defaults_to_none():
+    assert BasePipeline().ensemble_spec(_reg_ctx()) is None
+
+
+def test_patched_pipeline_ensemble_spec_delegates_to_patch():
+    pipeline = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
+    spec = pipeline.ensemble_spec(_reg_ctx())
+    assert spec is not None
+    assert len(spec["members"]) == 2
+
+
+def test_patched_pipeline_ensemble_spec_falls_back_to_base_when_patch_lacks_it():
+    class _NoEnsemblePatch:
+        action_type = "feature_engineering"
+
+    base_with_spec = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
+    pipeline = PatchedPipeline(base_with_spec, _NoEnsemblePatch())
+    assert pipeline.ensemble_spec(_reg_ctx()) is not None
+
+
+def test_preselect_params_bypasses_search_when_ensemble_spec_present():
+    """ensemble_spec이 있으면 param_candidates가 여러 개라도 탐색을 건너뛰고 빈 dict."""
+
+    class _EnsembleWithManyCandidates(_EnsembleSpecPatch):
+        def param_candidates(self, ctx):
+            raise AssertionError("ensemble_spec이 있으면 param_candidates를 호출하면 안 됨")
+
+    pipeline = PatchedPipeline(BasePipeline(), _EnsembleWithManyCandidates())
+    result = preselect_params(pipeline, _make_df(is_classification=False), _reg_ctx())
+    assert result == {}
+
+
+def test_evaluate_pipeline_routes_ensemble_spec_to_declarative_path():
+    # _make_df의 노이즈 없는 회귀 타깃(x0*2.0)은 앙상블이 trivial baseline을 너무
+    # 압도적으로 이겨(신호가 실제로 그만큼 깨끗해서) 스케일 누수 tripwire를 오탐
+    # 시킨다 — irreducible noise를 섞어 정상적인 회귀 신호로 만든다.
+    rng = np.random.default_rng(3)
+    n = 150
+    x = rng.standard_normal((n, 3))
+    y = x[:, 0] * 2.0 + rng.standard_normal(n) * 3.0
+    df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y})
+    ctx = _reg_ctx()
+    pipeline = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
+    result = evaluate_pipeline(pipeline, df, ctx)
+    assert np.isfinite(result.cv_score)
+
+
+def test_evaluate_pipeline_ensemble_binary_classification_weighted_average():
+    class _BinaryEnsemblePatch:
+        action_type = "ensemble"
+
+        def ensemble_spec(self, ctx):
+            return {
+                "members": [{"model": "hgb"}, {"model": "random_forest", "params": {"n_estimators": 10}}],
+                "method": "weighted_average",
+            }
+
+    df = _make_df(is_classification=True, n=150)
+    ctx = _ctx(is_classification=True)
+    pipeline = PatchedPipeline(BasePipeline(), _BinaryEnsemblePatch())
+    result = evaluate_pipeline(pipeline, df, ctx)
+    assert 0.0 <= result.cv_score <= 1.0

@@ -179,6 +179,30 @@ _UNEXPECTED_KWARG_RE = re.compile(r"unexpected keyword argument '(\w+)'")
 _MULTIPLE_KWARG_RE = re.compile(r"got multiple values for keyword argument '(\w+)'")
 
 
+def _construct_with_kwarg_retry(build_fn, params: dict):
+    """params로 build_fn(params)를 호출하되, 제거된/불명 kwarg로 인한 TypeError면
+    그 키 하나만 벗기고 재시도한다.
+
+    _build_model_safe(Patch.build_model 경유)와 _build_ensemble_member(#74,
+    ensemble_spec 멤버 생성)가 이 재시도 로직을 공유한다 — 둘 다 LLM이 stale
+    constructor kwarg(예: LogisticRegression의 구 `multi_class`)를 params dict에
+    넣는 동일한 실패 양상을 겪는다.
+    """
+    current = dict(params)
+    last_exc: TypeError | None = None
+    for _ in range(_MAX_BUILD_MODEL_RETRIES):
+        try:
+            return build_fn(current)
+        except TypeError as exc:
+            msg = str(exc)
+            m = _UNEXPECTED_KWARG_RE.search(msg) or _MULTIPLE_KWARG_RE.search(msg)
+            if not m or m.group(1) not in current:
+                raise
+            current = {k: v for k, v in current.items() if k != m.group(1)}
+            last_exc = exc
+    raise last_exc
+
+
 def _build_model_safe(pipeline: object, params: dict, ctx: object) -> object:
     """build_model()이 존재하지 않거나 제거된 kwarg를 params로 받아 생성자에서
     TypeError로 죽으면, 그 kwarg 하나만 벗기고 재시도한다(#74 후속).
@@ -188,25 +212,16 @@ def _build_model_safe(pipeline: object, params: dict, ctx: object) -> object:
     프롬프트만으로는 이 클래스의 문제가 수렴하지 않는다. build_model()이 params를
     `**params`로 그대로 언패킹하는 흔한 패턴에서는 여기서 잡힌다.
 
-    범위 밖: Coder가 생성한 wrapper 클래스 자신의 fit() 메서드 몸체 안에서
-    내부적으로 하는 하위 모델 호출(예: ensemble wrapper가 자기 fit() 안에서
-    `LGBMClassifier().fit(X, y, verbose=False)`를 잘못 호출)은 harness가 볼 수
-    없는 exec된 코드 내부라 이 함수로 못 잡는다 — 그건 라이브러리 자체를
-    몽키패치해야 하는 훨씬 큰 범위라 #74 후속 이슈로 남겨둠.
+    범위 밖(단, ensemble_spec을 쓰면 애초에 해당 안 됨 — 아래 참고): Coder가 생성한
+    wrapper 클래스 자신의 fit() 메서드 몸체 안에서 내부적으로 하는 하위 모델 호출
+    (예: ensemble wrapper가 자기 fit() 안에서 `LGBMClassifier().fit(X, y,
+    verbose=False)`를 잘못 호출)은 harness가 볼 수 없는 exec된 코드 내부라 이
+    함수로 못 잡는다. #74가 실제로 택한 해법은 몽키패치가 아니라 ensemble
+    action_type에 선언형 대안(ensemble_spec, 아래 _build_ensemble_member)을 추가해
+    LLM이 애초에 wrapper 클래스를 안 쓰도록 유도하는 것 — 자유형 build_model
+    경로는 계속 남아있으므로 이 안전망도 유지한다.
     """
-    current = dict(params)
-    last_exc: TypeError | None = None
-    for _ in range(_MAX_BUILD_MODEL_RETRIES):
-        try:
-            return pipeline.build_model(current, ctx)
-        except TypeError as exc:
-            msg = str(exc)
-            m = _UNEXPECTED_KWARG_RE.search(msg) or _MULTIPLE_KWARG_RE.search(msg)
-            if not m or m.group(1) not in current:
-                raise
-            current = {k: v for k, v in current.items() if k != m.group(1)}
-            last_exc = exc
-    raise last_exc
+    return _construct_with_kwarg_retry(lambda p: pipeline.build_model(p, ctx), params)
 
 
 def _fit_with_early_stopping(model: object, Xtr, ytr, Xva, yva) -> None:
@@ -240,6 +255,118 @@ def _fit_with_early_stopping(model: object, Xtr, ytr, Xva, yva) -> None:
     except Exception:
         pass  # 미지원 조합/버전 차이 — 조용히 폴백
     model.fit(Xtr, ytr)
+
+
+# --- ensemble_spec: 선언형 앙상블 (#74) ---
+#
+# ensemble action_type의 자유형 wrapper 클래스(직접 fit()/predict() 구현)는 #42
+# 이후에도 크래시율이 70%→55%로만 떨어지고 더는 안 움직였다 — 원인이 harness가
+# 볼 수 없는 exec된 클래스 몸체 내부(super() 오용, 생성자 stale kwarg 하드코딩,
+# 자기 fit() 안에서 하위 모델 재구성)라 정적 검증도 _build_model_safe 같은 런타임
+# 안전망도 못 미쳤다(#74 3라운드 실측). 몽키패치는 범위/리스크가 너무 커 보류됐고,
+# 대신 이 모듈이 모델 생성·적합·결합을 전부 대신해 그 클래스 자체를 없앤다 —
+# Patch는 "무엇을 조합할지"만 선언(ensemble_spec)하고 "어떻게 조합할지"는 신뢰
+# 코드가 맡는다. 기존 자유형 build_model 기반 ensemble 훅은 그대로 허용(병행).
+
+_ENSEMBLE_MODEL_REGISTRY: dict[str, dict[str, str]] = {
+    "lgbm":          {"module": "lightgbm",           "classifier": "LGBMClassifier",                "regressor": "LGBMRegressor"},
+    "xgboost":       {"module": "xgboost",             "classifier": "XGBClassifier",                  "regressor": "XGBRegressor"},
+    "catboost":      {"module": "catboost",             "classifier": "CatBoostClassifier",             "regressor": "CatBoostRegressor"},
+    "hgb":           {"module": "sklearn.ensemble",     "classifier": "HistGradientBoostingClassifier", "regressor": "HistGradientBoostingRegressor"},
+    "random_forest": {"module": "sklearn.ensemble",     "classifier": "RandomForestClassifier",         "regressor": "RandomForestRegressor"},
+    "ridge":         {"module": "sklearn.linear_model", "classifier": "RidgeClassifier",                "regressor": "Ridge"},
+}
+
+
+def _resolve_ensemble_model_class(model_name: str, is_classification: bool) -> type:
+    entry = _ENSEMBLE_MODEL_REGISTRY.get(model_name)
+    if entry is None:
+        raise ValueError(
+            f"ensemble_spec: unknown member model {model_name!r} — allowed: "
+            f"{sorted(_ENSEMBLE_MODEL_REGISTRY)}"
+        )
+    import importlib
+    module = importlib.import_module(entry["module"])
+    cls_name = entry["classifier"] if is_classification else entry["regressor"]
+    return getattr(module, cls_name)
+
+
+def _build_ensemble_member(model_name: str, params: dict, ctx: "PipelineContext") -> object:
+    """레지스트리 기반으로 멤버 모델을 직접 생성한다 — LLM이 작성한 코드가 아니라
+    harness 자신이 생성자를 호출하므로 super() 오용·stale kwarg 문제가 구조적으로
+    발생하지 않는다. random_state는 params가 명시하지 않으면 ctx.seed로 채운다."""
+    cls = _resolve_ensemble_model_class(model_name, ctx.is_classification)
+    base_params = dict(params or {})
+    base_params.setdefault("random_state", ctx.seed)
+    return _construct_with_kwarg_retry(lambda p: cls(**p), base_params)
+
+
+def _weighted_majority_vote(member_preds: list[np.ndarray], weights: list[float]) -> np.ndarray:
+    """discrete label 예측(classification metric_class)의 가중 다수결."""
+    from collections import Counter
+
+    n_rows = len(member_preds[0])
+    combined = []
+    for i in range(n_rows):
+        counter: Counter = Counter()
+        for w, preds in zip(weights, member_preds):
+            counter[preds[i]] += w
+        combined.append(counter.most_common(1)[0][0])
+    return np.array(combined, dtype=member_preds[0].dtype)
+
+
+def _combine_predictions(
+    member_preds: list[np.ndarray], method: str, weights: list[float], metric_class: str,
+) -> np.ndarray:
+    if method == "majority_vote":
+        return _weighted_majority_vote(member_preds, weights)
+    if method != "weighted_average":
+        raise ValueError(
+            f"ensemble_spec: unknown method {method!r} — use 'weighted_average' or 'majority_vote'"
+        )
+    total_w = sum(weights)
+    combined = sum(w * np.asarray(p, dtype=float) for w, p in zip(weights, member_preds)) / total_w
+    return combined
+
+
+def _fit_predict_ensemble(
+    spec: dict, Xtr: np.ndarray, ytr: np.ndarray, Xva: np.ndarray, yva: np.ndarray,
+    ctx: "PipelineContext", metric_class: str,
+) -> np.ndarray:
+    """Patch.ensemble_spec(ctx)이 선언한 멤버를 harness가 직접 생성·적합·결합한다.
+
+    spec 형태: {"members": [{"model": "lgbm", "params": {...}}, ...],
+                "method": "weighted_average" | "majority_vote", "weights": [...]}.
+    method 생략 시 metric_class에 따라 기본값을 고른다(discrete label 채점이면
+    다수결, 아니면 가중평균). weights 생략 시 균등가중.
+    """
+    members = spec.get("members") or []
+    if not members:
+        raise ValueError("ensemble_spec: 'members' must be a non-empty list")
+
+    weights = spec.get("weights") or [1.0] * len(members)
+    if len(weights) != len(members):
+        raise ValueError(
+            f"ensemble_spec: weights length ({len(weights)}) != members length ({len(members)})"
+        )
+    method = spec.get("method") or ("majority_vote" if metric_class == "classification" else "weighted_average")
+
+    member_preds: list[np.ndarray] = []
+    for member in members:
+        model_name = member.get("model")
+        params = member.get("params") or {}
+        built = _build_ensemble_member(model_name, params, ctx)
+        _fit_with_early_stopping(built, Xtr, ytr, Xva, yva)
+        if metric_class == "binary_proba":
+            member_preds.append(built.predict_proba(Xva)[:, 1])
+        else:
+            # CatBoost의 multiclass predict()는 (n, 1) shape을 반환한다(다른
+            # 라이브러리와 다른 관례) — reshape(-1)로 정규화하지 않으면
+            # _weighted_majority_vote가 행별 스칼라 대신 1-원소 배열을 카운트해
+            # "unhashable type: numpy.ndarray"로 죽는다(실측 확인).
+            member_preds.append(np.asarray(built.predict(Xva)).reshape(-1))
+
+    return _combine_predictions(member_preds, method, weights, metric_class)
 
 
 @dataclass
@@ -301,6 +428,11 @@ class BasePipeline:
     def postprocess_predictions(self, preds: np.ndarray, ctx: PipelineContext) -> np.ndarray:
         return preds
 
+    def ensemble_spec(self, ctx: PipelineContext) -> dict | None:
+        """#74 — 정의돼 있으면 evaluate_pipeline이 build_model 대신 이 스펙으로
+        멤버들을 harness가 직접 생성·적합·결합한다(_fit_predict_ensemble)."""
+        return None
+
 
 class PatchedPipeline:
     def __init__(self, base: BasePipeline, patch: object) -> None:
@@ -326,6 +458,10 @@ class PatchedPipeline:
     def postprocess_predictions(self, preds, ctx):
         fn = getattr(self.patch, "postprocess_predictions", None)
         return fn(preds, ctx) if fn else self.base.postprocess_predictions(preds, ctx)
+
+    def ensemble_spec(self, ctx):
+        fn = getattr(self.patch, "ensemble_spec", None)
+        return fn(ctx) if fn else self.base.ensemble_spec(ctx)
 
 
 def _make_folds(y: np.ndarray, ctx: PipelineContext) -> list:
@@ -370,7 +506,13 @@ def preselect_params(
     낙관 편향(optimistic bias)이 잔존한다. per-fold nested CV(옵션 B)가 정석이나
     계산 비용(k^2 모델 피팅)이 크다. 현재 구현은 단일 inner holdout으로 절충
     (see docs/decisions.md ADR-021).
+
+    ensemble_spec(#74)이 정의된 파이프라인은 하이퍼파라미터가 스펙의 멤버별
+    params에 이미 들어있어 이 탐색 대상이 아니다 — 빈 dict를 그대로 반환한다.
     """
+    if pipeline.ensemble_spec(ctx) is not None:
+        return {}
+
     candidates = pipeline.param_candidates(ctx)[:_MAX_PARAM_CANDIDATES]
     if len(candidates) <= 1:
         return candidates[0] if candidates else {}
@@ -438,6 +580,8 @@ def evaluate_pipeline(
     compute_importance = ctx.action_type in _IMPORTANCE_ACTIONS
 
     selected_params = preselect_params(pipeline, train, ctx)
+    # fold마다 한 번씩 물으면 매번 같은 dict를 만드는 patch 구현에 낭비 — 1회 조회.
+    ensemble_spec_dict = pipeline.ensemble_spec(ctx)
 
     fold_scores: list[float] = []
     # regression_error 메트릭 전용 trivial baseline(train fold 타깃 평균으로만
@@ -480,16 +624,27 @@ def evaluate_pipeline(
         Xtr_np = Xtr.to_numpy()
         Xva_np = Xva.to_numpy()
 
-        model = _build_model_safe(pipeline, selected_params, ctx)
-        _fit_with_early_stopping(model, Xtr_np, ytr, Xva_np, yva)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            if metric_class == "binary_proba":
-                raw_preds = model.predict_proba(Xva_np)[:, 1]
-            else:
-                raw_preds = model.predict(Xva_np)
+        if ensemble_spec_dict is not None:
+            # #74 — harness가 멤버를 직접 생성·적합·결합. best_model=None: 앙상블은
+            # 단일 estimator 개념이 없고, ensemble action_type은 애초에
+            # _IMPORTANCE_ACTIONS 밖이라 permutation importance 대상도 아니다.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                raw_preds = _fit_predict_ensemble(
+                    ensemble_spec_dict, Xtr_np, ytr, Xva_np, yva, ctx, metric_class,
+                )
+            best_model = None
+        else:
+            model = _build_model_safe(pipeline, selected_params, ctx)
+            _fit_with_early_stopping(model, Xtr_np, ytr, Xva_np, yva)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                if metric_class == "binary_proba":
+                    raw_preds = model.predict_proba(Xva_np)[:, 1]
+                else:
+                    raw_preds = model.predict(Xva_np)
+            best_model = model
         preds = pipeline.postprocess_predictions(raw_preds, ctx)
-        best_model = model
         fold_scores.append(float(fn(yva_raw, preds)))
         if metric_class == "regression_error":
             baseline_pred = np.full_like(yva_raw, fill_value=float(np.mean(ytr_raw)), dtype=float)
