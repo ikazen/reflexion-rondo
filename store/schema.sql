@@ -485,6 +485,20 @@ SELECT
         AND metric_sign * (lb_score - prev_lb) < 0) AS diverged
 FROM ordered;
 
+-- bin/blend.py 가중치(#75) — 대회당 최신 1건만 유지(competition_id PK, upsert).
+-- 승격 시점마다 cycle/run.py·bin/run_promote_task.py가 자동 재계산해 채운다.
+-- 로컬 파일(runs/blend/*.json)은 Airflow task 컨테이너 간 안 보이므로 DB가
+-- 유일한 신뢰 사본 — submit.py는 아직 이 값을 안 씀(계산·저장까지만, #75 범위).
+CREATE TABLE IF NOT EXISTS raw.blend_weights (
+    competition_id  text PRIMARY KEY,
+    pipeline_ids    jsonb,
+    weights         jsonb,
+    intercept       double precision,
+    blend_cv_score  double precision,
+    metric          text,
+    generated_at    timestamp
+);
+
 -- hot-path indexes
 CREATE INDEX IF NOT EXISTS idx_attempts_comp_ts     ON raw.attempts (competition_id, run_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_attempts_comp_action ON raw.attempts (competition_id, action_type);

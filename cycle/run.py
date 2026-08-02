@@ -679,6 +679,16 @@ def run_attempt_core(
                 )
             _best_pipeline_upload(config.competition_id, materialized)
             _LOG.info("best pipeline materialized (gain=%+.5f)", gain_vs_best)
+
+            # blend 가중치 재계산(#75) — best-effort, 실패해도 승격 자체는 이미
+            # 끝났으니 예외를 흡수만 하고 계속 진행한다.
+            try:
+                from bin.blend import compute_and_store_blend
+                compute_and_store_blend(
+                    conn, config.competition_id, config.train, config.target_col, config.metric,
+                )
+            except Exception as exc:
+                _LOG.warning("blend 재계산 실패(무시하고 계속): %s", exc)
         else:
             reason = "holdout 악화" if confirm.holdout_regressed else "cross-seed 미확인"
             _LOG.info("%s — 승격 스킵 (gain=%+.5f)", reason, gain_vs_best)
