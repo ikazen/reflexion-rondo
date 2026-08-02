@@ -13,6 +13,7 @@
 ## ADR-003 — CV 주 신호, LB 확인용
 - 결정: 성찰은 CV 델타 기준, LB는 희소 확인.
 - 근거: CV는 무제한·결정적. "trust your CV" 정석.
+- **[2026-08 #104 amend]**: "LB는 확인용"의 전제가 CV가 신뢰 가능하다는 데 있었는데, CV 자체가 오염(ADR-024/025 참조)될 수 있음이 드러나면서 LB가 유일한 외부 검증 신호가 되는 경우가 생겼다. `cv_lb_calibration` 뷰 + 발산 트립와이어를 추가해, CV는 개선인데 LB가 악화된 제출이 나오면 해당 pipeline을 격리하고 대회 auto-submit을 중단한다(ADR-026). CV가 주 신호라는 결정 자체는 유지 — LB는 이제 "확인"을 넘어 CV 신뢰가 깨졌을 때의 차단 신호로도 쓰인다.
 
 ## ADR-004 — 추론은 Ollama Cloud, 임베딩은 Mac 로컬 서버
 - 결정: Strategist/Reflector/Coder는 Ollama Cloud Pro(`OLLAMA_CLOUD_BASE_URL=https://ollama.com`, Bearer 인증). 임베딩(`qwen3-embedding:8b`)만 Mac Ollama 서버 로컬 유지. 오케스트레이션·저장소·CV·분석 뷰는 WSL2 로컬.
@@ -70,12 +71,13 @@
 - amend(BON-275, 2026-07-19): 타임아웃 600s→1200s 상향. s5e5(75만 행) 5-seed bagging이 기존 600s를 넘겨 매번 타임아웃으로 실패하던 문제 — eval과 동일한 값으로 통일.
 
 ## ADR-014 — Coder 컨트랙트는 class Patch + hook 분리
-- 결정: 산출물은 `class Patch` 하나. action_type에 허용된 훅(hook)만 구현하고, 나머지는 현재 best pipeline이 fallback으로 제공한다. 훅은 `preprocess` / `feature_transform` / `param_candidates` / `build_model` / `postprocess_predictions` 5종. IO/k-fold 하니스/파라미터 선정은 Evaluator가 소유.
+- 결정: 산출물은 `class Patch` 하나. action_type에 허용된 훅(hook)만 구현하고, 나머지는 현재 best pipeline이 fallback으로 제공한다. 훅은 `preprocess` / `feature_transform` / `param_candidates` / `build_model` / `postprocess_predictions` / `ensemble_spec` 6종. IO/k-fold 하니스/파라미터 선정은 Evaluator가 소유.
 - 대안: 전체 스크립트 자유 생성 / `feature_fn`+`model_fn` 두 함수 분리 (이전 방식).
 - 근거: hook 분리는 action_type 귀속을 코드 레벨로 강제하고(feature_transform만 바꾸는 게 feature_engineering), 1변경 규율을 컨트랙트로 보장한다. best pipeline을 base class로 두고 patch가 단일 훅만 override하면 cold-start seed 코드도 안전하게 재사용 가능. `validate_patch()` (AST 레벨)가 실행 전 위반을 차단한다.
 - **[2026-06 BON-113]**: `feature_fn`+`model_fn` → `class Patch` with hooks로 전환. `materialize_best_pipeline()`이 이전 best와 신규 patch를 AST 레벨에서 병합해 누적 pipeline을 유지한다.
 - **[2026-07-05 BON-268 amend]**: `validate_patch()`(AST 정적 검사)에 pandas-only API 금지(`.groupby`/`.map_dict`/`.take`/`.apply`/`.iterrows`/`.applymap`/`.get_dummies` — polars 1.41.2 실물에 `hasattr`로 대조해 확정, `value_counts`는 polars Series에 실존해 의도적으로 제외) + candidate patch 자신의 undefined-name 검사(실행 격리 모델과 동일 범위)를 추가. `agents/coder.py` 프롬프트에도 동일 금지 목록 반영.
 - **[2026-07-22 #42 amend]**: 정적 검증은 코드 생성 *이후*에만 컨트랙트 위반("action_type=X may not implement hooks: [...]")을 잡아 재시도해도 같은 실수가 반복됐다(s6e7 실측: model_swap이 feature_transform을 구현하려는 시도 다수). `agents/coder.py.generate_code()`가 `evaluator/contract.py._ALLOWED_HOOKS`(source of truth)를 직접 import해, 매 호출 user 메시지에 이번 action_type이 허용하는 hook만 동적으로 강조하도록 변경 — 생성 이전 단계 가드 추가. 같은 커밋에서 multiclass 라벨 왕복(round-trip) 규칙도 컨트랙트에 명시: 타깃을 정수로 인코딩했으면 `postprocess_predictions`에서 원래 문자열 라벨로 되돌려야 한다(`ValueError: Mix of label input types` 방지, 실측 45건).
+- **[2026-08 #74 amend]**: `ensemble` action_type의 자유형 wrapper 클래스(직접 fit/predict 구현)는 실행이 exec된 클래스 몸체 내부라 정적 검증도 런타임 안전망도 못 미치는 크래시(super() 오용, 생성자 stale kwarg, 자기 fit() 안에서 하위 모델 재구성)를 계속 냈다. 6번째 훅 `ensemble_spec(self, ctx) -> dict | None`을 추가해 Patch는 "무엇을 조합할지"(멤버 모델·파라미터·결합 방식)만 선언하고, harness(`evaluator/harness.py`)가 모델 생성·적합·결합을 전담한다. 자유형 `build_model` 기반 ensemble 훅은 병행 허용 — 크래시율 재비교 후 폐기 여부 결정. 상세는 ADR-023.
 
 ## ADR-015 — 인과 귀속은 상관 기반으로 시작, ablation 보류
 - 결정: 자가 개선 효과는 `reflection_impact` 상관 + 1변경 규율 + 실제 채택 교훈 id로 추정. retrieval ON/OFF ablation은 도입하지 않는다.
@@ -83,6 +85,7 @@
 - 근거: 초기 단순성 우선. 단 이는 인과 증명이 아니라는 한계를 명시하고(`architecture.md` §4), 신호가 모호하면 ablation을 후속 과제로 승격한다.
 - **[2026-07 amend]** BON-195: 상관 기반 귀속은 "그냥 인과가 약하다" 수준을 넘어 **자기강화(rich-get-richer) 편향**을 갖는다 — avg_gain 높은 교훈이 `_apply_impact_score`에서 부스팅되어 더 자주 검색되고, 그 결과 avg_gain이 계속 유지/상승하는 루프가 생긴다. 완화책: (1) z-score를 배치 로컬이 아닌 전역(`reflection_impact` 전체) 통계로 계산해 배치 구성에 따른 흔들림 제거(`memory/retriever._global_gain_stats`), (2) `_IMPACT_W` 0.25 → 0.15로 부스팅 강도 감쇠. attempt gain을 인용된 교훈에 균등 배분하는 근본 문제(Coder 변경분과 교훈 기여분 미분리)는 미해결 — ablation 도입 시 함께 재검토.
 - **[2026-07-22 #43 amend]**: 전역 z-score 통계(위 amend)가 metric 스케일을 구분하지 않고 `avg_gain`을 pool한다는 별도 문제 발견 — rmse degenerate 예측(모델이 완전히 빗나감)이 만드는 원시 `gain_vs_best`(s6e1 실측 -105448, baseline rmse~8.75 대비)가 전역 std를 부풀려 auc/accuracy 스케일 교훈들의 z-score를 0으로 수렴시켰다. 근본 원인은 `evaluator/harness.py`에서 처리: 기존 "baseline보다 100배 좋으면 스케일 누수로 raise"(`_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO`) 가드에 대칭으로 "100배 나쁘면 gain_vs_best를 하한 클립"을 추가(raise 아님 — label 판정은 클립 전 delta로 유지, DB에 저장되는 값만 스케일 폭주 차단). `_global_gain_stats`의 metric_class별 분리는 이 가드로 전역 std가 안정되는지 배포 후 재측정한 뒤 필요시 별도 판단(reflection_impact가 reflection_id 단위 집계라 분리가 비자명함 — 단순함 우선).
+- **[2026-08 #97 amend]**: `_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO`를 100 → 10으로 하향. s5e5가 이 가드보다 먼저 `_check_preprocess_target_leak`(ADR-024)에 잡혔어야 할 preprocess 누수였는데도 100배 문턱을 통과해(실측 gain 44배) 승격까지 갔던 사례가 계기 — 이 비율은 preprocess 누수 검사가 못 잡는 결과 기반 2차 방어선이라 문턱을 낮춰도 정상 개선을 오탐할 여지가 적다고 판단.
 - **[2026-07-22 #58 amend]**: 위 가드(클립)로도 `reflection_impact` 전역 z-score 오염(mean=-4.22, std=139.19 실측)이 해소되지 않음을 확인 — 클립은 극단값만 완화할 뿐 metric 스케일 자체(rmse 원시 단위 vs auc 0~1)를 정규화하지 않아 근본 해결이 아니었다. `gain_vs_best_relative` 컬럼(regression_error는 `gain_vs_best/baseline_cv` 상대값, 나머지는 패스스루) 신설로 전역 통계를 metric 스케일 상대화로 교체하고, `reflection_impact` 뷰가 이 컬럼만 집계하도록 재정의(값이 없는 legacy row는 제외, raw `gain_vs_best`로 폴백하지 않음).
 
 ## ADR-016 — LLM 역할별 모델 배정 (Actor 분리 + Reflector 패밀리 다양성)
@@ -212,6 +215,41 @@
   - **DAG Versioning과의 결합 약화** (airflow-stack ADR-L27 참조): task 이미지 태그가 Variable로 빠지면서, 특정 DagRun이 정확히 어떤 이미지로 돌았는지 이제 git log가 아니라 Airflow의 rendered-template을 봐야 안다.
   - **daemon/task 버전 불일치 창**: 두 이미지가 같은 커밋에서 함께 빌드되지만, task Variable은 즉시 반영되고 daemon은 release.sh를 별도로 돌릴 때까지 구버전으로 남을 수 있다. 둘 다 repo 전체를 COPY해 빌드하므로 코드 차이는 없지만 "지금 어느 버전이 떠있나"를 daemon/task 따로 확인해야 한다.
 - cross-ref: issue #15(release.sh 사전검증 순서 수정, 이번 daemon 전용 버전에도 유지), issue #17(release.sh 축소), airflow-stack decisions.md L29/R2.
+
+## ADR-023 — ensemble은 선언형 프리미티브(`ensemble_spec`), 자유형 wrapper와 병행
+
+- 결정: `ensemble`/`bootstrap` action_type에 6번째 훅 `ensemble_spec(self, ctx) -> dict | None`을 추가한다. Patch는 `{"members": [{"model": <registry key>, "params": {...}}, ...], "method": "weighted_average"|"majority_vote", "weights": [...]}`만 반환하고, 모델 생성·적합·결합은 `evaluator/harness.py`가 고정 레지스트리(`lgbm`/`xgboost`/`catboost`/`hgb`/`random_forest`/`ridge`)로 전담한다. 기존 자유형 `build_model` 기반 ensemble(직접 wrapper 클래스 작성)은 병행 허용한다.
+- 대안: (a) 몽키패치로 자주 나오는 wrapper 실수 패턴을 사후 교정 — 범위·리스크가 커서 보류. (b) 자유형을 전면 금지하고 `ensemble_spec` 강제 — 기존에 잘 동작하는 wrapper까지 막을 근거가 없어 기각.
+- 근거: `ensemble` 크래시는 exec된 클래스 몸체 내부(super() 오용, 생성자 stale kwarg 하드코딩, 자기 fit() 안에서 하위 모델 재구성)에서 나서 정적 검증도 `_build_model_safe` 같은 런타임 안전망도 원천적으로 못 미쳤다 — harness가 그 코드를 볼 수 없기 때문. 선언형으로 바꾸면 멤버 구성·적합·결합이 전부 신뢰 코드 안에서 일어나 이 클래스의 크래시가 구조적으로 사라진다.
+- 한계: 레지스트리에 없는 모델은 `ensemble_spec`으로 표현 불가 — 그런 경우는 자유형 경로가 여전히 유일한 선택지. 두 경로의 에러율을 배포 후 재비교해 자유형 폐기 여부를 판단한다.
+
+## ADR-024 — audit holdout을 추론조건(dummy target)으로 재현하고 승격 차단 게이트로 승격
+
+- 결정: `runtime/runner.py:_eval_holdout`이 holdout10의 타깃을 실제 추론(`bin/submit.py`)과 동일하게 dummy 상수로 치환한 뒤 preprocess/feature_transform을 태우고, 채점만 원본 타깃으로 한다. `ConfirmResult.holdout_regressed`를 신설해 `confirmed`에 AND 결합 — 후보 holdout이 현재 best(콜드스타트면 BasePipeline) 대비 악화되면 승격을 거부한다. baseline holdout을 측정 못 하면(에러) "정보 없음"으로 보고 막지 않는다(악화 확정과는 다름).
+- 대안: holdout을 기록만 하고 게이트에 안 씀(기존 동작) — cross-seed confirm이 이미 승격 신뢰도를 담당한다고 봤으나, cross-seed는 seed만 바꾼 CV라 seed 불변 누수(ADR-025)에 장님이라는 게 드러났다.
+- 근거: 기존 holdout은 타깃이 살아 있는 채로 파이프라인을 통과해 preprocess의 valid-target 의존 누수를 실제 추론 조건과 다르게(=누수를 그대로 재현하며) 측정했다. dummy target 치환으로 holdout이 실제 추론 조건의 복제가 되면서, 이 게이트 하나로 누수뿐 아니라 train/test skew 전반을 승격 전에 잡는다.
+- 한계: holdout10 자체가 없는 대회(데이터가 90/10 split을 감당 못함)는 이 게이트가 작동하지 않는다.
+
+## ADR-025 — 누수 파이프라인은 삭제 아닌 격리, baseline은 확정 파이프라인만(phantom-max 폐지)
+
+- 결정: `raw.pipelines.invalid_reason`(text, nullable) 컬럼을 추가해 확정 후 누수로 밝혀진 행을 격리 표시한다(삭제하지 않음 — 이력 보존). 모든 baseline 조회 경로(`cycle/run.py:_prev_best`/`_prev_best_fold_scores`, `bin/blend.py`, `bin/submit.py`, `cycle/materialize.py`)는 `invalid_reason IS NULL` 필터를 공유한다. 확정 파이프라인이 하나도 없던 대회를 위해 "전체 attempt의 max(cv)로 폴백"하던 phantom-max 분기를 제거하고, 대신 (a) bootstrap 종료 시 최고 attempt를 `confirm_and_measure`로 검증해 자동 baseline을 세우는 경로(`cycle/run.py:establish_bootstrap_baseline`)와 (b) 기존 정체 대회를 위한 소급 스크립트(`bin/establish_baseline.py`, top-k 순회 + 첫 통과 승격)를 추가했다.
+- 대안: 누수 확정 시 해당 행을 delete — attempt 이력·디버깅 근거가 사라져 기각. phantom-max를 그대로 두고 임계값만 조정 — max 순서통계량은 N이 늘수록 문턱이 같이 올라가 정직한 소폭 개선이 영원히 못 넘는 자기강화 데드락이라 근본 대응이 아니라고 판단.
+- 근거: phantom-max는 확정 파이프라인 없는 대회의 콜드스타트를 풀기 위한 임시 봉합이었는데, 수백 draw의 상위 꼬리를 문턱으로 쓰다 보니 그 자체가 새로운 데드락을 만들었다(확정 파이프라인 0건인 대회에서 jump 라벨도 0건으로 실측 상관됨). baseline을 "확정된 것만"으로 좁히고 그 확정 절차 자체를 자동화(bootstrap 종료 시)·소급(기존 대회)으로 나눠 풀면 데드락과 phantom을 동시에 해소한다.
+- 한계: `establish_baseline.py`의 top-k 폴백은 순위가 높은 candidate가 phantom(비정상적으로 좋은 CV)이면 cross-seed/holdout/scale-leak 가드에서 순차 탈락하며 다음 순위로 내려간다 — 후보 풀 자체가 얕으면(top-k 전부 phantom) 여전히 baseline을 못 세울 수 있다.
+
+## ADR-026 — cv-LB 발산 트립와이어, 해제는 수동만
+
+- 결정: 뷰 `cv_lb_calibration`(대회별 제출 시계열의 delta_cv/delta_lb/부호 일치)을 신설하고, `bin/api.py:refresh_submission_row`가 제출 결과를 받을 때마다 `_detect_cv_lb_divergence`로 판정한다. CV는 개선인데 LB가 악화된 제출이 나오면 원천 pipeline에 `invalid_reason='cv_lb_divergence'`를 표기하고 해당 대회의 `raw.competitions.auto_submit_paused_reason`을 세워 auto-submit을 중단한다. **자동 해제 없음** — 사람이 원인을 확인하고 `auto_submit_paused_reason`을 직접 NULL로 되돌려야 재개된다.
+- 대안: 발산 감지 후 자동으로 이전 baseline으로 롤백 — 발산 원인이 다양해서(진짜 누수/우연한 shake-up/데이터 drift) 자동 판단이 오히려 위험하다고 판단해 기각.
+- 근거: LB 회수가 자동화(ADR-003 amend)되면서 발산을 감지할 수 있게 됐지만, 감지만으로는 재발을 못 막는다 — auto-submit을 계속 돌리면 같은 문제로 반복 소모된다. 수동 해제는 의도적인 마찰이다: 자동 시스템이 "이 pipeline은 신뢰 못 함"이라고 판단했으면, 그 판단을 뒤집는 건 자동화가 아니라 사람의 확인이어야 한다.
+- 한계: 해제를 잊으면 해당 대회는 무기한 자동 제출이 멈춘다 — 운영자가 주기적으로 `auto_submit_paused_reason IS NOT NULL`인 대회를 점검해야 한다(`docs/runbook.md`).
+
+## ADR-027 — 격리 subprocess 메모리 상한은 RSS가 아닌 VSZ(RLIMIT_AS) 기준
+
+- 결정: `runtime/isolate.py`의 attempt 격리 subprocess 메모리 상한은 `RLIMIT_AS`(가상 주소공간, VSZ)로 건다. 기본값 6GiB, `EVAL_MEM_LIMIT_BYTES`로 대회/큐별 override 가능(기존 메커니즘 유지).
+- 대안: 더 낮은 값(1.5GiB)으로 tight하게 제한 — 실측으로 폐기됨(아래 근거).
+- 근거: `RLIMIT_AS`는 물리 RSS가 아니라 가상 주소공간 상한이다. numpy/scipy/sklearn/lightgbm/catboost/xgboost 같은 라이브러리는 실제 쓰는 물리 메모리가 적어도 공유 라이브러리 mmap·BLAS 스레드풀 등으로 VSZ를 널찍하게 예약한다 — 1.5GiB는 이런 라이브러리를 import하는 것만으로 부족해서, 물리 메모리가 12GB나 남는 워커에서도 신규 대회 부트스트랩 attempt 전체가 실패하는 회귀를 냈다. 6GiB로 되돌린 뒤 Airflow 실측(super-cycle 3678건 전수)으로 재확인한 실제 동시성 기준 근소 초과분은 물리 RSS 여유로 흡수 가능하다고 판단.
+- 한계: 이 특성 때문에 "물리 메모리가 충분한 환경"에서도 VSZ 예약이 큰 스택(예: WSL2의 다른 Python 배포판)에서는 동일 6GiB가 부족할 수 있다 — 운영 검증된 워커 환경(mac-server/worker-vm/ops-vm task 컨테이너) 밖에서 이 스크립트를 돌릴 땐 먼저 이 한계를 의심할 것.
 
 ---
 
