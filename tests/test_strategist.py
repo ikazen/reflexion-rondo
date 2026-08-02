@@ -37,6 +37,21 @@ def test_returns_strategy_decision() -> None:
     assert "encoding" in result.hypothesis.lower()
 
 
+def test_strategize_retries_on_transient_ollama_error() -> None:
+    mock_resp = _mock_response("Try target encoding on Geography", "feature_engineering", ["r1"])
+
+    with patch("agents.strategist._client") as mock_client, \
+         patch("agents.llm_retry.time.sleep"):
+        mock_client.return_value.chat.side_effect = [
+            RuntimeError("model temporarily overloaded"),
+            mock_resp,
+        ]
+        result = strategize(eda_card="n_rows=100k", lessons=LESSONS, stage="reflexion")
+
+    assert result.action_type == "feature_engineering"
+    assert mock_client.return_value.chat.call_count == 2
+
+
 def test_reflection_ids_subset_of_provided() -> None:
     # model hallucinated "r99" which was not in the provided lessons
     mock_resp = _mock_response("some hypothesis", "model_swap", ["r1", "r99"])

@@ -62,6 +62,24 @@ def test_generate_code_returns_string() -> None:
     assert "feature_transform" in result
 
 
+def test_generate_code_retries_on_transient_ollama_error() -> None:
+    """Ollama Cloud 일시 5xx(예: 'model temporarily overloaded')로 첫 호출이
+    실패해도 재시도로 복구되어 attempt task가 죽지 않아야 한다."""
+    with patch("agents.coder._client") as mock_client, \
+         patch("agents.llm_retry.time.sleep"):
+        mock_client.return_value.chat.side_effect = [
+            RuntimeError("model 'gpt-oss:120b' is temporarily overloaded"),
+            _mock_resp(_VALID_PATCH),
+        ]
+        result = generate_code(
+            hypothesis="Drop low-variance columns",
+            action_type="feature_engineering",
+            eda_card="n_rows=165034, task=binary",
+        )
+    assert "Patch" in result
+    assert mock_client.return_value.chat.call_count == 2
+
+
 def test_generate_code_with_error_feedback() -> None:
     with patch("agents.coder._client") as mock_client:
         mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)

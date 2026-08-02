@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from ollama import Client
 
+from agents.llm_retry import chat_with_retry
 from config import settings
 
 _LOG = logging.getLogger(__name__)
@@ -158,7 +159,8 @@ Respond with ONLY a JSON object using exactly these keys:
               settings.MODEL_STRATEGIST, len(lessons), stage, forced_action_type or "-",
               settings.LLM_TEMPERATURE)
     _t0 = time.monotonic()
-    resp = _client().chat(
+    resp = chat_with_retry(
+        _client,
         model=settings.MODEL_STRATEGIST,
         messages=[{"role": "user", "content": user_prompt}],
         format=_OUTPUT_SCHEMA,

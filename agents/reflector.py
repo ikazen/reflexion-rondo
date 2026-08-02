@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 from ollama import Client
 
+from agents.llm_retry import chat_with_retry
 from config import settings
 from memory.retriever import insert_reflection
 from store.db import PgConn
@@ -164,7 +165,8 @@ Respond with ONLY a JSON object using exactly these keys:
     _t0 = _time.monotonic()
     last_err: Exception | None = None
     for attempt in range(_REFLECT_RETRIES):
-        resp = _client().chat(
+        resp = chat_with_retry(
+            _client,
             model=settings.MODEL_REFLECTOR,
             messages=[{"role": "user", "content": user_prompt}],
             think=settings.MODEL_REFLECTOR_THINK,
