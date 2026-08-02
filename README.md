@@ -25,7 +25,7 @@
   | `rmse`, `mae`, `rmsle` | ↓ | regression_error | regression |
 
 - **multiclass는 binary_proba metric(auc/logloss) 사용 불가** — 평가 하네스가 `predict_proba[:, 1]`로 2-클래스를 가정하므로 깨진다. multiclass는 classification 계열 metric만 쓴다.
-- regression은 CV score가 mean-baseline 대비 100배 이상 좋으면 target 누수로 간주해 reject한다.
+- regression은 CV score가 mean-baseline 대비 10배 이상 좋으면 target 누수로 간주해 reject한다.
 - classification 계열 metric은 OOF를 수집하지 않아 Ridge blend(`bin/blend.py`) 대상에서 제외된다.
 - `rmsle`는 예측값을 0 이상으로 clip한다.
 
@@ -90,6 +90,10 @@ bin/             실행 진입점:
                    submit.py (best attempt → Kaggle 제출)
                    blend.py (승격 파이프라인 OOF 예측 Ridge blend)
                    rebuild_best_pipeline.py (raw.pipelines 히스토리 replay)
+                   quarantine_leaks.py (타깃 누수 파이프라인 스캔·격리)
+                   establish_baseline.py (baseline 없는 대회 소급 확립)
+                   backfill_materialized_code.py (승격 행에 병합본 스냅샷 소급)
+                   backfill_error_signatures.py (에러 시그니처 정규화 소급)
                    export_results.py (핵심 가설 검증 CSV 내보내기)
                    reset.py
 config/          settings.py + competitions/<slug>.py (대회별 설정)
@@ -114,7 +118,7 @@ docs/            아래 문서
 
 1. **Retrieve** (`bin/run_retrieve_task.py`): pgvector 코사인 검색으로 교훈 top-k + `action_bandit` Thompson sample로 attempt 3개에 서로 다른 `action_type` 배정 → `raw.super_cycle_context` upsert.
 2. **Attempt × 3** 병렬 (`bin/run_attempt_task.py`): Strategize → Generate → Evaluate(k-fold CV) → Persist.
-3. **Promote** (`bin/run_promote_task.py`): `gain_vs_best` 최대값 winner 선정 → `was_promoted` 플래그 → Reflect 호출 (winner: jump/regression/error 시만, loser: 전부).
+3. **Promote** (`bin/run_promote_task.py`): `gain_vs_best` 최대값 winner 선정 → cross-seed 재현 + audit holdout 게이트 통과 시에만 `raw.pipelines` 승격(`docs/spec.md` §4) → `was_promoted` 플래그 → Reflect 호출 (winner: jump/regression/error 시만, loser: 전부).
 
 ## Stage 규칙
 
@@ -134,10 +138,10 @@ Coder 출력은 반드시 `class Patch` 하나. action_type별 허용 훅:
 | `model_swap` | `build_model` |
 | `preprocessing` | `preprocess` |
 | `hyperparam_search` | `param_candidates` |
-| `ensemble` | 모든 훅 (fallback, `compound` 별칭) |
+| `ensemble` | 모든 훅 (`ensemble_spec` 선언형 프리미티브 권장, 자유형 wrapper도 병행 허용) |
 | `bootstrap` | 모든 훅 (from-scratch) |
 
-훅 이름: `preprocess` / `feature_transform` / `param_candidates` / `build_model` / `postprocess_predictions`.
+훅 이름: `preprocess` / `feature_transform` / `param_candidates` / `build_model` / `postprocess_predictions` / `ensemble_spec`.
 `Patch.action_type` 속성이 배정된 action_type과 일치해야 함. IO·네트워크·eval 금지.
 Polars API 사용 (pandas 스타일 혼용 금지). 컨트랙트 위반 코드는 `evaluator/contract.py`가 실행 전 차단.
 
@@ -149,6 +153,8 @@ Polars API 사용 (pandas 스타일 혼용 금지). 컨트랙트 위반 코드�
 - `raw.super_cycle_context` — retrieve → attempt 상태 전달용 임시 테이블.
 - `raw.competitions` — 대회 메타 + fingerprint JSON.
 - `raw.kaggle_submissions` — Kaggle 제출 추적 (submission_id, status, lb_score, checked_at). `bin/api.py`의 `/api/submissions*` 엔드포인트가 관리 (`docs/spec.md` §1.11/§7).
+- `raw.pipelines` — 승격 코드 메모리. `invalid_reason`이 non-null이면 격리(누수 확정, 삭제 아님) — baseline 조회는 전부 `IS NULL`로 제외.
+- `raw.blend_weights` — 승격 시점 재계산되는 blend 가중치. 계산·저장까지만, `bin/submit.py`는 미소비.
 
 스키마 변경 시: `store/schema.sql` 수정 후 `uv run python bin/reset.py --hard`.
 
