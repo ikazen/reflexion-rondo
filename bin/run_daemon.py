@@ -25,6 +25,7 @@ import polars as pl
 
 import bin.airflow_client as airflow_client
 from bin.api import DaemonState, create_app, refresh_submission_row
+from bin.archive_lessons import archive_low_gain_lessons
 from cycle.run import CycleConfig, establish_bootstrap_baseline, run_cycle
 from memory.retriever import EmbeddingUnavailableError
 from store.db import connect, ensure_competition
@@ -234,6 +235,29 @@ def _sweep_stale_submissions(conn) -> None:
                 print(f"[daemon] submission {submission_id[:8]} refreshed → {rec['status']}")
         except Exception as exc:
             print(f"[daemon] submission {submission_id[:8]} refresh failed: {exc}")
+
+
+# 저효율 교훈 자동 archive(#76) — 반복 인용됐는데(times_applied>=3) 평균 gain이
+# 0 이하인 교훈을 검색 후보 풀에서 뺀다. 이전엔 bin/archive_lessons.py가 수동
+# CLI로만 실행돼 죽은 레버였다(#75와 같은 패턴). 대회 무관 전역 집계라 자주
+# 훑을 필요 없음 — 하루 주기.
+_LESSON_ARCHIVE_SWEEP_INTERVAL_SEC = 24 * 3600
+_last_lesson_archive_sweep: float = 0.0
+
+
+def _sweep_low_gain_lessons(conn) -> None:
+    global _last_lesson_archive_sweep
+    now_mono = time.monotonic()
+    if now_mono - _last_lesson_archive_sweep < _LESSON_ARCHIVE_SWEEP_INTERVAL_SEC:
+        return
+    _last_lesson_archive_sweep = now_mono
+
+    try:
+        archived_ids = archive_low_gain_lessons(conn)
+        if archived_ids:
+            print(f"[daemon] archived {len(archived_ids)} low-gain lesson(s)")
+    except Exception as exc:
+        print(f"[daemon] lesson archive sweep failed: {exc}")
 
 
 def _run_api(state: DaemonState) -> None:
@@ -486,6 +510,7 @@ def main() -> None:
 
     while _running:
         _sweep_stale_submissions(conn)
+        _sweep_low_gain_lessons(conn)
         item = _pop_pending(conn)
         if item is None:
             time.sleep(POLL_INTERVAL)
