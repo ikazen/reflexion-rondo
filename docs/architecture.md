@@ -49,15 +49,15 @@ Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
    - **Generate**: 가설 → `class Patch` (action_type별 허용 훅만 구현). **bootstrap 외 단계는 best 코드를 `prev_code`로 받아 한 군데만 수정** (1변경 규율, §4).
    - **Evaluate**: k-fold CV + 지표 (inner holdout으로 param 사전 선정). 결정적 코드. `label`·`gain_vs_best` 계산.
    - **Persist**: `raw.attempts`에 기록 (`super_cycle_id`, `was_promoted=NULL`).
-3. **Promote** (`bin/run_promote_task.py`): 3개 attempt 중 `gain_vs_best` 최대값 → winner. `was_promoted=true/false` 플래그 업데이트. Reflect 호출:
+3. **Promote** (`bin/run_promote_task.py`): 3개 attempt 중 `gain_vs_best` 최대값 → winner. winner는 곧바로 `raw.pipelines`에 승격되지 않는다 — `cycle/promotion.py:confirm_and_measure`가 cross-seed paired 재현 + audit holdout(dummy target으로 추론 조건 재현, 현재 best 대비 악화 시 거부) 양쪽을 통과해야 승격된다(`spec.md` §4). `was_promoted=true/false` 플래그 업데이트. Reflect 호출:
    - **winner**: jump/regression/error일 때만 reflect.
    - **loser**: neutral 포함 전부 reflect ("이 시도는 효과 없었다"도 학습 신호).
-4. **Submit?**: (별도 스크립트) best 후보 → submission CSV/Kaggle. `raw.kaggle_submissions` + daemon API(`POST /api/submissions`, `/auto`, `/{id}/refresh`)가 제출·상태 폴링·`lb_score` 기록(attempts 테이블 backfill 포함)까지 수행한다. 다만 폴링은 API 호출로 트리거되며 자동 스케줄러는 없다 — 무인 주기 폴링 루프는 미구현. `submission_budget` 스키마는 있으나 일일 상한 자동 enforcement는 아직 미구현이다.
+4. **Submit?**: (별도 스크립트) best 후보 → submission CSV/Kaggle. `raw.kaggle_submissions` + daemon API(`POST /api/submissions`, `/auto`, `/{id}/refresh`)가 제출·상태 폴링·`lb_score` 기록(attempts 테이블 backfill 포함)까지 수행한다. daemon 유휴 틱마다 `status IN ('submitted','pending')` 제출을 지수 백오프로 자동 재폴링한다 — 수동 `/refresh` 호출 없이도 동작. `submission_budget` 스키마는 있으나 일일 상한 자동 enforcement는 아직 미구현이다.
 
 `action_bandit`(BON-109): `reflexion` 단계 attempt 완료 시 action_type별 α/β 업데이트. jump/gain>0 → α++, regression/error → β++, neutral → 소량 양방향.
 `assign_super_cycle_actions`는 super_cycle retrieve에서만 action_type을 강제 배정한다. 정상 reflexion 사이클에서 `get_action_prior`는 LLM Strategist 프롬프트에 텍스트 prior로만 제공되며, 최종 action 선택은 LLM이 한다(advisory, regret 보장 없음 — ADR-005/014).
 
-피드백 신호 정책: **CV = 주 신호**(무제한·결정적), **LB = 확인용 희소 신호**. 일일 제출 예산 게이트와 CV-LB 상관/shake 기록은 운영 목표이며, 현재 submit 경로에는 자동화되어 있지 않다.
+피드백 신호 정책: **CV = 주 신호**(무제한·결정적), **LB = 확인용 희소 신호**. `cv_lb_calibration` 뷰가 대회별 제출 시계열의 cv↔LB 부호 일치를 추적하고, CV는 개선인데 LB가 악화된 제출이 나오면 원천 pipeline을 격리하고 해당 대회 auto-submit을 중단하는 발산 트립와이어가 이미 동작한다(자동 해제 없음 — `runbook.md`). 일일 제출 예산 게이트(`submission_budget` 상한 enforcement)는 아직 미구현이다.
 
 ## 4. Stage 라벨과 1변경 규율
 

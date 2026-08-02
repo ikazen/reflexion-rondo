@@ -39,6 +39,7 @@ cd data/<competition-id> && unzip -q *.zip
 - `IS_CLASSIFICATION`, `DROP_COLS` (id 계열 컬럼)
 - `DATA_DIR`, `S3_DATA_PATH`
 - `EDA_CARD` — feature별 dtype 명시 필수 (pl.String 컬럼 인코딩 방법 포함)
+- `MAX_TRAIN_ROWS` (opt-in, 대형 데이터셋만) — 설정하면 `load_train`이 고정 시드 층화 샘플링으로 상한 적용. attempt-eval과 promote(cross-seed confirm)가 동일 데이터를 봐야 `cv_score`가 재현되므로 시드는 코드에 고정돼 있다. s4e7(11.5M행, OOM으로 전량 실패했던 사례)이 1.5M로 설정된 참고 예시.
 
 ### 1-3. cold-start 등록
 ```bash
@@ -67,7 +68,9 @@ curl -X POST http://localhost:8000/api/queue \
   -d '{"competition": "<slug>", "stage": "reflexion", "n_cycles": 30}'
 ```
 
-### 1-6. 교훈 위생 (30사이클마다)
+### 1-6. 교훈 위생
+
+daemon이 24시간마다 자동으로 스윕한다(`_sweep_low_gain_lessons`) — 수동 실행은 즉시 반영이 필요할 때만.
 ```bash
 uv run python -m bin.archive_lessons
 ```
@@ -156,9 +159,54 @@ dagrun(=사이클) 하나가 실패해도 배치를 중단하지 않는다 — �
 ## 4. 제출·LB score 추적
 
 - `POST /api/submissions` — attempt 지정 제출. `POST /api/submissions/auto` — 최근 window 내 대회별 best attempt 자동 선별 제출(이미 제출한 best는 skip).
-- `POST /api/submissions/{id}/refresh` — Kaggle 상태 1회 폴링. `complete`면 `raw.kaggle_submissions.lb_score` 갱신 + 해당 `attempt_id`의 `raw.attempts.lb_score`까지 backfill.
-- 폴링은 API 호출로만 트리거된다 — daemon에 무인 주기 폴링 루프는 없음. 운영 시 `refresh`를 주기 호출(cron 또는 수동)해야 lb_score가 갱신된다.
-- `submission_budget` 테이블은 스키마에 존재하나, 일일 제출 상한 자동 enforcement는 아직 미구현 — 현재는 `auto_submit`의 "best unchanged면 skip" 로직만 과다 제출을 억제한다.
+- `POST /api/submissions/{id}/refresh` — Kaggle 상태 1회 수동 폴링. `complete`면 `raw.kaggle_submissions.lb_score` 갱신 + 해당 `attempt_id`의 `raw.attempts.lb_score`까지 backfill.
+- daemon도 유휴 틱마다 `status IN ('submitted','pending')` 제출을 지수 백오프로 자동 재폴링한다(`refresh_submission_row` 공유 헬퍼) — 수동 `refresh` 호출은 즉시 반영이 필요할 때만.
+- `submission_budget` 테이블은 스키마에 존재하나, 일일 제출 상한 자동 enforcement는 아직 미구현 — 현재는 `auto_submit`의 "best unchanged면 skip" 로직 + cv-LB 발산 트립와이어(아래 §4-2)가 과다 제출을 억제한다.
+
+### 4-1. 누수 파이프라인 격리
+
+`raw.pipelines`가 확정 승격한 뒤에야 target 누수(예: preprocess에서 valid 타깃 직접 참조)가 드러나는 경우가 있다. 순서를 지켜야 한다:
+
+```bash
+# 0. (선택, 정확도 향상) materialized_code가 없는 오래된 승격 행에 스냅샷 소급
+uv run python -m bin.backfill_materialized_code
+
+# 1. 스캔 — 반드시 --dry-run 먼저. 로컬에 train.csv 캐시/MINIO_ENDPOINT가 없으면
+#    "판정 불가"로 스킵되고(격리 안 함) 콘솔에 남는다 — 격리 대상 목록에서 이런 스킵과
+#    실제 누수 확정을 구분해서 읽을 것.
+uv run python -m bin.quarantine_leaks --dry-run
+uv run python -m bin.quarantine_leaks --competition <competition-id>   # 확인 후 실제 반영
+
+# 2. MinIO best_pipeline.py 재구성 — quarantine_leaks가 출력하는 대회 목록에 대해
+uv run python -m bin.rebuild_best_pipeline --competition <competition-id>
+```
+
+격리는 `invalid_reason` 표기일 뿐 삭제가 아니다(`spec.md` §1.7, `decisions.md` ADR-025) — 이력은 보존되고, 이후 baseline 조회에서만 제외된다.
+
+### 4-2. baseline 없는 대회 소급 확립
+
+`raw.pipelines`에 확정 행이 하나도 없는 대회는(신규 대회 콜드스타트 이전, 또는 위 격리로 전량 제거된 경우) 승격 게이트가 비교 대상이 없어 정체된다.
+
+```bash
+uv run python -m bin.establish_baseline --dry-run                              # 후보 확인 먼저
+uv run python -m bin.establish_baseline --competition <competition-id>         # 확인 후 실제 반영
+```
+
+top-k(기본 5) attempt를 cv 순으로 순회하며 cross-seed+holdout을 통과하는 첫 후보를 승격한다 — 상위 후보가 phantom(비정상적으로 좋은 CV)이면 자동으로 다음 순위로 내려간다(decisions.md ADR-025 한계 참조).
+
+**메모리 주의**: 이 스크립트는 실제 모델 학습을 여러 번 반복한다. 검증된 프로덕션 환경(mac-server/worker-vm/ops-vm task 컨테이너) 밖에서 돌리면 `runtime/isolate.py`의 `RLIMIT_AS`(VSZ 기준, decisions.md ADR-027)에 걸려 물리 메모리가 남아도 전량 실패할 수 있다 — WSL 등 미검증 환경에서 실패가 반복되면 ops-vm의 task 이미지로 `docker run --network host --cap-add SYS_ADMIN`으로 직접 실행할 것.
+
+### 4-3. auto-submit 일시중단 복구
+
+cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_paused_reason`이 채워지고 해당 대회의 자동 제출이 멈춘다(decisions.md ADR-026). **자동 해제 없음** — 원인을 확인(`cv_lb_calibration` 뷰, `GET /api/cv-lb-calibration`)한 뒤 사람이 직접 NULL로 되돌려야 재개된다.
+
+```bash
+# 현재 일시중단된 대회 확인
+psql "$RONDO_DB_URL" -c "select competition_id, auto_submit_paused_reason from raw.competitions where auto_submit_paused_reason is not null;"
+
+# 원인 확인 후 해제
+psql "$RONDO_DB_URL" -c "update raw.competitions set auto_submit_paused_reason = null where competition_id = '<competition-id>';"
+```
 
 ## 5. 동시성
 
