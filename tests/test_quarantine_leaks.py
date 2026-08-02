@@ -68,10 +68,30 @@ def test_scan_pipeline_returns_none_for_clean_pipeline():
 
 
 def test_scan_pipeline_handles_broken_code_gracefully():
-    """exec 자체가 실패하는 코드(SyntaxError 등)는 예외를 던지지 않고 사유 문자열로 보고한다."""
+    """#120 — exec 자체가 실패하는 코드(SyntaxError 등)는 판정 불가이지 누수
+    확정이 아니다. None(스킵)을 반환해야 한다 — 예외를 던지지도, 격리 대상으로
+    잘못 집계되지도 않아야 한다."""
     reason = _scan_pipeline(_S5E10, "class Patch:\n    def preprocess(:\n        pass\n")
-    assert reason is not None
-    assert reason.startswith("scan_load_error")
+    assert reason is None
+
+
+def test_scan_pipeline_data_load_failure_returns_none_not_quarantine_reason():
+    """#120 실제 프로덕션 재현 — load_train이 실패하면(로컬에 train.csv 없음 등
+    순수 환경 문제) None을 반환해야 한다. 이전 버전은 이걸 non-None 문자열로
+    반환해 호출부(scan())가 격리 대상으로 집계했다 — s4e1/s5e3 정상 파이프라인
+    27개가 부당하게 격리될 뻔한 실제 사고."""
+
+    class _CompWithMissingData:
+        COMPETITION_ID = "playground-series-does-not-exist"
+        TARGET = "y"
+        METRIC = "auc"
+        IS_CLASSIFICATION = True
+        DATA_DIR = __import__("pathlib").Path("/nonexistent/path")
+        S3_DATA_PATH = None
+        DROP_COLS = []
+
+    reason = _scan_pipeline(_CompWithMissingData(), _CLEAN_CODE)
+    assert reason is None
 
 
 def test_scan_pipeline_missing_patch_class_returns_none():
