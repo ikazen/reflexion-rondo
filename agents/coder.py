@@ -5,6 +5,7 @@ import re
 
 from ollama import Client
 
+from agents.llm_retry import chat_with_retry
 from config import settings
 from evaluator.contract import _ALLOWED_HOOKS, _ALL_HOOKS
 
@@ -320,7 +321,8 @@ def generate_code(
               settings.MODEL_CODER, action_type,
               "yes" if prev_code else "no", retry_tag, settings.LLM_TEMPERATURE)
     _t0 = time.monotonic()
-    resp = _client().chat(
+    resp = chat_with_retry(
+        _client,
         model=settings.MODEL_CODER,
         messages=[
             {"role": "system", "content": contract},
