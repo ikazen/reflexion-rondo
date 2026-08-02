@@ -7,13 +7,14 @@
 ### 1.1 `raw.competitions`
 
 ```sql
-competition_id  text primary key,
-name            text,
-task_type       text,        -- binary / multiclass / regression
-metric          text,        -- auc / logloss / rmse / ...
-metric_sign     int,         -- +1 높을수록 좋음, -1 낮을수록 좋음
-start_ts        timestamp,
-fingerprint     jsonb        -- §1.4
+competition_id            text primary key,
+name                      text,
+task_type                 text,        -- binary / multiclass / regression
+metric                    text,        -- auc / logloss / rmse / ...
+metric_sign               int,         -- +1 높을수록 좋음, -1 낮을수록 좋음
+start_ts                  timestamp,
+fingerprint               jsonb,       -- §1.4
+auto_submit_paused_reason text         -- non-null이면 auto-submit 중단. 자동 해제 없음 (decisions.md ADR-026)
 ```
 
 `metric_sign`은 대회당 1회 결정. attempts에 중복 저장하지 않는다.
@@ -123,7 +124,9 @@ code                 text,        -- Patch class 소스 (§5)
 cv_score             double,
 gain_vs_best         double,
 pipeline_sha256      text,        -- BON-255: MinIO best_pipeline.py 무결성 검증용 신뢰 해시
-oof_preds            jsonb        -- BON-248: out-of-fold 예측값. bin/blend.py의 Ridge blend 입력
+oof_preds            jsonb,       -- BON-248: out-of-fold 예측값. bin/blend.py의 Ridge blend 입력
+materialized_code    text,        -- 승격 시점 병합본 스냅샷. bin/submit.py는 replay 대신 이걸 로드
+invalid_reason       text         -- non-null이면 격리(삭제 아님). 모든 baseline 조회가 IS NULL로 제외 (decisions.md ADR-025)
 ```
 
 cold-start 시 유사 fingerprint에서 검색해 그대로 baseline으로 재사용.
@@ -195,7 +198,7 @@ error          text,
 checked_at     timestamp
 ```
 
-폴링은 `POST /api/submissions/{id}/refresh` 호출로만 일어난다 — daemon에 무인 주기 폴링 루프는 없음(운영 시 cron 또는 수동 호출 필요, `runbook.md §4`).
+수동 폴링은 `POST /api/submissions/{id}/refresh`. daemon도 유휴 틱마다 `status IN ('submitted','pending')` 제출을 지수 백오프로 자동 재폴링한다(`refresh_submission_row` 공유 헬퍼, `runbook.md §4`).
 
 ### 1.12 `raw.external_ideas` (계획, 미구현) — ADR-019, BON-86
 
@@ -221,6 +224,20 @@ adopted_attempt_ids    text[]          -- 채택 attempt 역추적 (디버깅·�
 - Archive 정책: 자동 idea 단위(`trials ≥ 10 AND posterior_mean < 0.1`) + 수동 source 단위(BON-87).
 - 노출: `reflexion` 단계 Strategist 프롬프트에만, `applies_when` fingerprint 매치 + 톰슨 샘플링 top-3 (BON-89).
 
+### 1.13 `raw.blend_weights`
+
+승격 시점마다 재계산되는 blend 가중치. `bin/blend.py:compute_and_store_blend`가 양쪽 승격 경로(`cycle/run.py`, `bin/run_promote_task.py`)에서 best-effort로 호출한다 — 실패해도 예외를 던지지 않고 조용히 스킵, 승격을 막지 않는다. **`bin/submit.py`는 이 값을 소비하지 않는다**(계산·저장까지만, 실제 제출 배선은 범위 밖).
+
+```sql
+competition_id  text primary key,
+pipeline_ids    jsonb,           -- blend에 포함된 raw.pipelines.pipeline_id 배열
+weights         jsonb,           -- pipeline_ids와 같은 순서의 가중치
+intercept       double precision,
+blend_cv_score  double precision,
+metric          text,
+generated_at    timestamp
+```
+
 ## 2. enum 정의
 
 `action_type` (Strategist 출력 강제, `config/settings.py:ACTION_TYPES`):
@@ -228,8 +245,9 @@ adopted_attempt_ids    text[]          -- 채택 attempt 역추적 (디버깅·�
 - `model_swap` (lgbm ↔ catboost ↔ xgboost ↔ tabpfn)
 - `hyperparam_search` (param_candidates 훅으로 후보 목록 제공, inner holdout에서 선택)
 - `preprocessing` (결측 처리, 스케일, 인코딩)
-- `ensemble` (averaging, stacking — contract에서 모든 훅 허용)
-- `compound` (`evaluator/contract.py` 정의, ACTION_TYPES 미포함 — Strategist 미노출. 최대 2개 훅 허용)
+- `ensemble` (averaging, stacking — contract에서 모든 훅 허용. `ensemble_spec` 선언형 프리미티브 권장, §5)
+
+`bootstrap`은 `ACTION_TYPES`(Strategist 선택지)엔 없지만 실재하는 `action_type` 값이다 — bootstrap stage에서 `prev_code`가 없으면 `cycle/run.py`가 강제로 `action_type="bootstrap"`을 부여하고(Strategist 미개입), contract에서 모든 훅을 허용한다.
 
 `generality` (Reflector 출력):
 - `L1_local`: 이 대회 칼럼명/특이값 의존. transfer 대상 아님.
@@ -281,7 +299,9 @@ neutral     otherwise
 - `z = LABEL_Z = 2.0`(`config/settings.py`). 1σ(구 기본값)는 노이즈를 상시 jump로 잘못 잡아 `reflection_impact` 검색 부스팅을 오염시켰다 — ADR-012 amend(BON-194) 방어적 기본값, 재캘리브레이션은 TBD(`decisions.md`).
 - **jump 재판정(BON-267)**: 위 절대-마진 jump는 harness가 계산한 잠정값이다. `cycle/run.py`가 eval 직후 `is_significant_gain()`(`evaluator/harness.py`, BON-247 — candidate/baseline fold_scores의 **paired per-fold t-test**, `t_stat > LABEL_Z`)로 재확정한다: 유의하면 `jump` 확정, 절대-마진만 통과하고 paired 미달이면 `neutral`로 강등. 절대-마진 단독 기준은 수렴한 대회에서 사실상 도달 불가해 실승격 attempt도 전부 neutral로 남는 문제가 있었다. `bin/run_promote_task.py`도 promotion(reflect 여부) 판단에 동일 함수를 재사용한다.
 - `prev_best_cv`가 없으면(첫 attempt) label = `neutral`, gain = null.
-- 실패 attempt(`error_trace` 존재)는 label = `error`, gain = null. 정적 검증 실패 외에도 두 가지 결정적 누수 가드가 `ValueError`로 error를 유발한다: (1) 완벽점수 가드 — `cv_score`가 임계(`_LEAK_PERFECT_HIGH=0.9999`/`_LEAK_PERFECT_LOW=1e-9`)를 넘으면 target leakage 의심, (2) 회귀 trivial-baseline 비율 가드(issue #4) — `regression_error` 메트릭에서 train-fold 타깃 평균만 예측하는 baseline보다 100배 이상 좋으면 스케일/타깃 누수 의심.
+- 실패 attempt(`error_trace` 존재)는 label = `error`, gain = null. 정적 검증 실패 외에도 세 가지 결정적 누수 가드가 `ValueError`로 error를 유발한다: (1) 완벽점수 가드 — `cv_score`가 임계(`_LEAK_PERFECT_HIGH=0.9999`/`_LEAK_PERFECT_LOW=1e-9`)를 넘으면 target leakage 의심, (2) 회귀 trivial-baseline 비율 가드(issue #4) — `regression_error` 메트릭에서 train-fold 타깃 평균만 예측하는 baseline보다 10배 이상 좋으면(`_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO`, 2026-08 100→10 하향) 스케일/타깃 누수 의심, (3) preprocess 타깃 누수 가드(`_check_preprocess_target_leak`) — fold0에서 `preprocess`를 실제 valid와 마스킹된 valid 양쪽으로 실행해 결과가 다르면(=valid 타깃을 직접 읽음) 확정 error. 정적 AST 가드(`evaluator/contract.py:_preprocess_reads_valid_target`)가 코드 생성 단계에서 1차로 걸러내지만 우회 가능해, (3)의 런타임 동등성 검사가 본체다(decisions.md ADR-025).
+
+승격 게이트는 label 계산과 별개다. 후보는 cross-seed paired 재현(seed만 바꾼 CV, seed 불변 누수엔 장님) + audit holdout(dummy target으로 실제 추론 조건 재현, 현재 best 대비 악화면 `holdout_regressed=True`) 양쪽을 통과해야 `raw.pipelines`에 승격된다(`cycle/promotion.py:confirm_and_measure`, decisions.md ADR-024). holdout은 예전엔 기록만 됐지만 지금은 `confirmed = confirmed and not holdout_regressed`로 차단 게이트다.
 - `is_noop_tie`(BON-239): `cv_score`가 직전 best와 부동소수 완전 일치하면 patch hook이 base pipeline으로 위임돼 유효 변경이 없었다는 신호. label 자체를 바꾸진 않고 attempt에 플래그로 남는다.
 
 Reflector는 이 숫자를 보고 **왜 그런 결과가 나왔는지**(교훈 본문)만 쓴다. 정성 판정은 `reflector_label`로 분리.
@@ -311,11 +331,30 @@ def feature_transform(self, train: pl.DataFrame, valid: pl.DataFrame, target: st
 def param_candidates(self, ctx) -> list[dict]           # 후보 파라미터 dict 목록
 def build_model(self, params: dict, ctx) -> sklearn_estimator
 def postprocess_predictions(self, preds, ctx) -> preds
+def ensemble_spec(self, ctx) -> dict | None
 ```
 
 `ctx` 주요 속성: `target_col`, `metric`, `seed`, `is_classification`.  
 `feature_transform`은 반환 전 target 컬럼을 drop해야 한다.  
 통계는 train에서만 학습하고 valid엔 적용만 한다 (누수 방지).
+
+### `ensemble_spec` — 선언형 앙상블 프리미티브 (`ensemble`/`bootstrap`만 허용, decisions.md ADR-023)
+
+자유형 wrapper 클래스(직접 `fit`/`predict` 구현) 대신 "무엇을 조합할지"만 선언한다. 정의돼 있으면(non-None) `build_model`/`param_candidates` 대신 harness가 멤버 생성·적합·결합을 전담한다 — `preselect_params`는 하이퍼파라미터가 이미 스펙 안에 있으므로 빈 dict를 반환한다.
+
+```python
+def ensemble_spec(self, ctx) -> dict | None:
+    return {
+        "members": [{"model": "lgbm", "params": {...}}, {"model": "catboost", "params": {...}}, ...],
+        "method": "weighted_average",   # 또는 "majority_vote"
+        "weights": [0.6, 0.4],          # 생략 시 균등 가중치
+    }
+```
+
+- `model` 레지스트리(`evaluator/harness.py:_ENSEMBLE_MODEL_REGISTRY`): `lgbm` / `xgboost` / `catboost` / `hgb` / `random_forest` / `ridge`.
+- `method` 기본값: 이산 라벨 분류(`metric_class == "classification"`)는 `majority_vote`, 그 외는 `weighted_average`.
+- 각 멤버는 `random_state=ctx.seed`가 기본으로 들어간다.
+- 기존 자유형 `build_model` 기반 ensemble 훅도 병행 허용 — 강제 마이그레이션 아님.
 
 action_type별 허용 훅 (`evaluator/contract.py:_ALLOWED_HOOKS`):
 
@@ -325,8 +364,8 @@ action_type별 허용 훅 (`evaluator/contract.py:_ALLOWED_HOOKS`):
 | `preprocessing` | `preprocess` |
 | `model_swap` | `build_model` |
 | `hyperparam_search` | `param_candidates` |
-| `ensemble` | (제한 없음 — 모든 훅 허용) |
-| `compound` | 최대 2개 훅 (ACTION_TYPES 미포함 — Strategist 미노출) |
+| `ensemble` | (제한 없음 — 모든 훅 허용, `ensemble_spec` 포함) |
+| `bootstrap` | (제한 없음 — 모든 훅 허용) |
 
 Evaluator 실행 골격(개념):
 
@@ -360,6 +399,7 @@ cv_score = mean(scores); cv_fold_var = var(scores)
 | `action_bandit_posterior` | action_type별 Beta-Bernoulli 사후 상태 |
 | `cold_start_progression` | 대회별 attempt progression과 best_so_far |
 | `holdout_cv_gap_trend` | attempt별 `cv_score - holdout_score`(overfit gap, BON-247) |
+| `cv_lb_calibration` | 대회별 제출 시계열의 (cv, LB, Δcv, ΔLB, 부호 일치 여부) — 발산 트립와이어 판정 입력(decisions.md ADR-026) |
 
 **계획 (ADR-019):** `external_idea_bandit` — 외부 아이디어 채널 구현 시 추가할 사후 상태 뷰.
 
@@ -390,6 +430,7 @@ ops-vm의 daemon이 제공하는 HTTP API. `http://rondo-api.internal` (Caddy pr
 | GET | `/api/submissions` | 제출 이력 목록. `?competition=`, `?limit=` 파라미터 |
 | GET | `/api/submissions/{id}` | 제출 단건 상세 |
 | POST | `/api/submissions/{id}/refresh` | Kaggle 상태 1회 폴링 → `lb_score`/`status` 갱신 (§1.11) |
+| GET | `/api/cv-lb-calibration` | `cv_lb_calibration` 뷰 조회 — 대회별 cv↔LB 부호 일치 이력 |
 
 ### 인증·노출 정책
 
