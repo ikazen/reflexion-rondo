@@ -52,6 +52,36 @@ def test_refresh_backoff_very_old_uses_widest_interval():
     assert _submission_refresh_due(submitted_at, now - timedelta(hours=3), now) is True
 
 
+def test_refresh_due_handles_naive_db_datetimes_against_aware_now():
+    """#118 회귀 재현 — 실제 배포에서 daemon이 크래시루프에 빠졌던 정확한 시나리오.
+
+    raw.kaggle_submissions.submitted_at/checked_at는 timezone 없는 `timestamp`
+    컬럼이라 psycopg2가 naive datetime을 반환하는데, _sweep_stale_submissions는
+    aware(datetime.now(timezone.utc))인 now와 비교한다 — 로컬 mock 테스트는 전부
+    양쪽을 aware로만 구성해서 이 조합을 놓쳤었다. 여기서는 DB round-trip을
+    흉내내 submitted_at/checked_at을 naive로, now는 aware로 명시적으로 섞는다.
+    """
+    now_aware = datetime(2026, 8, 2, 12, 0, 0, tzinfo=timezone.utc)
+    submitted_at_naive = datetime(2026, 8, 2, 11, 55, 0)  # DB에서 온 그대로 — tzinfo 없음
+    checked_at_naive = datetime(2026, 8, 2, 11, 59, 30)
+    # TypeError 없이 실행되면 통과 — 첫 10분 윈도우(2분 간격) 안이라 아직 재확인 아님.
+    assert _submission_refresh_due(submitted_at_naive, checked_at_naive, now_aware) is False
+
+
+def test_refresh_due_naive_and_aware_inputs_agree_on_result():
+    """naive/aware 어느 조합으로 넣어도 같은 절대시각이면 같은 판정이 나와야 한다."""
+    aware_submitted = datetime(2026, 8, 2, 11, 55, 0, tzinfo=timezone.utc)
+    naive_submitted = datetime(2026, 8, 2, 11, 55, 0)
+    aware_checked = datetime(2026, 8, 2, 11, 57, 0, tzinfo=timezone.utc)
+    naive_checked = datetime(2026, 8, 2, 11, 57, 0)
+    now = datetime(2026, 8, 2, 12, 0, 0, tzinfo=timezone.utc)
+
+    assert (
+        _submission_refresh_due(aware_submitted, aware_checked, now)
+        == _submission_refresh_due(naive_submitted, naive_checked, now)
+    )
+
+
 # --- _sweep_stale_submissions ---
 
 def test_sweep_respects_module_level_rate_gate(monkeypatch):
