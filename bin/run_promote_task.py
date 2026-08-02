@@ -32,7 +32,7 @@ def main() -> None:
     # 이 프로세스는 Airflow DockerOperator가 별도 실행하는 진입점이라 부모의
     # 로깅 설정을 상속받지 않는다 — basicConfig 없이는 cycle/promotion.py의
     # 게이트 실패 로그(_LOG.warning 등)가 lastResort 핸들러에 의존하게 되는데,
-    # 그마저도 없던 기간엔 INFO 로그가 전부 조용히 사라졌다(#73).
+    # 그마저도 없던 기간엔 INFO 로그가 전부 조용히 사라졌다.
     logging.basicConfig(level=logging.INFO)
 
     parser = argparse.ArgumentParser()
@@ -138,7 +138,7 @@ def main() -> None:
     ).fetchone()
     _metric_sign = _sign_row[0] if _sign_row and _sign_row[0] is not None else 1
     # exclude_attempt_id로 winner 자신과의 자기비교를 막던 것은 phantom-max 폴백
-    # 전용 안전장치였다(#73) — 폴백 자체를 제거(#102)하며 인자도 함께 정리.
+    # 전용 안전장치였다 — 폴백 자체를 제거하며 인자도 함께 정리(decisions.md ADR-025).
     _baseline_fold_scores = _prev_best_fold_scores(conn, competition_id)
 
     _stage1_significant = is_significant_gain(
@@ -284,7 +284,7 @@ def main() -> None:
                     upload_best_pipeline(competition_id, materialized)
                     print(f"[run_promote_task] best pipeline materialized for {competition_id}")
 
-                    # blend 가중치 재계산(#75) — train90은 merge_oof_preds와 같은
+                    # blend 가중치 재계산 — train90은 merge_oof_preds와 같은
                     # provenance(길이 일치)라 정확한 재현이 된다. train90이 없으면
                     # (train 로드 실패) comp도 안 묶여 있으므로 시도 자체를 건너뜀.
                     # best-effort — 실패해도 이미 끝난 승격을 되돌리지 않는다.
@@ -318,7 +318,7 @@ def main() -> None:
     except Exception as exc:
         # competition_id/attempt_id를 문구에 남겨 daemon 로그에서 대회 단위로
         # grep 가능하게 한다 — 이 블록이 조용히 죽어 auto-submit 실패가 다음날
-        # 06:00까지 안 보이던 사고(#71)의 재발 방지.
+        # 06:00까지 안 보이던 사고의 재발 방지.
         best_attempt_id = best[0] if best else None
         print(
             f"[run_promote_task] submission csv caching failed for {competition_id} "

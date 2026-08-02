@@ -180,10 +180,8 @@ def _final_status(cycles_done: int, skipped: int, failed_cycles: int) -> tuple[s
     return "done", None
 
 
-# LB 자동 재폴링 (#103) — 이전엔 업로드 직후 1회 pending으로 남으면 사용자가
-# `POST /api/submissions/{id}/refresh`를 수동 호출하기 전까진 영영 갱신 안 됐다
-# (GH #96 s5e10 사후조사에서 승격 후 3일간 무증상이었던 이유). daemon 루프가 유휴
-# 틱마다 raw.kaggle_submissions를 훑어 스스로 재확인한다.
+# LB 자동 재폴링 — daemon 루프가 유휴 틱마다 raw.kaggle_submissions를 훑어
+# 스스로 재확인한다(수동 `POST /api/submissions/{id}/refresh` 호출 없이도 동작).
 _SUBMISSION_SWEEP_INTERVAL_SEC = 60  # 이 주기로만 훑는다 — daemon 루프 자체는 10s poll
 _last_submission_sweep: float = 0.0
 
@@ -195,12 +193,9 @@ def _submission_refresh_due(submitted_at: datetime, checked_at, now: datetime) -
     오래 pending인 건 뜸하게 확인해 불필요한 kaggle CLI 호출을 아낀다.
 
     raw.kaggle_submissions.submitted_at/checked_at는 timezone 없는 `timestamp`
-    컬럼이라 psycopg2가 naive datetime으로 돌려준다 — now(aware, datetime.now
-    (timezone.utc))와 그대로 빼면 "can't subtract offset-naive and offset-aware
-    datetimes"로 죽는다(#118, v1.4.13 배포 직후 실제 daemon 크래시루프). 셋 다
-    naive로 정규화한 뒤 비교한다 — 이 코드베이스는 DB의 naive timestamp를
-    암묵적으로 UTC로 취급하는 기존 관례(datetime.now(timezone.utc)를 그대로
-    naive 컬럼에 쓰는 다른 코드들과 동일)를 따른다.
+    컬럼이라 psycopg2가 naive datetime으로 돌려준다 — 이 코드베이스는 DB의 naive
+    timestamp를 암묵적으로 UTC로 취급하는 관례라, aware datetime과 그대로 빼면
+    TypeError이므로 셋 다 naive로 정규화한 뒤 비교한다.
     """
     now = now.replace(tzinfo=None) if now.tzinfo is not None else now
     submitted_at = submitted_at.replace(tzinfo=None) if submitted_at.tzinfo is not None else submitted_at
@@ -249,10 +244,9 @@ def _sweep_stale_submissions(conn) -> None:
             print(f"[daemon] submission {submission_id[:8]} refresh failed: {exc}")
 
 
-# 저효율 교훈 자동 archive(#76) — 반복 인용됐는데(times_applied>=3) 평균 gain이
-# 0 이하인 교훈을 검색 후보 풀에서 뺀다. 이전엔 bin/archive_lessons.py가 수동
-# CLI로만 실행돼 죽은 레버였다(#75와 같은 패턴). 대회 무관 전역 집계라 자주
-# 훑을 필요 없음 — 하루 주기.
+# 저효율 교훈 자동 archive — 반복 인용됐는데(times_applied>=3) 평균 gain이 0
+# 이하인 교훈을 검색 후보 풀에서 뺀다. 대회 무관 전역 집계라 자주 훑을 필요
+# 없음 — 하루 주기.
 _LESSON_ARCHIVE_SWEEP_INTERVAL_SEC = 24 * 3600
 _last_lesson_archive_sweep: float = 0.0
 
@@ -458,7 +452,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
         suffix = f" ({failed_cycles} failed)" if failed_cycles else ""
         print(f"[daemon] queue_id={qid} {status} latest_score={latest_score}{suffix}")
 
-        # bootstrap 배치가 최소 1 cycle이라도 성공했으면 baseline 확립을 시도한다(#100).
+        # bootstrap 배치가 최소 1 cycle이라도 성공했으면 baseline 확립을 시도한다.
         # 이미 확정 파이프라인이 있으면(재부트스트랩 등) establish_bootstrap_baseline이
         # 내부에서 스킵한다 — airflow 모드는 train이 로드 안 돼 있으므로 여기서 새로 읽는다.
         # 실패해도 daemon 루프 자체는 계속돼야 하므로 예외를 여기서 흡수한다.

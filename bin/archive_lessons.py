@@ -46,11 +46,7 @@ def archive_low_gain_lessons(
 ) -> list[str]:
     """저효율 교훈을 archived=true로 표기하고 archive된 reflection_id 목록을 반환한다.
 
-    #76 — 이전엔 이 정리가 수동 CLI로만 실행돼 검색 후보 풀이 계속 커지기만 했다
-    (인용률 75~97%인데 양의 gain 사실상 0%, near-duplicate 686쌍 — retriever의
-    MMR 재랭킹·impact z-score 감쇠가 이미 일부 완화하지만, 검증된 저효율 교훈을
-    풀에서 아예 빼는 건 그와 별개로 유효한 위생 관리다). bin/run_daemon.py가
-    주기적으로 호출(#76 자동 배선).
+    bin/run_daemon.py가 24시간 주기로 자동 호출한다(§`_sweep_low_gain_lessons`).
     """
     candidates = find_archive_candidates(conn, min_applied, max_gain)
     if not candidates:

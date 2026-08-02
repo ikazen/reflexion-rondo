@@ -38,8 +38,8 @@ def fetch_oof_candidates(
     "최근 N개"가 아니라 "상위 성능 N개"로 정의한다 — raw.pipelines에 recency
     컬럼(created_at 등)이 없고, 앙상블 다양성 관점에서도 상위 성능이 더 타당하다.
     oof_preds가 없는(OOF 수집 이전에 승격된 것 등) pipeline은 자동 제외된다.
-    invalid_reason이 표기된(GH #96 타깃 누수 등, #99 격리) pipeline도 제외된다 —
-    누수 pipeline의 부풀려진 cv_score가 blend 가중치를 오염시키면 안 된다.
+    invalid_reason이 표기된(격리된) pipeline도 제외된다 — 누수 pipeline의
+    부풀려진 cv_score가 blend 가중치를 오염시키면 안 된다.
     """
     rows = conn.execute(
         """
@@ -117,12 +117,8 @@ def compute_and_store_blend(
     conn, competition_id: str, train: "object", target_col: str, metric: str,
     n_top: int = DEFAULT_N_TOP,
 ) -> dict | None:
-    """확정 파이프라인(#99 격리분 제외) 상위 n_top의 OOF로 blend 가중치를 재계산해
-    raw.blend_weights에 upsert한다(#75).
-
-    이전엔 이 계산이 CLI(`uv run python -m bin.blend`)로만 수동 실행됐고, 확정
-    파이프라인이 2개 미만인 대회가 많아(#73/#100/#101로 해소 중) 사실상 죽은
-    레버였다 — 이 함수를 승격 시점마다 호출해 자동 최신화한다.
+    """확정 파이프라인(격리분 제외) 상위 n_top의 OOF로 blend 가중치를 재계산해
+    raw.blend_weights에 upsert한다. 승격 시점마다 호출해 자동 최신화한다.
 
     최소 2개 pipeline이 없거나 OOF 길이가 train과 안 맞는 pipeline뿐이면(과거
     다른 train 크기로 평가된 것 등) 조용히 None을 반환한다 — 승격 흐름 자체를

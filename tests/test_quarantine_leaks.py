@@ -1,6 +1,6 @@
 """bin/quarantine_leaks.py 단위 테스트.
 
-_scan_pipeline은 evaluator.harness._check_preprocess_target_leak(#97)을 그대로
+_scan_pipeline은 evaluator.harness._check_preprocess_target_leak을 그대로
 재사용하므로 그 로직 자체의 회귀는 tests/test_harness.py가 커버한다 — 여기서는
 스캐너의 배선(코드 exec → PatchedPipeline 구성 → 실제 대회 데이터로 검사 →
 invalid_reason 문자열 반환)이 실제 대회 설정(s5e10, 로컬 CSV)으로 끝까지 도는지만
@@ -68,18 +68,17 @@ def test_scan_pipeline_returns_none_for_clean_pipeline():
 
 
 def test_scan_pipeline_handles_broken_code_gracefully():
-    """#120 — exec 자체가 실패하는 코드(SyntaxError 등)는 판정 불가이지 누수
-    확정이 아니다. None(스킵)을 반환해야 한다 — 예외를 던지지도, 격리 대상으로
-    잘못 집계되지도 않아야 한다."""
+    """exec 자체가 실패하는 코드(SyntaxError 등)는 판정 불가이지 누수 확정이
+    아니다. None(스킵)을 반환해야 한다 — 예외를 던지지도, 격리 대상으로 잘못
+    집계되지도 않아야 한다."""
     reason = _scan_pipeline(_S5E10, "class Patch:\n    def preprocess(:\n        pass\n")
     assert reason is None
 
 
 def test_scan_pipeline_data_load_failure_returns_none_not_quarantine_reason():
-    """#120 실제 프로덕션 재현 — load_train이 실패하면(로컬에 train.csv 없음 등
-    순수 환경 문제) None을 반환해야 한다. 이전 버전은 이걸 non-None 문자열로
-    반환해 호출부(scan())가 격리 대상으로 집계했다 — s4e1/s5e3 정상 파이프라인
-    27개가 부당하게 격리될 뻔한 실제 사고."""
+    """load_train이 실패하면(로컬에 train.csv 없음 등 순수 환경 문제) None을
+    반환해야 한다 — non-None 문자열을 반환하면 호출부(scan())가 격리 대상으로
+    집계한다."""
 
     class _CompWithMissingData:
         COMPETITION_ID = "playground-series-does-not-exist"

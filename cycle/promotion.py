@@ -25,7 +25,7 @@ class ConfirmResult:
     confirmed: bool
     holdout_score: float | None
     seed_gains: dict | None = field(default=None)
-    # 현재 best(또는 콜드스타트면 BasePipeline) 대비 holdout이 악화됐는지(#98).
+    # 현재 best(또는 콜드스타트면 BasePipeline) 대비 holdout이 악화됐는지.
     # confirmed는 이미 이 값을 반영해 AND 결합돼 있다 — 별도 필드로 노출하는 건
     # 승격 거부 사유(cross-seed 미재현 vs holdout 악화)를 로그/DB에서 구분하기 위함.
     holdout_regressed: bool = False
@@ -48,14 +48,13 @@ def confirm_and_measure(
     """Cross-seed paired 재현 확인 + audit holdout 1회 측정·게이트.
 
     cross-seed: 각 seed에서 베이스라인(best pipeline)도 같은 seed로 재평가해
-    paired gain(candidate@seed - baseline@seed) > 0이어야 confirmed=True.
+    paired gain(candidate@seed - baseline@seed) > 0이어야 confirmed=True. seed만
+    바꾼 CV라 preprocess의 valid-target 의존 누수처럼 seed 불변인 문제는 못 잡는다.
     holdout: holdout10 있으면 train90으로 fit, holdout10 측정 → holdout_score.
     후보뿐 아니라 현재 best(콜드스타트면 BasePipeline)도 같은 holdout으로 측정해
     비교한다 — 후보가 더 나쁘면(holdout_regressed) confirmed를 강제로 False로
-    떨어뜨린다(#98). cross-seed confirm은 seed만 바꾼 CV라 preprocess의 valid-target
-    의존 누수(#96/#97)처럼 seed 불변인 문제를 못 잡는다 — holdout은
-    _eval_holdout(runtime/runner.py)이 dummy target으로 실제 추론 조건을 재현하므로
-    이런 누수를 값 자체(0.02배 CV 개선 vs 5배 LB 악화 같은)로 걸러낼 수 있다.
+    떨어뜨린다. _eval_holdout(runtime/runner.py)이 dummy target으로 실제 추론
+    조건을 재현하므로 cross-seed가 못 잡는 누수를 값 자체로 걸러낼 수 있다.
     baseline holdout을 측정 못 하면(에러) 비교 근거가 없으므로 보수적으로
     regressed=False로 두고 막지 않는다 — 정보 없음과 악화 확인은 다르다.
     """
@@ -135,8 +134,7 @@ def _baseline_cv(
     """best pipeline(또는 BasePipeline)을 seed 고정으로 단독 평가해 (cv_score, error) 반환.
 
     에러 시 cv_score=None → 호출부에서 보수적으로 승격 거부. error는 seed_gains에
-    남겨 진단 가능하게 한다(#73 — 이전엔 bool로 뭉개져 s6e6 confirm 실패가 "재현
-    안 됨"인지 "크래시"인지 DB만 봐선 구분 불가능했다).
+    남겨 confirm 실패가 "재현 안 됨"인지 "크래시"인지 DB만 봐서도 구분 가능하게 한다.
     """
     src = best_source if best_source else _NOOP_PATCH
     res = eval_isolated(

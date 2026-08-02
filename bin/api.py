@@ -1,48 +1,11 @@
 """reflexion-rondo daemon FastAPI 앱.
 
-엔드포인트:
-  GET  /api/heartbeat
-  GET  /api/health
-  GET  /api/competitions
-  POST /api/competitions
-  GET  /api/attempts
-  GET  /api/attempts/{id}
-  GET  /api/lessons
-  GET  /api/cold-start
-  GET  /api/score/timeline           -- 관측 T3  (#67): CV 추이 + jump 마커 + holdout
-  GET  /api/reflexion-health         -- 관측 T5  (#67): 건강 신호등 4칸(#11 §6)
-  GET  /api/bandit/posteriors        -- 관측 B2a (#67): posterior + 실측 가중성공률 괴리
-  GET  /api/lessons/funnel           -- 관측 B3f (#67): 작성→검색→인용→양의gain 전환율
-  GET  /api/lessons/dead             -- 관측 B3d (#67): 인용 0 / 음의gain 교훈
-  GET  /api/lessons/duplicates       -- 관측 B3u (#67): near-duplicate 교훈 쌍
-  GET  /api/errors/signatures        -- 관측 B4s (#67): 에러 시그니처·재발
-  GET  /api/transfer/matrix          -- 관측 X1  (#67): 대회 간 교훈 인용 매트릭스
-  GET  /api/competitions/summary     -- 관측 T1  (#67): 대회 목록 + best_cv·상태 롤업
-  GET  /api/score                    -- 관측 T2  (#67): 점수 헤드라인(best cv/holdout/gap)
-  GET  /api/best-strategy            -- 관측 T4  (#67): best pipeline 구성·인용 교훈
-  GET  /api/bandit/timeline          -- 관측 B2b (#67): posterior 리플레이 시계열
-  GET  /api/bandit/selection         -- 관측 B2c (#67): 배정 action vs posterior 순위 concordance
-  GET  /api/lessons/generality-mix   -- 관측 B3g (#67): L1/L2/L3 비율 시계열
-  GET  /api/errors/rate-timeline     -- 관측 B4r (#67): 슈퍼사이클별 에러율 추이
-  GET  /api/errors/repeat-offenders  -- 관측 B4o (#67): pitfall 활성 후 재발 시그니처
-  GET  /api/promotions               -- 관측 B5  (#67): 승격 타임라인(누적 best)
-  GET  /api/transfer/lessons         -- 관측 X2  (#67): 범용 교훈 재사용 리더보드
-  GET  /api/transfer/fp-distance     -- 관측 X3  (#67): fingerprint 거리 vs cold-start 이득
-  GET  /api/queue
-  POST /api/queue
-  PATCH /api/queue/{id}
-  POST /api/submissions
-  POST /api/submissions/auto
-  GET  /api/submissions
-  GET  /api/submissions/{id}
-  GET  /api/cv-lb-calibration        -- cv↔LB 발산 관측 (#104, 24개 설계 밖 추가분)
-
-관측 엔드포인트는 GH #11/#67 설계 24개 전체(대시보드 패널 #65는 후속). 데이터 소스는
-store/schema.sql의 파생 뷰(lesson_funnel/lesson_dead/lesson_duplicates/bandit_calibration/
-error_recurrence/transfer_matrix) + raw.pipelines/super_cycle_context 직접 조회 + 밴딧
-리플레이(_replay_bandit_timeline, 히스토리 테이블 없이 update_bandit 규칙 재현) +
-memory.transfer._fp_distance 재사용. retrieved_ids(P1)는 forward-only라 과거 데이터가 섞인
-경우 lesson_funnel.retrieved_precise=false로 표시된다.
+엔드포인트 전체 목록은 `GET /docs`(Swagger) 참조 — 이 docstring에 별도 유지하지 않는다.
+관측 엔드포인트의 데이터 소스는 store/schema.sql의 파생 뷰 + raw.pipelines/
+super_cycle_context 직접 조회 + 밴딧 리플레이(_replay_bandit_timeline, 히스토리
+테이블 없이 update_bandit 규칙 재현) + memory.transfer._fp_distance 재사용.
+retrieved_ids(P1)는 forward-only라 과거 데이터가 섞인 경우
+lesson_funnel.retrieved_precise=false로 표시된다.
 
 Postgres 연결은 호출 측(daemon)이 주입한다.
 DaemonState는 daemon 메인 루프가 갱신하고 API가 읽는 공유 객체.
@@ -523,7 +486,7 @@ def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None
 
 
 def _last_submitted_attempt(conn: PgConn, competition_id: str) -> str | None:
-    """오래 안 풀린 'submitted'는 미확정으로 보고 제외한다(#52) — 안 그러면 재제출
+    """오래 안 풀린 'submitted'는 미확정으로 보고 제외한다 — 안 그러면 재제출
     조건이 영원히 안 걸린다."""
     row = conn.execute(
         """
@@ -558,20 +521,15 @@ def _submission_gain_significant(
     candidate_attempt_id: str,
     baseline_attempt_id: str,
 ) -> bool:
-    """candidate가 baseline(직전 유효 제출) 대비 fold noise를 넘는 실제 개선인지 (#87).
+    """candidate가 baseline(직전 유효 제출) 대비 fold noise를 넘는 실제 개선인지.
 
-    기존 auto-submit 게이트는 best attempt_id가 바뀌었는지만 봐서 fold noise 수준
-    (실측 0.07~0.49σ)의 CV 차이로도 재제출됐고, LB는 사실상 랜덤워크했다(완료 제출
-    연속쌍 20건 중 ΔCV/ΔLB 방향 일치 55% — 동전 던지기 수준. s6e7 07-25는 0.07σ
-    차이로 재제출해 LB가 그 폭의 14배를 반대 방향으로 잃었다). 승격 게이트
-    (cycle/run.py, BON-267)와 동일한 is_significant_gain(paired per-fold t-test)을
-    재사용해 두 게이트의 기준을 통일한다.
+    승격 게이트(cycle/run.py)와 동일한 is_significant_gain(paired per-fold t-test)을
+    재사용해 두 게이트의 기준을 통일한다. LB 자체는 게이트 입력으로 쓰지 않는다 —
+    public split 노이즈가 있어 절대 기준으로 삼지 않고, 이 CV 유의성 검정만
+    통과하면 직전 LB가 더 좋았어도 교체를 허용한다.
 
-    LB 자체는 게이트 입력으로 쓰지 않는다 — public split 노이즈가 있어 절대 기준으로
-    삼지 않고, 이 CV 유의성 검정만 통과하면 직전 LB가 더 좋았어도 교체를 허용한다.
-
-    필요한 attempt 데이터가 없으면(과거 데이터 결손 등) fail-open으로 True를 반환한다 —
-    #73에서 겪은 것처럼 데이터 결손이 게이트를 영구 폐쇄하는 자기강화 데드락을 피하기 위함.
+    필요한 attempt 데이터가 없으면(과거 데이터 결손 등) fail-open으로 True를
+    반환한다 — 데이터 결손이 게이트를 영구 폐쇄하는 자기강화 데드락을 피하기 위함.
     """
     row = conn.execute(
         "select metric_sign from raw.competitions where competition_id = %s",
@@ -599,12 +557,11 @@ def _submission_gain_significant(
 def _detect_cv_lb_divergence(
     conn: PgConn, competition_id: str, attempt_id: str, lb_score: float, submitted_at,
 ) -> str | None:
-    """이번 완료 제출의 cv_score를 직전 완료 제출의 cv/LB와 비교한다(#104).
+    """이번 완료 제출의 cv_score를 직전 완료 제출의 cv/LB와 비교한다.
 
-    cv는 개선인데 LB가 악화됐으면(s5e10 GH #96, s4e12 GH #80과 같은 패턴) 사유
-    문자열을 반환 — cross-seed confirm은 seed만 바꾼 CV라 이런 발산은 못 잡고,
-    holdout 게이트(#98)도 사후 실측(실제 LB)만큼 확실하진 않다. 이건 그 실제
-    LB 신호 자체로 잡는 마지막 방어선.
+    cv는 개선인데 LB가 악화됐으면 사유 문자열을 반환 — cross-seed confirm은
+    seed만 바꾼 CV라 이런 발산은 못 잡고, holdout 게이트도 사후 실측(실제 LB)만큼
+    확실하진 않다. 이건 그 실제 LB 신호 자체로 잡는 마지막 방어선.
     """
     cur_row = conn.execute(
         "select cv_score from raw.attempts where attempt_id = %s", [attempt_id]
@@ -646,8 +603,8 @@ def _detect_cv_lb_divergence(
 def _apply_cv_lb_divergence_tripwire(
     conn: PgConn, competition_id: str, attempt_id: str, reason: str,
 ) -> None:
-    """원천 pipeline을 격리하고(#99 invalid_reason과 동일 컬럼) 대회 auto-submit을
-    중단한다. 자동 해제 없음 — 사람이 원인을 확인하고 raw.competitions.
+    """원천 pipeline을 격리하고(invalid_reason) 대회 auto-submit을 중단한다.
+    자동 해제 없음 — 사람이 원인을 확인하고 raw.competitions.
     auto_submit_paused_reason을 직접 NULL로 되돌려야 재개된다."""
     conn.execute(
         "update raw.pipelines set invalid_reason = %s where attempt_id = %s and invalid_reason is null",
@@ -663,10 +620,7 @@ def refresh_submission_row(conn: PgConn, submission_id: str) -> dict | None:
     """제출 1건을 kaggle에서 1회 재조회해 상태를 갱신한다. 없는 submission_id면 None.
 
     `/api/submissions/{id}/refresh` 엔드포인트와 bin/run_daemon.py의 자동 재폴링
-    스윕(#103)이 공유하는 단일 구현 — 이전엔 엔드포인트 안에만 있어서 daemon이
-    주기적으로 재확인할 방법이 없었고, 업로드 직후 1회 pending으로 남으면
-    사용자가 수동으로 이 엔드포인트를 호출하기 전까진 영영 갱신 안 됐다(GH #96
-    s5e10 사후조사에서 3일간 무증상이었던 이유).
+    스윕이 공유하는 단일 구현.
     """
     row = conn.execute(
         """
@@ -942,7 +896,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         _cache.set(cache_key, result)
         return result
 
-    # ---- 관측 (#11/#67) — 건강질문 직결 8개, 데이터는 store/schema.sql 파생 뷰 ----
+    # ---- 관측: 건강질문 직결 8개, 데이터는 store/schema.sql 파생 뷰 ----
 
     @app.get("/api/score/timeline")
     def get_score_timeline(competition: str, limit: int = 2000):
@@ -1212,7 +1166,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         _cache.set(cache_key, result)
         return result
 
-    # ---- 관측 (#11/#67) — 상위 레이어 T1/T2/T4 ----
+    # ---- 관측: 상위 레이어(대회 요약/점수/최고전략) ----
     # best_cv 계산은 cycle/run.py:_prev_best와 동일 로직: 확정 pipelines 우선,
     # 없으면(cold-start) attempts max로 폴백.
     _BEST_CV_SQL = """
@@ -1370,7 +1324,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         _cache.set(cache_key, result)
         return result
 
-    # ---- 관측 (#11/#67) — 밴딧 리플레이 B2b/B2c ----
+    # ---- 관측: 밴딧 리플레이(posterior 시계열/선택 concordance) ----
 
     @app.get("/api/bandit/timeline")
     def get_bandit_timeline(competition: str):
@@ -1420,7 +1374,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         _cache.set(cache_key, result)
         return result
 
-    # ---- 관측 (#11/#67) — 교훈 generality-mix + 에러 rate-timeline/repeat-offenders ----
+    # ---- 관측: 교훈 generality-mix + 에러 rate-timeline/repeat-offenders ----
 
     @app.get("/api/lessons/generality-mix")
     def get_generality_mix(competition: str, bucket: str = "week"):
@@ -1495,7 +1449,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         _cache.set(cache_key, result)
         return result
 
-    # ---- 관측 (#11/#67) — 승격 타임라인 + 전이 리더보드/fp-distance ----
+    # ---- 관측: 승격 타임라인 + 전이 리더보드/fp-distance ----
 
     @app.get("/api/promotions")
     def get_promotions(competition: str):
@@ -1725,7 +1679,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
                 [competition_id],
             ).fetchone()
             if paused_row and paused_row[0]:
-                # cv-lb 발산 트립와이어(#104)가 걸어둔 것 — 자동 해제 없음, 사람이
+                # cv-lb 발산 트립와이어가 걸어둔 것 — 자동 해제 없음, 사람이
                 # 원인 확인 후 raw.competitions.auto_submit_paused_reason을 직접
                 # NULL로 되돌려야 재개된다.
                 skipped.append({"competition": competition_id, "reason": f"auto-submit paused: {paused_row[0]}"})
@@ -1783,7 +1737,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
 
     @app.get("/api/cv-lb-calibration")
     def get_cv_lb_calibration(competition: str | None = None, limit: int = 50):
-        """cv_lb_calibration 뷰(#104) — cv↔LB 부호 일치 관측. 실시간 차단은 이
+        """cv_lb_calibration 뷰 — cv↔LB 부호 일치 관측. 실시간 차단은 이
         엔드포인트가 아니라 refresh_submission_row의 트립와이어가 담당하고,
         여기는 그 판정의 사후 관측·검증용."""
         limit = min(limit, 200)

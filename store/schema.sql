@@ -11,9 +11,9 @@ CREATE TABLE IF NOT EXISTS raw.competitions (
     start_ts        timestamp,
     fingerprint     jsonb
 );
--- cv↔LB 발산 트립와이어(#104)가 채운다. NULL이면 정상 — auto_submit이 이 값이
--- 있으면 해당 대회 제출을 건너뛴다. 수동 조사 후 사람이 직접 NULL로 되돌려야
--- 재개된다(자동 해제 없음 — 근본 원인 미해결 상태로 계속 제출되는 게 더 위험).
+-- cv↔LB 발산 트립와이어가 채운다. NULL이면 정상 — auto_submit이 이 값이 있으면
+-- 해당 대회 제출을 건너뛴다. 자동 해제 없음, 사람이 직접 NULL로 되돌려야 재개된다
+-- (docs/decisions.md ADR-026, docs/runbook.md §4-3).
 ALTER TABLE raw.competitions ADD COLUMN IF NOT EXISTS auto_submit_paused_reason text;
 
 CREATE TABLE IF NOT EXISTS raw.attempts (
@@ -55,7 +55,7 @@ ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS fold_scores jsonb;
 -- 상대값, 나머지는 gain_vs_best 그대로. reflection_impact가 이 컬럼만 집계한다.
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS gain_vs_best_relative double precision;
 
--- 관측 P1/P2(#66) — retrieved_ids: 검색된 전체 교훈(reflection_ids는 실제 채택분만).
+-- retrieved_ids: 검색된 전체 교훈(reflection_ids는 실제 채택분만).
 -- forward-only(과거 attempt는 원본 검색 결과가 남아있지 않아 backfill 불가).
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS retrieved_ids text[];
 -- error_signature: error_pitfalls._normalize_error(error_trace) 결과 영속화 — 매 조회마다
@@ -72,14 +72,14 @@ ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS pipeline_sha256 text;
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS oof_preds jsonb;
 
 -- 승격 시점의 병합본(materialized best_pipeline.py) 전문 스냅샷 — Postgres 신뢰 사본.
--- replay(patch 히스토리를 현재 materialize 로직으로 재병합)는 materialize가 바뀔 때마다
--- 당시 병합본과 달라져(#89: sha 불일치 → 제출 크래시/조용한 열화) 평가 시점 base를
--- 재현할 수 없다. submit.py attempt 경로는 이 스냅샷을 base로 쓴다.
+-- replay(patch 히스토리를 현재 materialize 로직으로 재병합)는 materialize 로직이
+-- 바뀌면 당시 병합본과 달라져 평가 시점 base를 재현할 수 없다. submit.py attempt
+-- 경로는 이 스냅샷을 base로 쓴다.
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS materialized_code text;
 
--- 승격 후 사후 발견된 결함(preprocess valid-target 누수 등, GH #96/#97) 표기 —
--- NULL이면 유효. 삭제하지 않고 조회 경로(_prev_best, blend 후보, replay 등)에서만
--- 제외해 이력을 보존한다. bin/quarantine_leaks.py가 스캔해서 채운다.
+-- 승격 후 사후 발견된 결함(preprocess valid-target 누수 등) 표기 — NULL이면 유효.
+-- 삭제하지 않고 조회 경로(_prev_best, blend 후보, replay 등)에서만 제외해 이력을
+-- 보존한다. bin/quarantine_leaks.py가 스캔해서 채운다(docs/decisions.md ADR-025).
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS invalid_reason text;
 
 CREATE TABLE IF NOT EXISTS raw.submission_budget (
@@ -153,8 +153,8 @@ SELECT
 FROM raw.attempts a
 JOIN raw.competitions c USING (competition_id);
 
--- CASCADE 필요: lesson_dead(#67)가 reflection_impact를 참조해서 CASCADE 없이는 두 번째
--- apply_schema부터 "cannot drop view ... other objects depend on it"로 실패한다(#69).
+-- CASCADE 필요: lesson_dead가 reflection_impact를 참조해서 CASCADE 없이는 두 번째
+-- apply_schema부터 "cannot drop view ... other objects depend on it"로 실패한다.
 -- lesson_dead는 이 파일 뒤쪽에서 CREATE OR REPLACE로 다시 만들어지므로 안전하다.
 DROP VIEW IF EXISTS reflection_impact CASCADE;
 DROP VIEW IF EXISTS stg_attempts_reflexion_only;
@@ -201,11 +201,9 @@ GROUP BY reflection_id
 ORDER BY avg_gain DESC;
 
 -- super-cycle 공유 retrieve 컨텍스트 (retrieve task → attempt/promote tasks)
--- PK를 queue_id -> run_id(Airflow dag_run_id)로 변경. queue_id는 같은
--- super-cycle의 여러 cycle이 공유해서(max_active_runs=4) 동시 실행 시 서로의
--- context row를 덮어쓰거나 훔쳐 지우는 레이스가 있었다 — run_id는 cycle마다 유일.
--- 기존 라이브 DB의 PK 전환(queue_id -> run_id)은 이 파일이 다루지 않는 1회성 수동
--- 마이그레이션으로 처리한다(스키마 적용기가 세미콜론 기준 단순 분할이라 가드된 DDL을 못 돌림).
+-- PK는 queue_id가 아닌 run_id(Airflow dag_run_id) — queue_id는 같은 super-cycle의
+-- 여러 cycle이 공유해서(max_active_runs=4) 동시 실행 시 서로의 context row를
+-- 덮어쓰거나 훔쳐 지우는 레이스가 있었다. run_id는 cycle마다 유일.
 CREATE TABLE IF NOT EXISTS raw.super_cycle_context (
     run_id            text PRIMARY KEY,
     queue_id          text NOT NULL,
@@ -273,7 +271,7 @@ FROM raw.attempts a
 JOIN raw.competitions c USING (competition_id)
 WHERE a.holdout_score IS NOT NULL;
 
--- #66/#67 관측 — 교훈 파이프라인 어디서 끊기나(작성→검색→인용→양의gain).
+-- 교훈 파이프라인 어디서 끊기나(작성→검색→인용→양의gain).
 -- retrieved/retrieve_rate는 P1(retrieved_ids) 반영 이후 데이터만 채워진다 —
 -- retrieved_precise=false면 과거 데이터가 섞여 retrieve_rate를 신뢰하지 말 것.
 CREATE OR REPLACE VIEW lesson_funnel AS
@@ -314,7 +312,7 @@ FROM written w
 FULL OUTER JOIN attempt_stats s USING (competition_id);
 
 -- 죽은 교훈 — 검색 풀 오염원. archive_lessons.py는 times_applied>=3인 것만 정리해
--- 인용 0회(never_cited) 교훈은 영원히 남는다(#11 §2 부수 발견).
+-- 인용 0회(never_cited) 교훈은 영원히 남는다.
 CREATE OR REPLACE VIEW lesson_dead AS
 SELECT
     r.reflection_id,
@@ -335,7 +333,7 @@ WHERE r.archived = false
   AND (coalesce(i.times_applied, 0) = 0 OR i.avg_gain <= 0);
 
 -- near-duplicate 교훈(Reflector 패러프레이즈 남발 감시). 임계는 넉넉히(0.90) 저장해
--- 두고 api.py가 ?threshold= 로 더 좁힌다. 2026-07-23 실측: cos_sim>0.95 686쌍.
+-- 두고 api.py가 ?threshold= 로 더 좁힌다.
 CREATE OR REPLACE VIEW lesson_duplicates AS
 SELECT
     a.competition_id,
@@ -350,7 +348,7 @@ WHERE a.archived = false AND b.archived = false
   AND 1 - (a.embedding <=> b.embedding) > 0.90;
 
 -- 밴딧 믿음(posterior_mean)과 실측 가중성공률 괴리. jump_rate가 아니라
--- update_bandit(action_optimizer.py)과 동일한 가중치로 실측해야 구조적 gap을 피한다(#11 §5).
+-- update_bandit(action_optimizer.py)과 동일한 가중치로 실측해야 구조적 gap을 피한다.
 CREATE OR REPLACE VIEW bandit_calibration AS
 WITH realized AS (
     SELECT
@@ -391,7 +389,7 @@ LEFT JOIN realized r ON r.scope_key = b.scope_key AND r.action_type = b.action_t
 
 -- 에러 시그니처별 재발(P2 error_signature 기반). pitfall_active는 top_error_pitfalls의
 -- min_count=2와 동일 기준(2회째까지는 pitfall 미주입) — occurrences_after_active>0이면
--- 안티패턴 루프가 안 닫힌 것(#11 §2 부수 발견).
+-- 안티패턴 루프가 안 닫힌 것.
 CREATE OR REPLACE VIEW error_recurrence AS
 WITH sigs AS (
     SELECT
@@ -448,12 +446,12 @@ CREATE TABLE IF NOT EXISTS raw.kaggle_submissions (
     checked_at     timestamp
 );
 
--- cv↔LB 정합성(#104) — 완료된 제출을 시간순으로 이어 delta_cv/delta_lb를 계산한다.
+-- cv↔LB 정합성 — 완료된 제출을 시간순으로 이어 delta_cv/delta_lb를 계산한다.
 -- 둘 다 metric_sign을 곱해 "개선이면 양수"로 방향을 통일했다. diverged=true는
--- cv는 개선인데 LB는 악화된 제출 — s5e10(GH #96)/s4e12(GH #80) 패턴의 관측 근거.
--- 실시간 차단은 이 뷰가 아니라 bin/api.py:refresh_submission_row의 트립와이어가
--- 담당(승격 시점에 즉시 invalid_reason/auto_submit_paused_reason을 채움) — 이 뷰는
--- 그 판정의 사후 관측·검증용.
+-- cv는 개선인데 LB는 악화된 제출. 실시간 차단은 이 뷰가 아니라
+-- bin/api.py:refresh_submission_row의 트립와이어가 담당(승격 시점에 즉시
+-- invalid_reason/auto_submit_paused_reason을 채움, docs/decisions.md ADR-026) —
+-- 이 뷰는 그 판정의 사후 관측·검증용.
 CREATE OR REPLACE VIEW cv_lb_calibration AS
 WITH ordered AS (
     SELECT
@@ -485,10 +483,10 @@ SELECT
         AND metric_sign * (lb_score - prev_lb) < 0) AS diverged
 FROM ordered;
 
--- bin/blend.py 가중치(#75) — 대회당 최신 1건만 유지(competition_id PK, upsert).
+-- bin/blend.py 가중치 — 대회당 최신 1건만 유지(competition_id PK, upsert).
 -- 승격 시점마다 cycle/run.py·bin/run_promote_task.py가 자동 재계산해 채운다.
 -- 로컬 파일(runs/blend/*.json)은 Airflow task 컨테이너 간 안 보이므로 DB가
--- 유일한 신뢰 사본 — submit.py는 아직 이 값을 안 씀(계산·저장까지만, #75 범위).
+-- 유일한 신뢰 사본 — submit.py는 이 값을 소비하지 않는다(계산·저장까지만).
 CREATE TABLE IF NOT EXISTS raw.blend_weights (
     competition_id  text PRIMARY KEY,
     pipeline_ids    jsonb,

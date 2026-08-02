@@ -1,4 +1,4 @@
-"""LB 자동 재폴링 (#103) 단위 테스트.
+"""LB 자동 재폴링 단위 테스트.
 
 bin/run_daemon.py의 백오프 로직 + 스윕 배선, bin/api.py의 refresh_submission_row
 (엔드포인트와 daemon 스윕이 공유하는 핵심 로직) 둘 다 커버한다.
@@ -53,13 +53,10 @@ def test_refresh_backoff_very_old_uses_widest_interval():
 
 
 def test_refresh_due_handles_naive_db_datetimes_against_aware_now():
-    """#118 회귀 재현 — 실제 배포에서 daemon이 크래시루프에 빠졌던 정확한 시나리오.
-
-    raw.kaggle_submissions.submitted_at/checked_at는 timezone 없는 `timestamp`
+    """raw.kaggle_submissions.submitted_at/checked_at는 timezone 없는 `timestamp`
     컬럼이라 psycopg2가 naive datetime을 반환하는데, _sweep_stale_submissions는
-    aware(datetime.now(timezone.utc))인 now와 비교한다 — 로컬 mock 테스트는 전부
-    양쪽을 aware로만 구성해서 이 조합을 놓쳤었다. 여기서는 DB round-trip을
-    흉내내 submitted_at/checked_at을 naive로, now는 aware로 명시적으로 섞는다.
+    aware(datetime.now(timezone.utc))인 now와 비교한다 — DB round-trip을 흉내내
+    submitted_at/checked_at을 naive로, now는 aware로 명시적으로 섞는다.
     """
     now_aware = datetime(2026, 8, 2, 12, 0, 0, tzinfo=timezone.utc)
     submitted_at_naive = datetime(2026, 8, 2, 11, 55, 0)  # DB에서 온 그대로 — tzinfo 없음
@@ -183,9 +180,9 @@ def test_refresh_submission_row_error_status_records_error_field():
     assert "kaggle: error" in rec["error"]
 
 
-# --- cv↔LB 발산 트립와이어 (#104) ---
-# s5e10(GH #96)/s4e12(GH #80)처럼 cv는 개선인데 LB가 악화된 제출을 감지해
-# 원천 pipeline을 격리하고 해당 대회 auto-submit을 중단한다.
+# --- cv↔LB 발산 트립와이어 ---
+# cv는 개선인데 LB가 악화된 제출을 감지해 원천 pipeline을 격리하고
+# 해당 대회 auto-submit을 중단한다.
 
 from bin.api import _apply_cv_lb_divergence_tripwire, _detect_cv_lb_divergence  # noqa: E402
 
@@ -266,7 +263,7 @@ def test_refresh_submission_row_complete_without_divergence_does_not_pause():
     assert len(comp_calls) == 0
 
 
-# --- auto_submit 일시중단 게이트 (#104) ---
+# --- auto_submit 일시중단 게이트 ---
 
 def test_auto_submit_skips_paused_competition(monkeypatch):
     import bin.api as api_mod
