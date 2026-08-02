@@ -1,26 +1,11 @@
 """
-raw.pipelines 타깃 누수 격리 스캐너 (GH #96/#97 이후 소급, #99).
+raw.pipelines 타깃 누수 격리 스캐너. 실행 순서·운영 절차는 docs/runbook.md §4-1.
 
-#97 이전에 승격된 파이프라인은 preprocess 훅의 valid-target 의존 누수(#96, s5e10
-quantile-bin 패턴)를 걸러내는 게이트 없이 통과했을 수 있다. 이 스크립트는 그 기준
-(evaluator.harness._check_preprocess_target_leak과 동일한 실측 동등성 검사)으로
-기존 승격 행을 스캔해 invalid_reason='target_leak_preprocess: ...'을 표기한다.
-
-삭제하지 않는다 — cycle/run.py._prev_best 등 조회 경로가 invalid_reason IS NULL로
-제외하면 이력 보존과 격리를 동시에 만족한다. 격리 후 해당 대회는 MinIO
-best_pipeline.py도 다시 맞춰야 한다(이 스크립트는 raw.pipelines 행만 표기하고
-MinIO는 건드리지 않음) — bin/rebuild_best_pipeline.py를 이어서 실행할 것
-(cycle/materialize.replay_best_pipeline이 invalid_reason 있는 행을 건너뛰도록
-같이 수정됨).
-
-materialized_code(#89 스냅샷)가 있으면 그걸로, 없으면 이 행 자신의 code(해당
-attempt의 patch delta)로 검사한다 — 후자는 이 행이 그 자체로 preprocess를
-재정의하지 않으면(이전 승격에서 물려받는 경우) 검사 대상이 없어 통과로
-판정되므로, materialized_code 백필(bin/backfill_materialized_code.py)을
-먼저 실행하면 더 정확하다.
-
-대회당 전체 train 데이터를 로드하므로(store.train_data.load_train) 대형 대회
-(s4e7 등)는 스캔 자체가 느릴 수 있다 — 1회성 운영 스크립트라 감내.
+evaluator.harness._check_preprocess_target_leak과 동일한 실측 동등성 검사로 기존
+승격 행을 스캔해 invalid_reason='target_leak_preprocess: ...'을 표기한다(삭제 아님).
+materialized_code 스냅샷이 없는 행은 이 행 자신의 code(patch delta)로만 검사하므로
+이전 승격에서 물려받아 preprocess를 재정의하지 않는 행은 검사 대상이 없어 통과로
+판정된다 — bin/backfill_materialized_code.py를 먼저 돌리면 더 정확하다.
 
 Dry-run (표기 안 함, 대상만 출력):
   uv run python -m bin.quarantine_leaks --dry-run
@@ -42,11 +27,7 @@ _MIN_ROWS_FOR_SCAN = 20  # 표본이 너무 작으면 leak 판정 자체가 불�
 
 
 def _competition_id_to_slug() -> dict[str, str]:
-    """config/competitions/*.py 스캔 → {competition_id: module_slug} 맵.
-
-    bin/api.py._competition_id_to_slug와 동일 목적이나, 그쪽의 요청-스코프 캐시
-    (_cache, 3600s TTL)는 1회성 CLI 스크립트에 불필요해 독립 구현한다.
-    """
+    """config/competitions/*.py 스캔 → {competition_id: module_slug} 맵."""
     result: dict[str, str] = {}
     for path in (ROOT / "config" / "competitions").glob("*.py"):
         if path.stem.startswith("_"):
@@ -64,13 +45,10 @@ def _competition_id_to_slug() -> dict[str, str]:
 def _scan_pipeline(comp: object, code: str) -> str | None:
     """이 코드가 valid-target 의존 preprocess를 갖는지 실측.
 
-    반환: 'target_leak_preprocess: ...'(실제 누수 확정) 또는 None(깨끗함 **또는
-    판정 불가**). exec 실패·데이터 로드 실패(#120 — 로컬에 train.csv 없음/MinIO
-    미설정 등 순수 환경 문제)는 누수의 증거가 아니므로 격리하지 않는다 — 호출부
-    scan()이 non-None 반환을 곧바로 격리 대상으로 집계하기 때문에, 여기서
-    "판정 불가"를 "누수 확정"과 절대 같은 값으로 반환하면 안 된다(실측: 이
-    구분이 없던 버전으로 실제 스캔했다면 s4e1/s5e3 정상 파이프라인 27개가
-    로컬 데이터 캐시 부재만으로 부당하게 격리될 뻔했다). 판정 불가 사례는
+    반환: 'target_leak_preprocess: ...'(실제 누수 확정) 또는 None(깨끗함 또는
+    판정 불가). exec/데이터 로드 실패는 누수의 증거가 아니므로 반드시 None을
+    반환한다 — 호출부 scan()이 non-None을 곧바로 격리 대상으로 집계하기 때문에,
+    "판정 불가"를 "누수 확정"과 같은 값으로 반환하면 안 된다. 판정 불가 사례는
     stdout에 남겨 운영자가 재시도 필요 여부를 알 수 있게 한다.
     """
     from evaluator.harness import (

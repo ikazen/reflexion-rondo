@@ -12,14 +12,14 @@ DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_I
 S3_DATA_PATH      = "s4e7/data/"
 EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
 
-# GH #84: 1150만행 전량 로드 시 100-cycle 큐가 전량 OOM(RLIMIT_AS 6GiB, runtime/isolate.py).
+# 1150만행 전량 로드 시 100-cycle 큐가 전량 OOM(RLIMIT_AS 6GiB, runtime/isolate.py).
 # 층화 샘플링(store/train_data.py:load_train, IS_CLASSIFICATION=True라 클래스 비율 보존)으로
 # 1/8 수준(약 144만행)까지 줄인다 — 그래도 OOM이면 대회 등록 해제가 다음 조치.
 MAX_TRAIN_ROWS = 1_500_000
 
 EDA_CARD = """competition: playground-series-s4e7 (Insurance Cross-Sell Prediction)
 task: binary classification  metric: AUC  target: Response
-rows: ~1500000 (MAX_TRAIN_ROWS로 층화 샘플링 — 원본 11504798행에서 OOM 방지, GH #84)
+rows: ~1500000 (MAX_TRAIN_ROWS로 층화 샘플링 — 원본 11504798행에서 OOM 방지)
 features: 10 (대회 중 최대 규모 — 학습 시간/메모리 예산 유의)
 target rate: 12.3% Response=1 / 87.7% Response=0 (minority=1, imbalanced)
 no missing values

@@ -33,7 +33,7 @@ _PANDAS_ONLY_ATTRS = frozenset({
 _ALL_HOOKS = frozenset({
     "preprocess", "feature_transform", "param_candidates",
     "build_model", "postprocess_predictions",
-    # ensemble_spec(#74) — 선언형 앙상블. build_model 대신 "무엇을 조합할지"만
+    # ensemble_spec — 선언형 앙상블. build_model 대신 "무엇을 조합할지"만
     # 반환하면 harness가 생성·적합·결합을 전담한다(evaluator/harness.py 참고).
     # ensemble/bootstrap에 자동 포함(둘 다 _ALL_HOOKS를 그대로 씀); 단일 변경
     # 원칙(ADR-006)이 적용되는 4개 제한 action_type에는 포함 안 됨.
@@ -89,12 +89,11 @@ def _find_patch_class(tree: ast.AST) -> ast.ClassDef | None:
     return None
 
 
-# candidate patch 자체의 undefined-name 검사. cycle/materialize.py의
-# 동명 로직과 의도적으로 별도 구현이다 — materialize.py는 이미 검증된 안전 경계(merged
-# best_pipeline 손상 방지)라 이번 변경 범위에서 건드리지 않는다. 여기서는 runtime/runner.py가
-# candidate patch를 base와 완전히 분리된 빈 namespace에 exec하는 것과 정확히 같은 이름
-# 해석 범위(자기 자신의 import/top-level helper + builtins + self/ctx)로 검사하므로,
-# patch 혼자 실행됐을 때 NameError가 날지 여부를 정적으로 미리 잡을 수 있다.
+# candidate patch 자체의 undefined-name 검사. cycle/materialize.py의 동명 로직과
+# 별도 구현 — runtime/runner.py가 candidate patch를 base와 완전히 분리된 빈
+# namespace에 exec하는 것과 정확히 같은 이름 해석 범위(자기 자신의 import/top-level
+# helper + builtins + self/ctx)로 검사해, patch 혼자 실행됐을 때 NameError가 날지
+# 정적으로 미리 잡는다.
 _SAFE_NAMES = frozenset(dir(builtins)) | {"self", "cls", "__class__"}
 
 
@@ -194,11 +193,10 @@ def _preprocess_reads_valid_target(item: ast.FunctionDef) -> bool:
     """preprocess(self, train, valid, target, ctx) 안에서 valid[target] 스타일로
     검증 split의 타깃 컬럼을 직접 읽는지 정적으로 확인.
 
-    이름 기반 lint다(파일 상단 docstring 참고) — 실제 격리 경계는
+    이름 기반 lint다(파일 상단 docstring 참고) — 실제 판정은
     evaluator.harness._check_preprocess_target_leak의 런타임 동등성 검사가 담당하고,
-    이건 그 전에 흔한 패턴(GH #96, s5e10)을 값싸게 미리 걸러 재생성 왕복을 줄이는
-    보조 장치. valid/target 파라미터명은 시그니처 위치(arity 검사로 이미 5개 고정)로
-    가져오므로 LLM이 다른 이름을 써도 그대로 대응된다.
+    이건 흔한 패턴을 값싸게 미리 걸러 재생성 왕복을 줄이는 보조 장치. valid/target
+    파라미터명은 시그니처 위치(arity 검사로 이미 5개 고정)로 가져온다.
     """
     args = item.args.args
     if len(args) < 4:

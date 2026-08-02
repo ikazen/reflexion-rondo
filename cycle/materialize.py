@@ -84,9 +84,8 @@ def _extract_class_members(source: str) -> dict[str, ast.stmt]:
             for item in node.body:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     # ClassDef 포함: ensemble action_type 등이 build_model에서 참조하는
-                    # wrapper 클래스를 Patch 안에 중첩 정의하는 패턴이 흔한데, 예전엔 여기서
-                    # 빠뜨려 병합본에서만 그 클래스가 사라졌다(cross-seed는 patch source를
-                    # 그대로 exec하니 통과, merge-verify에서만 AttributeError로 드러남).
+                    # wrapper 클래스를 Patch 안에 중첩 정의하는 패턴이 흔해, 누락하면
+                    # 병합본에서만 그 클래스가 사라진다.
                     result[item.name] = item
                 elif isinstance(item, ast.Assign):
                     for target in item.targets:
@@ -176,8 +175,8 @@ def load_base_snapshot(
 
     1순위는 해당 시점 이전 마지막 승격 행의 materialized_code(승격 당시 병합본
     스냅샷). 스냅샷이 없는 과거 이력이면 replay 폴백 — 단 strict_sha로 재생해,
-    재생 결과가 승격 당시 병합본과 다르면 진행하지 않고 raise한다(#89: 평가와
-    다른 base로 제출하면 크래시하거나 조용히 열화된 예측이 제출된다).
+    재생 결과가 승격 당시 병합본과 다르면 진행하지 않고 raise한다 — 평가와
+    다른 base로 제출하면 크래시하거나 조용히 열화된 예측이 제출된다.
 
     반환: (base_source | None, 출처 설명). 승격 이력이 없으면 (None, ...).
     """
@@ -221,17 +220,16 @@ def replay_best_pipeline(
 
     bin/rebuild_best_pipeline.py의 복구 로직과 동일한 재생 패턴을 공용화한 것 —
     거기서는 MinIO best_pipeline.py 손상 복구용, 여기서는 attempt 제출 시 평가
-    시점의 base를 정확히 재현하는 용도(#80). before_run_ts를 주면 그 시각 이전에
+    시점의 base를 정확히 재현하는 용도. before_run_ts를 주면 그 시각 이전에
     승격된 pipeline만 재생한다 — attempt의 cv_score는 그 시점까지의 base 위에서
     측정됐으므로 이후 승격분을 섞으면 안 된다.
 
     반환: (materialized_source, 마지막 행의 pipeline_sha256, 재생한 pipeline 수).
     승격 이력이 없으면 (None, None, 0).
 
-    invalid_reason이 표기된(GH #96 타깃 누수 등, #99 격리) 행은 건너뛴다 — 그 행이
-    바꾼 hook은 병합에서 빠지고, 그 이후 승격분은 건너뛴 상태 위에 그대로 이어붙는다.
-    삭제가 아니라 스킵이라 이후 legitimate 승격이 quarantine된 hook을 참조하지 않는
-    한(각 승격은 자기 완결적 patch라 일반적으로 문제 없음) 안전한 소급 롤백이 된다.
+    invalid_reason이 표기된(격리된) 행은 건너뛴다 — 삭제가 아니라 스킵이라 이후
+    legitimate 승격이 quarantine된 hook을 참조하지 않는 한(각 승격은 자기 완결적
+    patch라 일반적으로 문제 없음) 안전한 소급 롤백이 된다.
     """
     query = """
         SELECT p.pipeline_id, a.run_ts, p.code, p.pipeline_sha256
@@ -265,13 +263,13 @@ def replay_best_pipeline(
     assert best is not None  # rows non-empty, loop always assigns
     actual_sha256 = hashlib.sha256(best.encode()).hexdigest()
     if last_sha256 and actual_sha256 != last_sha256:
-        # 재현 실패의 주원인은 blob 손상이 아니라 materialize 로직 자체의 변경(#83 등)
-        # — 과거 레이어를 현재 로직으로 재병합하면 당시 병합본과 다른 코드가 된다(#89).
+        # 재현 실패의 주원인은 blob 손상이 아니라 materialize 로직 자체의 변경 —
+        # 과거 레이어를 현재 로직으로 재병합하면 당시 병합본과 다른 코드가 된다.
         if strict_sha:
             raise RuntimeError(
                 f"replay_best_pipeline: 재생 결과 sha256이 마지막 승격분의 신뢰 해시와 다르다 "
                 f"(competition_id={competition_id}) — 평가 시점 병합본을 재현할 수 없다. "
-                "이 base로 제출하면 평가와 다른 예측이 나가므로 중단한다(#89)."
+                "이 base로 제출하면 평가와 다른 예측이 나가므로 중단한다."
             )
         logger.warning(
             "replay_best_pipeline: 재생 결과 sha256이 마지막 승격분의 신뢰 해시와 다르다 "

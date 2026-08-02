@@ -21,14 +21,11 @@ _MAX_PARAM_CANDIDATES = 12
 _LEAK_PERFECT_HIGH = 0.9999
 _LEAK_PERFECT_LOW = 1e-9
 _EARLY_STOPPING_ROUNDS = 50
-# 회귀 error 메트릭(rmse/mae/rmsle)이 "타깃 평균만 예측하는" trivial baseline보다
-# 이 배수 이상 좋으면 스케일/타깃 누수로 간주한다. s5e5 이중 log1p phantom(cv≈0.017)이
-# trivial baseline 대비 비정상적으로 큰 개선폭을 보였던 사례의 사후 안전망 — 근본 수정은
-# raw 타깃 채점 계약 정비. preprocess 훅의 valid-target 직접 참조는
-# _check_preprocess_target_leak가 전담해서 걸러내지만, 그건 "훅이 target 컬럼을 읽었는가"
-# 만 보는 메커니즘 검사라 다른 경로의 스케일/누수(예: postprocess_predictions의 잘못된
-# 역변환)는 못 잡는다 — 이 비율 가드가 그 결과 기반 2차 방어. 100배는 s5e5 사례
-# (baseline/candidate 수백 배) 이후로도 여유가 커 10배로 낮춘다.
+# 회귀 error 메트릭(rmse/mae/rmsle)이 trivial baseline(train 타깃 평균 예측)보다
+# 이 배수 이상 좋으면 스케일/타깃 누수로 간주한다. _check_preprocess_target_leak은
+# "훅이 target 컬럼을 읽었는가"만 보는 메커니즘 검사라 다른 경로의 스케일 누수
+# (예: postprocess_predictions의 잘못된 역변환)는 못 잡는다 — 이 비율 가드가 그
+# 결과 기반 2차 방어선(decisions.md ADR-015/ADR-025).
 _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO = 10.0
 
 
@@ -96,23 +93,12 @@ def _check_preprocess_target_leak(
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """preprocess 훅이 valid split의 타깃 값에 의존하는 피처를 만드는지 검사.
 
-    preprocess는 feature_transform과 달리 타깃 변환(log1p 등)이 정당해 valid의
-    타깃을 무조건 마스킹할 수 없다(위 _mask_target 주석) — 그래서 직접 금지 대신
-    같은 입력을 타깃 유무만 다르게 두 번 호출해 valid 쪽 산출물이 갈리는지 보는
-    간접 방식을 쓴다: 실제 valid와 _mask_target(valid) 버전 각각으로 preprocess를
-    호출해 결과가 다르면(또는 마스킹 버전이 크래시하면) valid의 타깃을 읽어 파생시킨
-    것으로 판정한다. s5e10 확정 승격 파이프라인(GH #96)이 valid[target]로 10-quantile
-    빈을 직접 만들어 CV는 2.6배 좋아지고 LB는 5배 나빠졌던 사례의 재발 방지.
+    실제 valid와 _mask_target(valid) 버전 각각으로 preprocess를 호출해 결과가
+    다르면(또는 마스킹 버전이 크래시하면) valid의 타깃을 읽어 파생시킨 것으로 판정한다.
+    동일 입력 재호출이 결정적이라는 전제(fold split·모델 모두 ctx.seed 고정)에 의존한다.
 
-    cross-seed confirm과 마찬가지로 동일 입력 재호출이 결정적이라는 전제(fold split이
-    seed 고정, 모델도 ctx.seed 기반)에 의존한다 — preprocess가 통제 안 된 RNG를 쓰면
-    오탐 가능하나, 그런 훅은 애초에 재현성 게이트 전체를 통과 못 한다.
-
-    실제(비마스킹) 호출 결과 (tr2, va2)를 반환한다 — 호출부(evaluate_pipeline)가
-    fold 0에서 같은 입력으로 preprocess를 또 부르지 않고 재사용해, 이 검사가 있어도
-    fold 0당 preprocess 호출이 2회(실제+마스킹)로 끝나고 3회가 되지 않는다. 실제
-    호출이 크래시하면 여기서 그대로 전파한다 — 이 검사가 없었어도 호출부에서
-    발생했을 동일한 에러이므로 별도로 감싸지 않는다.
+    실제(비마스킹) 호출 결과 (tr_real, va_real)를 반환한다 — 호출부(evaluate_pipeline)가
+    fold 0에서 이 결과를 재사용해 preprocess 호출을 3회가 아닌 2회로 유지한다.
     """
     target = ctx.target_col
     tr_real, va_real = pipeline.preprocess(tr, va, target, ctx)
@@ -140,10 +126,8 @@ def dummy_target_value(train: pl.DataFrame, target_col: str):
     """실제 추론(test) 시점과 동일하게 쓸 더미 타깃 값 — train 실재값이어야 한다.
 
     synthetic placeholder(0, NaN 등)는 Patch의 exhaustive target 인코딩에서
-    매핑 밖 값이라 크래시한다(bin/submit.py에서 실측). bin/submit.py와
-    cycle/promotion.py(audit holdout)가 이 함수를 공유해 "추론 시점에 타깃이
-    어떻게 보이는가"를 한 곳에서 정의한다 — 각자 다르게 구현하면 holdout이
-    실제 제출 조건을 재현하지 못한다(GH #96/#98).
+    매핑 밖 값이라 크래시한다. bin/submit.py와 cycle/promotion.py(audit holdout)가
+    이 함수를 공유해 "추론 시점에 타깃이 어떻게 보이는가"를 한 곳에서 정의한다.
     """
     return train[target_col][0]
 
@@ -183,8 +167,8 @@ def _construct_with_kwarg_retry(build_fn, params: dict):
     """params로 build_fn(params)를 호출하되, 제거된/불명 kwarg로 인한 TypeError면
     그 키 하나만 벗기고 재시도한다.
 
-    _build_model_safe(Patch.build_model 경유)와 _build_ensemble_member(#74,
-    ensemble_spec 멤버 생성)가 이 재시도 로직을 공유한다 — 둘 다 LLM이 stale
+    _build_model_safe(Patch.build_model 경유)와 _build_ensemble_member(ensemble_spec
+    멤버 생성)가 이 재시도 로직을 공유한다 — 둘 다 LLM이 stale
     constructor kwarg(예: LogisticRegression의 구 `multi_class`)를 params dict에
     넣는 동일한 실패 양상을 겪는다.
     """
@@ -204,22 +188,12 @@ def _construct_with_kwarg_retry(build_fn, params: dict):
 
 
 def _build_model_safe(pipeline: object, params: dict, ctx: object) -> object:
-    """build_model()이 존재하지 않거나 제거된 kwarg를 params로 받아 생성자에서
-    TypeError로 죽으면, 그 kwarg 하나만 벗기고 재시도한다(#74 후속).
+    """build_model()이 제거된 kwarg를 params로 받아 생성자에서 TypeError로 죽으면
+    그 kwarg 하나만 벗기고 재시도한다.
 
-    프롬프트에 특정 kwarg(예: LogisticRegression의 구 `multi_class`)를 명시적으로
-    경고해도 Coder가 재생성했다 — LLM의 stale API 지식이 텍스트 지시보다 강해서
-    프롬프트만으로는 이 클래스의 문제가 수렴하지 않는다. build_model()이 params를
-    `**params`로 그대로 언패킹하는 흔한 패턴에서는 여기서 잡힌다.
-
-    범위 밖(단, ensemble_spec을 쓰면 애초에 해당 안 됨 — 아래 참고): Coder가 생성한
-    wrapper 클래스 자신의 fit() 메서드 몸체 안에서 내부적으로 하는 하위 모델 호출
-    (예: ensemble wrapper가 자기 fit() 안에서 `LGBMClassifier().fit(X, y,
-    verbose=False)`를 잘못 호출)은 harness가 볼 수 없는 exec된 코드 내부라 이
-    함수로 못 잡는다. #74가 실제로 택한 해법은 몽키패치가 아니라 ensemble
-    action_type에 선언형 대안(ensemble_spec, 아래 _build_ensemble_member)을 추가해
-    LLM이 애초에 wrapper 클래스를 안 쓰도록 유도하는 것 — 자유형 build_model
-    경로는 계속 남아있으므로 이 안전망도 유지한다.
+    범위 밖: 생성된 wrapper 클래스 자신의 fit() 메서드 몸체 안에서 내부적으로
+    하는 하위 모델 호출은 harness가 볼 수 없는 exec된 코드 내부라 이 함수로
+    못 잡는다 — ensemble_spec(선언형)이 이 범위 밖 문제 자체를 우회한다.
     """
     return _construct_with_kwarg_retry(lambda p: pipeline.build_model(p, ctx), params)
 
@@ -227,16 +201,11 @@ def _build_model_safe(pipeline: object, params: dict, ctx: object) -> object:
 def _fit_with_early_stopping(model: object, Xtr, ytr, Xva, yva) -> None:
     """fold valid를 early stopping에 쓸 수 있는 estimator면 opt-in으로 활용한다.
 
-    LightGBM/XGBoost/CatBoost는 fit()에 eval_set을 받고(라이브러리별로 콜백/kwarg가
-    다름), sklearn HistGradientBoosting은 X_val/y_val을 받는다. Patch.build_model이
-    반환하는 model이 어떤 타입인지 harness는 알 수 없으므로 fit() 시그니처를 검사해
-    감지하고, 무엇이든 실패하면(estimator가 이 인자들을 실제로 지원 안 하거나 조합이
-    안 맞는 경우) 조용히 기존 fit(Xtr, ytr)로 폴백한다 — opt-in이라 결과가 나빠지지
-    않는다(라이브러리 자체 콜백이 최선의 라운드에서 멈추므로 동일하거나 더 나음).
+    fit() 시그니처를 검사해 eval_set/X_val 지원 여부를 감지하고, 실패하면 조용히
+    기존 fit(Xtr, ytr)로 폴백한다 — opt-in이라 결과가 나빠지지 않는다.
 
     XGBoost는 3.x부터 early_stopping_rounds가 생성자 전용이라 harness가 fit()에서
-    강제할 수 없다 — eval_set만 전달, 실제 조기 종료 여부는 Patch.build_model이
-    생성자에 early_stopping_rounds를 설정했는지에 달려있다.
+    강제할 수 없다 — 실제 조기 종료 여부는 Patch.build_model이 생성자에 설정했는지에 달려있다.
     """
     try:
         sig_params = inspect.signature(model.fit).parameters
@@ -257,16 +226,9 @@ def _fit_with_early_stopping(model: object, Xtr, ytr, Xva, yva) -> None:
     model.fit(Xtr, ytr)
 
 
-# --- ensemble_spec: 선언형 앙상블 (#74) ---
-#
-# ensemble action_type의 자유형 wrapper 클래스(직접 fit()/predict() 구현)는 #42
-# 이후에도 크래시율이 70%→55%로만 떨어지고 더는 안 움직였다 — 원인이 harness가
-# 볼 수 없는 exec된 클래스 몸체 내부(super() 오용, 생성자 stale kwarg 하드코딩,
-# 자기 fit() 안에서 하위 모델 재구성)라 정적 검증도 _build_model_safe 같은 런타임
-# 안전망도 못 미쳤다(#74 3라운드 실측). 몽키패치는 범위/리스크가 너무 커 보류됐고,
-# 대신 이 모듈이 모델 생성·적합·결합을 전부 대신해 그 클래스 자체를 없앤다 —
-# Patch는 "무엇을 조합할지"만 선언(ensemble_spec)하고 "어떻게 조합할지"는 신뢰
-# 코드가 맡는다. 기존 자유형 build_model 기반 ensemble 훅은 그대로 허용(병행).
+# --- ensemble_spec: 선언형 앙상블 (decisions.md ADR-023) ---
+# Patch는 "무엇을 조합할지"만 선언하고, 모델 생성·적합·결합은 이 모듈이 전담한다.
+# 기존 자유형 build_model 기반 ensemble 훅은 병행 허용.
 
 _ENSEMBLE_MODEL_REGISTRY: dict[str, dict[str, str]] = {
     "lgbm":          {"module": "lightgbm",           "classifier": "LGBMClassifier",                "regressor": "LGBMRegressor"},
@@ -429,8 +391,8 @@ class BasePipeline:
         return preds
 
     def ensemble_spec(self, ctx: PipelineContext) -> dict | None:
-        """#74 — 정의돼 있으면 evaluate_pipeline이 build_model 대신 이 스펙으로
-        멤버들을 harness가 직접 생성·적합·결합한다(_fit_predict_ensemble)."""
+        """정의돼 있으면 evaluate_pipeline이 build_model 대신 이 스펙으로 멤버들을
+        harness가 직접 생성·적합·결합한다(_fit_predict_ensemble)."""
         return None
 
 
@@ -507,7 +469,7 @@ def preselect_params(
     계산 비용(k^2 모델 피팅)이 크다. 현재 구현은 단일 inner holdout으로 절충
     (see docs/decisions.md ADR-021).
 
-    ensemble_spec(#74)이 정의된 파이프라인은 하이퍼파라미터가 스펙의 멤버별
+    ensemble_spec이 정의된 파이프라인은 하이퍼파라미터가 스펙의 멤버별
     params에 이미 들어있어 이 탐색 대상이 아니다 — 빈 dict를 그대로 반환한다.
     """
     if pipeline.ensemble_spec(ctx) is not None:
@@ -625,7 +587,7 @@ def evaluate_pipeline(
         Xva_np = Xva.to_numpy()
 
         if ensemble_spec_dict is not None:
-            # #74 — harness가 멤버를 직접 생성·적합·결합. best_model=None: 앙상블은
+            # harness가 멤버를 직접 생성·적합·결합. best_model=None: 앙상블은
             # 단일 estimator 개념이 없고, ensemble action_type은 애초에
             # _IMPORTANCE_ACTIONS 밖이라 permutation importance 대상도 아니다.
             with warnings.catch_warnings():

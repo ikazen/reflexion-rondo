@@ -86,12 +86,9 @@ class _AttemptData:
 def _prev_best(conn: PgConn, competition_id: str) -> float | None:
     """확정 파이프라인(raw.pipelines, cross-seed+holdout 확인 통과분)의 cv_score.
 
-    확정 파이프라인이 없으면 None — 이전엔 여기서 raw.attempts 전체 최고 cv_score로
-    폴백했으나(phantom-max), 그 값은 재측정 없이 채택된 것이라 자기강화 데드락의
-    근본 원인이었다(#73). 이제 콜드스타트 대응은 establish_bootstrap_baseline(#100,
-    bootstrap 배치 종료 시)과 bin/establish_baseline.py(#101, 기존 대회 소급)가
-    실제 재검증을 거쳐 raw.pipelines를 채우는 방식으로 처리한다(#102) — 여기서
-    폴백으로 봉합하지 않는다.
+    확정 파이프라인이 없으면 None — 재측정 없는 attempt 최고값으로 폴백하지 않는다
+    (decisions.md ADR-025). 콜드스타트 대응은 establish_bootstrap_baseline과
+    bin/establish_baseline.py가 실제 재검증으로 처리한다.
     """
     row = conn.execute(
         """
@@ -140,10 +137,8 @@ def _prev_best_fold_scores(conn: PgConn, competition_id: str) -> list[float] | N
     같은 seed로 생성된 fold split은 결정적이라 candidate의 fold_scores와 인덱스별로
     바로 대응시킬 수 있다.
 
-    확정 파이프라인이 없으면 None — 이전엔 raw.attempts 전체 최고 cv_score의
-    fold_scores로 폴백했으나(phantom-max), 재측정 없이 채택된 값이라 자기강화
-    데드락의 근본 원인이었다(#73). 콜드스타트 대응은 establish_bootstrap_baseline
-    (#100)과 bin/establish_baseline.py(#101)가 실제 재검증으로 처리한다(#102).
+    확정 파이프라인이 없으면 None — 재측정 없는 attempt 최고값의 fold_scores로
+    폴백하지 않는다(decisions.md ADR-025).
     """
     row = conn.execute(
         """
@@ -176,13 +171,10 @@ def establish_bootstrap_baseline(
 ) -> bool:
     """bootstrap 배치 종료 시 최고 attempt를 BasePipeline 대비 검증해 확정 baseline으로 승격한다.
 
-    확정 파이프라인(raw.pipelines)이 하나도 없는 신규 대회는 _prev_best/
-    _prev_best_fold_scores가 baseline을 못 찾아 승격 게이트가 영원히 비활성화되는
-    콜드스타트 데드락에 빠졌었다(#73의 phantom-max 폴백은 그 임시 봉합이었고, 실제
-    재측정 없는 attempt 최고값을 baseline으로 썼다 — #100/#102로 폴백 자체를
-    걷어내고 이 함수로 대체한다). bootstrap 배치 끝에 최고 attempt를 실제로
-    cross-seed confirm + holdout 게이트(confirm_and_measure, best_source=None →
-    BasePipeline 대비)를 통과시켜야만 baseline이 된다 — 재측정 없이 그냥 채택하지 않는다.
+    확정 파이프라인이 하나도 없는 신규 대회를 위한 콜드스타트 대응(decisions.md
+    ADR-025) — bootstrap 배치 끝에 최고 attempt를 실제로 cross-seed confirm +
+    holdout 게이트(confirm_and_measure, best_source=None → BasePipeline 대비)를
+    통과시켜야만 baseline이 된다.
 
     이미 확정 파이프라인이 있으면(재부트스트랩 등) 아무것도 하지 않고 False 반환.
     반환값은 이번 호출로 새로 baseline이 확립됐는지 여부.
@@ -680,7 +672,7 @@ def run_attempt_core(
             _best_pipeline_upload(config.competition_id, materialized)
             _LOG.info("best pipeline materialized (gain=%+.5f)", gain_vs_best)
 
-            # blend 가중치 재계산(#75) — best-effort, 실패해도 승격 자체는 이미
+            # blend 가중치 재계산 — best-effort, 실패해도 승격 자체는 이미
             # 끝났으니 예외를 흡수만 하고 계속 진행한다.
             try:
                 from bin.blend import compute_and_store_blend

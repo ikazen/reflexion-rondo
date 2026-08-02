@@ -282,7 +282,7 @@ def generate_code(
     is_bootstrap = action_type == "bootstrap"
     contract = _BOOTSTRAP_CONTRACT if is_bootstrap else _REFLEXION_CONTRACT
 
-    # 정적 검증은 생성 이후에만 컨트랙트 위반을 잡아 반복된다(#42) — 허용 hook을
+    # 정적 검증은 생성 이후에만 컨트랙트 위반을 잡아 반복된다 — 허용 hook을
     # 생성 이전 user 메시지에 action_type별로 명시.
     allowed_hooks = sorted(_ALLOWED_HOOKS.get(action_type, _ALL_HOOKS))
     hook_directive = (

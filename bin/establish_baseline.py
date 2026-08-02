@@ -1,19 +1,13 @@
-"""기존 대회 baseline 소급 확립 스크립트 (#101).
+"""기존 대회 baseline 소급 확립 스크립트. 배경·운영 절차는 docs/decisions.md
+ADR-025, docs/runbook.md §4-2.
 
-확정 파이프라인(raw.pipelines)이 0건인 대회는 cycle/run.py의 _prev_best /
-_prev_best_fold_scores가 baseline을 못 찾아 승격 게이트(is_significant_gain의
-paired per-fold 검정)가 영원히 비활성화되는 콜드스타트 데드락에 빠진다 — #73의
-phantom-max 폴백(전체 attempt의 max cv를 baseline으로 대체)은 이 문제의 임시
-봉합이었고, 재측정 없이 attempt 최고값을 그냥 baseline으로 채택했다.
-
-이 스크립트는 그 대회들을 대상으로 cv 상위 top-k개 attempt를 순회하며
-BasePipeline 대비 cross-seed confirm + holdout 게이트(#97/#98 — preprocess
-valid-target 누수와 추론조건 발산을 실제로 검증)를 통과하는 첫 번째를
-raw.pipelines에 확정 baseline으로 승격한다. phantom(s5e5의 이중 log1p처럼
-실제로는 재현 안 되는 비정상 고점)은 게이트를 통과 못 해 자동 탈락하고 다음
-순위로 넘어간다 — cycle/run.py:establish_bootstrap_baseline(#100, 단일 최고
-attempt만 시도)과 달리 이미 대량 축적된 attempt 풀에서 phantom이 최고점을
-차지하고 있을 가능성에 대응하기 위해 top-k 폴백을 갖는다.
+확정 파이프라인(raw.pipelines)이 0건인 대회의 cv 상위 top-k개 attempt를 순회하며
+BasePipeline 대비 cross-seed confirm + holdout 게이트를 통과하는 첫 번째를
+raw.pipelines에 확정 baseline으로 승격한다. phantom(실제로는 재현 안 되는 비정상
+고점)은 게이트를 통과 못 해 자동 탈락하고 다음 순위로 넘어간다 —
+cycle/run.py:establish_bootstrap_baseline(단일 최고 attempt만 시도)과 달리 이미
+대량 축적된 attempt 풀에서 phantom이 최고점을 차지하고 있을 가능성에 대응하기
+위해 top-k 폴백을 갖는다.
 
 Dry-run (승격 후보만 출력, DB/MinIO 반영 없음):
   uv run python -m bin.establish_baseline --dry-run
@@ -52,11 +46,7 @@ _DEFAULT_TOP_K = 5
 
 
 def _competition_id_to_slug() -> dict[str, str]:
-    """config/competitions/*.py 스캔 → {competition_id: module_slug} 맵.
-
-    bin/api.py, bin/quarantine_leaks.py의 동명 함수와 같은 목적의 독립 구현 —
-    각각 캐시 요구사항·호출 맥락이 달라 공용화하지 않는다(기존 관례).
-    """
+    """config/competitions/*.py 스캔 → {competition_id: module_slug} 맵."""
     result: dict[str, str] = {}
     for path in (ROOT / "config" / "competitions").glob("*.py"):
         if path.stem.startswith("_"):
