@@ -1,5 +1,77 @@
 # 변경 이력
 
+## 미배포 (main, 다음 task 이미지 빌드에 포함 예정)
+- #120: `bin/quarantine_leaks.py`가 코드 exec/데이터 로드 실패(판정 불가)를 누수 확정과 동일하게 처리해 격리 대상으로 잘못 집계하던 문제 수정 — `--dry-run` 프로덕션 실측 중 s4e1/s5e3 정상 파이프라인 27개가 로컬 데이터 캐시 부재만으로 부당하게 격리될 뻔한 사고를 계기로 발견.
+
+## v1.4.14 — daemon 크래시루프 수정: naive/aware datetime (2026-08-02)
+- #118: `bin/run_daemon.py:_submission_refresh_due`가 DB에서 읽은 naive `timestamp`(`raw.kaggle_submissions.submitted_at`/`checked_at`)를 `datetime.now(timezone.utc)`(aware)와 직접 빼서 `TypeError`로 daemon이 크래시루프에 빠짐 — v1.4.13 배포 직후 프로덕션에서 실제 발생. 로컬 mock 테스트는 양쪽을 전부 aware로 구성해 이 조합을 못 잡았다.
+- 세 값(`now`/`submitted_at`/`checked_at`) 모두 naive로 정규화 후 뺄셈하도록 수정, DB round-trip을 실제로 거치는 회귀 테스트 2종 추가.
+
+## v1.4.13 — 학습 정체 근본 원인 수정 (측정 정합성 + 승격 래칫 + LB 되먹임 + 컴퓨트 회수) (2026-08-02)
+"reflexion 상한선이 아닌데 성능 향상이 없다"는 진단에서 나온 4갈래 구조적 결함을 한 번에 배포. Milestone 5개(M1~M5), 이슈 12개.
+
+**M1 측정 정합성**
+- #97: `preprocess` 훅이 valid split의 타깃 컬럼을 직접 읽는 누수를 fold0 동등성 검사(마스킹 전/후 결과 비교)로 실측 차단 + AST 정적 가드. `_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO` 100→10 하향.
+- #98: audit holdout을 `bin/submit.py`와 동일한 dummy target 치환으로 재현해 실제 추론 조건과 일치시키고, `holdout_regressed`를 승격 조건에 AND 결합(기록용→차단 게이트).
+- #99: `raw.pipelines.invalid_reason` 컬럼 + `bin/quarantine_leaks.py` 신설 — 확정 후 누수로 밝혀진 파이프라인을 격리(삭제 아님). 모든 baseline 조회 경로에 `invalid_reason IS NULL` 필터 적용.
+
+**M2 승격 래칫 복구**
+- #100: bootstrap 종료 시 최고 attempt를 `confirm_and_measure`로 검증해 확정 baseline 자동 확립(`cycle/run.py:establish_bootstrap_baseline`).
+- #101: 기존에 확정 파이프라인이 없던 대회를 위한 소급 스크립트 `bin/establish_baseline.py`(top-k 순회, `--dry-run` 지원).
+- #102: "확정 파이프라인 없으면 전체 attempt의 max(cv)로 폴백"하던 phantom-max 분기 제거 — N이 늘수록 문턱이 같이 올라가는 자기강화 데드락의 근본 원인.
+
+**M3 LB 되먹임 연결**
+- #103: daemon 유휴 틱마다 `status IN ('submitted','pending')` 제출을 지수 백오프로 재폴링 — 기존엔 업로드 직후 1회뿐이라 pending이면 수동 refresh 전까지 영구 방치됐다.
+- #104: `cv_lb_calibration` 뷰 + 발산 트립와이어 — CV는 개선인데 LB가 악화된 제출이 나오면 원천 pipeline 격리 + 해당 대회 auto-submit 중단(`auto_submit_paused_reason`, 자동 해제 없음).
+
+**M4 컴퓨트 회수**
+- #84: `comp.MAX_TRAIN_ROWS` opt-in + 층화 샘플링(`store/train_data.py`) — s4e7(11.5M행)이 100-cycle 큐 전량 OOM되던 문제, 1.5M으로 상한 적용.
+- #74: `ensemble_spec` 선언형 앙상블 프리미티브 — 자유형 wrapper 클래스 크래시(70%→55%에서 정체)의 구조적 원인(exec된 클래스 몸체 내부는 harness가 볼 수 없음)을 해소. Patch는 멤버·결합방식만 선언, harness가 생성·적합·결합 전담.
+
+**M5 탐색 능력**
+- #75: `raw.blend_weights` 테이블 신설 + `bin/blend.py:compute_and_store_blend`를 양쪽 승격 경로에 배선 — 계산·저장까지만(`bin/submit.py`는 의도적으로 미연결, 범위 밖).
+- #76: `bin/archive_lessons.py`를 daemon 24시간 스윕으로 배선 — 이전엔 CLI 수동 실행뿐이라 사실상 죽은 레버였다.
+
+## v1.4.12 — submit build_model 안전망 (2026-07-25)
+- #94: `bin/submit.py`의 `build_model()` 생성자 stale kwarg 문제에 평가 경로(#79)와 동일한 런타임 안전망 적용.
+
+## v1.4.11 — MinIO 텍스트 다운로드 mojibake 수정 (2026-07-25)
+- #92: charset 없는 `text/plain` 응답을 latin-1로 잘못 디코드하던 문제 — UTF-8 명시 디코드로 수정.
+
+## v1.4.10 — materialized_code 스냅샷 + 백필 (2026-07-24)
+- #89: 승격 시점 병합본 스냅샷을 `raw.pipelines.materialized_code`에 저장. attempt 제출 base를 replay 대신 이 스냅샷으로 로드(replay 폴백은 sha 불일치 시 중단). 기존 승격 행을 위한 백필 스크립트 신설.
+
+## v1.4.9 — auto-submit 재제출 유의성 검정 (2026-07-24)
+- #87/#88: fold noise 수준의 변화로도 재제출되던 auto-submit 게이트에 유의성 검정 추가.
+
+## v1.4.8 — ensemble materialize 유실 수정 (2026-07-24)
+- #83: `materialize`가 Patch 안 중첩 클래스를 유실해 ensemble 승격이 merge-verify 단계에서 크래시하던 문제 수정.
+
+## v1.4.7 — 콜드스타트 데드락 + confirm 실패 원인 소실 수정 (2026-07-23)
+- #73: 확정 승격 콜드스타트 데드락과 confirm 실패 시 원인이 로그에서 사라지던 문제 수정.
+
+## v1.4.6 — attempt_only 제출 누적 base 유실 수정 (2026-07-23)
+- #80: `attempt_only` 제출이 누적 base pipeline을 버리고 vanilla 모델로 떨어지던 문제 수정.
+
+## v1.4.3~5 — ensemble action_type 크래시 완화 3라운드 (2026-07-22~23)
+- #74/#77: Coder 컨트랙트의 잘못된 예시·조언이 ensemble action_type 70% 크래시를 유발하던 문제 1차 수정.
+- #74 후속(#78): 정석 예시의 `sorted(unique())`가 null 섞이면 크래시 — `drop_nulls()` 추가.
+- #74 후속(#79): `build_model()` 생성자 stale kwarg 런타임 안전망 추가 — 프롬프트 경고만으론 재발을 못 막았다. (이 3라운드로도 크래시율은 70%→55%까지만 떨어졌고, 근본 해결은 v1.4.13의 #74 선언형 프리미티브로 이관.)
+
+## v1.4.2 — submit 생성자 early-stopping 파라미터 크래시 수정 (2026-07-22)
+- #72: 생성자 early-stopping 파라미터가 submit full-train fit을 크래시시키던 문제 수정.
+
+## v1.4.1 — reflection_impact DROP VIEW CASCADE (2026-07-22)
+- #69: `lesson_dead`가 `reflection_impact`에 의존해 CASCADE 없이는 재적용이 실패하던 문제 수정.
+
+## v1.4.0 — 관측 API 24개 + 파생 뷰 6개 + 대회 온보딩 14개 (2026-07-22)
+- #66/#67: 관측 계측 P1/P2(`retrieved_ids`/`error_signature` 영속화) + 파생 뷰 6종(funnel/dead/duplicates/calibration/error_recurrence/transfer) + 엔드포인트 24개(score/timeline, bandit/posteriors, lessons, errors, transfer 등).
+- #39: 대회 온보딩 14개 — binary AUC 6개, accuracy/balanced_accuracy 3개, regression 5개.
+
+## v1.3.1 — auto-submit 캐시 트리거 수정 (2026-07-22)
+- #62/#63: auto-submit 제출 CSV 캐시가 실제로 채워지지 않던 트리거·키 문제 수정.
+- #61: 코드베이스 전체 이슈 번호 태그 정리 + 문서 최신화.
+
 ## v1.3.0 — gain_vs_best_relative: metric 스케일 정규화 (2026-07-22)
 - `reflection_impact` 전역 z-score가 metric 스케일 혼합(rmse 원시 단위 vs auc 0~1)으로 오염돼 있던 문제(mean=-4.22, std=139.19 실측) — DB wipe로는 해결 안 되는 코드 자체의 스케일 정규화 부재가 근본 원인으로 확인됨.
 - `gain_vs_best_relative` 컬럼 신설(regression_error는 `gain_vs_best / baseline_cv` 상대값, 나머지 metric_class는 `gain_vs_best` 패스스루) — `evaluator/harness.py` → `runtime/isolate.py`/`runtime/runner.py`(subprocess JSON 경계) → `cycle/run.py` → `store/schema.sql`까지 전체 파이프라인에 배관.
