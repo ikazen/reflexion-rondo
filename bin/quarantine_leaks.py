@@ -62,7 +62,17 @@ def _competition_id_to_slug() -> dict[str, str]:
 
 
 def _scan_pipeline(comp: object, code: str) -> str | None:
-    """이 코드가 valid-target 의존 preprocess를 갖는지 실측. invalid_reason 또는 None."""
+    """이 코드가 valid-target 의존 preprocess를 갖는지 실측.
+
+    반환: 'target_leak_preprocess: ...'(실제 누수 확정) 또는 None(깨끗함 **또는
+    판정 불가**). exec 실패·데이터 로드 실패(#120 — 로컬에 train.csv 없음/MinIO
+    미설정 등 순수 환경 문제)는 누수의 증거가 아니므로 격리하지 않는다 — 호출부
+    scan()이 non-None 반환을 곧바로 격리 대상으로 집계하기 때문에, 여기서
+    "판정 불가"를 "누수 확정"과 절대 같은 값으로 반환하면 안 된다(실측: 이
+    구분이 없던 버전으로 실제 스캔했다면 s4e1/s5e3 정상 파이프라인 27개가
+    로컬 데이터 캐시 부재만으로 부당하게 격리될 뻔했다). 판정 불가 사례는
+    stdout에 남겨 운영자가 재시도 필요 여부를 알 수 있게 한다.
+    """
     from evaluator.harness import (
         BasePipeline, PatchedPipeline, PipelineContext,
         _check_preprocess_target_leak,
@@ -77,12 +87,14 @@ def _scan_pipeline(comp: object, code: str) -> str | None:
             return None
         pipeline = PatchedPipeline(BasePipeline(), patch_cls())
     except Exception as exc:
-        return f"scan_load_error: {exc!r}"[:500]
+        print(f"    [skip] 코드 로드 실패(판정 불가, 격리 안 함): {exc!r}"[:500])
+        return None
 
     try:
         train = load_train(comp)
     except Exception as exc:
-        return f"scan_data_load_error: {exc!r}"[:500]
+        print(f"    [skip] 데이터 로드 실패(판정 불가, 격리 안 함): {exc!r}"[:500])
+        return None
 
     if train.height < _MIN_ROWS_FOR_SCAN:
         return None
