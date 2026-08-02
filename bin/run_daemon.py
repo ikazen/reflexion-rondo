@@ -193,7 +193,19 @@ def _submission_refresh_due(submitted_at: datetime, checked_at, now: datetime) -
 
     Kaggle 채점은 보통 분 단위지만 드물게 몇 시간 걸린다 — 갓 제출된 건 자주,
     오래 pending인 건 뜸하게 확인해 불필요한 kaggle CLI 호출을 아낀다.
+
+    raw.kaggle_submissions.submitted_at/checked_at는 timezone 없는 `timestamp`
+    컬럼이라 psycopg2가 naive datetime으로 돌려준다 — now(aware, datetime.now
+    (timezone.utc))와 그대로 빼면 "can't subtract offset-naive and offset-aware
+    datetimes"로 죽는다(#118, v1.4.13 배포 직후 실제 daemon 크래시루프). 셋 다
+    naive로 정규화한 뒤 비교한다 — 이 코드베이스는 DB의 naive timestamp를
+    암묵적으로 UTC로 취급하는 기존 관례(datetime.now(timezone.utc)를 그대로
+    naive 컬럼에 쓰는 다른 코드들과 동일)를 따른다.
     """
+    now = now.replace(tzinfo=None) if now.tzinfo is not None else now
+    submitted_at = submitted_at.replace(tzinfo=None) if submitted_at.tzinfo is not None else submitted_at
+    if checked_at is not None and checked_at.tzinfo is not None:
+        checked_at = checked_at.replace(tzinfo=None)
     if checked_at is None:
         return True
     elapsed_since_submit = (now - submitted_at).total_seconds()
