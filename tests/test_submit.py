@@ -153,6 +153,30 @@ def test_load_pipeline_skips_verification_when_sha256_none() -> None:
     assert pipeline is not None
 
 
+def test_load_pipeline_default_path_preserves_class_attributes() -> None:
+    """attempt_only가 아닌 기본(MinIO best_pipeline.py) 경로도 훅 밖 클래스 속성을
+    보존해야 한다.
+
+    회귀 테스트 — s5e10 프로덕션 실제 재현(2026-08-03): ensemble action_type
+    attempt가 build_model 안에서 참조하는 nested class(`_EnsembleRegressor`)를
+    hook 메서드만 옮겨 붙이는 옛 type(...) 방식이 통째로 소실시켜
+    `AttributeError: 'BestPipeline' object has no attribute '_EnsembleRegressor'`로
+    Kaggle 제출이 크래시했다. attempt_only 경로는 이미 PatchedPipeline으로 고쳐져
+    있었으나 이 기본 경로는 별도 구현이라 같은 버그가 남아 있었다.
+    """
+    source = (
+        "class Patch:\n"
+        "    class _EnsembleRegressor:\n"
+        "        def predict(self):\n"
+        "            return 'ensembled'\n"
+        "    def build_model(self, params, ctx):\n"
+        "        return self._EnsembleRegressor()\n"
+    )
+    with patch("store.s3_code.download_best_pipeline", return_value=source):
+        pipeline = _load_pipeline("s4e1", expected_sha256=None)
+    assert pipeline.build_model({}, None).predict() == "ensembled"
+
+
 # ---------------------------------------------------------------------------
 # attempt_only는 MinIO best_pipeline.py를 참조하지 않아야 한다
 # ---------------------------------------------------------------------------
