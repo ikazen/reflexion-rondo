@@ -42,6 +42,27 @@ def _query_df(_conn: PgConn, query: str, columns: list[str], params: list | None
 def _fetch_stagnation(_conn: PgConn, competition_id: str):
     return detect_stagnation(_conn, competition_id)
 
+
+def _fleet_attention(row: dict) -> str:
+    """대회 하나의 "지금 봐야 하나" 판정 — _traffic_light와 신호 조합이 달라
+    별도 함수. 천장 진단(2026-08-03)에서 대회 26개를 하나씩 SQL로 찔러 찾았던
+    "baseline 없음/큐 방치/OOM 과다"를 한 테이블에서 바로 보이게 하는 게 목적."""
+    if row["auto_submit_paused_reason"]:
+        return "🔴"
+    attempts = row["attempts_14d"] or 0
+    if attempts > 0 and (row["errors_14d"] or 0) / attempts > 0.7:
+        return "🔴"
+    if (row["confirmed"] or 0) == 0 and (row["quarantined"] or 0) > 0:
+        return "🔴"  # baseline이 전부 격리돼 지금 하나도 없음
+    if (row["confirmed"] or 0) == 0:
+        return "🟡"  # 아직 baseline 자체가 없음
+    if row["queue_status"] == "pending":
+        return "🟡"  # 예약만 되고 daemon이 아직 안 돎
+    if (row["jumps_14d"] or 0) == 0:
+        return "🟡"
+    return "🟢"
+
+
 st.set_page_config(page_title="Reflexion Monitor", layout="wide")
 st.title("Reflexion Monitor")
 
@@ -50,6 +71,87 @@ try:
 except Exception as exc:
     st.error(f"DB connection failed: {exc}")
     st.stop()
+
+st.subheader("Fleet Overview")
+st.caption("전 대회 한눈에 — 어디부터 볼지 여기서 고른다. attention: 🔴 즉시 확인 / 🟡 관찰 필요 / 🟢 정상")
+
+# raw.cycle_queue.competition은 슬러그(s4e7), 나머지 테이블은 풀 competition_id
+# (playground-series-s4e7) — split_part로 조인 키를 맞춘다.
+queue_latest = _query_df(
+    conn,
+    """
+    select distinct on (competition) competition, status, n_cycles, cycles_done, started_at
+    from raw.cycle_queue order by competition, created_at desc
+    """,
+    ["competition", "queue_status", "n_cycles", "cycles_done", "started_at"],
+)
+pipeline_counts = _query_df(
+    conn,
+    """
+    select competition_id,
+           count(*) filter (where invalid_reason is null) as confirmed,
+           count(*) filter (where invalid_reason is not null) as quarantined
+    from raw.pipelines group by competition_id
+    """,
+    ["competition_id", "confirmed", "quarantined"],
+)
+recent_activity = _query_df(
+    conn,
+    """
+    select competition_id, count(*) as attempts_14d,
+           count(*) filter (where label='jump') as jumps_14d,
+           count(*) filter (where label='error') as errors_14d,
+           count(*) filter (where error_trace like '%%rc=-9%%') as oom_14d,
+           max(run_ts) as last_attempt
+    from raw.attempts where run_ts > now() - interval '14 days'
+    group by competition_id
+    """,
+    ["competition_id", "attempts_14d", "jumps_14d", "errors_14d", "oom_14d", "last_attempt"],
+)
+paused = _query_df(
+    conn,
+    "select competition_id, auto_submit_paused_reason from raw.competitions where auto_submit_paused_reason is not null",
+    ["competition_id", "auto_submit_paused_reason"],
+)
+all_comps = _query_df(
+    conn,
+    "select competition_id, name from raw.competitions order by competition_id",
+    ["competition_id", "name"],
+)
+
+# 조인 소스가 비어 있으면(예: 지금은 paused=[]) _rows_df가 컬럼 dtype을 Null로 만들어
+# join key 타입이 안 맞아 죽는다 — join key만 명시 캐스팅해 방어.
+queue_latest = queue_latest.with_columns(pl.col("competition").cast(pl.Utf8))
+pipeline_counts = pipeline_counts.with_columns(pl.col("competition_id").cast(pl.Utf8))
+recent_activity = recent_activity.with_columns(pl.col("competition_id").cast(pl.Utf8))
+paused = paused.with_columns(pl.col("competition_id").cast(pl.Utf8))
+
+fleet = (
+    all_comps
+    .with_columns(pl.col("competition_id").str.split("-").list.get(2).alias("_slug"))
+    .join(queue_latest, left_on="_slug", right_on="competition", how="left")
+    .join(pipeline_counts, on="competition_id", how="left")
+    .join(recent_activity, on="competition_id", how="left")
+    .join(paused, on="competition_id", how="left")
+    .drop("_slug")
+)
+
+fleet_rows = [_fleet_attention(r) for r in fleet.iter_rows(named=True)]
+fleet = fleet.with_columns(pl.Series("attention", fleet_rows)).sort(
+    pl.col("attention").replace_strict({"🔴": 0, "🟡": 1, "🟢": 2}, return_dtype=pl.Int32)
+)
+
+st.dataframe(
+    fleet.select([
+        "attention", "competition_id", "name", "queue_status", "cycles_done", "n_cycles",
+        "confirmed", "quarantined", "attempts_14d", "jumps_14d", "errors_14d", "oom_14d",
+        "auto_submit_paused_reason", "last_attempt",
+    ]),
+    use_container_width=True,
+    height=min(35 * (len(fleet) + 1), 500),
+)
+
+st.divider()
 
 competitions = _query_df(
     conn,
@@ -239,6 +341,79 @@ with h4:
     )
     st.metric(f"{status} Exploration", f"{action_coverage}/{len(ACTION_TYPES)} types")
     st.caption(f"stagnant_for={stagnation.stagnant_for}")
+
+st.divider()
+
+st.subheader("Submissions · Quarantine · Blend")
+
+paused_reason = conn.execute(
+    "select auto_submit_paused_reason from raw.competitions where competition_id = %s",
+    [comp_id],
+).fetchone()
+if paused_reason and paused_reason[0]:
+    st.warning(f"auto-submit 일시중단: {paused_reason[0]} — 자동 해제 없음, runbook.md §4-3 절차로 수동 해제 필요")
+
+calib_df = _query_df(
+    conn,
+    """
+    select submitted_at, cv_score, lb_score, delta_cv, delta_lb, diverged
+    from cv_lb_calibration where competition_id = %s
+    order by submitted_at desc
+    limit 20
+    """,
+    ["submitted_at", "cv_score", "lb_score", "delta_cv", "delta_lb", "diverged"],
+    [comp_id],
+)
+quarantine_df = _query_df(
+    conn,
+    """
+    select pipeline_id, cv_score, invalid_reason
+    from raw.pipelines where competition_id = %s and invalid_reason is not null
+    order by cv_score desc
+    """,
+    ["pipeline_id", "cv_score", "invalid_reason"],
+    [comp_id],
+)
+blend_df = _query_df(
+    conn,
+    "select pipeline_ids, blend_cv_score, generated_at from raw.blend_weights where competition_id = %s",
+    ["pipeline_ids", "blend_cv_score", "generated_at"],
+    [comp_id],
+)
+
+sq_left, sq_right = st.columns(2)
+with sq_left:
+    st.caption("CV ↔ LB 정합 (제출 이력)")
+    if calib_df.is_empty():
+        st.info("No submissions yet.")
+    else:
+        n_diverged = int(calib_df["diverged"].fill_null(False).sum())
+        if n_diverged:
+            st.warning(f"CV는 개선인데 LB는 악화된 제출 {n_diverged}건 — cv_lb_calibration 발산")
+        st.dataframe(calib_df, use_container_width=True)
+
+    st.caption("Blend")
+    if blend_df.is_empty():
+        st.info("No blend computed yet (confirmed pipeline이 2개 이상 쌓이면 자동 계산).")
+    else:
+        best_confirmed_cv = _query_df(
+            conn,
+            "select max(cv_score) from raw.pipelines where competition_id = %s and invalid_reason is null",
+            ["max_cv"],
+            [comp_id],
+        )
+        b = blend_df.row(0, named=True)
+        best_cv_val = best_confirmed_cv.item(0, 0) if not best_confirmed_cv.is_empty() else None
+        bc1, bc2 = st.columns(2)
+        bc1.metric("Blend CV", f"{b['blend_cv_score']:.5f}" if b["blend_cv_score"] is not None else "-")
+        bc2.metric("Best single pipeline CV", f"{best_cv_val:.5f}" if best_cv_val is not None else "-")
+
+with sq_right:
+    st.caption(f"격리된 파이프라인 ({len(quarantine_df)}건)")
+    if quarantine_df.is_empty():
+        st.info("No quarantined pipelines.")
+    else:
+        st.dataframe(quarantine_df, use_container_width=True)
 
 st.divider()
 
