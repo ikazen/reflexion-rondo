@@ -116,12 +116,6 @@ def _read_csv(comp: object, name: str) -> pl.DataFrame:
     return pl.read_csv(getattr(comp, "DATA_DIR") / name)
 
 
-_HOOK_NAMES = (
-    "preprocess", "feature_transform", "param_candidates",
-    "build_model", "postprocess_predictions",
-)
-
-
 def _load_pipeline(
     competition_id: str,
     extra_source: str | None = None,
@@ -156,13 +150,13 @@ def _load_pipeline(
     BasePipeline 기본 모델로 조용히 떨어져 평가와 전혀 다른(대개 훨씬 나쁜) 예측을
     제출하게 된다. None이면(재생 이력 없음 등) 기존대로 BasePipeline()에 patch만 적용.
 
-    attempt_only 경로는 예전에 훅 메서드만 `type(...)`으로 새 클래스에 옮겨
-    붙였는데(methods={h: getattr(patch_cls, h) ...}), Patch가 훅 밖 클래스 속성(예:
-    s6e7 우승 attempt의 `_ordinal_orders`)에 의존하면 그 상태가 통째로 소실돼
-    AttributeError로 죽었다. 평가 경로(runtime/runner.py)는 실제 Patch() 인스턴스를
-    PatchedPipeline으로 감싸 이 문제가 없었으므로 — cv 산출은 통과하고 submit만
-    크래시하는 불일치가 생겼다. 여기도 동일하게 PatchedPipeline을 써서 인스턴스 상태를
-    보존한다.
+    두 경로(attempt_only, 기본) 모두 훅 메서드만 `type(...)`으로 새 클래스에
+    옮겨 붙이던 예전 방식은 Patch가 훅 밖 클래스 속성(예: s6e7 우승 attempt의
+    `_ordinal_orders`, 자유형 ensemble wrapper의 nested class)에 의존하면 그
+    상태가 통째로 소실돼 AttributeError로 죽었다. 평가 경로(runtime/runner.py)는
+    실제 Patch() 인스턴스를 PatchedPipeline으로 감싸 이 문제가 없었으므로 — cv
+    산출은 통과하고 submit만 크래시하는 불일치가 생겼다. 두 경로 다
+    PatchedPipeline(BasePipeline(), patch_cls())로 통일해 인스턴스 상태를 보존한다.
     """
     import sys
     sys.path.insert(0, str(ROOT))
@@ -183,8 +177,7 @@ def _load_pipeline(
             exec(compile(base_source, "<replayed_best_pipeline>", "exec"), base_ns)  # noqa: S102
             base_patch_cls = base_ns.get("Patch")
             if base_patch_cls:
-                methods = {h: getattr(base_patch_cls, h) for h in _HOOK_NAMES if hasattr(base_patch_cls, h)}
-                base = type("ReplayedBase", (BasePipeline,), methods)()
+                base = PatchedPipeline(BasePipeline(), base_patch_cls())
         return PatchedPipeline(base, patch_cls())
 
     best_source = download_best_pipeline(competition_id)
@@ -217,9 +210,7 @@ def _load_pipeline(
     patch_cls = ns.get("Patch")
     if not patch_cls:
         return BasePipeline()
-    methods = {h: getattr(patch_cls, h) for h in _HOOK_NAMES if hasattr(patch_cls, h)}
-    BestPipelineCls = type("BestPipeline", (BasePipeline,), methods)
-    return BestPipelineCls()
+    return PatchedPipeline(BasePipeline(), patch_cls())
 
 
 def _predict_raw(model, X, metric_class: str):
