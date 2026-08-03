@@ -333,19 +333,33 @@ WHERE r.archived = false
   AND (coalesce(i.times_applied, 0) = 0 OR i.avg_gain <= 0);
 
 -- near-duplicate 교훈(Reflector 패러프레이즈 남발 감시). 임계는 넉넉히(0.90) 저장해
--- 두고 api.py가 ?threshold= 로 더 좁힌다.
+-- 두고 api.py가 ?threshold= 로 더 좁힌다. embedding에 ANN 인덱스가 없어 자기조인
+-- 비용이 대회당 반영 건수의 제곱에 비례한다 — s4e1처럼 reflection이 수천 건
+-- 쌓인 대회에서 12초 이상 걸려 대시보드 로드를 막던 실측 문제(2026-08-03).
+-- 최근 것일수록 중복 여부가 운영에 의미 있으므로 대회당 최근 250건으로 자기조인
+-- 범위를 캡핑한다(s4e1 실측: cap 없음 12.2s → 500건 1.7s → 250건 0.3s) —
+-- 오래된 pair는 이미 archive_lessons 등으로 정리됐을 가능성이 높음.
 CREATE OR REPLACE VIEW lesson_duplicates AS
+WITH recent AS (
+    SELECT reflection_id, competition_id, embedding
+    FROM (
+        SELECT reflection_id, competition_id, embedding,
+               row_number() OVER (PARTITION BY competition_id ORDER BY created_at DESC) AS rn
+        FROM raw.reflections
+        WHERE archived = false
+    ) ranked
+    WHERE rn <= 250
+)
 SELECT
     a.competition_id,
     a.reflection_id AS reflection_id_a,
     b.reflection_id AS reflection_id_b,
     1 - (a.embedding <=> b.embedding) AS cos_sim
-FROM raw.reflections a
-JOIN raw.reflections b
+FROM recent a
+JOIN recent b
     ON a.reflection_id < b.reflection_id
    AND a.competition_id = b.competition_id
-WHERE a.archived = false AND b.archived = false
-  AND 1 - (a.embedding <=> b.embedding) > 0.90;
+WHERE 1 - (a.embedding <=> b.embedding) > 0.90;
 
 -- 밴딧 믿음(posterior_mean)과 실측 가중성공률 괴리. jump_rate가 아니라
 -- update_bandit(action_optimizer.py)과 동일한 가중치로 실측해야 구조적 gap을 피한다.
