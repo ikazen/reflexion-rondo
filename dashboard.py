@@ -1,15 +1,31 @@
 from __future__ import annotations
 
+import altair as alt
 import streamlit as st
 import polars as pl
 
+from config.settings import ACTION_TYPES
+from cycle.stagnation import detect_stagnation
 from store.db import PgConn, connect
+
+
+def _traffic_light(*, green: bool, red: bool) -> str:
+    """bin/api.py:_traffic_light와 동일 판정(red가 green보다 우선) — API를 거치지
+    않고 대시보드가 같은 뷰를 직접 재계산하는 GH #65 설계라 여기서도 재현한다."""
+    if red:
+        return "🔴"
+    if green:
+        return "🟢"
+    return "🟡"
 
 
 def _rows_df(rows: list[tuple], columns: list[str]) -> pl.DataFrame:
     if not rows:
         return pl.DataFrame({c: [] for c in columns})
-    return pl.DataFrame(rows, schema=columns, orient="row")
+    # infer_schema_length 기본값(100)이면 앞쪽 100행이 전부 null인 컬럼(예: 대부분의
+    # attempt에는 없는 holdout_score)에서 타입을 Null로 오추론해, 뒤에서 실제 float
+    # 값이 나오면 "could not append value" ComputeError로 죽는다 — 전체 행을 스캔.
+    return pl.DataFrame(rows, schema=columns, orient="row", infer_schema_length=None)
 
 
 def _query_df(conn: PgConn, query: str, columns: list[str], params: list | None = None) -> pl.DataFrame:
@@ -103,21 +119,115 @@ col4.metric("Best CV", f"{best_cv:.5f}" if best_cv else "-")
 
 st.divider()
 
+st.subheader("Health Signals")
+
+funnel_row = conn.execute(
+    "select cite_rate, retrieved_precise from lesson_funnel where competition_id = %s",
+    [comp_id],
+).fetchone()
+cite_rate = float(funnel_row[0]) if funnel_row and funnel_row[0] is not None else 0.0
+
+jumps_last10 = int(
+    attempts_df.filter(pl.col("stage") == "reflexion")
+    .sort("run_ts", descending=True)
+    .head(10)["label"].eq("jump").sum()
+)
+
+stagnation = detect_stagnation(conn, comp_id)
+
+bandit_rows = _query_df(
+    conn,
+    "select posterior_mean, calibration_gap from bandit_calibration where scope_key = %s",
+    ["posterior_mean", "calibration_gap"],
+    [comp_id],
+)
+posteriors = bandit_rows["posterior_mean"].drop_nulls()
+gaps = bandit_rows["calibration_gap"].drop_nulls()
+posterior_spread = float(posteriors.max() - posteriors.min()) if len(posteriors) else 0.0
+calibration_gap = float(gaps.max()) if len(gaps) else 0.0
+
+error_rows = _query_df(
+    conn,
+    """
+    select total, occurrences_after_active, pitfall_active
+    from error_recurrence where competition_id = %s
+    """,
+    ["total", "occurrences_after_active", "pitfall_active"],
+    [comp_id],
+)
+active_rows = error_rows.filter(pl.col("pitfall_active"))
+active_total = int(active_rows["total"].sum()) if not active_rows.is_empty() else 0
+repeat_after_pitfall_rate = (
+    float(active_rows["occurrences_after_active"].sum()) / active_total if active_total else 0.0
+)
+
+recent_labels = attempts_df.filter(pl.col("stage") == "reflexion").sort("run_ts", descending=True).head(200)
+error_rate_slope = 0
+if len(recent_labels) >= 20:
+    mid = len(recent_labels) // 2
+    recent_rate = recent_labels.head(mid)["label"].eq("error").mean()
+    earlier_rate = recent_labels.tail(len(recent_labels) - mid)["label"].eq("error").mean()
+    error_rate_slope = -1 if recent_rate < earlier_rate else (1 if recent_rate > earlier_rate else 0)
+
+action_coverage = len(ACTION_TYPES) - len(stagnation.underused_actions)
+
+h1, h2, h3, h4 = st.columns(4)
+with h1:
+    status = _traffic_light(
+        green=(cite_rate >= 0.30 and jumps_last10 >= 1),
+        red=(cite_rate < 0.10 or (jumps_last10 == 0 and stagnation.is_stagnant)),
+    )
+    st.metric(f"{status} Accumulation", f"cite {cite_rate:.2f}")
+    st.caption(f"jumps(last10)={jumps_last10}" + ("" if funnel_row and funnel_row[1] else " (approx)"))
+with h2:
+    status = _traffic_light(
+        green=(posterior_spread >= 0.15 and calibration_gap <= 0.15),
+        red=(posterior_spread < 0.05 or calibration_gap > 0.30),
+    )
+    st.metric(f"{status} Bandit", f"gap {calibration_gap:.2f}")
+    st.caption(f"posterior spread={posterior_spread:.2f}")
+with h3:
+    status = _traffic_light(
+        green=(error_rate_slope < 0 and repeat_after_pitfall_rate <= 0.20),
+        red=(repeat_after_pitfall_rate > 0.50),
+    )
+    st.metric(f"{status} Antipattern", f"repeat {repeat_after_pitfall_rate:.2f}")
+    st.caption(f"error slope={error_rate_slope:+d}")
+with h4:
+    status = _traffic_light(
+        green=(action_coverage >= 3),
+        red=(stagnation.is_stagnant and action_coverage <= 1),
+    )
+    st.metric(f"{status} Exploration", f"{action_coverage}/{len(ACTION_TYPES)} types")
+    st.caption(f"stagnant_for={stagnation.stagnant_for}")
+
+st.divider()
+
 st.subheader("CV Score Progression")
 
 has_scores = attempts_df["cv_score"].drop_nulls()
 if not has_scores.is_empty():
-    chart_df = attempts_df.select(["attempt_no", "cv_score"]).filter(
+    chart_df = attempts_df.select(["attempt_no", "cv_score", "label"]).filter(
         pl.col("cv_score").is_not_null()
     )
     if not best_so_far.is_empty():
         chart_df = chart_df.join(best_so_far, on="attempt_no", how="left")
 
-    st.line_chart(
-        chart_df.to_pandas().set_index("attempt_no")[
-            [c for c in ["cv_score", "best_so_far"] if c in chart_df.columns]
-        ]
-    )
+    pdf = chart_df.to_pandas()
+    line = alt.Chart(pdf).mark_line().encode(x="attempt_no", y="cv_score")
+    layers = [line]
+    if "best_so_far" in pdf.columns:
+        layers.append(alt.Chart(pdf).mark_line(color="orange").encode(x="attempt_no", y="best_so_far"))
+    jump_points = pdf[pdf["label"] == "jump"]
+    if not jump_points.empty:
+        layers.append(
+            alt.Chart(jump_points).mark_point(size=80, color="green", filled=True).encode(
+                x="attempt_no", y="cv_score", tooltip=["attempt_no", "cv_score"]
+            )
+        )
+    st.altair_chart(alt.layer(*layers).interactive(), use_container_width=True)
+    if stagnation.is_stagnant:
+        st.warning(f"정체 중 — 최근 {stagnation.stagnant_for} attempt 동안 jump 없음")
 else:
     st.info("No CV scores recorded yet.")
 
@@ -190,6 +300,123 @@ else:
 
 st.divider()
 
+st.subheader("Lesson Funnel")
+
+funnel_df = _query_df(
+    conn,
+    """
+    select written, total_attempts, retrieved, cited, positive_gain,
+           retrieve_rate, cite_rate, gain_rate, retrieved_precise
+    from lesson_funnel where competition_id = %s
+    """,
+    ["written", "total_attempts", "retrieved", "cited", "positive_gain",
+     "retrieve_rate", "cite_rate", "gain_rate", "retrieved_precise"],
+    [comp_id],
+)
+
+if funnel_df.is_empty():
+    st.info("No lesson_funnel data yet.")
+else:
+    f = funnel_df.row(0, named=True)
+    fc1, fc2, fc3, fc4 = st.columns(4)
+    fc1.metric("Written", f["written"])
+    fc2.metric("Retrieved", f["retrieved"], f"rate {f['retrieve_rate']}" if f["retrieve_rate"] is not None else None)
+    fc3.metric("Cited", f["cited"], f"rate {f['cite_rate']}" if f["cite_rate"] is not None else None)
+    fc4.metric("Positive gain", f["positive_gain"], f"rate {f['gain_rate']}" if f["gain_rate"] is not None else None)
+    if not f["retrieved_precise"]:
+        st.caption("retrieve_rate는 P1 계측 이전 데이터가 섞여 근사치일 수 있음")
+
+    dead_tab, dup_tab = st.tabs(["Dead lessons", "Near-duplicates"])
+    with dead_tab:
+        dead_df = _query_df(
+            conn,
+            """
+            select reflection_id, lesson_type, generality, times_cited, avg_gain, reason
+            from lesson_dead where competition_id = %s
+            order by times_cited desc
+            limit 30
+            """,
+            ["reflection_id", "lesson_type", "generality", "times_cited", "avg_gain", "reason"],
+            [comp_id],
+        )
+        if dead_df.is_empty():
+            st.info("No dead lessons.")
+        else:
+            st.dataframe(dead_df, use_container_width=True)
+    with dup_tab:
+        dup_df = _query_df(
+            conn,
+            """
+            select reflection_id_a, reflection_id_b, cos_sim
+            from lesson_duplicates where competition_id = %s
+            order by cos_sim desc
+            limit 30
+            """,
+            ["reflection_id_a", "reflection_id_b", "cos_sim"],
+            [comp_id],
+        )
+        if dup_df.is_empty():
+            st.info("No near-duplicate lessons (cos_sim > 0.90).")
+        else:
+            st.dataframe(dup_df, use_container_width=True)
+
+st.divider()
+
+st.subheader("Bandit Calibration")
+
+bandit_df = _query_df(
+    conn,
+    """
+    select action_type, posterior_mean, weighted_success, calibration_gap, picks
+    from bandit_calibration where scope_key = %s
+    order by calibration_gap desc nulls last
+    """,
+    ["action_type", "posterior_mean", "weighted_success", "calibration_gap", "picks"],
+    [comp_id],
+)
+
+if bandit_df.is_empty():
+    st.info("No bandit_calibration data yet.")
+else:
+    bc_left, bc_right = st.columns(2)
+    with bc_left:
+        st.bar_chart(
+            bandit_df.select(["action_type", "posterior_mean", "weighted_success"])
+            .to_pandas().set_index("action_type")
+        )
+    with bc_right:
+        st.dataframe(bandit_df, use_container_width=True)
+
+st.divider()
+
+st.subheader("Error Recurrence")
+
+err_df = _query_df(
+    conn,
+    """
+    select action_type, error_signature, total, first_seen, last_seen,
+           pitfall_active, occurrences_after_active, has_avoid_lesson
+    from error_recurrence where competition_id = %s
+    order by pitfall_active desc, occurrences_after_active desc
+    limit 30
+    """,
+    ["action_type", "error_signature", "total", "first_seen", "last_seen",
+     "pitfall_active", "occurrences_after_active", "has_avoid_lesson"],
+    [comp_id],
+)
+
+if err_df.is_empty():
+    st.info("No error_recurrence data yet.")
+else:
+    unresolved = err_df.filter(
+        (pl.col("pitfall_active")) & (pl.col("occurrences_after_active") > 0)
+    )
+    if not unresolved.is_empty():
+        st.warning(f"pitfall 주입 후에도 재발한 에러 시그니처 {len(unresolved)}건")
+    st.dataframe(err_df, use_container_width=True)
+
+st.divider()
+
 st.subheader("Cold-start Progression")
 
 csp_df = _query_df(
@@ -240,6 +467,28 @@ else:
         .sort("attempt_no")
     )
     st.line_chart(pivot.to_pandas().set_index("attempt_no"))
+
+st.divider()
+
+st.subheader("Transfer Matrix")
+st.caption("행=교훈 출처 대회, 열=인용한 대회. 대각선 밖(source != target)이 실제 cross-competition 전이.")
+
+tm_df = _query_df(
+    conn,
+    "select source_comp, target_comp, citations from transfer_matrix",
+    ["source_comp", "target_comp", "citations"],
+)
+
+if tm_df.is_empty():
+    st.info("No transfer_matrix data yet.")
+else:
+    tm_pivot = (
+        tm_df.pivot(on="target_comp", index="source_comp", values="citations", aggregate_function="sum")
+        .fill_null(0)
+        .sort("source_comp")
+    )
+    tm_pandas = tm_pivot.to_pandas().set_index("source_comp")
+    st.dataframe(tm_pandas.style.background_gradient(cmap="Blues"), use_container_width=True)
 
 st.divider()
 
