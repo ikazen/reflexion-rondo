@@ -224,10 +224,12 @@ Postgres가 concurrent read를 처리한다. daemon은 단일 프로세스로 �
 ## 7. 모니터링
 
 **Streamlit 대시보드**
-- 운영: `http://rondo.internal:8501` (ops-vm Docker, compose.yml `rondo-dashboard` 서비스)
+- 운영: `http://rondo-dashboard.internal` (ops-vm Docker, `deploy/compose.yml`의 `rondo-dashboard` 서비스 — daemon과 동일 이미지, 커맨드만 다름)
 - 로컬 개발: `uv run streamlit run dashboard.py`
+- daemon API를 거치지 않고 Postgres에 직결 — daemon이 죽어 있어도 독립 동작(GH #65 설계 의도)
 
-CV score 진행 곡선, label/action_type 분포, reflection_impact 상위 교훈, 최근 attempt 테이블 제공.
+대회 선택(사이드바) 종속 패널: Health 신호등 4칸(accumulation/bandit/antipattern/exploration, `bin/api.py:/api/reflexion-health`와 동일 임계값을 API 미호출로 재현) · CV score 진행 곡선(jump 마커 오버레이) · CV vs Holdout Divergence · Action/Label 분포 · Lesson Funnel(+Dead/Duplicates 탭) · Bandit Calibration · Error Recurrence · Top Lessons by Impact · Recent Attempts.
+전역(대회 무관) 패널: Cold-start Progression, Transfer Matrix 히트맵.
 
 **Daemon API**
 - 베이스: `http://rondo-api.internal`

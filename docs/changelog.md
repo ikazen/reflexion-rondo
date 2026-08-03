@@ -1,7 +1,16 @@
 # 변경 이력
 
-## 미배포 (main, 다음 task 이미지 빌드에 포함 예정)
+## v1.4.17 — 대시보드 건강 신호등 + 관측 패널 6종 (2026-08-03)
+- #65: `dashboard.py`(Streamlit, Postgres 직결, daemon API 미경유)에 Health 신호등 4칸(`bin/api.py:/api/reflexion-health`와 동일 임계값을 API 호출 없이 재현) + CV progression jump 마커/정체 경고 오버레이 + Lesson Funnel/Dead/Duplicates + Bandit Calibration + Error Recurrence + Transfer Matrix 히트맵(pandas Styler) 추가. `docs/decisions.md` 등 별도 ADR 없이 기존 GH #65 설계(뷰 직접 소비) 그대로 구현.
+- 부수 수정: `_rows_df`가 polars 기본 `infer_schema_length=100`으로 앞쪽 100행이 전부 null인 컬럼(예: holdout_score)에서 타입을 오추론해 뒷행 실측값에서 크래시하던 문제 수정(`infer_schema_length=None`) — s5e10 등 attempt가 많은 대회에서 대시보드 자체가 안 뜨던 원인.
+
+## v1.4.16 — submit.py nested class 소실 버그 수정 (2026-08-03)
+- #137: `bin/submit.py:_load_pipeline`의 기본(non-attempt_only) 경로가 Patch 훅 메서드만 `type(...)`으로 새 클래스에 옮겨 붙여, 훅 밖 nested class(자유형 ensemble wrapper의 `_EnsembleRegressor` 등)를 소실시켜 `AttributeError`로 제출이 크래시하던 문제 — s5e10 신규 clean baseline 재제출 실제 프로덕션 크래시로 발견. `attempt_only` 경로는 이미 `PatchedPipeline`으로 고쳐져 있었는데 기본 경로만 별도 구현이라 놓쳐 있었음. 두 경로 다 `PatchedPipeline(BasePipeline(), patch_cls())`로 통일.
+
+## v1.4.15 — Ollama Cloud 재시도 + quarantine_leaks 오판 수정 (2026-08-02)
+- #131: attempt task 60개 중 40개(67%)가 Ollama Cloud "model temporarily overloaded" 503에 크래시하던 문제 — `agents/llm_retry.py` 신규(지수 백오프 1/4/16초, `memory/retriever.embed`와 동일 패턴), `coder.py`/`strategist.py`/`reflector.py` 호출부 3곳 적용. 배포 후 실측 60→0% 근접까지 개선 확인.
 - #120: `bin/quarantine_leaks.py`가 코드 exec/데이터 로드 실패(판정 불가)를 누수 확정과 동일하게 처리해 격리 대상으로 잘못 집계하던 문제 수정 — `--dry-run` 프로덕션 실측 중 s4e1/s5e3 정상 파이프라인 27개가 로컬 데이터 캐시 부재만으로 부당하게 격리될 뻔한 사고를 계기로 발견.
+- #122~125: 문서·주석 싱크 정리 Milestone — ADR-023~027 신설, spec.md/README `compound`(실재한 적 없던 action_type) 삭제 및 `ensemble_spec` 반영, architecture.md/runbook.md 운영 정합성, 17개 파일 480줄 규칙 위반 주석 정리.
 
 ## v1.4.14 — daemon 크래시루프 수정: naive/aware datetime (2026-08-02)
 - #118: `bin/run_daemon.py:_submission_refresh_due`가 DB에서 읽은 naive `timestamp`(`raw.kaggle_submissions.submitted_at`/`checked_at`)를 `datetime.now(timezone.utc)`(aware)와 직접 빼서 `TypeError`로 daemon이 크래시루프에 빠짐 — v1.4.13 배포 직후 프로덕션에서 실제 발생. 로컬 mock 테스트는 양쪽을 전부 aware로 구성해 이 조합을 못 잡았다.
