@@ -28,8 +28,19 @@ def _rows_df(rows: list[tuple], columns: list[str]) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=columns, orient="row", infer_schema_length=None)
 
 
-def _query_df(conn: PgConn, query: str, columns: list[str], params: list | None = None) -> pl.DataFrame:
-    return _rows_df(conn.execute(query, params or []).fetchall(), columns)
+@st.cache_data(ttl=60)
+def _query_df(_conn: PgConn, query: str, columns: list[str], params: list | None = None) -> pl.DataFrame:
+    """결과를 60초 캐싱한다 — Streamlit은 상호작용마다 스크립트를 처음부터 재실행해
+    캐싱 없이는 대회 선택·탭 클릭마다 쿼리 10개+가 매번 다시 나간다. `_conn`은
+    언더스코어 프리픽스라 캐시 키 해싱에서 제외(연결 객체 자체가 매 rerun 새로
+    생성돼도 캐시가 깨지지 않음) — bin/api.py의 60초 TTL 캐시(_cache.get)와 동일 값.
+    """
+    return _rows_df(_conn.execute(query, params or []).fetchall(), columns)
+
+
+@st.cache_data(ttl=60)
+def _fetch_stagnation(_conn: PgConn, competition_id: str):
+    return detect_stagnation(_conn, competition_id)
 
 st.set_page_config(page_title="Reflexion Monitor", layout="wide")
 st.title("Reflexion Monitor")
@@ -40,9 +51,11 @@ except Exception as exc:
     st.error(f"DB connection failed: {exc}")
     st.stop()
 
-competitions = conn.execute(
-    "select competition_id, name from raw.competitions order by start_ts desc"
-).fetchall()
+competitions = _query_df(
+    conn,
+    "select competition_id, name from raw.competitions order by start_ts desc",
+    ["competition_id", "name"],
+).rows()
 
 if not competitions:
     conn.close()
@@ -53,7 +66,13 @@ comp_options = {f"{c[0]} — {c[1]}": c[0] for c in competitions}
 selected_label = st.sidebar.selectbox("Competition", list(comp_options.keys()))
 comp_id = comp_options[selected_label]
 
-cols = {r[0] for r in conn.execute("select column_name from information_schema.columns where table_schema='raw' and table_name='attempts'").fetchall()}
+cols = set(
+    _query_df(
+        conn,
+        "select column_name from information_schema.columns where table_schema='raw' and table_name='attempts'",
+        ["column_name"],
+    )["column_name"]
+)
 has_duration = "duration_sec" in cols
 has_holdout = "holdout_score" in cols
 
@@ -121,11 +140,23 @@ st.divider()
 
 st.subheader("Health Signals")
 
-funnel_row = conn.execute(
-    "select cite_rate, retrieved_precise from lesson_funnel where competition_id = %s",
+# lesson_funnel/bandit_calibration/error_recurrence는 아래 상세 섹션에서도 쓰인다 —
+# 컬럼 목록만 다르게 두 번 쿼리하면 캐시 키가 갈려 캐싱 혜택이 없다. 여기서 전체
+# 컬럼으로 한 번만 쿼리해 상세 섹션에서 그대로 재사용한다(쿼리 왕복 3회 절감).
+funnel_df = _query_df(
+    conn,
+    """
+    select written, total_attempts, retrieved, cited, positive_gain,
+           retrieve_rate, cite_rate, gain_rate, retrieved_precise
+    from lesson_funnel where competition_id = %s
+    """,
+    ["written", "total_attempts", "retrieved", "cited", "positive_gain",
+     "retrieve_rate", "cite_rate", "gain_rate", "retrieved_precise"],
     [comp_id],
-).fetchone()
-cite_rate = float(funnel_row[0]) if funnel_row and funnel_row[0] is not None else 0.0
+)
+funnel_row = funnel_df.row(0) if not funnel_df.is_empty() else None
+cite_rate = float(funnel_row[6]) if funnel_row and funnel_row[6] is not None else 0.0
+retrieved_precise = bool(funnel_row[8]) if funnel_row else False
 
 jumps_last10 = int(
     attempts_df.filter(pl.col("stage") == "reflexion")
@@ -133,29 +164,37 @@ jumps_last10 = int(
     .head(10)["label"].eq("jump").sum()
 )
 
-stagnation = detect_stagnation(conn, comp_id)
+stagnation = _fetch_stagnation(conn, comp_id)
 
-bandit_rows = _query_df(
+bandit_df = _query_df(
     conn,
-    "select posterior_mean, calibration_gap from bandit_calibration where scope_key = %s",
-    ["posterior_mean", "calibration_gap"],
+    """
+    select action_type, posterior_mean, weighted_success, calibration_gap, picks
+    from bandit_calibration where scope_key = %s
+    order by calibration_gap desc nulls last
+    """,
+    ["action_type", "posterior_mean", "weighted_success", "calibration_gap", "picks"],
     [comp_id],
 )
-posteriors = bandit_rows["posterior_mean"].drop_nulls()
-gaps = bandit_rows["calibration_gap"].drop_nulls()
+posteriors = bandit_df["posterior_mean"].drop_nulls()
+gaps = bandit_df["calibration_gap"].drop_nulls()
 posterior_spread = float(posteriors.max() - posteriors.min()) if len(posteriors) else 0.0
 calibration_gap = float(gaps.max()) if len(gaps) else 0.0
 
-error_rows = _query_df(
+err_df = _query_df(
     conn,
     """
-    select total, occurrences_after_active, pitfall_active
+    select action_type, error_signature, total, first_seen, last_seen,
+           pitfall_active, occurrences_after_active, has_avoid_lesson
     from error_recurrence where competition_id = %s
+    order by pitfall_active desc, occurrences_after_active desc
+    limit 30
     """,
-    ["total", "occurrences_after_active", "pitfall_active"],
+    ["action_type", "error_signature", "total", "first_seen", "last_seen",
+     "pitfall_active", "occurrences_after_active", "has_avoid_lesson"],
     [comp_id],
 )
-active_rows = error_rows.filter(pl.col("pitfall_active"))
+active_rows = err_df.filter(pl.col("pitfall_active"))
 active_total = int(active_rows["total"].sum()) if not active_rows.is_empty() else 0
 repeat_after_pitfall_rate = (
     float(active_rows["occurrences_after_active"].sum()) / active_total if active_total else 0.0
@@ -178,7 +217,7 @@ with h1:
         red=(cite_rate < 0.10 or (jumps_last10 == 0 and stagnation.is_stagnant)),
     )
     st.metric(f"{status} Accumulation", f"cite {cite_rate:.2f}")
-    st.caption(f"jumps(last10)={jumps_last10}" + ("" if funnel_row and funnel_row[1] else " (approx)"))
+    st.caption(f"jumps(last10)={jumps_last10}" + ("" if retrieved_precise else " (approx)"))
 with h2:
     status = _traffic_light(
         green=(posterior_spread >= 0.15 and calibration_gap <= 0.15),
@@ -214,18 +253,22 @@ if not has_scores.is_empty():
         chart_df = chart_df.join(best_so_far, on="attempt_no", how="left")
 
     pdf = chart_df.to_pandas()
-    line = alt.Chart(pdf).mark_line().encode(x="attempt_no", y="cv_score")
+    # 명시 type(:Q) — 자동추론에 맡기면 레이어마다 다르게 추론돼 Vega-Lite가
+    # "Scale bindings are currently only supported for..." 경고를 낸다.
+    # .interactive()(pan/zoom 바인딩)도 제거 — 정적 모니터링 차트라 불필요하고,
+    # 레이어 중 하나라도 값이 전부 null이면 바인딩 스케일 계산이 Infinity로 죽는다.
+    line = alt.Chart(pdf).mark_line().encode(x="attempt_no:Q", y="cv_score:Q")
     layers = [line]
-    if "best_so_far" in pdf.columns:
-        layers.append(alt.Chart(pdf).mark_line(color="orange").encode(x="attempt_no", y="best_so_far"))
+    if "best_so_far" in pdf.columns and pdf["best_so_far"].notna().any():
+        layers.append(alt.Chart(pdf).mark_line(color="orange").encode(x="attempt_no:Q", y="best_so_far:Q"))
     jump_points = pdf[pdf["label"] == "jump"]
     if not jump_points.empty:
         layers.append(
             alt.Chart(jump_points).mark_point(size=80, color="green", filled=True).encode(
-                x="attempt_no", y="cv_score", tooltip=["attempt_no", "cv_score"]
+                x="attempt_no:Q", y="cv_score:Q", tooltip=["attempt_no", "cv_score"]
             )
         )
-    st.altair_chart(alt.layer(*layers).interactive(), use_container_width=True)
+    st.altair_chart(alt.layer(*layers), use_container_width=True)
     if stagnation.is_stagnant:
         st.warning(f"정체 중 — 최근 {stagnation.stagnant_for} attempt 동안 jump 없음")
 else:
@@ -302,18 +345,7 @@ st.divider()
 
 st.subheader("Lesson Funnel")
 
-funnel_df = _query_df(
-    conn,
-    """
-    select written, total_attempts, retrieved, cited, positive_gain,
-           retrieve_rate, cite_rate, gain_rate, retrieved_precise
-    from lesson_funnel where competition_id = %s
-    """,
-    ["written", "total_attempts", "retrieved", "cited", "positive_gain",
-     "retrieve_rate", "cite_rate", "gain_rate", "retrieved_precise"],
-    [comp_id],
-)
-
+# funnel_df는 Health Signals에서 이미 전체 컬럼으로 쿼리해 둔 것을 재사용.
 if funnel_df.is_empty():
     st.info("No lesson_funnel data yet.")
 else:
@@ -364,26 +396,21 @@ st.divider()
 
 st.subheader("Bandit Calibration")
 
-bandit_df = _query_df(
-    conn,
-    """
-    select action_type, posterior_mean, weighted_success, calibration_gap, picks
-    from bandit_calibration where scope_key = %s
-    order by calibration_gap desc nulls last
-    """,
-    ["action_type", "posterior_mean", "weighted_success", "calibration_gap", "picks"],
-    [comp_id],
-)
-
+# bandit_df는 Health Signals에서 이미 전체 컬럼으로 쿼리해 둔 것을 재사용.
 if bandit_df.is_empty():
     st.info("No bandit_calibration data yet.")
 else:
     bc_left, bc_right = st.columns(2)
     with bc_left:
-        st.bar_chart(
-            bandit_df.select(["action_type", "posterior_mean", "weighted_success"])
-            .to_pandas().set_index("action_type")
+        # weighted_success는 LEFT JOIN이라 한 번도 안 뽑힌 action_type에서 null —
+        # 차트에 null 열이 섞이면 Vega-Lite가 해당 필드 도메인을 Infinity로 잡고 경고한다.
+        chart_rows = bandit_df.select(["action_type", "posterior_mean", "weighted_success"]).drop_nulls(
+            "weighted_success"
         )
+        if chart_rows.is_empty():
+            st.info("No action_type has been picked yet (weighted_success unavailable).")
+        else:
+            st.bar_chart(chart_rows.to_pandas().set_index("action_type"))
     with bc_right:
         st.dataframe(bandit_df, use_container_width=True)
 
@@ -391,20 +418,7 @@ st.divider()
 
 st.subheader("Error Recurrence")
 
-err_df = _query_df(
-    conn,
-    """
-    select action_type, error_signature, total, first_seen, last_seen,
-           pitfall_active, occurrences_after_active, has_avoid_lesson
-    from error_recurrence where competition_id = %s
-    order by pitfall_active desc, occurrences_after_active desc
-    limit 30
-    """,
-    ["action_type", "error_signature", "total", "first_seen", "last_seen",
-     "pitfall_active", "occurrences_after_active", "has_avoid_lesson"],
-    [comp_id],
-)
-
+# err_df는 Health Signals에서 이미 전체 컬럼으로 쿼리해 둔 것을 재사용.
 if err_df.is_empty():
     st.info("No error_recurrence data yet.")
 else:
