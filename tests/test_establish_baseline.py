@@ -42,6 +42,10 @@ def _patches(confirm_results, code_by_attempt=None):
         patch("bin.establish_baseline._code_download", side_effect=lambda path: code_by_attempt.get(path, "code")),
         patch("bin.establish_baseline.confirm_and_measure", side_effect=_confirm_side_effect),
         patch("bin.establish_baseline.materialize_best_pipeline", return_value="materialized"),
+        # eval_isolated는 실제 서브프로세스를 띄우므로(#145 merge-verify OOF 수집)
+        # 다른 IO와 마찬가지로 monkeypatch — 순수 로직만 확인한다는 이 파일의
+        # 설계 원칙 유지.
+        patch("bin.establish_baseline.eval_isolated", return_value=MagicMock(error_trace=None, cv_score=0.9, oof_preds=[0.1, 0.2])),
         patch("bin.establish_baseline.insert_pipeline"),
         patch("bin.establish_baseline.upload_best_pipeline"),
     )
@@ -80,7 +84,7 @@ def test_first_candidate_confirmed_promotes_and_stops():
     ]
     conn.execute.return_value.fetchone.return_value = (None,)
     patches = _patches([ConfirmResult(confirmed=True, holdout_score=0.88, seed_gains=None)])
-    with patches[0], patches[1], patches[2], patches[3] as mock_confirm, patches[4], patches[5] as mock_insert, patches[6] as mock_upload:
+    with patches[0], patches[1], patches[2], patches[3] as mock_confirm, patches[4], patches[5], patches[6] as mock_insert, patches[7] as mock_upload:
         result = establish_for_competition(conn, _Comp(), top_k=5, dry_run=False)
 
     assert result == "attempt-1"
@@ -101,7 +105,7 @@ def test_first_candidate_fails_falls_back_to_second():
         ConfirmResult(confirmed=False, holdout_score=None, seed_gains=None),
         ConfirmResult(confirmed=True, holdout_score=0.84, seed_gains=None),
     ])
-    with patches[0], patches[1], patches[2], patches[3] as mock_confirm, patches[4], patches[5] as mock_insert, patches[6]:
+    with patches[0], patches[1], patches[2], patches[3] as mock_confirm, patches[4], patches[5], patches[6] as mock_insert, patches[7]:
         result = establish_for_competition(conn, _Comp(), top_k=5, dry_run=False)
 
     assert result == "attempt-2"
@@ -121,7 +125,7 @@ def test_all_candidates_fail_returns_none():
         ConfirmResult(confirmed=False, holdout_score=None, seed_gains=None),
         ConfirmResult(confirmed=False, holdout_score=None, seed_gains=None),
     ])
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as mock_insert, patches[6]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6] as mock_insert, patches[7]:
         result = establish_for_competition(conn, _Comp(), top_k=5, dry_run=False)
 
     assert result is None
@@ -132,7 +136,7 @@ def test_dry_run_does_not_write_but_returns_attempt_id():
     conn = MagicMock()
     conn.execute.return_value.fetchall.return_value = [("attempt-1", 0.9, "path1")]
     patches = _patches([ConfirmResult(confirmed=True, holdout_score=0.88, seed_gains=None)])
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as mock_insert, patches[6] as mock_upload:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6] as mock_insert, patches[7] as mock_upload:
         result = establish_for_competition(conn, _Comp(), top_k=5, dry_run=True)
 
     assert result == "attempt-1"
@@ -150,7 +154,7 @@ def test_empty_source_after_header_strip_skips_candidate():
     patches_list = list(_patches([ConfirmResult(confirmed=True, holdout_score=0.8, seed_gains=None)],
                                   code_by_attempt={"path1": "", "path2": "code"}))
     with patches_list[0], patches_list[1], patches_list[2], patches_list[3] as mock_confirm, \
-         patches_list[4], patches_list[5], patches_list[6]:
+         patches_list[4], patches_list[5], patches_list[6], patches_list[7]:
         result = establish_for_competition(conn, _Comp(), top_k=5, dry_run=False)
 
     assert result == "attempt-2"

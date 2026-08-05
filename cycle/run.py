@@ -656,6 +656,31 @@ def run_attempt_core(
             # 다른 문자열이므로 순서를 바꿔 sha256을 insert_pipeline에 함께 기록한다.
             materialized = materialize_best_pipeline(prev_code, source)
             pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
+
+            # OOF 확보 — bin/run_promote_task.py의 merge-verify와 동일 패턴
+            # (materialized를 1회 재평가하는 김에 collect_oof=True로 얹는다,
+            # 추가 eval 아님). 여기 없으면 이 경로로 승격된 pipeline은 영구히
+            # blend 후보가 될 수 없다(#145). 이 경로는 기존에 merge-verify
+            # 게이트가 없었으므로 실패해도 승격 자체는 막지 않고 oof_preds만
+            # 비운다 — best-effort.
+            merge_oof_preds = None
+            try:
+                merge_eval = eval_isolated(
+                    source=materialized,
+                    train=config.train,
+                    target_col=config.target_col,
+                    metric=config.metric,
+                    prev_best=None,
+                    n_splits=config.n_splits,
+                    seed=config.seed,
+                    is_classification=config.is_classification,
+                    collect_oof=True,
+                )
+                if not merge_eval.error_trace and merge_eval.cv_score is not None:
+                    merge_oof_preds = merge_eval.oof_preds
+            except Exception as exc:
+                _LOG.warning("merge-verify OOF 수집 실패(무시하고 계속): %s", exc)
+
             with conn.transaction():
                 insert_pipeline(
                     conn,
@@ -667,6 +692,7 @@ def run_attempt_core(
                     cv_score=cv_score,
                     gain_vs_best=gain_vs_best,
                     pipeline_sha256=pipeline_sha256,
+                    oof_preds=merge_oof_preds,
                     materialized_code=materialized,
                 )
             _best_pipeline_upload(config.competition_id, materialized)

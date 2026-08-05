@@ -8,6 +8,7 @@ import polars as pl
 import pytest
 
 from bin.blend import build_oof_matrix, compute_and_store_blend, fetch_oof_candidates, fit_blend
+from bin.blend import _encode_target
 
 
 def _conn_with(rows) -> MagicMock:
@@ -130,3 +131,44 @@ def test_compute_and_store_blend_succeeds_and_upserts():
     assert len(upsert_calls) == 1
     assert "ON CONFLICT (competition_id) DO UPDATE" in upsert_calls[0].args[0]
     assert upsert_calls[0].args[1][0] == "s4e1"
+
+
+# --- _encode_target (#145 — s6e3 실측 회귀: 문자열 이진 타깃 캐스팅 실패) ---
+
+def test_encode_target_passes_through_numeric():
+    train = pl.DataFrame({"y": [0, 1, 1, 0]})
+    result = _encode_target(train, "y")
+    assert result.tolist() == [0.0, 1.0, 1.0, 0.0]
+
+
+def test_encode_target_maps_string_binary_labels_ascending():
+    """s6e3 'Churn' Yes/No 실측 — .astype(float)가 'could not convert string to
+    float' ValueError로 죽던 것을, sklearn 정렬 순서(오름차순 두 번째=positive)와
+    같은 컨벤션으로 0/1 인코딩해야 한다."""
+    train = pl.DataFrame({"y": ["No", "Yes", "No", "Yes"]})
+    result = _encode_target(train, "y")
+    assert result.tolist() == [0.0, 1.0, 0.0, 1.0]
+
+
+def test_encode_target_none_when_not_binary():
+    train = pl.DataFrame({"y": ["a", "b", "c"]})
+    assert _encode_target(train, "y") is None
+
+
+def test_compute_and_store_blend_handles_string_target_without_raising():
+    rng = np.random.default_rng(2)
+    n = 40
+    labels = rng.integers(0, 2, n)
+    train = pl.DataFrame({"y": np.where(labels == 1, "Yes", "No")})
+    oof1 = (labels + rng.standard_normal(n) * 0.05).tolist()
+    oof2 = (labels + rng.standard_normal(n) * 0.05).tolist()
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = [
+        ("p1", oof1, 0.9),
+        ("p2", oof2, 0.88),
+    ]
+    result = compute_and_store_blend(conn, "s6e3", train, "y", "auc")
+
+    assert result is not None
+    assert set(result["pipeline_ids"]) == {"p1", "p2"}

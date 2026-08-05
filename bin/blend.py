@@ -113,6 +113,26 @@ def _store_blend_weights(conn, result: dict) -> None:
     )
 
 
+def _encode_target(train: "object", target_col: str) -> "np.ndarray | None":
+    """Ridge fit·채점용 float 타깃. 이미 수치형이면 그대로 캐스팅한다.
+
+    binary_proba 메트릭(auc 등) 대회는 타깃이 문자열 라벨(예: s6e3 'Churn'의
+    Yes/No)일 수 있다 — evaluator.harness는 원본 dtype 그대로 fn()에 넘겨
+    sklearn이 알아서 처리하지만, 여기선 Ridge.fit에 쓸 float가 필요하다.
+    postprocess_predictions가 만드는 확률(=predict_proba[:, 1), 오름차순 정렬
+    시 두 번째 클래스)과 같은 클래스를 1로 매핑해야 target과 OOF가 같은 걸
+    가리킨다. 클래스가 2개가 아니면(멀티클래스 등) 인코딩 불가로 None.
+    """
+    raw = train[target_col].to_numpy()
+    try:
+        return raw.astype(float)
+    except (ValueError, TypeError):
+        classes = np.unique(raw)
+        if len(classes) != 2:
+            return None
+        return (raw == classes[1]).astype(float)
+
+
 def compute_and_store_blend(
     conn, competition_id: str, train: "object", target_col: str, metric: str,
     n_top: int = DEFAULT_N_TOP,
@@ -130,7 +150,9 @@ def compute_and_store_blend(
     if len(candidates) < 2:
         return None
 
-    target = train[target_col].to_numpy().astype(float)
+    target = _encode_target(train, target_col)
+    if target is None:
+        return None
     oof_matrix, used_ids = build_oof_matrix(candidates, len(target))
     if oof_matrix.shape[1] < 2:
         return None
