@@ -89,7 +89,9 @@ def test_sweep_respects_module_level_rate_gate(monkeypatch):
     conn.execute.assert_not_called()
 
 
-def test_sweep_queries_submitted_and_pending_statuses(monkeypatch):
+def test_sweep_queries_all_non_terminal_statuses(monkeypatch):
+    """#146: 실측상 'submitted'/'pending'은 실제로 안 쓰이고 'queued'/'submitting'이
+    쓰인다 — 넷 다 걸려야 daemon이 실제 제출 상태를 놓치지 않는다."""
     monkeypatch.setattr(run_daemon, "_last_submission_sweep", 0.0)
     conn = MagicMock()
     conn.execute.return_value.fetchall.return_value = []
@@ -97,6 +99,8 @@ def test_sweep_queries_submitted_and_pending_statuses(monkeypatch):
     sql = conn.execute.call_args.args[0]
     assert "submitted" in sql
     assert "pending" in sql
+    assert "queued" in sql
+    assert "submitting" in sql
 
 
 def test_sweep_refreshes_only_due_rows(monkeypatch):
@@ -104,8 +108,8 @@ def test_sweep_refreshes_only_due_rows(monkeypatch):
     conn = MagicMock()
     now = datetime.now(timezone.utc)
     conn.execute.return_value.fetchall.return_value = [
-        ("sub-1", now - timedelta(minutes=5), None),  # 한 번도 확인 안 됨 — due
-        ("sub-2", now - timedelta(minutes=5), now - timedelta(seconds=10)),  # 방금 확인 — not due
+        ("sub-1", now - timedelta(minutes=5), None, "queued"),  # 한 번도 확인 안 됨 — due
+        ("sub-2", now - timedelta(minutes=5), now - timedelta(seconds=10), "queued"),  # 방금 확인 — not due
     ]
     with patch("bin.run_daemon.refresh_submission_row", return_value={"status": "submitted"}) as mock_refresh:
         _sweep_stale_submissions(conn)
@@ -116,9 +120,37 @@ def test_sweep_does_not_crash_when_refresh_raises(monkeypatch):
     monkeypatch.setattr(run_daemon, "_last_submission_sweep", 0.0)
     conn = MagicMock()
     now = datetime.now(timezone.utc)
-    conn.execute.return_value.fetchall.return_value = [("sub-1", now - timedelta(minutes=5), None)]
+    conn.execute.return_value.fetchall.return_value = [("sub-1", now - timedelta(minutes=5), None, "queued")]
     with patch("bin.run_daemon.refresh_submission_row", side_effect=RuntimeError("boom")):
         _sweep_stale_submissions(conn)  # 예외가 여기까지 전파되면 실패
+
+
+def test_sweep_skips_submitting_within_timeout_window(monkeypatch):
+    """kaggle CLI가 실제로 업로드 중일 수 있는 시간대(<_SUBMIT_TIMEOUT_SEC)엔
+    'submitting'을 재확인하지 않는다 — 진행 중인 업로드와 경합 방지."""
+    monkeypatch.setattr(run_daemon, "_last_submission_sweep", 0.0)
+    conn = MagicMock()
+    now = datetime.now(timezone.utc)
+    conn.execute.return_value.fetchall.return_value = [
+        ("sub-1", now - timedelta(minutes=5), None, "submitting"),
+    ]
+    with patch("bin.run_daemon.refresh_submission_row") as mock_refresh:
+        _sweep_stale_submissions(conn)
+    mock_refresh.assert_not_called()
+
+
+def test_sweep_refreshes_submitting_past_timeout_window(monkeypatch):
+    """실측: s4e12 제출이 'submitting'에서 7일째 방치됐던 케이스(#146) — daemon
+    재시작 등으로 상태 갱신이 끊긴 것으로 보고 타임아웃 이후엔 재확인해야 한다."""
+    monkeypatch.setattr(run_daemon, "_last_submission_sweep", 0.0)
+    conn = MagicMock()
+    now = datetime.now(timezone.utc)
+    conn.execute.return_value.fetchall.return_value = [
+        ("sub-1", now - timedelta(days=7), now - timedelta(days=7), "submitting"),
+    ]
+    with patch("bin.run_daemon.refresh_submission_row", return_value={"status": "complete"}) as mock_refresh:
+        _sweep_stale_submissions(conn)
+    mock_refresh.assert_called_once_with(conn, "sub-1")
 
 
 # --- refresh_submission_row (bin/api.py) ---

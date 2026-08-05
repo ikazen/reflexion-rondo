@@ -24,7 +24,7 @@ from pathlib import Path
 import polars as pl
 
 import bin.airflow_client as airflow_client
-from bin.api import DaemonState, create_app, refresh_submission_row
+from bin.api import _SUBMIT_TIMEOUT_SEC, DaemonState, create_app, refresh_submission_row
 from bin.archive_lessons import archive_low_gain_lessons
 from cycle.run import CycleConfig, establish_bootstrap_baseline, run_cycle
 from memory.retriever import EmbeddingUnavailableError
@@ -222,16 +222,30 @@ def _sweep_stale_submissions(conn) -> None:
         return
     _last_submission_sweep = now_mono
 
+    # 'submitted'/'pending'은 실제로 쓰인 적 없는(과도 상태이거나 미사용) 값이라
+    # 이 필터로는 아무것도 안 걸리는 게 정상 케이스였다(#146) — 실제로 걸리는
+    # raw.kaggle_submissions.status는 'queued'/'submitting'/'complete'/'error'.
+    # 'queued'/'submitting'을 빼먹으면 daemon 재시작 등으로 갱신이 끊긴 제출이
+    # 영구히 미확인 상태로 남는다(실측: 10일·7일째 방치된 건 2건).
     rows = conn.execute(
         """
-        select submission_id, submitted_at, checked_at
+        select submission_id, submitted_at, checked_at, status
         from raw.kaggle_submissions
-        where status in ('submitted', 'pending')
+        where status in ('submitted', 'pending', 'queued', 'submitting')
         """
     ).fetchall()
 
     now = datetime.now(timezone.utc)
-    for submission_id, submitted_at, checked_at in rows:
+    for submission_id, submitted_at, checked_at, status in rows:
+        if status == "submitting":
+            # kaggle CLI가 지금 이 순간 실제로 업로드 중일 수 있다 — 진행 중인
+            # 업로드와 경합하지 않도록, 업로드 타임아웃(bin/api.py의
+            # _SUBMIT_TIMEOUT_SEC)보다 오래 이 상태면(=daemon 재시작 등으로
+            # 갱신이 끊긴 것으로 판단) 재확인, 그 전엔 스킵.
+            submitted_naive = submitted_at.replace(tzinfo=None) if submitted_at.tzinfo else submitted_at
+            now_naive = now.replace(tzinfo=None)
+            if (now_naive - submitted_naive).total_seconds() < _SUBMIT_TIMEOUT_SEC:
+                continue
         if not _submission_refresh_due(submitted_at, checked_at, now):
             continue
         try:
