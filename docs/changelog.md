@@ -1,5 +1,12 @@
 # 변경 이력
 
+## v1.4.19 — 대시보드 Fleet Overview (2026-08-03)
+- #143: 대시보드 최상단에 전역 Fleet Overview 신설 — 대회별 큐 상태·confirmed/quarantined pipeline 수·14일 attempt/jump/error/OOM 카운트·`auto_submit_paused_reason`을 벌크 쿼리 5개(N+1 아님, 실측 0.085s)로 모아 attention 배지(🔴/🟡/🟢)로 정렬해 어디부터 볼지 여기서 고르게 함. 대회 선택 종속 섹션으로 Submissions·Quarantine·Blend 신설 — `cv_lb_calibration` 제출 이력(발산 경고), 격리 pipeline 목록, `auto_submit_paused_reason` 경고, blend_cv_score vs 단일 best pipeline 비교. daemon API 미경유, 전부 Postgres 직접 쿼리(GH #65 설계 그대로).
+
+## v1.4.18 — 대시보드 콘솔 경고·느림 수정 (2026-08-03)
+- #141: 캐싱 부재로 `_query_df`가 rerun마다 재조회하던 문제에 `@st.cache_data(ttl=60)`(`bin/api.py` 60초 TTL 관례와 동일) 적용. Health Signals·상세 섹션이 같은 쿼리(lesson_funnel/bandit_calibration/error_recurrence)를 중복 호출하던 것 제거. CV Progression 차트 `.interactive()` 제거 + 명시 타입으로 Scale binding 콘솔 경고 해소, Bandit 차트 null 열 드롭으로 Infinite extent 경고 해소.
+- 부수 수정: `lesson_duplicates` 뷰의 O(n²) 자기조인을 대회당 최근 250건으로 캡핑 — s4e1 12.18s → 0.29s.
+
 ## v1.4.17 — 대시보드 건강 신호등 + 관측 패널 6종 (2026-08-03)
 - #65: `dashboard.py`(Streamlit, Postgres 직결, daemon API 미경유)에 Health 신호등 4칸(`bin/api.py:/api/reflexion-health`와 동일 임계값을 API 호출 없이 재현) + CV progression jump 마커/정체 경고 오버레이 + Lesson Funnel/Dead/Duplicates + Bandit Calibration + Error Recurrence + Transfer Matrix 히트맵(pandas Styler) 추가. `docs/decisions.md` 등 별도 ADR 없이 기존 GH #65 설계(뷰 직접 소비) 그대로 구현.
 - 부수 수정: `_rows_df`가 polars 기본 `infer_schema_length=100`으로 앞쪽 100행이 전부 null인 컬럼(예: holdout_score)에서 타입을 오추론해 뒷행 실측값에서 크래시하던 문제 수정(`infer_schema_length=None`) — s5e10 등 attempt가 많은 대회에서 대시보드 자체가 안 뜨던 원인.
