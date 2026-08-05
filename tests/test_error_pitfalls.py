@@ -36,6 +36,19 @@ IndentationError: unexpected indent
 
 _CONTRACT_TRACE = "action_type mismatch: expected feature_engineering, got preprocessing"
 
+# #147 실측 — 파이썬 예외 형식(Class: message)이 아닌 실패 3종. 전부 error_trace는
+# 있는데 error_signature가 None으로 빠져 error_recurrence가 못 보고 있었다.
+_PANDAS_GUARD_TRACE = (
+    "pandas-only API (not on polars — use group_by/replace_strict/map_elements/gather/etc): groupby()"
+)
+_RUNNER_OOM_TRACE = "runner exited without output.json (rc=-9)"
+_UNDERSCORE_MODULE_TRACE = """\
+Traceback (most recent call last):
+  File "runner.py", line 42, in run
+    model.fit(X, y)
+_catboost.CatBoostError: catboost/private/libs/options/plain_options_helper.cpp:512: Unknown option {random_state} with value "42"
+"""
+
 
 def test_normalize_categorical_to_signature() -> None:
     sig = normalize_error(_CATEGORICAL_TRACE)
@@ -66,8 +79,42 @@ def test_normalize_indentation_error_excluded() -> None:
     assert normalize_error(_INDENTATION_TRACE) is None
 
 
-def test_normalize_contract_violation_excluded() -> None:
-    assert normalize_error(_CONTRACT_TRACE) is None
+def test_normalize_non_exception_message_falls_back_to_last_line() -> None:
+    """예외 형식(Class: message)이 아닌 한 줄짜리 메시지도(#147) None으로 버리지
+    않고 그대로 시그니처로 쓴다 — error_recurrence가 이런 반복 실패도 추적해야
+    한다."""
+    sig = normalize_error(_CONTRACT_TRACE)
+    assert sig == _CONTRACT_TRACE
+
+
+def test_normalize_pandas_guard_rejection() -> None:
+    """실측(#147, s6e6): 정적 가드 거부 메시지가 'Class: message' 형식이 아니라
+    시그니처 없이 누락되던 문제 — #136 집계가 이 케이스에 의존한다. API 이름
+    (groupby 등)은 그대로 남아야 어떤 API가 재발하는지 구분 가능하다 — 나머지
+    file-path 형태 부분만 <val>로 마스킹된다."""
+    sig = normalize_error(_PANDAS_GUARD_TRACE)
+    assert sig is not None
+    assert sig.startswith("pandas-only API")
+    assert "groupby()" in sig
+
+
+def test_normalize_runner_oom_message() -> None:
+    """실측(#147, s6e6): runner 비정상 종료(rc=-9)도 예외 형식이 아니라 누락되던
+    문제 — #135 OOM 집계가 이 케이스에 의존한다(rc 숫자는 volatile이라 마스킹됨)."""
+    sig = normalize_error(_RUNNER_OOM_TRACE)
+    assert sig is not None
+    assert sig.startswith("runner exited without output.json")
+
+
+def test_normalize_underscore_prefixed_module_matched() -> None:
+    """실측(#147, s6e6): `_catboost.CatBoostError`처럼 밑줄로 시작하는 내부
+    모듈명이 기존 정규식([A-Za-z]만 허용)에 안 걸려 시그니처 없이 누락되던
+    문제."""
+    sig = normalize_error(_UNDERSCORE_MODULE_TRACE)
+    assert sig is not None
+    assert sig.startswith("CatBoostError:")
+    assert "512" not in sig
+    assert "42" not in sig
 
 
 def test_normalize_volatile_numbers_removed() -> None:

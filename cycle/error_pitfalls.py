@@ -16,26 +16,49 @@ _VOLATILE = [
     re.compile(r"(/[\w./\\-]+)"),     # file paths
 ]
 
-_EXCEPTION_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*):\s*(.+)$")
+
+# 모듈명이 밑줄로 시작하는 내부 확장 모듈(_catboost, _pickle 등)도 실제
+# traceback에 나온다 — [A-Za-z]만 허용하면 이런 예외 라인이 통째로 안 걸린다
+# (#147, s6e6 실측: _catboost.CatBoostError 라인이 매칭 실패해 시그니처 없이
+# 누락됨).
+_EXCEPTION_LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*):\s*(.+)$")
+
+
+def _normalize_message(text: str) -> str:
+    for pattern in _VOLATILE:
+        text = pattern.sub("<val>", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def normalize_error(trace: str) -> str | None:
+    """실패 attempt를 error_recurrence가 추적할 수 있는 시그니처로 정규화한다.
+
+    'ExceptionClass: message' 형식 라인을 아래에서 위로 찾아 우선 매칭한다.
+    그런 라인이 하나도 없으면(#147 실측: 정적 가드 거부 메시지 —
+    "pandas-only API (...): groupby()", runner 비정상 종료 —
+    "runner exited without output.json (rc=-9)" 등, 파이썬 예외가 아니라
+    harness/runtime이 직접 만든 상태 메시지) 마지막 비어있지 않은 줄을 그대로
+    정규화해 시그니처로 쓴다 — 이런 것도 실제로는 반복되는 실패 패턴이라
+    추적 안 하면 #135/#136류 집계가 과소 추정된다.
+    """
+    last_nonblank: str | None = None
     for line in reversed(trace.splitlines()):
         line = line.strip()
         if not line:
             continue
+        if last_nonblank is None:
+            last_nonblank = line
         m = _EXCEPTION_LINE.match(line)
         if not m:
             continue
         exc_class = m.group(1).split(".")[-1]
         if exc_class in _SYNTAX_ERRORS:
             return None
-        message = m.group(2)
-        for pattern in _VOLATILE:
-            message = pattern.sub("<val>", message)
-        message = re.sub(r"\s+", " ", message).strip()
-        return f"{exc_class}: {message}"
-    return None
+        return f"{exc_class}: {_normalize_message(m.group(2))}"
+
+    if last_nonblank is None:
+        return None
+    return _normalize_message(last_nonblank) or None
 
 
 def top_error_pitfalls(
