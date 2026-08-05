@@ -32,11 +32,14 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
+import polars as pl
+
 from config.settings import PROMOTE_CONFIRM_SEEDS
 from cycle.materialize import materialize_best_pipeline
 from cycle.promotion import confirm_and_measure
 from cycle.run import _CODE_HEADER_SEP
 from evaluator.harness import split_audit_holdout
+from runtime.isolate import eval_isolated
 from store.db import connect, insert_pipeline
 from store.s3_code import download as _code_download
 from store.s3_code import upload_best_pipeline
@@ -93,7 +96,8 @@ def _top_k_attempts(conn, competition_id: str, top_k: int) -> list[tuple[str, fl
     ).fetchall()
 
 
-def _promote(conn, competition_id: str, attempt_id: str, cv_score: float, source: str, confirm) -> None:
+def _promote(conn, comp: object, attempt_id: str, cv_score: float, source: str, confirm, train90: pl.DataFrame) -> None:
+    competition_id = comp.COMPETITION_ID
     if confirm.holdout_score is not None:
         conn.execute(
             "UPDATE raw.attempts SET holdout_score = %s WHERE attempt_id = %s",
@@ -114,6 +118,30 @@ def _promote(conn, competition_id: str, attempt_id: str, cv_score: float, source
 
     materialized = materialize_best_pipeline(None, source)
     pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
+
+    # OOF 확보 — bin/run_promote_task.py의 merge-verify와 동일 패턴, 이 스크립트
+    # 자체 승격 시점엔 아직 확정 pipeline이 1개뿐이라 blend는 못 돌지만(#75는
+    # 확정 2개 필요), 이 대회에 나중에 두 번째 확정이 생겼을 때 blend 후보가
+    # 되려면 여기서부터 oof_preds가 있어야 한다(#145). best-effort — 실패해도
+    # baseline 확립 자체는 막지 않는다.
+    merge_oof_preds = None
+    try:
+        merge_eval = eval_isolated(
+            source=materialized,
+            train=train90,
+            target_col=comp.TARGET,
+            metric=comp.METRIC,
+            prev_best=None,
+            n_splits=getattr(comp, "N_SPLITS", 5),
+            seed=42,
+            is_classification=comp.IS_CLASSIFICATION,
+            collect_oof=True,
+        )
+        if not merge_eval.error_trace and merge_eval.cv_score is not None:
+            merge_oof_preds = merge_eval.oof_preds
+    except Exception as exc:
+        print(f"  merge-verify OOF 수집 실패(무시하고 계속): {exc}")
+
     with conn.transaction():
         insert_pipeline(
             conn,
@@ -125,6 +153,7 @@ def _promote(conn, competition_id: str, attempt_id: str, cv_score: float, source
             cv_score=cv_score,
             gain_vs_best=None,
             pipeline_sha256=pipeline_sha256,
+            oof_preds=merge_oof_preds,
             materialized_code=materialized,
         )
     upload_best_pipeline(competition_id, materialized)
@@ -173,7 +202,7 @@ def establish_for_competition(conn, comp: object, top_k: int, dry_run: bool) -> 
         if dry_run:
             print(f"  [dry-run] would establish baseline: {comp.COMPETITION_ID} attempt={attempt_id[:8]}")
         else:
-            _promote(conn, comp.COMPETITION_ID, attempt_id, cv_score, source, confirm)
+            _promote(conn, comp, attempt_id, cv_score, source, confirm, train90)
             print(f"  established baseline: {comp.COMPETITION_ID} attempt={attempt_id[:8]} cv={cv_score}")
         return attempt_id
 
