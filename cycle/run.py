@@ -497,6 +497,7 @@ def run_attempt_core(
     is_noop_tie = False
     fold_scores: list[float] | None = None
     selected_params: dict | None = None
+    peak_rss_bytes: int | None = None
 
     if not error_trace:
         for _eval_i in range(2):
@@ -513,6 +514,7 @@ def run_attempt_core(
                 best_source=prev_code,
                 best_params=_prev_best_params(conn, config.competition_id),
             )
+            peak_rss_bytes = iso.peak_rss_bytes
             if not iso.error_trace:
                 cv_score = iso.cv_score
                 cv_fold_var = iso.cv_fold_var or 0.0
@@ -605,6 +607,7 @@ def run_attempt_core(
         "error_trace":      error_trace,
         "error_signature":  normalize_error(error_trace) if error_trace else None,
         "duration_sec":     round(duration_sec, 1),
+        "peak_rss_bytes":   peak_rss_bytes,
         "code_path":        str(code_path),
         "retries":          retries,
         # 다음 attempt/승격 게이트가 이 attempt의 fold_scores/params를
