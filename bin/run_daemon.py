@@ -33,6 +33,11 @@ from store.train_data import load_train
 
 POLL_INTERVAL = 10  # 빈 큐 대기 간격 (초)
 MAX_CONSECUTIVE_CYCLE_FAILURES = int(os.getenv("RONDO_MAX_CONSECUTIVE_FAILURES", "5"))
+# 큐 항목 하나가 daemon을 통째로 붙잡지 않도록 리스당 최대 사이클 수를 제한한다
+# (2026-08 실측: 30~100-cycle 큐 하나가 며칠씩 다른 13개 대회의 실행 기회를 막음).
+# 리스 소진 시 pending으로 되돌려 다음으로 오래 기다린 항목에 순서를 넘긴다 —
+# 큐 슬롯 자체(big=3)는 그대로라 처리량 이득은 없고 대회 간 커버리지만 회복한다.
+DAEMON_CYCLES_PER_LEASE = int(os.getenv("DAEMON_CYCLES_PER_LEASE", "5"))
 ROOT = Path(__file__).parent.parent
 
 _running = True
@@ -138,19 +143,23 @@ def _handle_signal(sig, frame) -> None:
 
 
 def _pop_pending(conn) -> dict | None:
+    # last_leased_at 기준 오름차순 — 리스를 방금 마친 항목은 last_leased_at이 now()로
+    # 갱신돼 뒤로 밀리고, 한 번도 리스된 적 없는 항목은 NULL이라 created_at으로 폴백해
+    # 기존 "가장 오래 기다린 것부터" 순서를 유지한다.
     row = conn.execute(
         """
-        select queue_id, competition, stage, n_cycles, priority
+        select queue_id, competition, stage, n_cycles, priority, cycles_done, latest_score
         from raw.cycle_queue
         where status = 'pending'
-        order by priority desc, created_at asc
+        order by priority desc, coalesce(last_leased_at, created_at) asc
         limit 1
         """
     ).fetchone()
     if not row:
         return None
     return {"queue_id": row[0], "competition": row[1], "stage": row[2],
-            "n_cycles": row[3], "priority": row[4]}
+            "n_cycles": row[3], "priority": row[4], "cycles_done": row[5],
+            "latest_score": row[6]}
 
 
 def _set_status(conn, queue_id: str, status: str, **extra) -> None:
@@ -295,14 +304,26 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
     competition = item["competition"]
     stage = item["stage"]
     n_cycles = item["n_cycles"]
+    # 리스 재개 — cycles_done/latest_score는 이전 리스가 pending으로 되돌리며
+    # 남겨둔 진행 상태(store/schema.sql cycle_queue). 최초 리스면 둘 다 0/None.
+    cycles_done = item.get("cycles_done") or 0
+    latest_score: float | None = item.get("latest_score")
 
     mode = "airflow" if airflow_client.available() else "direct"
-    print(f"[daemon] starting queue_id={qid} competition={competition} stage={stage} n={n_cycles} mode={mode}")
-    _set_status(conn, qid, "running", started_at=datetime.now(timezone.utc))
+    print(
+        f"[daemon] starting queue_id={qid} competition={competition} stage={stage} "
+        f"progress={cycles_done}/{n_cycles} mode={mode}"
+    )
+    # started_at은 "최초 시작"으로 dashboard/api가 읽으므로 리스 재개 시에는 건드리지
+    # 않는다 — last_leased_at만 매 리스마다 갱신해 _pop_pending의 라운드로빈 정렬에 쓴다.
+    lease_status_kwargs = {"last_leased_at": datetime.now(timezone.utc)}
+    if cycles_done == 0:
+        lease_status_kwargs["started_at"] = datetime.now(timezone.utc)
+    _set_status(conn, qid, "running", **lease_status_kwargs)
     state.update(
         current_queue_id=qid,
         current_competition=competition,
-        current_cycle=0,
+        current_cycle=cycles_done,
         current_n_cycles=n_cycles,
     )
 
@@ -327,16 +348,21 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
             metric_sign=comp.METRIC_SIGN,
         )
 
-    latest_score: float | None = None
-    cycles_done = 0
+    # successes는 "이번 리스에서 실제로 성공한 cycle 수"(_final_status의 "전량 실패"
+    # 판정용, 기존 cycles_done의 원래 의미). cycles_done은 이제 성공/실패/스킵을
+    # 가리지 않고 소비한 예산 전체를 가리킨다 — 리스 경계를 넘어 n_cycles 소진 여부를
+    # 정확히 재개 판단하려면 "시도한 총량"이 필요하기 때문(성공만 세면 계속 실패하는
+    # 대회가 예산을 영영 못 채워 무한정 리스를 반복하게 된다).
+    successes = 0
     skipped = 0
     failed_cycles = 0
     consecutive_failures = 0
     aborted = False
 
-    for i in range(n_cycles):
+    lease_end = min(n_cycles, cycles_done + DAEMON_CYCLES_PER_LEASE)
+    while cycles_done < lease_end:
         if not _running or _is_cancelled(conn, qid):
-            print(f"[daemon] queue_id={qid} cancelled at cycle {i + 1}")
+            print(f"[daemon] queue_id={qid} cancelled at cycle {cycles_done + 1}")
             _set_status(conn, qid, "cancelled", ended_at=datetime.now(timezone.utc),
                         cycles_done=cycles_done, latest_score=latest_score)
             return
@@ -344,6 +370,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
         pacer.acquire()
 
         cycle_failed = False
+        cycle_skipped = False
         err_msg = None
 
         if mode == "airflow":
@@ -353,11 +380,11 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                     stage=stage,
                     queue_id=qid,
                 )
-                print(f"[daemon] cycle {i + 1}/{n_cycles} dag_run={dag_run_id}")
+                print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} dag_run={dag_run_id}")
                 final_state = airflow_client.wait_for_dag_run(dag_run_id)
             except Exception as exc:
                 final_state, err_msg = "error", str(exc)
-                print(f"[daemon] cycle {i + 1}/{n_cycles} airflow error: {err_msg}")
+                print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} airflow error: {err_msg}")
 
             if final_state == "success":
                 row = conn.execute(
@@ -373,11 +400,10 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                     aid, cv, label = row
                     if cv is not None:
                         latest_score = cv
-                    print(f"[daemon] cycle {i + 1}/{n_cycles} winner={aid[:8]} cv={cv} label={label}")
-                cycles_done += 1
+                    print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} winner={aid[:8]} cv={cv} label={label}")
+                successes += 1
                 consecutive_failures = 0
                 pacer.record()
-                state.update(current_cycle=cycles_done, last_cycle_at=datetime.now(timezone.utc))
             else:
                 cycle_failed = True
                 err_msg = err_msg or f"dag_run {dag_run_id} ended with state={final_state}"
@@ -401,27 +427,29 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                 result = run_cycle(conn, config)
                 if result.cv_score is not None:
                     latest_score = result.cv_score
-                cycles_done += 1
+                successes += 1
                 consecutive_failures = 0
                 pacer.record()
-                state.update(current_cycle=cycles_done, last_cycle_at=datetime.now(timezone.utc))
                 print(
-                    f"[daemon] cycle {i + 1}/{n_cycles} attempt={result.attempt_id[:8]}"
+                    f"[daemon] cycle {cycles_done + 1}/{n_cycles} attempt={result.attempt_id[:8]}"
                     f" cv={result.cv_score} label={result.label}"
                 )
             except EmbeddingUnavailableError as exc:
-                print(f"[daemon] cycle {i + 1}/{n_cycles} skipped — embedding unavailable: {exc}")
+                print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} skipped — embedding unavailable: {exc}")
                 skipped += 1
-                continue
+                cycle_skipped = True
             except Exception as exc:
                 cycle_failed = True
                 err_msg = str(exc)
+
+        cycles_done += 1
+        state.update(current_cycle=cycles_done, last_cycle_at=datetime.now(timezone.utc))
 
         if cycle_failed:
             failed_cycles += 1
             consecutive_failures += 1
             print(
-                f"[daemon] cycle {i + 1}/{n_cycles} failed ({(err_msg or '')[:120]})"
+                f"[daemon] cycle {cycles_done}/{n_cycles} failed ({(err_msg or '')[:120]})"
                 f" — {consecutive_failures}/{MAX_CONSECUTIVE_CYCLE_FAILURES} consecutive"
             )
             if consecutive_failures >= MAX_CONSECUTIVE_CYCLE_FAILURES:
@@ -438,13 +466,16 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                 break
             continue
 
+        if cycle_skipped:
+            continue
+
         # 사이클이 성공한 직후 무조건 "running"으로 되돌아가면, 이 사이클이
         # 진행되는 동안(대부분의 시간, ~2분) 걸린 외부 PATCH cancelled 요청이 여기서
         # 조용히 지워지고 다음 반복의 취소 체크는 이미 복구된 "running"만 보게 된다 —
         # 사실상 취소가 실패 분기(continue로 이 호출을 건너뜀)가 아니면 절대 반영 안 됨.
         # 루프 맨 위 체크와 대칭적으로 여기서도 확인한다.
         if _is_cancelled(conn, qid):
-            print(f"[daemon] queue_id={qid} cancelled at cycle {i + 1} (detected post-cycle)")
+            print(f"[daemon] queue_id={qid} cancelled at cycle {cycles_done} (detected post-cycle)")
             _set_status(conn, qid, "cancelled", ended_at=datetime.now(timezone.utc),
                         cycles_done=cycles_done, latest_score=latest_score)
             return
@@ -456,8 +487,14 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
         pass  # circuit breaker가 이미 failed로 설정
     elif _is_cancelled(conn, qid):
         print(f"[daemon] queue_id={qid} cancelled (detected post-cycle)")
+    elif cycles_done < n_cycles:
+        # 리스 소진, 예산 남음 — pending으로 되돌려 다른 큐 항목에 순서를 넘긴다.
+        # last_leased_at은 _process 진입 시 이미 now()로 갱신돼 있어 라운드로빈
+        # 정렬에서 자연히 뒤로 밀린다.
+        _set_status(conn, qid, "pending", cycles_done=cycles_done, latest_score=latest_score)
+        print(f"[daemon] queue_id={qid} lease exhausted at {cycles_done}/{n_cycles} — requeued")
     else:
-        status, err = _final_status(cycles_done, skipped, failed_cycles)
+        status, err = _final_status(successes, skipped, failed_cycles)
         _set_status(conn, qid, status,
                     ended_at=datetime.now(timezone.utc),
                     cycles_done=cycles_done,
@@ -470,7 +507,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
         # 이미 확정 파이프라인이 있으면(재부트스트랩 등) establish_bootstrap_baseline이
         # 내부에서 스킵한다 — airflow 모드는 train이 로드 안 돼 있으므로 여기서 새로 읽는다.
         # 실패해도 daemon 루프 자체는 계속돼야 하므로 예외를 여기서 흡수한다.
-        if stage == "bootstrap" and cycles_done > 0:
+        if stage == "bootstrap" and successes > 0:
             try:
                 bootstrap_train = train if train is not None else load_train(comp)
                 established = establish_bootstrap_baseline(

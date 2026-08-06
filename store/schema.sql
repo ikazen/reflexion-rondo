@@ -135,6 +135,11 @@ CREATE TABLE IF NOT EXISTS raw.cycle_queue (
     latest_score double precision,
     error        text
 );
+-- bin/run_daemon.py의 리스 기반 라운드로빈(#133) — 한 큐 항목이 daemon을 통째로
+-- 붙잡지 않도록 DAEMON_CYCLES_PER_LEASE 사이클마다 pending으로 되돌린다.
+-- _pop_pending이 이 컬럼 기준 오름차순으로 다음 항목을 골라, 방금 리스를 마친
+-- 항목이 자연히 뒤로 밀리게 한다. NULL이면(리스 이력 없음) created_at으로 폴백.
+ALTER TABLE raw.cycle_queue ADD COLUMN IF NOT EXISTS last_leased_at timestamp;
 
 CREATE OR REPLACE VIEW score_progression AS
 SELECT
