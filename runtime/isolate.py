@@ -16,6 +16,7 @@ import os
 import sys
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +24,16 @@ import polars as pl
 
 _RUNNER = Path(__file__).parent / "runner.py"
 DEFAULT_TIMEOUT = 1200
+
+# RLIMIT_AS(가상 주소공간, VSZ)는 numpy/BLAS/부스팅 라이브러리가 실사용보다
+# 훨씬 큰 주소공간을 예약해서 물리 메모리가 남아도 import만으로 실패할 수
+# 있다(ADR-027) — 그래서 그대로 6GiB로 둔다. 대신 이 워치독은 물리
+# RSS(/proc/<pid>/status VmRSS)를 폴링해서 실제 메모리 고갈로 인한 커널
+# OOM kill(rc=-9, 평균 13분을 태운 뒤 죽음, 2026-08 실측 계산의 37%)을
+# 훨씬 싸게(폴링 주기 이내) 선제 차단한다. 컨테이너 mem_limit(백스톱)보다
+# 낮게 잡아야 이 워치독이 먼저 죽여 원인이 명시된 error_signature를 남긴다.
+_DEFAULT_RSS_LIMIT_BYTES = 4 * 1024 ** 3
+_RSS_POLL_INTERVAL_SEC = 2.0
 
 _HAVE_NEWNET = sys.platform == "linux" and hasattr(os, "CLONE_NEWNET")
 
@@ -68,6 +79,19 @@ class IsolatedResult:
     selected_params: dict | None = None
     oof_preds: list[float] | None = None
     gain_vs_best_relative: float | None = None
+    peak_rss_bytes: int | None = None
+
+
+def _read_rss_bytes(pid: int) -> int | None:
+    """/proc/<pid>/status의 VmRSS(KB)를 바이트로 읽는다. 프로세스가 이미 종료됐으면 None."""
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) * 1024
+    except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError):
+        return None
+    return None
 
 
 def eval_isolated(
@@ -114,32 +138,68 @@ def eval_isolated(
         env["PYTHONPATH"] = str(_RUNNER.parent.parent)
         env["HOME"] = tmpdir  # catboost_info 등 홈 쓰기를 tmpdir로 격리
 
-        try:
-            proc = subprocess.run(
+        rss_limit = int(os.environ.get("EVAL_RSS_LIMIT_BYTES", str(_DEFAULT_RSS_LIMIT_BYTES)))
+        stdout_path = ws / "_stdout.log"
+        stderr_path = ws / "_stderr.log"
+        peak_rss = 0
+        killed_reason: str | None = None
+        start = time.monotonic()
+
+        # stdout/stderr는 PIPE 대신 파일로 리다이렉트 — RSS 폴링 중 자식이
+        # 파이프 버퍼를 채우면 부모가 안 읽어가는 동안 자식이 write()에서
+        # 블로킹돼 데드락(watchdog이 kill할 기회조차 없이 멈춤)이 난다.
+        with open(stdout_path, "wb") as out_f, open(stderr_path, "wb") as err_f:
+            proc = subprocess.Popen(
                 [sys.executable, str(_RUNNER), tmpdir],
-                timeout=timeout_sec,
-                capture_output=True,
-                text=True,
+                stdout=out_f,
+                stderr=err_f,
                 env=env,
                 preexec_fn=_PREEXEC,
             )
-        except subprocess.TimeoutExpired:
-            return _err(f"timeout after {timeout_sec}s")
+            while True:
+                rss = _read_rss_bytes(proc.pid)
+                if rss is not None:
+                    peak_rss = max(peak_rss, rss)
+                    if rss > rss_limit:
+                        killed_reason = (
+                            f"memory watchdog: peak RSS {rss // (1024 ** 2)}MB "
+                            f"> limit {rss_limit // (1024 ** 2)}MB"
+                        )
+                        proc.kill()
+                        proc.wait()
+                        break
+                remaining = timeout_sec - (time.monotonic() - start)
+                if remaining <= 0:
+                    proc.kill()
+                    proc.wait()
+                    killed_reason = f"timeout after {timeout_sec}s"
+                    break
+                try:
+                    proc.wait(timeout=min(_RSS_POLL_INTERVAL_SEC, remaining))
+                    break  # 자식이 스스로 종료
+                except subprocess.TimeoutExpired:
+                    continue
+
+        peak_rss_bytes = peak_rss or None
+
+        if killed_reason:
+            return _err(killed_reason, peak_rss_bytes=peak_rss_bytes)
 
         out_path = ws / "output.json"
         if not out_path.exists():
-            stderr = (proc.stderr or "")[:2000]
+            stderr = stderr_path.read_text(errors="replace")[:2000]
             return _err(
-                f"runner exited without output.json (rc={proc.returncode})\n{stderr}"
+                f"runner exited without output.json (rc={proc.returncode})\n{stderr}",
+                peak_rss_bytes=peak_rss_bytes,
             )
 
         try:
             out: dict = json.loads(out_path.read_text())
         except Exception as exc:
-            return _err(f"failed to parse output.json: {exc}")
+            return _err(f"failed to parse output.json: {exc}", peak_rss_bytes=peak_rss_bytes)
 
         if out.get("error_trace"):
-            return _err(out["error_trace"])
+            return _err(out["error_trace"], peak_rss_bytes=peak_rss_bytes)
 
         return IsolatedResult(
             cv_score=out.get("cv_score"),
@@ -154,11 +214,13 @@ def eval_isolated(
             selected_params=out.get("selected_params"),
             oof_preds=out.get("oof_preds"),
             gain_vs_best_relative=out.get("gain_vs_best_relative"),
+            peak_rss_bytes=peak_rss_bytes,
         )
 
 
-def _err(msg: str) -> IsolatedResult:
+def _err(msg: str, peak_rss_bytes: int | None = None) -> IsolatedResult:
     return IsolatedResult(
         cv_score=None, cv_fold_var=None, fold_scores=None,
         label=None, gain_vs_best=None, error_trace=msg,
+        peak_rss_bytes=peak_rss_bytes,
     )
