@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -26,7 +27,7 @@ from evaluator.contract import validate_patch
 from evaluator.harness import is_significant_gain, split_audit_holdout
 from evaluator.metrics import get as get_metric
 from memory.retriever import EmbeddingUnavailableError, search
-from runtime.isolate import eval_isolated
+from runtime.isolate import DEFAULT_CPU_BUDGET_SECS, eval_isolated
 from store.db import PgConn, insert_attempt, insert_pipeline
 from store.s3_code import download as _code_download
 from store.s3_code import download_best_pipeline as _best_pipeline_download
@@ -409,6 +410,27 @@ def _retrieval_scores(lessons: list[dict]) -> list[float | None] | None:
     return [l.get("score") for l in lessons] or None
 
 
+def _resource_kill_feedback(error_trace: str, cpu_budget_sec: float) -> str:
+    """워치독이 리소스 상한 초과로 강제종료한 에러는 원문(rc=-9 등) 대신 실행
+    가능한 지시로 바꿔 재생성 피드백에 넘긴다. 원문은 "이유 모르게 죽었다"로만
+    읽혀 재시도가 비슷하게 비싼 코드를 다시 쓰는 낭비를 낳았다(2026-08 실측:
+    CPU kill attempt 113건이 예외 없이 이 경로로 재시도했고 전부 같은 자리에서
+    다시 실패)."""
+    if error_trace.startswith("cpu budget exceeded"):
+        return (
+            f"이 파이프라인은 CPU 예산 {cpu_budget_sec:.0f}초를 초과해 강제 종료됐다"
+            "(코드 버그 아님). n_estimators/iterations, n_splits, 하이퍼파라미터"
+            " 탐색 후보 수를 줄여 더 싼 파이프라인을 써라."
+        )
+    if error_trace.startswith("memory watchdog"):
+        return (
+            "이 파이프라인은 메모리 상한을 초과해 강제 종료됐다(코드 버그 아님)."
+            " 배치 크기, 피처 수, 모델 복잡도를 줄이거나 청크 처리로 메모리"
+            " 사용량을 낮춰라."
+        )
+    return error_trace
+
+
 
 def run_attempt_core(
     conn: PgConn,
@@ -498,9 +520,22 @@ def run_attempt_core(
     fold_scores: list[float] | None = None
     selected_params: dict | None = None
     peak_rss_bytes: int | None = None
+    peak_cpu_sec: float | None = None
 
     if not error_trace:
+        # CPU 예산은 eval 회차가 아니라 attempt 전체 기준으로 집행한다 — 과거엔
+        # 회차마다 독립적으로 900초를 줬는데, 무의미한 rc=-9 피드백으로 재생성한
+        # 2회차도 같은 자리에서 또 900초를 태워 attempt 하나가 최대 ~1800초까지
+        # 갔다(2026-08 실측: CPU kill attempt 113건 중앙값 971초). 1회차가 예산을
+        # 다 쓰면 2회차는 애초에 돌리지 않는다 — 최악 소모가 절반으로 줄고, 다
+        # 못 쓴 나머지 예산은 그대로 2회차에 넘어가 재시도가 낭비가 아니라
+        # 실제 성공 기회가 된다(피드백도 아래에서 실행 가능한 지시로 바꾼다).
+        cpu_budget_total = float(
+            os.environ.get("EVAL_CPU_BUDGET_SECS", str(DEFAULT_CPU_BUDGET_SECS))
+        )
+        cpu_spent = 0.0
         for _eval_i in range(2):
+            cpu_remaining = cpu_budget_total - cpu_spent
             iso = eval_isolated(
                 source=source,
                 train=config.train,
@@ -513,8 +548,11 @@ def run_attempt_core(
                 action_type=action_type,
                 best_source=prev_code,
                 best_params=_prev_best_params(conn, config.competition_id),
+                cpu_budget_sec=cpu_remaining,
             )
             peak_rss_bytes = iso.peak_rss_bytes
+            peak_cpu_sec = iso.peak_cpu_sec
+            cpu_spent += iso.peak_cpu_sec or 0.0
             if not iso.error_trace:
                 cv_score = iso.cv_score
                 cv_fold_var = iso.cv_fold_var or 0.0
@@ -539,8 +577,19 @@ def run_attempt_core(
                 break
             _LOG.warning("eval error (try %d) → regenerating: %s",
                          _eval_i + 1, (iso.error_trace or "")[:120])
+            if _eval_i == 0 and cpu_budget_total - cpu_spent <= 0:
+                # 1회차가 예산을 이미 다 태웠으면 재생성 자체를 하지 않는다 —
+                # 남은 예산 0으로 재시도해봐야 즉시 다시 죽으므로, 규정 위반
+                # 없이도 LLM 호출과 2회차 eval을 통째로 아낀다.
+                _LOG.warning(
+                    "cpu budget exhausted after try 1 (spent %.0fs of %.0fs) — "
+                    "skipping retry", cpu_spent, cpu_budget_total,
+                )
+                error_trace = iso.error_trace
+                break
             if _eval_i == 0:
-                source = generate_code(**gen_kwargs, error_feedback=iso.error_trace)
+                feedback = _resource_kill_feedback(iso.error_trace, cpu_remaining)
+                source = generate_code(**gen_kwargs, error_feedback=feedback)
                 retries += 1
                 static_errs = validate_patch(source, action_type)
                 if static_errs:
@@ -608,6 +657,7 @@ def run_attempt_core(
         "error_signature":  normalize_error(error_trace) if error_trace else None,
         "duration_sec":     round(duration_sec, 1),
         "peak_rss_bytes":   peak_rss_bytes,
+        "peak_cpu_sec":     peak_cpu_sec,
         "code_path":        str(code_path),
         "retries":          retries,
         # 다음 attempt/승격 게이트가 이 attempt의 fold_scores/params를
