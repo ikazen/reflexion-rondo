@@ -100,10 +100,25 @@ def test_normalize_pandas_guard_rejection() -> None:
 
 def test_normalize_runner_oom_message() -> None:
     """실측(#147, s6e6): runner 비정상 종료(rc=-9)도 예외 형식이 아니라 누락되던
-    문제 — #135 OOM 집계가 이 케이스에 의존한다(rc 숫자는 volatile이라 마스킹됨)."""
+    문제 — #135 OOM 집계가 이 케이스에 의존한다."""
     sig = normalize_error(_RUNNER_OOM_TRACE)
     assert sig is not None
     assert sig.startswith("runner exited without output.json")
+
+
+def test_normalize_runner_exit_preserves_signal_number() -> None:
+    """#159: rc 숫자를 volatile로 마스킹하면 SIGKILL(rc=-9, 과거엔 OOM/CPU kill이
+    구분 없이 여기 섞였다)/segfault(rc=-11)/SIGXCPU 백스톱(rc=-24)이 전부 같은
+    시그니처로 뭉개져 원인별 집계가 불가능했다. 신호 번호는 그대로 남아야 한다."""
+    assert normalize_error("runner exited without output.json (rc=-9)") == \
+        "runner exited without output.json (rc=-9)"
+    assert normalize_error("runner exited without output.json (rc=-11)") == \
+        "runner exited without output.json (rc=-11)"
+    assert normalize_error("runner exited without output.json (rc=-24)") == \
+        "runner exited without output.json (rc=-24)"
+    sig_9 = normalize_error("runner exited without output.json (rc=-9)")
+    sig_24 = normalize_error("runner exited without output.json (rc=-24)")
+    assert sig_9 != sig_24
 
 
 def test_normalize_underscore_prefixed_module_matched() -> None:
