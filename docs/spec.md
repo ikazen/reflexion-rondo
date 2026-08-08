@@ -384,7 +384,7 @@ cv_score = mean(scores); cv_fold_var = var(scores)
 
 검증 게이트(실행 전): `class Patch` 존재 여부, 허용 import만, 금지 호출(`eval`/`exec`/`open`) 없음, 구현 훅의 인자 수(arity) 일치, `Patch.action_type == 배정 action_type`. 위반 시 최대 2회 재생성(`cycle/run.py:_MAX_CODE_RETRIES`), 그래도 실패면 `error_trace` 기록 후 Reflect로 진행.
 
-격리 실행: `runtime/isolate.py`가 tmpdir에 source/input/train 파일을 쓰고 `runtime/runner.py`를 subprocess로 실행한다. runner 내부에서는 생성 코드를 `exec`로 로드한다. 프로덕션(Linux, CAP_SYS_ADMIN 있음)에서는 preexec_fn에서 `os.unshare(os.CLONE_NEWNET)`으로 network namespace를 분리해 subprocess egress를 차단하고, `RLIMIT_AS`/`RLIMIT_CPU`를 병행한다(ADR-017). CAP_SYS_ADMIN 없는 폴백(로컬 mac 등)은 env allowlist + rlimit + timeout만 적용하고 네트워크 차단은 조용히 스킵한다. 파일시스템 sandbox(예: tmpdir 밖 접근 차단)는 아직 미구현이다.
+격리 실행: `runtime/isolate.py`가 tmpdir에 source/input/train 파일을 쓰고 `runtime/runner.py`를 subprocess로 실행한다. runner 내부에서는 생성 코드를 `exec`로 로드한다. 프로덕션(Linux, CAP_SYS_ADMIN 있음)에서는 preexec_fn에서 `os.unshare(os.CLONE_NEWNET)`으로 network namespace를 분리해 subprocess egress를 차단하고, `RLIMIT_AS`(VSZ, ADR-027)를 병행한다(ADR-017). CAP_SYS_ADMIN 없는 폴백(로컬 mac 등)은 env allowlist + rlimit + timeout만 적용하고 네트워크 차단은 조용히 스킵한다. 파일시스템 sandbox(예: tmpdir 밖 접근 차단)는 아직 미구현이다. 부모의 2초 폴링 루프가 RSS·CPU 시간을 직접 감시해 상한(각각 4GiB, 900초 기본값) 초과 시 명시적 원인으로 선제 kill한다 — `RLIMIT_CPU`는 폴링이 놓쳤을 때만 발동하는 soft<hard 백스톱일 뿐이다(ADR-028).
 
 ## 6. 분석 뷰 (dbt 아님 — `store/schema.sql` 내 SQL view)
 
