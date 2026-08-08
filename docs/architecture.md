@@ -81,7 +81,8 @@ Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
 Coder가 만든 `class Patch`는 `runtime/isolate.py`가 subprocess로 실행한다 (ADR-013).
 - tmpdir에 source.py / input.json / train.parquet 기록 → `runtime/runner.py` subprocess 실행 → output.json 수거.
 - 타임아웃 1200s(BON-275, s5e5/s6e6 등 대형 데이터셋 대응 600s→상향). 에러·타임아웃은 `error_trace`로 기록되어 Reflector가 실패에서 교훈을 뽑는다.
-- 네트워크 격리(ADR-017): 프로덕션(CAP_SYS_ADMIN 있음)에서 preexec_fn이 `os.unshare(CLONE_NEWNET)`으로 subprocess의 network namespace를 분리해 egress를 차단한다. 컨테이너 자체 네트워크는 유지(Postgres/MinIO/Ollama 접근용) — 차단은 subprocess 레벨에서만. `RLIMIT_AS`/`RLIMIT_CPU`도 병행. CAP_SYS_ADMIN 없으면(로컬 mac 등) 조용히 스킵하고 allowlist+rlimit+timeout만 적용.
+- 네트워크 격리(ADR-017): 프로덕션(CAP_SYS_ADMIN 있음)에서 preexec_fn이 `os.unshare(CLONE_NEWNET)`으로 subprocess의 network namespace를 분리해 egress를 차단한다. 컨테이너 자체 네트워크는 유지(Postgres/MinIO/Ollama 접근용) — 차단은 subprocess 레벨에서만. `RLIMIT_AS`(VSZ, ADR-027)도 병행. CAP_SYS_ADMIN 없으면(로컬 mac 등) 조용히 스킵하고 allowlist+rlimit+timeout만 적용.
+- 리소스 워치독(ADR-028): 부모(`isolate.py`)의 2초 폴링 루프가 RSS와 CPU 시간을 직접 감시해 상한 초과 시 원인이 명시된 error_trace로 선제 kill한다. `RLIMIT_CPU`는 폴링이 놓쳤을 때만 발동하는 soft<hard 백스톱(rc=-24)일 뿐, 주 집행 수단이 아니다 — soft==hard로 걸면 커널이 SIGXCPU 없이 곧장 SIGKILL(rc=-9)을 보내 OOM killer 사망과 구분이 안 됐던 과거 실패를 반복하지 않도록 이 구분을 유지할 것.
 - subprocess 환경변수는 allowlist 필터링 (`OMP_NUM_THREADS` 등 포함, BON-104).
 - `OMP_NUM_THREADS=2` / `OPENBLAS_NUM_THREADS=2` / `MKL_NUM_THREADS=2` — worker-vm 2코어에서 CPU 포화 방지.
 

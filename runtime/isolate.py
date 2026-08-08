@@ -29,11 +29,22 @@ DEFAULT_TIMEOUT = 1200
 # 훨씬 큰 주소공간을 예약해서 물리 메모리가 남아도 import만으로 실패할 수
 # 있다(ADR-027) — 그래서 그대로 6GiB로 둔다. 대신 이 워치독은 물리
 # RSS(/proc/<pid>/status VmRSS)를 폴링해서 실제 메모리 고갈로 인한 커널
-# OOM kill(rc=-9, 평균 13분을 태운 뒤 죽음, 2026-08 실측 계산의 37%)을
-# 훨씬 싸게(폴링 주기 이내) 선제 차단한다. 컨테이너 mem_limit(백스톱)보다
-# 낮게 잡아야 이 워치독이 먼저 죽여 원인이 명시된 error_signature를 남긴다.
+# OOM kill(rc=-9)을 훨씬 싸게(폴링 주기 이내) 선제 차단한다. 컨테이너
+# mem_limit(백스톱)보다 낮게 잡아야 이 워치독이 먼저 죽여 원인이 명시된
+# error_signature를 남긴다.
 _DEFAULT_RSS_LIMIT_BYTES = 4 * 1024 ** 3
 _RSS_POLL_INTERVAL_SEC = 2.0
+
+# CPU 예산: 과거엔 RLIMIT_CPU(soft==hard==900)로만 집행했는데, 리눅스는 hard
+# 한도를 soft보다 먼저 검사해서 SIGXCPU 경고 없이 곧장 SIGKILL(rc=-9)로
+# 죽인다 — OOM killer 사망과 문자열이 동일해 구분이 안 됐다(2026-08 실측:
+# 계산의 40%, 전부 재시도까지 태워 attempt당 최대 16분). 그래서 RSS와 같은
+# 폴링 루프가 CPU 시간도 감시해서 명시적 원인을 남기고 선제 kill한다.
+# RLIMIT_CPU는 폴링이 놓쳤을 때만 발동하는 soft<hard 백스톱으로 강등한다 —
+# 정상적으로는 안 걸리고, 걸리면 SIGXCPU(rc=-24)라 OOM과 영구히 구분된다.
+DEFAULT_CPU_BUDGET_SECS = 900
+_CPU_BACKSTOP_SOFT_MARGIN_SECS = 60
+_CPU_BACKSTOP_HARD_MARGIN_SECS = 120
 
 _HAVE_NEWNET = sys.platform == "linux" and hasattr(os, "CLONE_NEWNET")
 
@@ -46,23 +57,25 @@ _DEFAULT_MEM_LIMIT_BYTES = 6 * 1024 ** 3
 try:
     import resource as _resource
 
-    def _set_resource_limits() -> None:
+    def _set_resource_limits(cpu_budget: float) -> None:
         mem = int(os.environ.get("EVAL_MEM_LIMIT_BYTES", str(_DEFAULT_MEM_LIMIT_BYTES)))
-        cpu = int(os.environ.get("EVAL_CPU_LIMIT_SECS", "900"))
         _resource.setrlimit(_resource.RLIMIT_AS, (mem, mem))
-        _resource.setrlimit(_resource.RLIMIT_CPU, (cpu, cpu))
+        soft = int(cpu_budget) + _CPU_BACKSTOP_SOFT_MARGIN_SECS
+        hard = int(cpu_budget) + _CPU_BACKSTOP_HARD_MARGIN_SECS
+        _resource.setrlimit(_resource.RLIMIT_CPU, (soft, hard))
 
-    def _preexec_fn() -> None:
-        if _HAVE_NEWNET and os.environ.get("EVAL_SANDBOX") != "none":
-            try:
-                os.unshare(os.CLONE_NEWNET)
-            except OSError:
-                pass  # CAP_SYS_ADMIN 없으면 조용히 스킵 (로컬 개발 환경 등)
-        _set_resource_limits()
-
-    _PREEXEC = _preexec_fn
+    def _make_preexec(cpu_budget: float):
+        def _preexec_fn() -> None:
+            if _HAVE_NEWNET and os.environ.get("EVAL_SANDBOX") != "none":
+                try:
+                    os.unshare(os.CLONE_NEWNET)
+                except OSError:
+                    pass  # CAP_SYS_ADMIN 없으면 조용히 스킵 (로컬 개발 환경 등)
+            _set_resource_limits(cpu_budget)
+        return _preexec_fn
 except (ImportError, AttributeError):
-    _PREEXEC = None  # Windows/non-Linux fallback
+    def _make_preexec(cpu_budget: float):  # Windows/non-Linux fallback
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +93,7 @@ class IsolatedResult:
     oof_preds: list[float] | None = None
     gain_vs_best_relative: float | None = None
     peak_rss_bytes: int | None = None
+    peak_cpu_sec: float | None = None
 
 
 def _read_rss_bytes(pid: int) -> int | None:
@@ -92,6 +106,25 @@ def _read_rss_bytes(pid: int) -> int | None:
     except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError):
         return None
     return None
+
+
+def _read_cpu_seconds(pid: int) -> float | None:
+    """/proc/<pid>/stat의 utime+stime+cutime+cstime을 초 단위로 읽는다.
+
+    cutime/cstime(자식 프로세스 몫)까지 더하는 건 joblib/loky 등 손자
+    프로세스가 뜨는 경우까지 예산에 포함하기 위함 — 커널 RLIMIT_CPU는 자기
+    프로세스 시간만 세므로 여기서 의도적으로 더 넓게 잡는다. comm 필드에
+    공백·괄호가 섞일 수 있어 마지막 ") " 뒤부터 파싱한다.
+    """
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            raw = f.read()
+        fields = raw.rpartition(") ")[2].split()
+        utime, stime, cutime, cstime = (int(x) for x in fields[11:15])
+        ticks = os.sysconf("SC_CLK_TCK")
+        return (utime + stime + cutime + cstime) / ticks
+    except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError, IndexError):
+        return None
 
 
 def eval_isolated(
@@ -109,6 +142,7 @@ def eval_isolated(
     collect_oof: bool = False,
     timeout_sec: int = DEFAULT_TIMEOUT,
     holdout_data: pl.DataFrame | None = None,
+    cpu_budget_sec: float | None = None,
 ) -> IsolatedResult:
     with tempfile.TemporaryDirectory(prefix="rondo-eval-") as tmpdir:
         ws = Path(tmpdir)
@@ -139,9 +173,14 @@ def eval_isolated(
         env["HOME"] = tmpdir  # catboost_info 등 홈 쓰기를 tmpdir로 격리
 
         rss_limit = int(os.environ.get("EVAL_RSS_LIMIT_BYTES", str(_DEFAULT_RSS_LIMIT_BYTES)))
+        cpu_budget = (
+            cpu_budget_sec if cpu_budget_sec is not None
+            else float(os.environ.get("EVAL_CPU_BUDGET_SECS", str(DEFAULT_CPU_BUDGET_SECS)))
+        )
         stdout_path = ws / "_stdout.log"
         stderr_path = ws / "_stderr.log"
         peak_rss = 0
+        peak_cpu = 0.0
         killed_reason: str | None = None
         start = time.monotonic()
 
@@ -154,7 +193,7 @@ def eval_isolated(
                 stdout=out_f,
                 stderr=err_f,
                 env=env,
-                preexec_fn=_PREEXEC,
+                preexec_fn=_make_preexec(cpu_budget),
             )
             while True:
                 rss = _read_rss_bytes(proc.pid)
@@ -164,6 +203,16 @@ def eval_isolated(
                         killed_reason = (
                             f"memory watchdog: peak RSS {rss // (1024 ** 2)}MB "
                             f"> limit {rss_limit // (1024 ** 2)}MB"
+                        )
+                        proc.kill()
+                        proc.wait()
+                        break
+                cpu = _read_cpu_seconds(proc.pid)
+                if cpu is not None:
+                    peak_cpu = max(peak_cpu, cpu)
+                    if cpu > cpu_budget:
+                        killed_reason = (
+                            f"cpu budget exceeded: {cpu:.0f}s CPU used (limit {cpu_budget:.0f}s)"
                         )
                         proc.kill()
                         proc.wait()
@@ -181,9 +230,10 @@ def eval_isolated(
                     continue
 
         peak_rss_bytes = peak_rss or None
+        peak_cpu_sec = peak_cpu or None
 
         if killed_reason:
-            return _err(killed_reason, peak_rss_bytes=peak_rss_bytes)
+            return _err(killed_reason, peak_rss_bytes=peak_rss_bytes, peak_cpu_sec=peak_cpu_sec)
 
         out_path = ws / "output.json"
         if not out_path.exists():
@@ -191,15 +241,22 @@ def eval_isolated(
             return _err(
                 f"runner exited without output.json (rc={proc.returncode})\n{stderr}",
                 peak_rss_bytes=peak_rss_bytes,
+                peak_cpu_sec=peak_cpu_sec,
             )
 
         try:
             out: dict = json.loads(out_path.read_text())
         except Exception as exc:
-            return _err(f"failed to parse output.json: {exc}", peak_rss_bytes=peak_rss_bytes)
+            return _err(
+                f"failed to parse output.json: {exc}",
+                peak_rss_bytes=peak_rss_bytes, peak_cpu_sec=peak_cpu_sec,
+            )
 
         if out.get("error_trace"):
-            return _err(out["error_trace"], peak_rss_bytes=peak_rss_bytes)
+            return _err(
+                out["error_trace"],
+                peak_rss_bytes=peak_rss_bytes, peak_cpu_sec=peak_cpu_sec,
+            )
 
         return IsolatedResult(
             cv_score=out.get("cv_score"),
@@ -215,12 +272,18 @@ def eval_isolated(
             oof_preds=out.get("oof_preds"),
             gain_vs_best_relative=out.get("gain_vs_best_relative"),
             peak_rss_bytes=peak_rss_bytes,
+            peak_cpu_sec=peak_cpu_sec,
         )
 
 
-def _err(msg: str, peak_rss_bytes: int | None = None) -> IsolatedResult:
+def _err(
+    msg: str,
+    peak_rss_bytes: int | None = None,
+    peak_cpu_sec: float | None = None,
+) -> IsolatedResult:
     return IsolatedResult(
         cv_score=None, cv_fold_var=None, fold_scores=None,
         label=None, gain_vs_best=None, error_trace=msg,
         peak_rss_bytes=peak_rss_bytes,
+        peak_cpu_sec=peak_cpu_sec,
     )

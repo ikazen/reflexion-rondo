@@ -251,6 +251,13 @@
 - 근거: `RLIMIT_AS`는 물리 RSS가 아니라 가상 주소공간 상한이다. numpy/scipy/sklearn/lightgbm/catboost/xgboost 같은 라이브러리는 실제 쓰는 물리 메모리가 적어도 공유 라이브러리 mmap·BLAS 스레드풀 등으로 VSZ를 널찍하게 예약한다 — 1.5GiB는 이런 라이브러리를 import하는 것만으로 부족해서, 물리 메모리가 12GB나 남는 워커에서도 신규 대회 부트스트랩 attempt 전체가 실패하는 회귀를 냈다. 6GiB로 되돌린 뒤 Airflow 실측(super-cycle 3678건 전수)으로 재확인한 실제 동시성 기준 근소 초과분은 물리 RSS 여유로 흡수 가능하다고 판단.
 - 한계: 이 특성 때문에 "물리 메모리가 충분한 환경"에서도 VSZ 예약이 큰 스택(예: WSL2의 다른 Python 배포판)에서는 동일 6GiB가 부족할 수 있다 — 운영 검증된 워커 환경(mac-server/worker-vm/ops-vm task 컨테이너) 밖에서 이 스크립트를 돌릴 땐 먼저 이 한계를 의심할 것.
 
+## ADR-028 — eval CPU 상한은 커널 RLIMIT_CPU가 아니라 부모 폴링 워치독이 집행
+
+- 결정: `runtime/isolate.py`의 attempt 격리 subprocess CPU 예산(기본 900초, `EVAL_CPU_BUDGET_SECS`로 override)은 기존 RSS 워치독과 같은 2초 폴링 루프가 `/proc/<pid>/stat`으로 직접 감시해 초과 시 명시적 `error_trace`("cpu budget exceeded: ...")를 남기고 선제 kill한다. 커널 `RLIMIT_CPU`는 폴링이 놓쳤을 때만 발동하는 soft<hard 백스톱(`budget+60`/`budget+120`)으로 강등한다. `cycle/run.py`의 eval 재시도 루프는 예산을 eval 회차가 아니라 **attempt 전체 기준**으로 집행한다 — 1회차가 예산을 다 쓰면 2회차는 아예 돌리지 않는다.
+- 대안: (a) 기존처럼 `RLIMIT_CPU(soft=hard=900)`만으로 집행 — 이번 결정으로 폐기. (b) soft<hard로 켜되 백스톱이 아니라 주 집행 수단으로 유지(SIGXCPU를 자식이 직접 처리) — 자식이 LLM 생성 코드라 신호 핸들러를 신뢰할 수 없어 기각.
+- 근거: 리눅스는 `RLIMIT_CPU`의 hard 한도를 soft보다 먼저 검사해서, soft==hard로 걸면 SIGXCPU 경고 단계 없이 곧장 SIGKILL(rc=-9)로 죽인다. 이는 커널 OOM killer 사망과 문자열이 완전히 동일해 원인 구분이 불가능했고, 2026-08-07 처리량 진단이 이걸 전부 OOM으로 오판해 RSS 워치독(#154)을 배포했지만 효과가 없었다(배포 후 2일간 RSS 워치독 발동 1회, 반면 rc=-9 kill은 113건/22.4h=계산의 40%, 성공 attempt 대비 peak RSS는 여유가 컸다 — 메모리가 아니라 CPU가 원인이었음을 실측으로 확인). 게다가 `cycle/run.py`가 이 무의미한 rc=-9 원문을 LLM 재생성 피드백으로 그대로 넘겨 2회차 eval도 같은 자리에서 또 죽었다(rc=-9 attempt 113건 전부가 예외 없이 이 경로) — attempt당 최대 소모가 ~1800초(16분+)까지 갔다. 부모 폴링으로 옮기면 원인이 명시된 에러를 남길 수 있고, attempt 단위 예산으로 재시도의 최악 소모를 절반으로 자르고, 재생성 피드백을 "더 싼 파이프라인을 써라" 같은 실행 가능한 지시로 바꿔 재시도가 낭비가 아니라 실제 성공 기회가 되게 한다. 예산 값 900은 그대로 유지한다 — 성공 attempt의 실측 wall time(p99=728초, max=1112초)이 이 근처라 낮추면 성공을 에러로 바꿀 위험이 있고, 신규 `peak_cpu_sec` 컬럼(성공/실패 무관 기록, `peak_rss_bytes`와 동일 계약)으로 다음 사이클에 재조정할 근거를 모은다.
+- 한계: `/proc/<pid>/stat` 폴링은 2초 주기라 그 사이 짧게 폭증하는 CPU 소모는 최대 2초 지연 뒤에야 감지된다(RSS 워치독과 동일한 한계, 실무상 무시 가능). ADR-027(`RLIMIT_AS` 6GiB)은 이 변경과 무관하게 그대로 유지된다.
+
 ---
 
 ## 미정 항목 (TBD)

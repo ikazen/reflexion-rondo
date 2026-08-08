@@ -23,6 +23,14 @@ _VOLATILE = [
 # 누락됨).
 _EXCEPTION_LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*):\s*(.+)$")
 
+# _VOLATILE의 \d+ 스크럽이 "rc=-9"(SIGKILL)/"rc=-11"(segfault)/"rc=-24"(SIGXCPU
+# 백스톱)를 전부 "rc=-<val>"로 합쳐버려, 커널이 어떤 이유로 죽였는지가 시그니처
+# 단계에서 사라졌다(#159 — CPU 예산 초과 kill이 이 시그니처로 뭉개져 OOM으로
+# 오판된 근본원인 중 하나). eval_isolated의 자체 워치독(RSS/CPU)이 먼저 걸러낸
+# 뒤라 이 경로는 이제 드물어야 하지만, 신호 번호는 그대로 살려야 향후 재발 시
+# 원인별로 집계·구분할 수 있다.
+_RUNNER_EXIT_LINE = re.compile(r"^runner exited without output\.json \(rc=(-?\d+)\)$")
+
 
 def _normalize_message(text: str) -> str:
     for pattern in _VOLATILE:
@@ -58,6 +66,9 @@ def normalize_error(trace: str) -> str | None:
 
     if last_nonblank is None:
         return None
+    m = _RUNNER_EXIT_LINE.match(last_nonblank)
+    if m:
+        return f"runner exited without output.json (rc={m.group(1)})"
     return _normalize_message(last_nonblank) or None
 
 

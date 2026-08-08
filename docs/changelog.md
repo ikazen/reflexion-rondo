@@ -1,5 +1,24 @@
 # 변경 이력
 
+## v1.4.23 — eval CPU 예산 워치독: rc=-9 오진과 재시도 이중 소모 제거 (2026-08-09)
+- #159: RSS 워치독(#154, v1.4.21) 배포 후 2일 실측 — 전체 attempt 계산시간 56.3h 중
+  40%(22.4h)가 `RLIMIT_CPU(soft=hard=900)`의 흔적 없는 SIGKILL(rc=-9)이었다. 커널이
+  hard 한도를 먼저 검사해 SIGXCPU 경고 없이 곧장 죽여 OOM killer 사망과 문자열이
+  동일했고(오진의 근본원인), `cycle/run.py`가 이 무의미한 원문을 LLM 재생성 피드백에
+  그대로 넘겨 2회차 eval도 같은 자리에서 또 죽었다(rc=-9 attempt 113건 전부 재시도
+  경로, attempt당 최대 ~1800초). ADR-028.
+- `runtime/isolate.py`: 기존 RSS 폴링 루프(2초 주기)가 CPU 시간도 함께 감시해
+  `"cpu budget exceeded: ..."`로 선제 kill. `RLIMIT_CPU`는 폴링이 놓쳤을 때만
+  발동하는 soft<hard 백스톱(`budget+60`/`budget+120`, rc=-24)으로 강등. 신규
+  `peak_cpu_sec` 컬럼(`peak_rss_bytes`와 동일 계약)으로 예산 900의 적정성을 계측.
+- `cycle/run.py`: CPU 예산을 eval 회차가 아니라 attempt 전체 기준으로 집행 — 1회차가
+  예산을 다 쓰면 2회차를 아예 돌리지 않아 최악 소모가 절반으로 준다. 재생성 피드백도
+  리소스 kill 원문 대신 "n_estimators/n_splits/탐색 후보 수를 줄여라" 같은 실행 가능한
+  지시로 교체.
+- `cycle/error_pitfalls.py`: `normalize_error`의 `\d+` 스크럽이 `rc=-9`/`rc=-11`/
+  `rc=-24`를 전부 같은 시그니처로 뭉개던 것을 수정 — `runner exited without
+  output.json (rc=-N)` 패턴은 신호 번호를 보존해 원인별 집계가 가능하게 함.
+
 ## v1.4.19 — 대시보드 Fleet Overview (2026-08-03)
 - #143: 대시보드 최상단에 전역 Fleet Overview 신설 — 대회별 큐 상태·confirmed/quarantined pipeline 수·14일 attempt/jump/error/OOM 카운트·`auto_submit_paused_reason`을 벌크 쿼리 5개(N+1 아님, 실측 0.085s)로 모아 attention 배지(🔴/🟡/🟢)로 정렬해 어디부터 볼지 여기서 고르게 함. 대회 선택 종속 섹션으로 Submissions·Quarantine·Blend 신설 — `cv_lb_calibration` 제출 이력(발산 경고), 격리 pipeline 목록, `auto_submit_paused_reason` 경고, blend_cv_score vs 단일 best pipeline 비교. daemon API 미경유, 전부 Postgres 직접 쿼리(GH #65 설계 그대로).
 
