@@ -67,6 +67,12 @@ ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS error_signature text;
 -- 분포로 검증하는 데 쓴다 — forward-only, backfill 불가(과거 프로세스는 이미 종료).
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS peak_rss_bytes bigint;
 
+-- eval_isolated의 CPU 워치독(runtime/isolate.py)이 폴링한 peak CPU 시간(초).
+-- 성공 attempt에도 채워져 EVAL_CPU_BUDGET_SECS 기본값(900)이 적정한지 분포로
+-- 검증하는 데 쓴다 — forward-only, backfill 불가(과거 프로세스는 이미 종료).
+-- peak_rss_bytes와 동일한 계약(GH #159).
+ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS peak_cpu_sec double precision;
+
 -- materialize 시 sha256 기록 — submit.py exec 전 MinIO 다운로드본과 대조해
 -- 익명 write 버킷 변조를 탐지한다. code 컬럼(raw.attempts 원본)이 아니라
 -- 실제 exec되는 materialized best_pipeline.py 내용의 해시.
