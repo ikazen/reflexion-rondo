@@ -258,6 +258,13 @@
 - 근거: 리눅스는 `RLIMIT_CPU`의 hard 한도를 soft보다 먼저 검사해서, soft==hard로 걸면 SIGXCPU 경고 단계 없이 곧장 SIGKILL(rc=-9)로 죽인다. 이는 커널 OOM killer 사망과 문자열이 완전히 동일해 원인 구분이 불가능했고, 2026-08-07 처리량 진단이 이걸 전부 OOM으로 오판해 RSS 워치독(#154)을 배포했지만 효과가 없었다(배포 후 2일간 RSS 워치독 발동 1회, 반면 rc=-9 kill은 113건/22.4h=계산의 40%, 성공 attempt 대비 peak RSS는 여유가 컸다 — 메모리가 아니라 CPU가 원인이었음을 실측으로 확인). 게다가 `cycle/run.py`가 이 무의미한 rc=-9 원문을 LLM 재생성 피드백으로 그대로 넘겨 2회차 eval도 같은 자리에서 또 죽었다(rc=-9 attempt 113건 전부가 예외 없이 이 경로) — attempt당 최대 소모가 ~1800초(16분+)까지 갔다. 부모 폴링으로 옮기면 원인이 명시된 에러를 남길 수 있고, attempt 단위 예산으로 재시도의 최악 소모를 절반으로 자르고, 재생성 피드백을 "더 싼 파이프라인을 써라" 같은 실행 가능한 지시로 바꿔 재시도가 낭비가 아니라 실제 성공 기회가 되게 한다. 예산 값 900은 그대로 유지한다 — 성공 attempt의 실측 wall time(p99=728초, max=1112초)이 이 근처라 낮추면 성공을 에러로 바꿀 위험이 있고, 신규 `peak_cpu_sec` 컬럼(성공/실패 무관 기록, `peak_rss_bytes`와 동일 계약)으로 다음 사이클에 재조정할 근거를 모은다.
 - 한계: `/proc/<pid>/stat` 폴링은 2초 주기라 그 사이 짧게 폭증하는 CPU 소모는 최대 2초 지연 뒤에야 감지된다(RSS 워치독과 동일한 한계, 실무상 무시 가능). ADR-027(`RLIMIT_AS` 6GiB)은 이 변경과 무관하게 그대로 유지된다.
 
+## ADR-029 — 생성 코드의 `n_jobs=-1` 등 무제한 병렬성은 정적 거부
+
+- 결정: `evaluator/contract.py:validate_patch`에 `n_jobs`/`thread_count`/`num_threads`/`nthread`/`n_threads` 키워드 인자가 0 이하 리터럴(전부/거의 전부 코어 요청)이면 거부하는 AST 검사를 추가한다. 값이 변수·표현식이면 판정하지 않는다(기존 pandas-only 검사와 동일하게 과소탐지를 오탐보다 우선).
+- 대안: (a) Docker/cgroup 레벨에서 하드 CPU quota로 강제 — airflow-stack `reflexion_rondo_cycle.py`의 `cpus=1.5`가 이미 이 의도였으나 docker provider가 `cpu_shares`(상대 가중치)로만 반영해(`CpuQuota=0` 실측 확인) 하드 캡이 아니다. 근본적으로는 더 맞는 위치지만 다른 repo(airflow-stack) 작업이고 fleet 처리량이 슬롯 대비 포화 상태가 아니라 급하지 않음 — 별도 후속. (b) 이 값 그대로 두고 무시 — 아래 실측 때문에 기각.
+- 근거: `OMP_NUM_THREADS=2`/`OPENBLAS_NUM_THREADS=2`/`MKL_NUM_THREADS=2`(`deploy/Dockerfile`)는 BLAS/OpenMP 레벨 스레딩만 제한하고 이 파라미터들과는 무관하게 동작한다는 걸 이 세션에서 직접 재현: `OMP_NUM_THREADS=2` 환경에서 LightGBM `n_jobs=-1`은 20 threads/15.9x cores-equivalent, CatBoost `thread_count=-1`은 21 threads/15.0x, scikit-learn `RandomForestClassifier(n_jobs=-1)`은 43 threads/15.6x를 썼다. Airflow attempt 컨테이너의 CPU 상한이 위 대안(a)처럼 사실상 장식이라, LLM 생성 코드 하나가 이 파라미터를 쓰면 같은 호스트(특히 big 큐 슬롯 2개가 4vCPU를 공유하는 mac-server)의 sibling attempt를 실제로 굶길 수 있다. #159(eval CPU 예산 워치독)의 kill은 이 문제를 해결하지 못한다 — attempt 자신의 CPU-초 소진을 더 빨리 채워 자신은 더 빨리 죽지만, sibling이 그 사이 굶는 것 자체는 막지 못한다.
+- 한계: 이름 기반 정적 lint라 `getattr`/문자열 조합/변수 경유 등으로 우회 가능하다(파일 상단 docstring — 보안 경계 아님, 정직한 실수를 값싸게 재생성으로 돌려보내는 soft guard). 실제 강제 경계는 여전히 Docker/cgroup 레벨이어야 하며, 그 후속(대안 a)이 남아 있다.
+
 ---
 
 ## 미정 항목 (TBD)

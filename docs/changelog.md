@@ -1,5 +1,17 @@
 # 변경 이력
 
+## v1.4.25 — 생성 코드의 무제한 병렬성(n_jobs=-1 등) 정적 거부 (2026-08-10)
+- #162: #159 CPU 예산 워치독 배포 후 리소스 상황을 점검하다가 발견 — Airflow
+  attempt 컨테이너(`cpus=1.5`)는 실제로는 `cpu_shares`(상대 가중치)로만 반영돼
+  하드 CPU quota가 아니고(`CpuQuota=0` 실측 확인), `OMP_NUM_THREADS=2`류 env var는
+  LightGBM/CatBoost/XGBoost/scikit-learn의 `n_jobs`/`thread_count` 파라미터와
+  무관하게 동작한다(실측: `n_jobs=-1` LightGBM 20 threads/15.9x cores, CatBoost
+  `thread_count=-1` 21 threads/15.0x, sklearn RandomForest `n_jobs=-1` 43
+  threads/15.6x). mac-server는 big 큐 슬롯 2개가 4vCPU를 공유해 이런 생성 코드
+  하나가 sibling attempt를 실제로 굶길 수 있었다. `evaluator/contract.py`에
+  `n_jobs`/`thread_count`/`num_threads`/`nthread`/`n_threads` 0 이하 리터럴을
+  정적 거부하는 검사 추가. ADR-029.
+
 ## v1.4.23 — eval CPU 예산 워치독: rc=-9 오진과 재시도 이중 소모 제거 (2026-08-09)
 - #159: RSS 워치독(#154, v1.4.21) 배포 후 2일 실측 — 전체 attempt 계산시간 56.3h 중
   40%(22.4h)가 `RLIMIT_CPU(soft=hard=900)`의 흔적 없는 SIGKILL(rc=-9)이었다. 커널이
