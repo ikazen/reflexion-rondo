@@ -158,6 +158,58 @@ def test_value_counts_not_forbidden():
     assert not any("pandas-only API" in e for e in errs)
 
 
+# --- 무제한 병렬성(n_jobs=-1 등) 정적 거부 ---
+
+def _build_model_patch(model_call: str) -> str:
+    return (
+        'class Patch:\n'
+        '    action_type = "model_swap"\n'
+        '    changed_stages = ["build_model"]\n'
+        '    rationale = "unbounded parallelism demo"\n'
+        '    def build_model(self, params, ctx):\n'
+        f'        return {model_call}\n'
+    )
+
+
+@pytest.mark.parametrize("call,hit", [
+    ('LGBMClassifier(n_jobs=-1)', "n_jobs=-1"),
+    ('CatBoostClassifier(thread_count=-1)', "thread_count=-1"),
+    ('XGBClassifier(n_jobs=-1)', "n_jobs=-1"),
+    ('RandomForestClassifier(n_jobs=-1)', "n_jobs=-1"),
+    ('LGBMClassifier(num_threads=0)', "num_threads=0"),
+    ('XGBClassifier(nthread=-1)', "nthread=-1"),
+    ('SomeModel(n_threads=-2)', "n_threads=-2"),
+])
+def test_unbounded_parallelism_literal_rejected(call: str, hit: str):
+    """실측(#162): OMP_NUM_THREADS=2를 걸어도 n_jobs=-1/thread_count=-1류는
+    무시하고 자체 스레드풀로 15배 이상 코어를 점유한다(LightGBM 20 threads,
+    CatBoost 21 threads, sklearn RandomForest 43 threads 실측). 0 이하 리터럴은
+    전부 "가용 코어 전부/대부분" 요청으로 간주해 거부한다."""
+    errs = validate_patch(_build_model_patch(call), "model_swap")
+    assert any("unbounded parallelism" in e and hit in e for e in errs)
+
+
+@pytest.mark.parametrize("call", [
+    "LGBMClassifier(n_jobs=2)",
+    "CatBoostClassifier(thread_count=1)",
+    "RandomForestClassifier()",
+    "Ridge(alpha=1.0)",
+])
+def test_bounded_or_unrelated_params_not_forbidden(call: str):
+    """양의 고정값(스레드 제한 준수)이나 threading과 무관한 파라미터는 거부하지
+    않는다 — 정당한 모델 구성까지 막으면 재생성 왕복만 늘어난다."""
+    errs = validate_patch(_build_model_patch(call), "model_swap")
+    assert not any("unbounded parallelism" in e for e in errs)
+
+
+def test_unbounded_parallelism_via_variable_not_flagged():
+    """값이 변수/표현식이면 정적으로 판정 불가 — 과소탐지를 오탐보다 우선한다
+    (파일 상단 docstring: name 기반 soft guard, 실제 경계는 실행 샌드박스)."""
+    source = _build_model_patch("LGBMClassifier(n_jobs=params.get('n_jobs', 2))")
+    errs = validate_patch(source, "model_swap")
+    assert not any("unbounded parallelism" in e for e in errs)
+
+
 # --- candidate patch 자체의 undefined-name 검사 ---
 
 def test_undefined_name_in_hook_caught():
