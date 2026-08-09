@@ -30,6 +30,19 @@ _PANDAS_ONLY_ATTRS = frozenset({
     "groupby", "map_dict", "take", "apply", "iterrows", "applymap", "get_dummies",
 })
 
+# n_jobs=-1/thread_count=-1/num_threads=0 등 "가용 코어 전부" 요청 파라미터명.
+# Dockerfile의 OMP_NUM_THREADS=2/OPENBLAS_NUM_THREADS=2/MKL_NUM_THREADS=2는
+# BLAS/OpenMP 레벨 스레딩만 제한할 뿐, LightGBM/CatBoost/XGBoost/scikit-learn의
+# 이 파라미터들은 그 env var와 무관하게 자체 스레드풀을 쓴다 — 실측(#162,
+# OMP_NUM_THREADS=2 환경): n_jobs=-1 LightGBM 20 threads/15.9x cores,
+# thread_count=-1 CatBoost 21 threads/15.0x cores, n_jobs=-1 RandomForest
+# 43 threads/15.6x cores. Airflow attempt 컨테이너의 cpus=1.5도 실제로는
+# cpu_shares(상대 가중치)일 뿐 하드 quota가 아니라서, 이런 코드 하나가
+# 같은 호스트의 sibling attempt를 실제로 굶길 수 있다.
+_UNBOUNDED_PARALLELISM_PARAMS = frozenset({
+    "n_jobs", "thread_count", "num_threads", "nthread", "n_threads",
+})
+
 _ALL_HOOKS = frozenset({
     "preprocess", "feature_transform", "param_candidates",
     "build_model", "postprocess_predictions",
@@ -80,6 +93,35 @@ def _collect_calls(tree: ast.AST) -> list[str]:
             elif isinstance(node.func, ast.Attribute):
                 names.append(node.func.attr)
     return names
+
+
+def _literal_int(node: ast.expr) -> int | None:
+    """리터럴 정수 값(음수 리터럴은 UnaryOp(USub, Constant)로 파싱됨 포함)만 해석.
+    변수·표현식은 판정 불가하므로 None(미탐지가 오탐보다 안전)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+        return node.value
+    if (
+        isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub)
+        and isinstance(node.operand, ast.Constant) and isinstance(node.operand.value, int)
+    ):
+        return -node.operand.value
+    return None
+
+
+def _find_unbounded_parallelism(tree: ast.AST) -> list[str]:
+    """n_jobs=-1 등 _UNBOUNDED_PARALLELISM_PARAMS 키워드 인자에 0 이하 리터럴이
+    오면 잡는다. 값이 변수·표현식이면 판정하지 않는다(과소탐지 허용)."""
+    hits: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for kw in node.keywords:
+            if kw.arg not in _UNBOUNDED_PARALLELISM_PARAMS:
+                continue
+            val = _literal_int(kw.value)
+            if val is not None and val <= 0:
+                hits.append(f"{kw.arg}={val}")
+    return hits
 
 
 def _find_patch_class(tree: ast.AST) -> ast.ClassDef | None:
@@ -243,6 +285,12 @@ def validate_patch(source: str, action_type: str) -> list[str]:
                 f"pandas-only API (not on polars — use group_by/replace_strict/"
                 f"map_elements/gather/etc): {call}()"
             )
+    for hit in _find_unbounded_parallelism(tree):
+        errors.append(
+            f"unbounded parallelism: {hit} — requests all/most host cores and "
+            f"ignores the container's OMP_NUM_THREADS isolation; use a small "
+            f"fixed value (e.g. 2) instead"
+        )
 
     patch_cls = _find_patch_class(tree)
     if patch_cls is None:
