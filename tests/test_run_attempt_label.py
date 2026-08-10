@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 
 from agents.strategist import StrategyDecision
+from cycle.promotion import ConfirmResult
 from cycle.run import CycleConfig, run_attempt_core
 from cycle.stagnation import StagnationSignal
 from runtime.isolate import IsolatedResult
@@ -118,3 +119,76 @@ def test_error_trace_forces_error_label_and_skips_significance_check():
     assert mock_insert.call_args[0][1]["label"] == "error"
     assert mock_bandit.call_args.kwargs["label"] == "error"
     mock_sig.assert_not_called()
+
+
+# --- confirm 결과를 bandit/lesson 보상에 반영 (#164) ---
+#
+# defer_promotion=False(직접모드)에서만 run_attempt_core 자신이 confirm_and_measure를
+# 돌린다. 로컬 유의성(is_significant_gain)만으로 확정된 label="jump"가 나중에
+# confirm(cross-seed 재현/holdout)에서 거부되면, 그 사실이 update_bandit과
+# _AttemptData.reward_label(→ _do_reflect의 lesson)에 반영돼야 자기강화 루프가
+# 안 생긴다. raw.attempts.label(insert_attempt row)은 attempt 시점의 잠정 판정을
+# 그대로 보존한다 — 여기서 다운그레이드하는 건 하류 학습 신호뿐이다.
+
+def _run_deferred(iso_result: IsolatedResult, confirm_result: ConfirmResult | None):
+    conn = MagicMock()
+    # confirm.confirmed=True 경로는 fingerprint를 조회해 raw.pipelines에 insert한다
+    # (cycle/run.py:~710) — dict로 고정해 json.loads(MagicMock) TypeError를 피한다.
+    conn.execute.return_value.fetchone.return_value = ({},)
+    with (
+        patch("cycle.run.detect_stagnation",
+              return_value=StagnationSignal(False, 0, (), 0)),
+        patch("cycle.run.get_action_prior", return_value={}),
+        patch("cycle.run.strategize", return_value=StrategyDecision(
+            hypothesis="h", action_type="model_swap", reflection_ids=[])),
+        patch("cycle.run.top_error_pitfalls", return_value=[]),
+        patch("cycle.run.generate_code", return_value="source"),
+        patch("cycle.run.validate_patch", return_value=[]),
+        patch("cycle.run.eval_isolated", return_value=iso_result),
+        patch("cycle.run.is_significant_gain", return_value=True),
+        patch("cycle.run.confirm_and_measure", return_value=confirm_result),
+        patch("cycle.run._dynamic_eda_context", return_value=""),
+        patch("cycle.run._load_best_pipeline", return_value="prev code"),
+        patch("cycle.run._prev_best_params", return_value=None),
+        patch("cycle.run._prev_best_fold_scores", return_value=None),
+        patch("cycle.run._save_code", return_value="s3://code"),
+        patch("cycle.run.insert_attempt") as mock_insert,
+        patch("cycle.run.update_bandit") as mock_bandit,
+        patch("cycle.run.materialize_best_pipeline", return_value="materialized"),
+        patch("cycle.run.insert_pipeline"),
+        patch("cycle.run._best_pipeline_upload"),
+    ):
+        data = run_attempt_core(
+            conn, _config(), lessons=[], prev_best_cv=0.89,
+            defer_promotion=False,
+        )
+    return data, mock_insert, mock_bandit
+
+
+def test_confirm_rejected_jump_downgrades_bandit_reward():
+    """confirm이 holdout 악화로 거부하면, raw.attempts.label은 jump로 남지만
+    update_bandit엔 regression으로 전달돼야 한다 — 안 그러면 confirm이 거부해도
+    같은 action_type이 다음 cycle에 계속 높은 확률로 재선택된다(#164 실측: s6e1
+    preprocessing 후보 32회 재생성)."""
+    confirm = ConfirmResult(
+        confirmed=False, holdout_score=0.8, seed_gains={"7": {}}, holdout_regressed=True,
+    )
+    data, mock_insert, mock_bandit = _run_deferred(
+        _iso(label="jump", gain_vs_best=0.02), confirm_result=confirm,
+    )
+
+    assert data.label == "jump"  # attempt 시점 판정은 그대로 보존
+    assert mock_insert.call_args[0][1]["label"] == "jump"  # DB row도 마찬가지
+    assert data.reward_label == "regression"  # 하류 학습 신호만 다운그레이드
+    assert mock_bandit.call_args.kwargs["label"] == "regression"
+
+
+def test_confirm_confirmed_jump_keeps_bandit_reward():
+    """confirm이 통과하면 기존과 동일하게 label="jump"로 보상(회귀 방지)."""
+    confirm = ConfirmResult(confirmed=True, holdout_score=0.9, seed_gains={"7": {}})
+    data, mock_insert, mock_bandit = _run_deferred(
+        _iso(label="jump", gain_vs_best=0.02), confirm_result=confirm,
+    )
+
+    assert data.reward_label == "jump"
+    assert mock_bandit.call_args.kwargs["label"] == "jump"

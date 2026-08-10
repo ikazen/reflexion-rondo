@@ -22,7 +22,7 @@ from cycle.action_optimizer import get_action_prior, update_bandit
 from cycle.error_pitfalls import normalize_error, top_error_pitfalls
 from cycle.stagnation import detect_stagnation
 from cycle.materialize import materialize_best_pipeline
-from cycle.promotion import confirm_and_measure
+from cycle.promotion import ConfirmResult, confirm_and_measure, effective_label
 from evaluator.contract import validate_patch
 from evaluator.harness import is_significant_gain, split_audit_holdout
 from evaluator.metrics import get as get_metric
@@ -81,6 +81,7 @@ class _AttemptData:
     error_trace: str | None
     code_path: str
     feature_importance: dict | None
+    reward_label: str
     is_noop_tie: bool = False
 
 
@@ -673,6 +674,9 @@ def run_attempt_core(
 
     # defer_promotion=True: caller (super_cycle / Airflow promote task) handles winner-only promotion.
     # _significant은 위에서 label 확정 시 이미 계산됨 — 재계산하지 않음.
+    # confirm은 아래 update_bandit 직전에 effective_label(label, confirm)로 다시
+    # 참조된다 — 블록을 안 타는 경우(defer_promotion/미유의/에러) None으로 초기화.
+    confirm: ConfirmResult | None = None
     if not defer_promotion and _significant and not error_trace:
         confirm = confirm_and_measure(
             source=source,
@@ -769,12 +773,15 @@ def run_attempt_core(
         duration_sec, attempt_id[:8], action_type, label, retries,
     )
 
+    # confirm이 jump를 거부했으면(cross-seed 미재현/holdout 악화) 보상 신호를
+    # regression으로 다운그레이드 — #164, effective_label 참고.
+    reward_label = effective_label(label, confirm)
     if config.stage == "reflexion":
         update_bandit(
             conn,
             competition_id=config.competition_id,
             action_type=action_type,
-            label=label,
+            label=reward_label,
             gain_vs_best=gain_vs_best,
             error_trace=error_trace,
         )
@@ -792,6 +799,7 @@ def run_attempt_core(
         error_trace=error_trace,
         code_path=code_path,
         feature_importance=feature_importance,
+        reward_label=reward_label,
         is_noop_tie=is_noop_tie,
     )
 
@@ -799,8 +807,13 @@ def run_attempt_core(
 def _do_reflect(conn: PgConn, competition_id: str, data: _AttemptData) -> str | None:
     """Reflect if label warrants it, or if a no-op tie was detected —
     otherwise these zero-effect attempts silently bypass the label gate (label=neutral,
-    error_trace=None) and the strategist never learns why the action had no effect."""
-    if data.label not in ("jump", "regression") and data.error_trace is None and not data.is_noop_tie:
+    error_trace=None) and the strategist never learns why the action had no effect.
+
+    data.reward_label(jump/regression 둘 다 이 게이트를 통과하므로 판정 자체는
+    안 바뀐다)을 쓴다 — confirm이 jump를 거부한 경우 lesson도 "CV에서는 좋아
+    보였지만 실제 검증은 통과 못 했다"는 correction된 신호를 받아야 한다(#164).
+    """
+    if data.reward_label not in ("jump", "regression") and data.error_trace is None and not data.is_noop_tie:
         return None
     ctx = AttemptContext(
         hypothesis=data.decision.hypothesis,
@@ -809,7 +822,7 @@ def _do_reflect(conn: PgConn, competition_id: str, data: _AttemptData) -> str | 
         cv_score=data.cv_score or 0.0,
         cv_fold_var=data.cv_fold_var,
         gain_vs_best=data.gain_vs_best,
-        label=data.label,
+        label=data.reward_label,
         retrieved_ids=data.decision.reflection_ids,
         feature_importance=data.feature_importance,
         error_trace=data.error_trace,
