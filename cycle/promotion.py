@@ -31,6 +31,25 @@ class ConfirmResult:
     holdout_regressed: bool = False
 
 
+def effective_label(original_label: str, confirm: ConfirmResult | None) -> str:
+    """confirm이 jump를 거부하면(cross-seed 미재현 또는 holdout 악화) bandit
+    보상·reflection lesson에는 regression으로 반영한다 — CV 단계에서만 좋아
+    보였을 뿐 실제 검증(cross-seed 재현/holdout)은 통과 못 한 방향이라는 뜻이므로.
+
+    이 구분이 없으면 update_bandit이 attempt 생성 시점의 잠정 label(confirm
+    이전)만 보고 α+=1.0을 준다 — confirm이 나중에 거부해도 그 보상은 되돌아가지
+    않아, 같은 아이디어가 계속 높은 확률로 재선택되는 자기강화 루프가 생긴다
+    (#164 실측: s6e1의 preprocessing 후보가 cv_score 소수점 10자리까지 동일하게
+    32회 재생성 — 매번 holdout에서 거부됐지만 bandit은 그때마다 최댓값 보상을 받음).
+
+    confirm=None(스킵됨)이거나 원본이 이미 jump가 아니면 그대로 반환 — jump만
+    다운그레이드 대상이다(neutral/regression/error는 confirm을 애초에 안 탄다).
+    """
+    if original_label == "jump" and confirm is not None and not confirm.confirmed:
+        return "regression"
+    return original_label
+
+
 def confirm_and_measure(
     *,
     source: str,

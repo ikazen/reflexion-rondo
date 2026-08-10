@@ -1,5 +1,25 @@
 # 변경 이력
 
+## v1.4.26 — bandit/lesson 보상 신호를 confirm 결과와 연동 (2026-08-11)
+- #164: promote task가 가끔 22분(cross-seed 3 + holdout 2 = 순차 풀 CV 5회) 걸리는
+  이유를 추적하다가 발견 — s6e1의 `preprocessing` 후보가 cv_score 소수점 10자리까지
+  동일한 채로 32회(2026-08-09~10, 하루 이상) 재생성돼 매번 22분짜리 confirm을
+  돌고 매번 holdout 악화로 거부당했다.
+- 원인: `cycle/action_optimizer.py:update_bandit`이 attempt 생성 시점의 잠정
+  label(`is_significant_gain` 통과 시 "jump")에 α+=1.0(최강 보상)을 주는데, 이
+  호출이 `defer_promotion` 여부와 무관하게 무조건 실행된다. 프로덕션(airflow
+  모드)에서 confirm(cross-seed+holdout)은 별도 task(`bin/run_promote_task.py`)가
+  승자만 나중에 도는데, 그 결과가 bandit에 전혀 반영 안 됐다(이 파일이
+  `update_bandit`을 아예 호출 안 함). jump→α+=1.0→다음 cycle 당첨 확률↑→비슷한
+  아이디어 재생성→다시 jump→다시 α+=1.0→... 자기강화 루프가 confirm 결과와
+  무관하게 돌아간 구조. `reflect()`도 동일 결함으로 confirm 이전 raw label을
+  그대로 lesson에 반영했다.
+- `cycle/promotion.py`에 `effective_label(label, confirm)` 신설 — confirm이
+  jump를 거부하면 regression으로 다운그레이드. `cycle/run.py`(직접모드)와
+  `bin/run_promote_task.py`(프로덕션 경로) 양쪽의 bandit 보상·reflect lesson에
+  적용. `raw.attempts.label`(DB 원본)은 건드리지 않고 하류 학습 신호만 보정.
+  ADR-030.
+
 ## v1.4.25 — 생성 코드의 무제한 병렬성(n_jobs=-1 등) 정적 거부 (2026-08-10)
 - #162: #159 CPU 예산 워치독 배포 후 리소스 상황을 점검하다가 발견 — Airflow
   attempt 컨테이너(`cpus=1.5`)는 실제로는 `cpu_shares`(상대 가중치)로만 반영돼

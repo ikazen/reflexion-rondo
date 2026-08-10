@@ -48,8 +48,9 @@ def main() -> None:
     from store.db import connect, insert_pipeline
     from agents.reflector import AttemptContext, reflect
     from config.settings import PROMOTE_CONFIRM_SEEDS
+    from cycle.action_optimizer import update_bandit
     from cycle.materialize import materialize_best_pipeline
-    from cycle.promotion import confirm_and_measure
+    from cycle.promotion import confirm_and_measure, effective_label
     from evaluator.harness import is_significant_gain, split_audit_holdout
     from memory.retriever import EmbeddingUnavailableError
     from runtime.isolate import eval_isolated
@@ -155,6 +156,11 @@ def main() -> None:
         f"has_error={bool(winner_error)} has_code={bool(winner_code_path)}"
     )
 
+    # confirm이 실제로 돈 경우에만(아래 블록 안에서) effective_label로 재계산된다 —
+    # stage1 자체가 미유의/에러/코드없음이면 confirm을 안 타므로 None으로 남고,
+    # reflect 루프에서 winner_row[3](원본 label) 그대로 쓴다.
+    bandit_label: str | None = None
+
     if _stage1_significant and not winner_error and winner_code_path:
         winner_content = _code_download(winner_code_path) or ""
         sep = _CODE_HEADER_SEP + "\n"
@@ -212,8 +218,24 @@ def main() -> None:
                     reason = "holdout 악화" if confirm.holdout_regressed else "cross-seed 미확인"
                     print(f"[run_promote_task] {reason} — 승격 스킵 winner={winner_row[0][:8]}")
                     # 승격만 스킵 — 아래 promotion 가드(confirm.confirmed)가 막고, reflect 루프는 계속 실행
+
+                # bandit 보상을 confirm 결과와 연동 — cycle/run.py의 attempt-생성
+                # 시점 update_bandit(defer_promotion=True라 여기선 원본 label로
+                # 이미 한 번 쐈다)은 confirm을 모른다. confirm이 jump를 거부하면
+                # 여기서 regression 방향으로 보정 신호를 추가로 준다 — 안 그러면
+                # 같은 action_type이 다음 cycle에 계속 높은 확률로 재선택된다
+                # (#164 실측: s6e1 preprocessing 후보가 cv_score 소수점 10자리까지
+                # 동일하게 32회 재생성, 매번 holdout 거부). train90 로드 실패로
+                # confirm 자체가 스킵된 경우(else 분기)는 새 정보가 없으니 보정할
+                # 게 없다 — 여기서만(confirm이 실제로 돈 경우만) 호출한다.
+                bandit_label = effective_label(winner_row[3], confirm)
+                update_bandit(
+                    conn, competition_id=competition_id, action_type=winner_row[6],
+                    label=bandit_label, gain_vs_best=winner_gain, error_trace=winner_error,
+                )
             else:
                 confirm = None
+                bandit_label = winner_row[3]
 
             if train90 is None or (confirm is not None and confirm.confirmed):
                 fp_row = conn.execute(
@@ -342,6 +364,11 @@ def main() -> None:
             sep = _CODE_HEADER_SEP + "\n"
             source = content.split(sep, 1)[1].strip() if sep in content else content
 
+        # winner이고 confirm이 실제로 돌았으면 confirm-보정된 label로 lesson을
+        # 남긴다 — "CV에서는 좋아 보였지만 실제 검증은 통과 못 했다"는 신호가
+        # strategist 학습에 전달돼야 한다(#164).
+        reflect_label = bandit_label if (is_winner and bandit_label is not None) else label
+
         ctx = AttemptContext(
             hypothesis=hypothesis or "",
             action_type=action_type or "",
@@ -349,7 +376,7 @@ def main() -> None:
             cv_score=cv_score or 0.0,
             cv_fold_var=cv_fold_var or 0.0,
             gain_vs_best=gain_vs_best,
-            label=label or "regression",
+            label=reflect_label or "regression",
             retrieved_ids=reflection_ids or [],
             feature_importance=None,
             error_trace=error_trace,

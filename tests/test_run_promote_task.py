@@ -175,18 +175,19 @@ class _Conn:
 
 def _run_promote_with_mocks(
     confirm_result, reflect_mock, confirm_mock, eval_isolated_mock=None, generate_csv_mock=None,
-    best_attempt_mock=None, download_submission_csv_mock=None,
+    best_attempt_mock=None, download_submission_csv_mock=None, update_bandit_mock=None,
 ) -> "_Conn":
     """모든 외부 의존을 mock 처리하고 run_promote_task.main()을 1회 실행. 사용된 conn을 반환.
 
     conn.insert_pipeline_mock / conn.upload_best_pipeline_mock / conn.eval_isolated_mock /
     conn.generate_csv_mock / conn.upload_submission_csv_mock / conn.best_attempt_mock /
-    conn.download_submission_csv_mock에 각 mock을 붙여둔다 — 호출 여부를 검증할 수 있도록
-    (merge-verify, submission 캐싱).
+    conn.download_submission_csv_mock / conn.update_bandit_mock에 각 mock을 붙여둔다 —
+    호출 여부를 검증할 수 있도록(merge-verify, submission 캐싱, bandit 보정(#164)).
     eval_isolated_mock 미지정 시 winner_cv(_WINNER_CV)와 일치하는 기본 성공 응답으로 채운다.
     generate_csv_mock 미지정 시 (fake_path, winner_attempt_id, _WINNER_CV) 성공 응답으로 채운다.
     best_attempt_mock 미지정 시 winner_attempt_id를 전역 best로 반환(대부분 테스트는 승격
     winner == 전역 best로 가정). download_submission_csv_mock 미지정 시 캐시 미스(None).
+    update_bandit_mock 미지정 시 새 MagicMock.
     """
     fake_df = MagicMock(name="train_df")
     fake_df.drop.return_value = fake_df
@@ -213,6 +214,7 @@ def _run_promote_with_mocks(
         return_value=(_ATTEMPT_ROWS[0][0], _WINNER_CV)
     )
     download_submission_csv_mock = download_submission_csv_mock or MagicMock(return_value=None)
+    update_bandit_mock = update_bandit_mock or MagicMock()
 
     argv = ["run_promote_task", "--queue-id", "qid", "--run-id", "rid", "--competition", _SLUG]
     sys.path.insert(0, str(ROOT))
@@ -230,6 +232,7 @@ def _run_promote_with_mocks(
             stack.enter_context(patch("bin.api._best_attempt", best_attempt_mock))
             stack.enter_context(patch("cycle.materialize.materialize_best_pipeline", return_value="code"))
             stack.enter_context(patch("cycle.promotion.confirm_and_measure", confirm_mock))
+            stack.enter_context(patch("cycle.action_optimizer.update_bandit", update_bandit_mock))
             stack.enter_context(patch("agents.reflector.reflect", reflect_mock))
             stack.enter_context(patch("evaluator.harness.is_significant_gain", return_value=True))
             stack.enter_context(patch("evaluator.harness.split_audit_holdout", return_value=(fake_df, fake_df)))
@@ -252,6 +255,7 @@ def _run_promote_with_mocks(
     conn.upload_submission_csv_mock = upload_submission_csv_mock
     conn.best_attempt_mock = best_attempt_mock
     conn.download_submission_csv_mock = download_submission_csv_mock
+    conn.update_bandit_mock = update_bandit_mock
     return conn
 
 
@@ -517,3 +521,77 @@ def test_submission_csv_caching_failure_does_not_block_promotion() -> None:
     assert conn.insert_pipeline_mock.call_count == 1
     assert conn.upload_best_pipeline_mock.call_count == 1
     assert conn.upload_submission_csv_mock.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# bandit/lesson 보상 신호를 confirm 결과와 연동 (#164)
+# ---------------------------------------------------------------------------
+# winner row(_ATTEMPT_ROWS[0])는 label="jump" action_type="model_swap" gain=0.05.
+
+def test_confirm_rejected_jump_corrects_bandit_to_regression() -> None:
+    """confirm이 holdout 악화로 거부하면 update_bandit이 winner의 action_type에
+    label="regression"으로 호출돼야 한다 — 안 그러면 confirm이 계속 거부해도
+    같은 action_type이 다음 cycle에 계속 높은 확률로 재선택된다(#164 실측: s6e1
+    preprocessing 후보가 cv_score 소수점 10자리까지 동일하게 32회 재생성)."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    update_bandit_mock = MagicMock()
+    _run_promote_with_mocks(
+        SimpleNamespace(confirmed=False, holdout_score=0.8, seed_gains={"7": {}}, holdout_regressed=True),
+        reflect_mock,
+        confirm_mock,
+        update_bandit_mock=update_bandit_mock,
+    )
+    assert update_bandit_mock.call_count == 1
+    kwargs = update_bandit_mock.call_args.kwargs
+    assert kwargs["action_type"] == "model_swap"
+    assert kwargs["label"] == "regression"
+
+
+def test_confirm_confirmed_jump_keeps_bandit_reward() -> None:
+    """confirm이 통과하면 기존과 동일하게 label="jump"로 보상(회귀 방지)."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    update_bandit_mock = MagicMock()
+    _run_promote_with_mocks(
+        SimpleNamespace(confirmed=True, holdout_score=0.9, seed_gains={"7": {}}, holdout_regressed=False),
+        reflect_mock,
+        confirm_mock,
+        update_bandit_mock=update_bandit_mock,
+    )
+    assert update_bandit_mock.call_count == 1
+    assert update_bandit_mock.call_args.kwargs["label"] == "jump"
+
+
+def test_confirm_rejected_jump_winner_reflect_uses_regression_label() -> None:
+    """confirm이 거부한 winner의 reflect() 호출도 lesson에 regression을 반영해야
+    한다 — raw.attempts.label(DB)은 그대로 jump로 남지만(fixture가 확인), 하류
+    학습 신호만 correction된다."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    _run_promote_with_mocks(
+        SimpleNamespace(confirmed=False, holdout_score=0.8, seed_gains={"7": {}}, holdout_regressed=True),
+        reflect_mock,
+        confirm_mock,
+    )
+    winner_call = next(
+        c for c in reflect_mock.call_args_list if c.kwargs["attempt_id"] == _ATTEMPT_ROWS[0][0]
+    )
+    assert winner_call.kwargs["context"].label == "regression"
+
+
+def test_confirm_none_skips_bandit_correction() -> None:
+    """train90 로드 실패로 confirm 자체가 스킵된 경우(train90=None) — 새 정보가
+    없으니 update_bandit을 다시 호출하지 않는다(attempt 생성 시점에 이미 한 번
+    쐈으므로 중복 보상 방지)."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    update_bandit_mock = MagicMock()
+    with patch("store.train_data.load_train", side_effect=RuntimeError("no data")):
+        _run_promote_with_mocks(
+            SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None, holdout_regressed=False),
+            reflect_mock,
+            confirm_mock,
+            update_bandit_mock=update_bandit_mock,
+        )
+    assert update_bandit_mock.call_count == 0

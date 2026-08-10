@@ -10,7 +10,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from cycle.promotion import ConfirmResult, _NOOP_PATCH, confirm_and_measure
+from cycle.promotion import ConfirmResult, _NOOP_PATCH, confirm_and_measure, effective_label
 from runtime.isolate import IsolatedResult
 
 
@@ -333,3 +333,51 @@ def test_best_source_none_uses_noop_patch():
     assert len(baseline_calls) >= 1
     assert baseline_calls[0]["source"] == _NOOP_PATCH
     assert result.confirmed is True
+
+
+# --- effective_label: bandit/lesson 보상 신호를 confirm 결과와 연동 (#164) ---
+#
+# update_bandit/reflect가 confirm 이전의 잠정 label(jump)을 그대로 쓰면, confirm이
+# 나중에 cross-seed 미재현이나 holdout 악화로 거부해도 그 보상이 되돌아가지 않아
+# 같은 아이디어가 계속 높은 확률로 재선택되는 자기강화 루프가 생긴다(실측: s6e1의
+# preprocessing 후보가 cv_score 소수점 10자리까지 동일하게 32회 재생성, 매번 holdout
+# 거부). effective_label은 이 다운그레이드를 결정하는 순수 함수다.
+
+def _confirmed() -> ConfirmResult:
+    return ConfirmResult(confirmed=True, holdout_score=0.9, seed_gains={"7": {}})
+
+
+def _rejected_cross_seed() -> ConfirmResult:
+    return ConfirmResult(confirmed=False, holdout_score=None, seed_gains={"7": {"error": "..."}})
+
+
+def _rejected_holdout() -> ConfirmResult:
+    return ConfirmResult(
+        confirmed=False, holdout_score=0.8, seed_gains={"7": {}}, holdout_regressed=True,
+    )
+
+
+def test_effective_label_jump_confirmed_stays_jump():
+    assert effective_label("jump", _confirmed()) == "jump"
+
+
+def test_effective_label_jump_rejected_cross_seed_downgraded():
+    assert effective_label("jump", _rejected_cross_seed()) == "regression"
+
+
+def test_effective_label_jump_rejected_holdout_downgraded():
+    assert effective_label("jump", _rejected_holdout()) == "regression"
+
+
+def test_effective_label_jump_confirm_none_stays_jump():
+    """confirm 자체가 스킵된 경우(예: train 로드 실패) — 판단 근거가 없으니
+    원본 그대로 둔다. 보수적으로 다운그레이드하지 않음."""
+    assert effective_label("jump", None) == "jump"
+
+
+@pytest.mark.parametrize("label", ["neutral", "regression", "error"])
+def test_effective_label_non_jump_unaffected(label: str):
+    """jump가 아닌 label은 애초에 confirm을 안 타므로 confirm 결과와 무관하게
+    원본 그대로여야 한다."""
+    assert effective_label(label, _rejected_holdout()) == label
+    assert effective_label(label, _confirmed()) == label
