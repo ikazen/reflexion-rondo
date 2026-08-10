@@ -265,6 +265,13 @@
 - 근거: `OMP_NUM_THREADS=2`/`OPENBLAS_NUM_THREADS=2`/`MKL_NUM_THREADS=2`(`deploy/Dockerfile`)는 BLAS/OpenMP 레벨 스레딩만 제한하고 이 파라미터들과는 무관하게 동작한다는 걸 이 세션에서 직접 재현: `OMP_NUM_THREADS=2` 환경에서 LightGBM `n_jobs=-1`은 20 threads/15.9x cores-equivalent, CatBoost `thread_count=-1`은 21 threads/15.0x, scikit-learn `RandomForestClassifier(n_jobs=-1)`은 43 threads/15.6x를 썼다. Airflow attempt 컨테이너의 CPU 상한이 위 대안(a)처럼 사실상 장식이라, LLM 생성 코드 하나가 이 파라미터를 쓰면 같은 호스트(특히 big 큐 슬롯 2개가 4vCPU를 공유하는 mac-server)의 sibling attempt를 실제로 굶길 수 있다. #159(eval CPU 예산 워치독)의 kill은 이 문제를 해결하지 못한다 — attempt 자신의 CPU-초 소진을 더 빨리 채워 자신은 더 빨리 죽지만, sibling이 그 사이 굶는 것 자체는 막지 못한다.
 - 한계: 이름 기반 정적 lint라 `getattr`/문자열 조합/변수 경유 등으로 우회 가능하다(파일 상단 docstring — 보안 경계 아님, 정직한 실수를 값싸게 재생성으로 돌려보내는 soft guard). 실제 강제 경계는 여전히 Docker/cgroup 레벨이어야 하며, 그 후속(대안 a)이 남아 있다.
 
+## ADR-030 — bandit/lesson 보상 신호는 attempt-time label이 아니라 confirm 결과를 반영
+
+- 결정: `cycle/promotion.py`에 순수 함수 `effective_label(original_label, confirm)`을 추가한다. `label=="jump"`인데 `confirm.confirmed is False`(cross-seed 미재현 또는 holdout 악화)면 하류 학습 신호(`update_bandit` 호출의 `label`, `reflect()`에 넘기는 `AttemptContext.label`)에는 `"regression"`으로 다운그레이드한다. `raw.attempts.label`(attempt 생성 시점 DB 값)은 건드리지 않는다 — 그 시점의 잠정 판정은 그대로 사실이고, 다운그레이드 대상은 오직 나중에 계산되는 보상/lesson 신호뿐이다. `cycle/run.py`(직접모드, `run_attempt_core`)와 `bin/run_promote_task.py`(프로덕션 airflow 모드) 양쪽에 적용한다.
+- 대안: (a) 같은 아이디어의 재생성을 코드 내용(hash) 기준으로 캐싱해 재검증을 건너뛰기 — 증상(반복되는 22분짜리 confirm)만 가리고 원인(왜 같은 아이디어가 계속 최고 후보로 뽑히는가)은 안 건드린다. 바이트 단위로 동일한 코드만 잡아 사소한 변형에는 무력하다 — 기각. (b) `update_bandit`을 confirm 완료까지 지연 — 프로덕션은 retrieve/attempt×3/promote가 별도 Airflow task/컨테이너라 "승자가 될지" 자체가 attempt 생성 시점엔 미정이라 구조적으로 불가능. 대신 승자에 한해 confirm 이후 보정 delta를 추가하는 현재 설계를 택함.
+- 근거: `cycle/action_optimizer.py:update_bandit`은 `label=="jump"`에 α+=1.0(최강 보상)을 준다. `cycle/run.py`가 `defer_promotion` 여부와 무관하게 이 함수를 무조건 호출하는데, confirm(cross-seed+holdout, `bin/run_promote_task.py`에서 승자만 별도로 나중에 실행)은 이 시점에 아직 모른다 — 실제로 `bin/run_promote_task.py`는 `update_bandit`을 아예 호출하지 않았다(grep 확인, #164 전). 그 α/β를 소비하는 `assign_super_cycle_actions`는 `get_action_prior`(advisory, LLM이 최종 결정)와 달리 LLM 개입 없는 결정론적 top-N 배정이라 안전판도 없다. 실측(2026-08-09~10): s6e1의 `preprocessing` 후보가 cv_score 소수점 10자리까지 동일한 채로 32회 재생성됐고 매번 holdout에서 거부됐다 — jump→α+=1.0→다음 cycle 당첨 확률↑→재생성→다시 jump→... 자기강화 루프가 confirm 결과와 무관하게 돌아간 것으로 설명된다. `reflect()`도 같은 결함 — confirm 이전 raw label을 그대로 lesson에 반영해 strategist가 "이 방향 성공했다"고 계속 학습했다.
+- 한계: bandit은 decay(0.95)가 있는 노이즈 추정기라, 이 보정은 이전에 쐈던 α+=1.0을 수학적으로 정확히 되돌리는 게 아니라 β 쪽에 새 delta를 더하는 것이다(반대 방향 신호를 추가하는 것) — 여러 cycle에 걸쳐 수렴하는 설계고, 단발 보정으로 즉시 상쇄되진 않는다. 효과(재생성 빈도 감소)는 배포 후 며칠 관찰이 필요하며 즉시 검증 가능한 항목이 아니다.
+
 ---
 
 ## 미정 항목 (TBD)
