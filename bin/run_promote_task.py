@@ -50,7 +50,7 @@ def main() -> None:
     from config.settings import PROMOTE_CONFIRM_SEEDS
     from cycle.action_optimizer import update_bandit
     from cycle.materialize import materialize_best_pipeline
-    from cycle.promotion import confirm_and_measure, effective_label
+    from cycle.promotion import PromotionCache, confirm_and_measure, effective_label
     from evaluator.harness import is_significant_gain, split_audit_holdout
     from memory.retriever import EmbeddingUnavailableError
     from runtime.isolate import eval_isolated
@@ -203,6 +203,10 @@ def main() -> None:
                     seed=42,
                     is_classification=is_classification,
                     confirm_seeds=PROMOTE_CONFIRM_SEEDS,
+                    cache=PromotionCache(conn),
+                    competition_id=competition_id,
+                    candidate_cv=winner_row[2],
+                    candidate_fold_scores=winner_fold_scores,
                 )
                 if confirm.holdout_score is not None:
                     conn.execute(

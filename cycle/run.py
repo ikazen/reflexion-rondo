@@ -22,7 +22,7 @@ from cycle.action_optimizer import get_action_prior, update_bandit
 from cycle.error_pitfalls import normalize_error, top_error_pitfalls
 from cycle.stagnation import detect_stagnation
 from cycle.materialize import materialize_best_pipeline
-from cycle.promotion import ConfirmResult, confirm_and_measure, effective_label
+from cycle.promotion import ConfirmResult, PromotionCache, confirm_and_measure, effective_label
 from evaluator.contract import validate_patch
 from evaluator.harness import is_significant_gain, split_audit_holdout
 from evaluator.metrics import get as get_metric
@@ -190,7 +190,7 @@ def establish_bootstrap_baseline(
 
     row = conn.execute(
         """
-        select a.attempt_id, a.cv_score, a.code_path
+        select a.attempt_id, a.cv_score, a.code_path, a.fold_scores
         from raw.attempts a
         join raw.competitions c using (competition_id)
         where a.competition_id = %s
@@ -203,7 +203,7 @@ def establish_bootstrap_baseline(
     ).fetchone()
     if not row:
         return False
-    attempt_id, cv_score, code_path = row
+    attempt_id, cv_score, code_path, fold_scores = row
     if not code_path:
         return False
 
@@ -226,6 +226,10 @@ def establish_bootstrap_baseline(
         seed=42,
         is_classification=is_classification,
         confirm_seeds=PROMOTE_CONFIRM_SEEDS,
+        cache=PromotionCache(conn),
+        competition_id=competition_id,
+        candidate_cv=cv_score,
+        candidate_fold_scores=fold_scores,
     )
     if confirm.holdout_score is not None:
         conn.execute(
@@ -690,6 +694,10 @@ def run_attempt_core(
             is_classification=config.is_classification,
             confirm_seeds=PROMOTE_CONFIRM_SEEDS,
             action_type=action_type,
+            cache=PromotionCache(conn),
+            competition_id=config.competition_id,
+            candidate_cv=cv_score,
+            candidate_fold_scores=fold_scores,
         )
         if confirm.holdout_score is not None:
             conn.execute(
