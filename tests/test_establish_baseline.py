@@ -79,8 +79,8 @@ def test_no_candidates_returns_none():
 def test_first_candidate_confirmed_promotes_and_stops():
     conn = MagicMock()
     conn.execute.return_value.fetchall.return_value = [
-        ("attempt-1", 0.9, "path1"),
-        ("attempt-2", 0.85, "path2"),
+        ("attempt-1", 0.9, "path1", [0.9]),
+        ("attempt-2", 0.85, "path2", [0.85]),
     ]
     conn.execute.return_value.fetchone.return_value = (None,)
     patches = _patches([ConfirmResult(confirmed=True, holdout_score=0.88, seed_gains=None)])
@@ -97,8 +97,8 @@ def test_first_candidate_fails_falls_back_to_second():
     """phantom(첫 후보)이 게이트를 통과 못 하면 다음 순위로 넘어가야 한다."""
     conn = MagicMock()
     conn.execute.return_value.fetchall.return_value = [
-        ("attempt-1", 0.99, "path1"),  # phantom — 재현 안 됨
-        ("attempt-2", 0.85, "path2"),  # 실제 confirm됨
+        ("attempt-1", 0.99, "path1", [0.99]),  # phantom — 재현 안 됨
+        ("attempt-2", 0.85, "path2", [0.85]),  # 실제 confirm됨
     ]
     conn.execute.return_value.fetchone.return_value = (None,)
     patches = _patches([
@@ -118,8 +118,8 @@ def test_first_candidate_fails_falls_back_to_second():
 def test_all_candidates_fail_returns_none():
     conn = MagicMock()
     conn.execute.return_value.fetchall.return_value = [
-        ("attempt-1", 0.99, "path1"),
-        ("attempt-2", 0.95, "path2"),
+        ("attempt-1", 0.99, "path1", [0.99]),
+        ("attempt-2", 0.95, "path2", [0.95]),
     ]
     patches = _patches([
         ConfirmResult(confirmed=False, holdout_score=None, seed_gains=None),
@@ -134,7 +134,7 @@ def test_all_candidates_fail_returns_none():
 
 def test_dry_run_does_not_write_but_returns_attempt_id():
     conn = MagicMock()
-    conn.execute.return_value.fetchall.return_value = [("attempt-1", 0.9, "path1")]
+    conn.execute.return_value.fetchall.return_value = [("attempt-1", 0.9, "path1", [0.9])]
     patches = _patches([ConfirmResult(confirmed=True, holdout_score=0.88, seed_gains=None)])
     with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6] as mock_insert, patches[7] as mock_upload:
         result = establish_for_competition(conn, _Comp(), top_k=5, dry_run=True)
@@ -147,8 +147,8 @@ def test_dry_run_does_not_write_but_returns_attempt_id():
 def test_empty_source_after_header_strip_skips_candidate():
     conn = MagicMock()
     conn.execute.return_value.fetchall.return_value = [
-        ("attempt-1", 0.9, "path1"),
-        ("attempt-2", 0.85, "path2"),
+        ("attempt-1", 0.9, "path1", [0.9]),
+        ("attempt-2", 0.85, "path2", [0.85]),
     ]
     conn.execute.return_value.fetchone.return_value = (None,)
     patches_list = list(_patches([ConfirmResult(confirmed=True, holdout_score=0.8, seed_gains=None)],

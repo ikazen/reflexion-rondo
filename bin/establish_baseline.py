@@ -36,7 +36,7 @@ import polars as pl
 
 from config.settings import PROMOTE_CONFIRM_SEEDS
 from cycle.materialize import materialize_best_pipeline
-from cycle.promotion import confirm_and_measure
+from cycle.promotion import PromotionCache, confirm_and_measure
 from cycle.run import _CODE_HEADER_SEP
 from evaluator.harness import split_audit_holdout
 from runtime.isolate import eval_isolated
@@ -79,10 +79,10 @@ def competitions_without_baseline(conn) -> list[str]:
     return [r[0] for r in rows]
 
 
-def _top_k_attempts(conn, competition_id: str, top_k: int) -> list[tuple[str, float, str]]:
+def _top_k_attempts(conn, competition_id: str, top_k: int) -> list[tuple[str, float, str, list]]:
     return conn.execute(
         """
-        SELECT a.attempt_id, a.cv_score, a.code_path
+        SELECT a.attempt_id, a.cv_score, a.code_path, a.fold_scores
         FROM raw.attempts a
         JOIN raw.competitions c USING (competition_id)
         WHERE a.competition_id = %s
@@ -170,7 +170,8 @@ def establish_for_competition(conn, comp: object, top_k: int, dry_run: bool) -> 
     train90, holdout10 = split_audit_holdout(train, comp.TARGET, comp.IS_CLASSIFICATION)
     sep = _CODE_HEADER_SEP + "\n"
 
-    for rank, (attempt_id, cv_score, code_path) in enumerate(candidates, 1):
+    cache = PromotionCache(conn)
+    for rank, (attempt_id, cv_score, code_path, fold_scores) in enumerate(candidates, 1):
         content = _code_download(code_path) or ""
         source = content.split(sep, 1)[1].strip() if sep in content else content.strip()
         if not source:
@@ -188,6 +189,10 @@ def establish_for_competition(conn, comp: object, top_k: int, dry_run: bool) -> 
             seed=42,
             is_classification=comp.IS_CLASSIFICATION,
             confirm_seeds=PROMOTE_CONFIRM_SEEDS,
+            cache=cache,
+            competition_id=comp.COMPETITION_ID,
+            candidate_cv=cv_score,
+            candidate_fold_scores=fold_scores,
         )
         reason = (
             "confirmed" if confirm.confirmed

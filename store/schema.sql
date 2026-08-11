@@ -527,6 +527,37 @@ CREATE TABLE IF NOT EXISTS raw.blend_weights (
     generated_at    timestamp
 );
 
+-- cycle/promotion.py 캐시 — confirm 게이트가 매번 최대 8회 순차 full-CV eval을
+-- 돌면서 (1) 이미 확정된 거부 판정을 재계산하고 (2) 변하지 않은 baseline pipeline을
+-- 매번 다시 평가하던 낭비 제거 (2026-08 실측: s6e1 confirm 39회가 행동 지문
+-- (cv_score, fold_scores) 기준 4그룹으로 붕괴, promote p95 11.8m).
+--
+-- negative-only: 확정 승격(confirmed=True)은 캐시하지 않는다 — 승격은 attempt마다
+-- 새 코드라 재현될 일이 없고, 만에 하나 재현돼도 원본 eval을 다시 도는 편이 안전하다.
+-- eval 에러로 인한 거부도 캐시하지 않는다 — 일시적 OOM/CPU-kill(ADR-027/028)을
+-- 영구 거부로 굳히면 정상 후보가 계속 막힌다.
+CREATE TABLE IF NOT EXISTS raw.confirm_memo (
+    memo_key          text PRIMARY KEY,
+    competition_id    text NOT NULL,
+    cv_score          double precision,
+    fold_scores       double precision[],
+    holdout_score     double precision,
+    holdout_regressed boolean,
+    seed_gains        jsonb,
+    created_at        timestamptz DEFAULT now()
+);
+
+-- best pipeline(변경 없음) 대비 baseline eval 재사용. best_source_sha가 키에
+-- 들어있어 승격이 일어나 best pipeline이 바뀌면 자연히 새 키로 갈린다.
+CREATE TABLE IF NOT EXISTS raw.baseline_eval_cache (
+    cache_key       text PRIMARY KEY,
+    competition_id  text NOT NULL,
+    mode            text NOT NULL,  -- 'cv' | 'holdout'
+    seed            int NOT NULL,
+    score           double precision NOT NULL,
+    created_at      timestamptz DEFAULT now()
+);
+
 -- hot-path indexes
 CREATE INDEX IF NOT EXISTS idx_attempts_comp_ts     ON raw.attempts (competition_id, run_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_attempts_comp_action ON raw.attempts (competition_id, action_type);
