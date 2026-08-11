@@ -46,7 +46,7 @@ def test_returns_false_when_no_scored_attempt():
 
 
 def test_returns_false_when_best_attempt_has_no_code_path():
-    conn = _conn_seq(None, ("attempt-1", 0.9, None))
+    conn = _conn_seq(None, ("attempt-1", 0.9, None, [0.9]))
     result = establish_bootstrap_baseline(conn, "s4e1", **_COMMON_KW)
     assert result is False
 
@@ -54,7 +54,7 @@ def test_returns_false_when_best_attempt_has_no_code_path():
 def test_confirmed_promotes_and_returns_true():
     conn = _conn_seq(
         None,                                   # 확정 파이프라인 없음
-        ("attempt-1", 0.9, "path/to/code"),      # best attempt
+        ("attempt-1", 0.9, "path/to/code", [0.9]),      # best attempt
         ({"fingerprint": "x"},),                 # fingerprint row
     )
     with patch("cycle.run._code_download", return_value="code body"), \
@@ -79,7 +79,7 @@ def test_confirmed_promotes_and_returns_true():
 
 def test_confirm_and_measure_called_with_best_source_none():
     """BasePipeline 대비 검증이어야 하므로 best_source=None으로 confirm해야 한다."""
-    conn = _conn_seq(None, ("attempt-1", 0.9, "path/to/code"), ({},))
+    conn = _conn_seq(None, ("attempt-1", 0.9, "path/to/code", [0.9]), ({},))
     with patch("cycle.run._code_download", return_value="code body"), \
          patch("cycle.run.split_audit_holdout", return_value=(_COMMON_KW["train"], _COMMON_KW["train"])), \
          patch("cycle.run.confirm_and_measure", return_value=ConfirmResult(confirmed=False, holdout_score=None)) as mock_confirm, \
@@ -93,7 +93,7 @@ def test_confirm_and_measure_called_with_best_source_none():
 
 
 def test_not_confirmed_does_not_promote():
-    conn = _conn_seq(None, ("attempt-1", 0.9, "path/to/code"))
+    conn = _conn_seq(None, ("attempt-1", 0.9, "path/to/code", [0.9]))
     with patch("cycle.run._code_download", return_value="code body"), \
          patch("cycle.run.split_audit_holdout", return_value=(_COMMON_KW["train"], _COMMON_KW["train"])), \
          patch("cycle.run.confirm_and_measure", return_value=ConfirmResult(confirmed=False, holdout_score=None)), \
@@ -107,7 +107,7 @@ def test_not_confirmed_does_not_promote():
 
 
 def test_empty_code_after_header_strip_returns_false():
-    conn = _conn_seq(None, ("attempt-1", 0.9, "path/to/code"))
+    conn = _conn_seq(None, ("attempt-1", 0.9, "path/to/code", [0.9]))
     with patch("cycle.run._code_download", return_value=""):
         result = establish_bootstrap_baseline(conn, "s4e1", **_COMMON_KW)
     assert result is False
