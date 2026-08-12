@@ -1,6 +1,6 @@
 services:
   rondo-daemon:
-    image: registry.internal:5000/reflexion-rondo/daemon:v1.4.27
+    image: registry.internal:5000/reflexion-rondo/daemon:v1.4.28
     networks:
       - nexus
     env_file:
@@ -14,7 +14,7 @@ services:
     restart: always
 
   rondo-dashboard:
-    image: registry.internal:5000/reflexion-rondo/daemon:v1.4.27
+    image: registry.internal:5000/reflexion-rondo/daemon:v1.4.28
     networks:
       - nexus
     env_file:
