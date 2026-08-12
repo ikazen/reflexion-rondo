@@ -182,7 +182,8 @@ class PromotionCache:
                 created_at = now()
             """,
             [
-                memo_key, competition_id, candidate_cv, candidate_fold_scores,
+                memo_key, competition_id, candidate_cv,
+                json.dumps(candidate_fold_scores) if candidate_fold_scores is not None else None,
                 result.holdout_score, result.holdout_regressed,
                 json.dumps(result.seed_gains) if result.seed_gains else None,
             ],
