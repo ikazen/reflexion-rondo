@@ -540,12 +540,16 @@ CREATE TABLE IF NOT EXISTS raw.confirm_memo (
     memo_key          text PRIMARY KEY,
     competition_id    text NOT NULL,
     cv_score          double precision,
-    fold_scores       double precision[],
+    fold_scores       jsonb,
     holdout_score     double precision,
     holdout_regressed boolean,
     seed_gains        jsonb,
     created_at        timestamptz DEFAULT now()
 );
+-- issue #171: 최초 배포(v1.4.27) 시 double precision[]로 잘못 선언했다 — 코드베이스
+-- 전체가 fold_scores를 jsonb로 저장하는 관행(raw.attempts.fold_scores 등)과 불일치.
+-- 배포 직후라 아직 0행이라 데이터 손실 없이 정정.
+ALTER TABLE raw.confirm_memo ALTER COLUMN fold_scores TYPE jsonb USING to_jsonb(fold_scores);
 
 -- best pipeline(변경 없음) 대비 baseline eval 재사용. best_source_sha가 키에
 -- 들어있어 승격이 일어나 best pipeline이 바뀌면 자연히 새 키로 갈린다.
