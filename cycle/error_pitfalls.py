@@ -1,3 +1,7 @@
+"""에러 시그니처 정규화(normalize_error) + 과거 pitfall 조회(top_error_pitfalls).
+
+동일 에러의 값만 다른 변형(예: 다른 컬럼명)을 같은 signature로 묶어 재발 빈도를 센다.
+"""
 from __future__ import annotations
 
 import re

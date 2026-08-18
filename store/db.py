@@ -1,3 +1,8 @@
+"""Postgres 연결 풀 + PgConn(DuckDB 호환 execute().fetchone()/fetchall() 인터페이스).
+
+connect(apply_schema=True)가 기본 경로 — daemon만 이 기본값을 쓰고 Airflow task는
+apply_schema=False로 스키마 재적용 경합을 피한다.
+"""
 import os
 import threading
 from contextlib import contextmanager

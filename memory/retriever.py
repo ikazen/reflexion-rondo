@@ -1,3 +1,8 @@
+"""임베딩 기반 lesson 검색 + MMR 재랭킹.
+
+ollama 임베딩 모델이 응답하지 않으면 EmbeddingUnavailableError를 낸다 — 호출부가
+검색 없이 계속할지 판단한다.
+"""
 from __future__ import annotations
 
 import time

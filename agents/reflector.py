@@ -1,3 +1,7 @@
+"""LLM 리플렉션 — attempt 결과를 lesson(label/generality)으로 변환한다(reflect).
+
+잘못된/누락된 값은 안전한 기본값(label=neutral, generality=l1_local)으로 보정한다.
+"""
 from __future__ import annotations
 
 import json

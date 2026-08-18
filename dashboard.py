@@ -1,3 +1,7 @@
+"""Streamlit 운영 대시보드 — Postgres 파생 뷰 직접 조회(daemon API 미경유, GH #65).
+
+Fleet Overview + 대회 선택 종속 섹션(Submissions/Quarantine/Blend 등)로 구성.
+"""
 from __future__ import annotations
 
 import altair as alt
