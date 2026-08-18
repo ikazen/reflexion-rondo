@@ -24,7 +24,8 @@
   | `accuracy`, `f1`, `qwk`, `balanced_accuracy` | ↑ | classification | binary/multiclass |
   | `rmse`, `mae`, `rmsle` | ↓ | regression_error | regression |
 
-- **multiclass는 binary_proba metric(auc/logloss) 사용 불가** — 평가 하네스가 `predict_proba[:, 1]`로 2-클래스를 가정하므로 깨진다. multiclass는 classification 계열 metric만 쓴다.
+- **multiclass는 binary_proba metric(auc/logloss) 사용 불가** — 평가 하네스가 `predict_proba[:, 1]`로 2-클래스를 가정하므로 깨진다. multiclass는
+classification 계열 metric만 쓴다.
 - regression은 CV score가 mean-baseline 대비 10배 이상 좋으면 target 누수로 간주해 reject한다.
 - classification 계열 metric은 OOF를 수집하지 않아 Ridge blend(`bin/blend.py`) 대상에서 제외된다.
 - `rmsle`는 예측값을 0 이상으로 clip한다.
@@ -48,7 +49,8 @@
 | Coder | `gpt-oss:120b` | 동일 |
 | Embedding | `qwen3-embedding:8b` | `OLLAMA_BASE_URL` (키 없음) |
 
-모델명 단일 소스 = `config/settings.py` 기본값 (평문, 비밀 아님). `MODEL_*` env override는 실험용으로 읽히지만 SOPS·Airflow Variable엔 넣지 않는다. 모델 변경 = settings.py 편집 후 두 이미지(daemon, task) 재빌드·재배포.
+모델명 단일 소스 = `config/settings.py` 기본값 (평문, 비밀 아님). `MODEL_*` env override는 실험용으로 읽히지만 SOPS·Airflow Variable엔 넣지 않는다. 모델
+변경 = settings.py 편집 후 두 이미지(daemon, task) 재빌드·재배포.
 
 ## 주요 진입점
 
@@ -116,9 +118,11 @@ docs/            아래 문서
 
 ## 수퍼사이클 구조 (1회 실행 단위)
 
-1. **Retrieve** (`bin/run_retrieve_task.py`): pgvector 코사인 검색으로 교훈 top-k + `action_bandit` Thompson sample로 attempt 3개에 서로 다른 `action_type` 배정 → `raw.super_cycle_context` upsert.
+1. **Retrieve** (`bin/run_retrieve_task.py`): pgvector 코사인 검색으로 교훈 top-k + `action_bandit` Thompson sample로 attempt 3개에
+서로 다른 `action_type` 배정 → `raw.super_cycle_context` upsert.
 2. **Attempt × 3** 병렬 (`bin/run_attempt_task.py`): Strategize → Generate → Evaluate(k-fold CV) → Persist.
-3. **Promote** (`bin/run_promote_task.py`): `gain_vs_best` 최대값 winner 선정 → cross-seed 재현 + audit holdout 게이트 통과 시에만 `raw.pipelines` 승격(`docs/spec.md` §4) → `was_promoted` 플래그 → Reflect 호출 (winner: jump/regression/error 시만, loser: 전부).
+3. **Promote** (`bin/run_promote_task.py`): `gain_vs_best` 최대값 winner 선정 → cross-seed 재현 + audit holdout 게이트 통과 시에만
+`raw.pipelines` 승격(`docs/spec.md` §4) → `was_promoted` 플래그 → Reflect 호출 (winner: jump/regression/error 시만, loser: 전부).
 
 ## Stage 규칙
 
@@ -152,7 +156,8 @@ Polars API 사용 (pandas 스타일 혼용 금지). 컨트랙트 위반 코드�
 - `raw.action_bandit` — `(scope, scope_key, action_type)` Beta-Bernoulli 밴딧.
 - `raw.super_cycle_context` — retrieve → attempt 상태 전달용 임시 테이블.
 - `raw.competitions` — 대회 메타 + fingerprint JSON.
-- `raw.kaggle_submissions` — Kaggle 제출 추적 (submission_id, status, lb_score, checked_at). `bin/api.py`의 `/api/submissions*` 엔드포인트가 관리 (`docs/spec.md` §1.11/§7).
+- `raw.kaggle_submissions` — Kaggle 제출 추적 (submission_id, status, lb_score, checked_at). `bin/api.py`의
+`/api/submissions*` 엔드포인트가 관리 (`docs/spec.md` §1.11/§7).
 - `raw.pipelines` — 승격 코드 메모리. `invalid_reason`이 non-null이면 격리(누수 확정, 삭제 아님) — baseline 조회는 전부 `IS NULL`로 제외.
 - `raw.blend_weights` — 승격 시점 재계산되는 blend 가중치. 계산·저장까지만, `bin/submit.py`는 미소비.
 

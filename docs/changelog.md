@@ -1,5 +1,34 @@
 # 변경 이력
 
+## v1.4.29 — s6e8 재가동: auto-submit confirmed-only + 트립와이어 데드밴드 + CPU 상한 (2026-08-19)
+- #178(근본원인): `bin/api.py:_best_attempt()`가 raw.attempts 전체 max cv_score를 확정
+  여부와 무관하게 골라, `--attempt-id`(원래 사람이 미확정 attempt를 수동 지정하는
+  escape hatch)로 그대로 제출되고 있었다. 완료 Kaggle 제출 74건 중 61%가 cross-seed
+  +holdout 확정을 한 번도 거치지 않은 코드였다. `_best_attempt()`를 raw.pipelines
+  JOIN으로 제한(ADR-031).
+- #175: cv-LB 발산 트립와이어(ADR-026)가 배포 이후 정지시킨 5개 대회 전부 노이즈
+  오탐(`|delta_lb|`가 `|prev_lb|`의 0.05% 미만)이었다. `|prev_lb|`의 0.1% 데드밴드 +
+  최근 3개 delta 중 2개 이상일 때만 정지하도록 완화.
+- #176: s6e8 CPU 예산(900s) kill률 35%(직전 활동일 80%), 성공 attempt p99=841s로
+  벽에 붙어 있었다. `CycleConfig.cpu_budget_secs`(comp.CPU_BUDGET_SECS 오버라이드)
+  배선 후 s6e8을 3600s로 상향 — 검열된 측정을 풀어 실제 분포 확보(#182에서 관측 후
+  영구값 결정).
+- #174/#177: 정지 해제 + 확정 pipeline 교정 제출(cv 0.9638775, lb 0.96501 — CV↓ LB도
+  같이 소폭↓, 역상관 아님 확인) 후 30 cycle 재적재.
+
+## v1.4.28 — raw.confirm_memo.fold_scores 타입 정정 (2026-08-16)
+- #171: `raw.confirm_memo.fold_scores`가 float[] 배열 컬럼으로 생성됐는데
+  `PromotionCache.put_confirm_memo`는 JSON 문자열을 넘겨 타입 불일치로 저장이
+  실패하고 있었다. jsonb로 정정.
+
+## v1.4.27 — confirm 게이트 캐시(negative memo + baseline eval) (2026-08-11)
+- #166/#167/#168: 15분+ 걸리는 promote 케이스가 confirm 게이트 중복 재계산 때문임을
+  실측(s6e1 confirm 39회가 (cv_score, fold_scores) 행동 지문 기준 3그룹으로 붕괴 —
+  35회가 이미 확정된 거부 판정을 재계산). 소스 해시 기반 dedupe는 안 통한다(같은
+  cv_score를 내는 34개 후보가 서로 다른 AST) — 행동 지문(cv+fold_scores)만 유효.
+  `raw.confirm_memo`(negative-only) + `raw.baseline_eval_cache`(변하지 않는 best
+  pipeline 재평가 방지) 신설, 승격 경로 4곳에 배선. promote p95 20배 개선 확인.
+
 ## v1.4.26 — bandit/lesson 보상 신호를 confirm 결과와 연동 (2026-08-11)
 - #164: promote task가 가끔 22분(cross-seed 3 + holdout 2 = 순차 풀 CV 5회) 걸리는
   이유를 추적하다가 발견 — s6e1의 `preprocessing` 후보가 cv_score 소수점 10자리까지
@@ -52,35 +81,54 @@
   output.json (rc=-N)` 패턴은 신호 번호를 보존해 원인별 집계가 가능하게 함.
 
 ## v1.4.19 — 대시보드 Fleet Overview (2026-08-03)
-- #143: 대시보드 최상단에 전역 Fleet Overview 신설 — 대회별 큐 상태·confirmed/quarantined pipeline 수·14일 attempt/jump/error/OOM 카운트·`auto_submit_paused_reason`을 벌크 쿼리 5개(N+1 아님, 실측 0.085s)로 모아 attention 배지(🔴/🟡/🟢)로 정렬해 어디부터 볼지 여기서 고르게 함. 대회 선택 종속 섹션으로 Submissions·Quarantine·Blend 신설 — `cv_lb_calibration` 제출 이력(발산 경고), 격리 pipeline 목록, `auto_submit_paused_reason` 경고, blend_cv_score vs 단일 best pipeline 비교. daemon API 미경유, 전부 Postgres 직접 쿼리(GH #65 설계 그대로).
+- #143: 대시보드 최상단에 전역 Fleet Overview 신설 — 대회별 큐 상태·confirmed/quarantined pipeline 수·14일 attempt/jump/error/OOM
+카운트·`auto_submit_paused_reason`을 벌크 쿼리 5개(N+1 아님, 실측 0.085s)로 모아 attention 배지(🔴/🟡/🟢)로 정렬해 어디부터 볼지 여기서 고르게 함. 대회 선택 종속
+섹션으로 Submissions·Quarantine·Blend 신설 — `cv_lb_calibration` 제출 이력(발산 경고), 격리 pipeline 목록, `auto_submit_paused_reason` 경고,
+blend_cv_score vs 단일 best pipeline 비교. daemon API 미경유, 전부 Postgres 직접 쿼리(GH #65 설계 그대로).
 
 ## v1.4.18 — 대시보드 콘솔 경고·느림 수정 (2026-08-03)
-- #141: 캐싱 부재로 `_query_df`가 rerun마다 재조회하던 문제에 `@st.cache_data(ttl=60)`(`bin/api.py` 60초 TTL 관례와 동일) 적용. Health Signals·상세 섹션이 같은 쿼리(lesson_funnel/bandit_calibration/error_recurrence)를 중복 호출하던 것 제거. CV Progression 차트 `.interactive()` 제거 + 명시 타입으로 Scale binding 콘솔 경고 해소, Bandit 차트 null 열 드롭으로 Infinite extent 경고 해소.
+- #141: 캐싱 부재로 `_query_df`가 rerun마다 재조회하던 문제에 `@st.cache_data(ttl=60)`(`bin/api.py` 60초 TTL 관례와 동일) 적용. Health
+Signals·상세 섹션이 같은 쿼리(lesson_funnel/bandit_calibration/error_recurrence)를 중복 호출하던 것 제거. CV Progression 차트
+`.interactive()` 제거 + 명시 타입으로 Scale binding 콘솔 경고 해소, Bandit 차트 null 열 드롭으로 Infinite extent 경고 해소.
 - 부수 수정: `lesson_duplicates` 뷰의 O(n²) 자기조인을 대회당 최근 250건으로 캡핑 — s4e1 12.18s → 0.29s.
 
 ## v1.4.17 — 대시보드 건강 신호등 + 관측 패널 6종 (2026-08-03)
-- #65: `dashboard.py`(Streamlit, Postgres 직결, daemon API 미경유)에 Health 신호등 4칸(`bin/api.py:/api/reflexion-health`와 동일 임계값을 API 호출 없이 재현) + CV progression jump 마커/정체 경고 오버레이 + Lesson Funnel/Dead/Duplicates + Bandit Calibration + Error Recurrence + Transfer Matrix 히트맵(pandas Styler) 추가. `docs/decisions.md` 등 별도 ADR 없이 기존 GH #65 설계(뷰 직접 소비) 그대로 구현.
-- 부수 수정: `_rows_df`가 polars 기본 `infer_schema_length=100`으로 앞쪽 100행이 전부 null인 컬럼(예: holdout_score)에서 타입을 오추론해 뒷행 실측값에서 크래시하던 문제 수정(`infer_schema_length=None`) — s5e10 등 attempt가 많은 대회에서 대시보드 자체가 안 뜨던 원인.
+- #65: `dashboard.py`(Streamlit, Postgres 직결, daemon API 미경유)에 Health 신호등 4칸(`bin/api.py:/api/reflexion-health`와 동일 임계값을
+API 호출 없이 재현) + CV progression jump 마커/정체 경고 오버레이 + Lesson Funnel/Dead/Duplicates + Bandit Calibration + Error
+Recurrence + Transfer Matrix 히트맵(pandas Styler) 추가. `docs/decisions.md` 등 별도 ADR 없이 기존 GH #65 설계(뷰 직접 소비) 그대로 구현.
+- 부수 수정: `_rows_df`가 polars 기본 `infer_schema_length=100`으로 앞쪽 100행이 전부 null인 컬럼(예: holdout_score)에서 타입을 오추론해 뒷행 실측값에서
+크래시하던 문제 수정(`infer_schema_length=None`) — s5e10 등 attempt가 많은 대회에서 대시보드 자체가 안 뜨던 원인.
 
 ## v1.4.16 — submit.py nested class 소실 버그 수정 (2026-08-03)
-- #137: `bin/submit.py:_load_pipeline`의 기본(non-attempt_only) 경로가 Patch 훅 메서드만 `type(...)`으로 새 클래스에 옮겨 붙여, 훅 밖 nested class(자유형 ensemble wrapper의 `_EnsembleRegressor` 등)를 소실시켜 `AttributeError`로 제출이 크래시하던 문제 — s5e10 신규 clean baseline 재제출 실제 프로덕션 크래시로 발견. `attempt_only` 경로는 이미 `PatchedPipeline`으로 고쳐져 있었는데 기본 경로만 별도 구현이라 놓쳐 있었음. 두 경로 다 `PatchedPipeline(BasePipeline(), patch_cls())`로 통일.
+- #137: `bin/submit.py:_load_pipeline`의 기본(non-attempt_only) 경로가 Patch 훅 메서드만 `type(...)`으로 새 클래스에 옮겨 붙여, 훅 밖 nested
+class(자유형 ensemble wrapper의 `_EnsembleRegressor` 등)를 소실시켜 `AttributeError`로 제출이 크래시하던 문제 — s5e10 신규 clean baseline 재제출
+실제 프로덕션 크래시로 발견. `attempt_only` 경로는 이미 `PatchedPipeline`으로 고쳐져 있었는데 기본 경로만 별도 구현이라 놓쳐 있었음. 두 경로 다
+`PatchedPipeline(BasePipeline(), patch_cls())`로 통일.
 
 ## v1.4.15 — Ollama Cloud 재시도 + quarantine_leaks 오판 수정 (2026-08-02)
-- #131: attempt task 60개 중 40개(67%)가 Ollama Cloud "model temporarily overloaded" 503에 크래시하던 문제 — `agents/llm_retry.py` 신규(지수 백오프 1/4/16초, `memory/retriever.embed`와 동일 패턴), `coder.py`/`strategist.py`/`reflector.py` 호출부 3곳 적용. 배포 후 실측 60→0% 근접까지 개선 확인.
-- #120: `bin/quarantine_leaks.py`가 코드 exec/데이터 로드 실패(판정 불가)를 누수 확정과 동일하게 처리해 격리 대상으로 잘못 집계하던 문제 수정 — `--dry-run` 프로덕션 실측 중 s4e1/s5e3 정상 파이프라인 27개가 로컬 데이터 캐시 부재만으로 부당하게 격리될 뻔한 사고를 계기로 발견.
-- #122~125: 문서·주석 싱크 정리 Milestone — ADR-023~027 신설, spec.md/README `compound`(실재한 적 없던 action_type) 삭제 및 `ensemble_spec` 반영, architecture.md/runbook.md 운영 정합성, 17개 파일 480줄 규칙 위반 주석 정리.
+- #131: attempt task 60개 중 40개(67%)가 Ollama Cloud "model temporarily overloaded" 503에 크래시하던 문제 — `agents/llm_retry.py`
+신규(지수 백오프 1/4/16초, `memory/retriever.embed`와 동일 패턴), `coder.py`/`strategist.py`/`reflector.py` 호출부 3곳 적용. 배포 후 실측 60→0%
+근접까지 개선 확인.
+- #120: `bin/quarantine_leaks.py`가 코드 exec/데이터 로드 실패(판정 불가)를 누수 확정과 동일하게 처리해 격리 대상으로 잘못 집계하던 문제 수정 — `--dry-run` 프로덕션 실측
+중 s4e1/s5e3 정상 파이프라인 27개가 로컬 데이터 캐시 부재만으로 부당하게 격리될 뻔한 사고를 계기로 발견.
+- #122~125: 문서·주석 싱크 정리 Milestone — ADR-023~027 신설, spec.md/README `compound`(실재한 적 없던 action_type) 삭제 및 `ensemble_spec`
+반영, architecture.md/runbook.md 운영 정합성, 17개 파일 480줄 규칙 위반 주석 정리.
 
 ## v1.4.14 — daemon 크래시루프 수정: naive/aware datetime (2026-08-02)
-- #118: `bin/run_daemon.py:_submission_refresh_due`가 DB에서 읽은 naive `timestamp`(`raw.kaggle_submissions.submitted_at`/`checked_at`)를 `datetime.now(timezone.utc)`(aware)와 직접 빼서 `TypeError`로 daemon이 크래시루프에 빠짐 — v1.4.13 배포 직후 프로덕션에서 실제 발생. 로컬 mock 테스트는 양쪽을 전부 aware로 구성해 이 조합을 못 잡았다.
+- #118: `bin/run_daemon.py:_submission_refresh_due`가 DB에서 읽은 naive
+`timestamp`(`raw.kaggle_submissions.submitted_at`/`checked_at`)를 `datetime.now(timezone.utc)`(aware)와 직접 빼서 `TypeError`로
+daemon이 크래시루프에 빠짐 — v1.4.13 배포 직후 프로덕션에서 실제 발생. 로컬 mock 테스트는 양쪽을 전부 aware로 구성해 이 조합을 못 잡았다.
 - 세 값(`now`/`submitted_at`/`checked_at`) 모두 naive로 정규화 후 뺄셈하도록 수정, DB round-trip을 실제로 거치는 회귀 테스트 2종 추가.
 
 ## v1.4.13 — 학습 정체 근본 원인 수정 (측정 정합성 + 승격 래칫 + LB 되먹임 + 컴퓨트 회수) (2026-08-02)
 "reflexion 상한선이 아닌데 성능 향상이 없다"는 진단에서 나온 4갈래 구조적 결함을 한 번에 배포. Milestone 5개(M1~M5), 이슈 12개.
 
 **M1 측정 정합성**
-- #97: `preprocess` 훅이 valid split의 타깃 컬럼을 직접 읽는 누수를 fold0 동등성 검사(마스킹 전/후 결과 비교)로 실측 차단 + AST 정적 가드. `_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO` 100→10 하향.
+- #97: `preprocess` 훅이 valid split의 타깃 컬럼을 직접 읽는 누수를 fold0 동등성 검사(마스킹 전/후 결과 비교)로 실측 차단 + AST 정적 가드.
+`_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO` 100→10 하향.
 - #98: audit holdout을 `bin/submit.py`와 동일한 dummy target 치환으로 재현해 실제 추론 조건과 일치시키고, `holdout_regressed`를 승격 조건에 AND 결합(기록용→차단 게이트).
-- #99: `raw.pipelines.invalid_reason` 컬럼 + `bin/quarantine_leaks.py` 신설 — 확정 후 누수로 밝혀진 파이프라인을 격리(삭제 아님). 모든 baseline 조회 경로에 `invalid_reason IS NULL` 필터 적용.
+- #99: `raw.pipelines.invalid_reason` 컬럼 + `bin/quarantine_leaks.py` 신설 — 확정 후 누수로 밝혀진 파이프라인을 격리(삭제 아님). 모든 baseline 조회
+경로에 `invalid_reason IS NULL` 필터 적용.
 
 **M2 승격 래칫 복구**
 - #100: bootstrap 종료 시 최고 attempt를 `confirm_and_measure`로 검증해 확정 baseline 자동 확립(`cycle/run.py:establish_bootstrap_baseline`).
@@ -89,11 +137,13 @@
 
 **M3 LB 되먹임 연결**
 - #103: daemon 유휴 틱마다 `status IN ('submitted','pending')` 제출을 지수 백오프로 재폴링 — 기존엔 업로드 직후 1회뿐이라 pending이면 수동 refresh 전까지 영구 방치됐다.
-- #104: `cv_lb_calibration` 뷰 + 발산 트립와이어 — CV는 개선인데 LB가 악화된 제출이 나오면 원천 pipeline 격리 + 해당 대회 auto-submit 중단(`auto_submit_paused_reason`, 자동 해제 없음).
+- #104: `cv_lb_calibration` 뷰 + 발산 트립와이어 — CV는 개선인데 LB가 악화된 제출이 나오면 원천 pipeline 격리 + 해당 대회 auto-submit
+중단(`auto_submit_paused_reason`, 자동 해제 없음).
 
 **M4 컴퓨트 회수**
 - #84: `comp.MAX_TRAIN_ROWS` opt-in + 층화 샘플링(`store/train_data.py`) — s4e7(11.5M행)이 100-cycle 큐 전량 OOM되던 문제, 1.5M으로 상한 적용.
-- #74: `ensemble_spec` 선언형 앙상블 프리미티브 — 자유형 wrapper 클래스 크래시(70%→55%에서 정체)의 구조적 원인(exec된 클래스 몸체 내부는 harness가 볼 수 없음)을 해소. Patch는 멤버·결합방식만 선언, harness가 생성·적합·결합 전담.
+- #74: `ensemble_spec` 선언형 앙상블 프리미티브 — 자유형 wrapper 클래스 크래시(70%→55%에서 정체)의 구조적 원인(exec된 클래스 몸체 내부는 harness가 볼 수 없음)을 해소.
+Patch는 멤버·결합방식만 선언, harness가 생성·적합·결합 전담.
 
 **M5 탐색 능력**
 - #75: `raw.blend_weights` 테이블 신설 + `bin/blend.py:compute_and_store_blend`를 양쪽 승격 경로에 배선 — 계산·저장까지만(`bin/submit.py`는 의도적으로 미연결, 범위 밖).
@@ -106,7 +156,8 @@
 - #92: charset 없는 `text/plain` 응답을 latin-1로 잘못 디코드하던 문제 — UTF-8 명시 디코드로 수정.
 
 ## v1.4.10 — materialized_code 스냅샷 + 백필 (2026-07-24)
-- #89: 승격 시점 병합본 스냅샷을 `raw.pipelines.materialized_code`에 저장. attempt 제출 base를 replay 대신 이 스냅샷으로 로드(replay 폴백은 sha 불일치 시 중단). 기존 승격 행을 위한 백필 스크립트 신설.
+- #89: 승격 시점 병합본 스냅샷을 `raw.pipelines.materialized_code`에 저장. attempt 제출 base를 replay 대신 이 스냅샷으로 로드(replay 폴백은 sha 불일치 시
+중단). 기존 승격 행을 위한 백필 스크립트 신설.
 
 ## v1.4.9 — auto-submit 재제출 유의성 검정 (2026-07-24)
 - #87/#88: fold noise 수준의 변화로도 재제출되던 auto-submit 게이트에 유의성 검정 추가.
@@ -123,7 +174,8 @@
 ## v1.4.3~5 — ensemble action_type 크래시 완화 3라운드 (2026-07-22~23)
 - #74/#77: Coder 컨트랙트의 잘못된 예시·조언이 ensemble action_type 70% 크래시를 유발하던 문제 1차 수정.
 - #74 후속(#78): 정석 예시의 `sorted(unique())`가 null 섞이면 크래시 — `drop_nulls()` 추가.
-- #74 후속(#79): `build_model()` 생성자 stale kwarg 런타임 안전망 추가 — 프롬프트 경고만으론 재발을 못 막았다. (이 3라운드로도 크래시율은 70%→55%까지만 떨어졌고, 근본 해결은 v1.4.13의 #74 선언형 프리미티브로 이관.)
+- #74 후속(#79): `build_model()` 생성자 stale kwarg 런타임 안전망 추가 — 프롬프트 경고만으론 재발을 못 막았다. (이 3라운드로도 크래시율은 70%→55%까지만 떨어졌고, 근본
+해결은 v1.4.13의 #74 선언형 프리미티브로 이관.)
 
 ## v1.4.2 — submit 생성자 early-stopping 파라미터 크래시 수정 (2026-07-22)
 - #72: 생성자 early-stopping 파라미터가 submit full-train fit을 크래시시키던 문제 수정.
@@ -132,7 +184,9 @@
 - #69: `lesson_dead`가 `reflection_impact`에 의존해 CASCADE 없이는 재적용이 실패하던 문제 수정.
 
 ## v1.4.0 — 관측 API 24개 + 파생 뷰 6개 + 대회 온보딩 14개 (2026-07-22)
-- #66/#67: 관측 계측 P1/P2(`retrieved_ids`/`error_signature` 영속화) + 파생 뷰 6종(funnel/dead/duplicates/calibration/error_recurrence/transfer) + 엔드포인트 24개(score/timeline, bandit/posteriors, lessons, errors, transfer 등).
+- #66/#67: 관측 계측 P1/P2(`retrieved_ids`/`error_signature` 영속화) + 파생 뷰
+6종(funnel/dead/duplicates/calibration/error_recurrence/transfer) + 엔드포인트 24개(score/timeline, bandit/posteriors, lessons,
+errors, transfer 등).
 - #39: 대회 온보딩 14개 — binary AUC 6개, accuracy/balanced_accuracy 3개, regression 5개.
 
 ## v1.3.1 — auto-submit 캐시 트리거 수정 (2026-07-22)
@@ -140,24 +194,34 @@
 - #61: 코드베이스 전체 이슈 번호 태그 정리 + 문서 최신화.
 
 ## v1.3.0 — gain_vs_best_relative: metric 스케일 정규화 (2026-07-22)
-- `reflection_impact` 전역 z-score가 metric 스케일 혼합(rmse 원시 단위 vs auc 0~1)으로 오염돼 있던 문제(mean=-4.22, std=139.19 실측) — DB wipe로는 해결 안 되는 코드 자체의 스케일 정규화 부재가 근본 원인으로 확인됨.
-- `gain_vs_best_relative` 컬럼 신설(regression_error는 `gain_vs_best / baseline_cv` 상대값, 나머지 metric_class는 `gain_vs_best` 패스스루) — `evaluator/harness.py` → `runtime/isolate.py`/`runtime/runner.py`(subprocess JSON 경계) → `cycle/run.py` → `store/schema.sql`까지 전체 파이프라인에 배관.
+- `reflection_impact` 전역 z-score가 metric 스케일 혼합(rmse 원시 단위 vs auc 0~1)으로 오염돼 있던 문제(mean=-4.22, std=139.19 실측) — DB
+wipe로는 해결 안 되는 코드 자체의 스케일 정규화 부재가 근본 원인으로 확인됨.
+- `gain_vs_best_relative` 컬럼 신설(regression_error는 `gain_vs_best / baseline_cv` 상대값, 나머지 metric_class는 `gain_vs_best`
+패스스루) — `evaluator/harness.py` → `runtime/isolate.py`/`runtime/runner.py`(subprocess JSON 경계) → `cycle/run.py` →
+`store/schema.sql`까지 전체 파이프라인에 배관.
 - `reflection_impact` 뷰가 이 컬럼만 집계하도록 재정의 — `gain_vs_best_relative IS NULL`인 legacy row는 집계에서 제외(raw `gain_vs_best`로 폴백하지 않음).
 - 프로덕션 실측으로 정규화 검증: raw `gain_vs_best=-110.92` → `gain_vs_best_relative=-0.0014`.
 
 ## v1.2.32 — Kaggle 자동 제출 gap 진단 및 수정 (2026-07-22)
-- s5e7/s6e6 자동 제출 누락 재진단: (a) `bin/submit.py` dummy target 생성이 문자열 타깃 대회에서 크래시하던 버그, (b) `raw.kaggle_submissions.status='submitted'`가 폴링 데드라인을 지나도 안 풀려 재제출이 영구 스킵되던 버그.
+- s5e7/s6e6 자동 제출 누락 재진단: (a) `bin/submit.py` dummy target 생성이 문자열 타깃 대회에서 크래시하던 버그, (b)
+`raw.kaggle_submissions.status='submitted'`가 폴링 데드라인을 지나도 안 풀려 재제출이 영구 스킵되던 버그.
 - 두 경로 모두 수정 후 실제 Kaggle 제출로 종단 검증 — s5e7 LB 0.973279, s6e6 LB 0.96408로 `complete` 상태 도달 확인.
 
 ## v1.2.31 — subprocess 고아 프로세스 kill + degenerate 회귀 gain 클립 + s6e7 코드생성 harness 버그 (2026-07-22)
-- #37: `bin/api.py`의 `subprocess.run` 타임아웃 처리가 `uv run`이 spawn한 손자 python 프로세스를 못 죽여 고아로 남던 문제(타임아웃 기록 후에도 CPU 85%+ 점유 실측) — `_run_in_pgroup` 헬퍼로 교체, `start_new_session=True` + 타임아웃 시 `os.killpg`로 프로세스 그룹 전체 종료.
-- #43: rmse degenerate 예측(모델이 완전히 빗나감)이 만드는 극단적 `gain_vs_best`(s6e1 실측 -105448)가 `reflection_impact` 전역 z-score(BON-195)를 오염시키던 문제 — `evaluator/harness.py`에 대칭 가드 추가(issue #4의 "100배 좋으면 raise"에 대칭으로 "100배 나쁘면 gain_vs_best 하한 클립", label 판정은 영향 없음).
-- #42: s6e7(multiclass) 에러율 65% 재진단 결과 다수가 Coder 코드 문제가 아니라 harness 자체 버그(`_encode_residual_categoricals`가 null 섞인 문자열 컬럼 정렬 시 크래시, ADR-014 amend)로 확인 — null 제외 정렬로 수정. 추가로 multiclass 라벨 왕복(round-trip) 컨트랙트 규칙과 action_type별 hook 동적 강조를 `agents/coder.py`에 반영.
+- #37: `bin/api.py`의 `subprocess.run` 타임아웃 처리가 `uv run`이 spawn한 손자 python 프로세스를 못 죽여 고아로 남던 문제(타임아웃 기록 후에도 CPU 85%+ 점유
+실측) — `_run_in_pgroup` 헬퍼로 교체, `start_new_session=True` + 타임아웃 시 `os.killpg`로 프로세스 그룹 전체 종료.
+- #43: rmse degenerate 예측(모델이 완전히 빗나감)이 만드는 극단적 `gain_vs_best`(s6e1 실측 -105448)가 `reflection_impact` 전역
+z-score(BON-195)를 오염시키던 문제 — `evaluator/harness.py`에 대칭 가드 추가(issue #4의 "100배 좋으면 raise"에 대칭으로 "100배 나쁘면 gain_vs_best 하한
+클립", label 판정은 영향 없음).
+- #42: s6e7(multiclass) 에러율 65% 재진단 결과 다수가 Coder 코드 문제가 아니라 harness 자체 버그(`_encode_residual_categoricals`가 null 섞인 문자열
+컬럼 정렬 시 크래시, ADR-014 amend)로 확인 — null 제외 정렬로 수정. 추가로 multiclass 라벨 왕복(round-trip) 컨트랙트 규칙과 action_type별 hook 동적 강조를
+`agents/coder.py`에 반영.
 
 ## v1.2.28~30 — 대회 온보딩 배치 3건 + 운영 버그 수정 (2026-07-17~19)
 - #24 (2026-07-17): 신규 대회 3개 추가 — s6e7(multiclass), s6e1(regression), s5e9(regression).
 - #25/#26 (2026-07-17): `release.sh`의 registry 태그 존재 확인이 OCI 매니페스트 타입 미인식 + repo path에 태그가 남는 버그로 늘 실패하던 문제 수정.
-- #27/#28 (2026-07-17): attempt eval `RLIMIT_AS` 기본값을 1.5GiB→6GiB로 복원(#20이 낮췄던 값 — mac-server Colima VM을 8→16GiB로 증설해 근본 해결, 신규 대회 bootstrap 전체가 SIGKILL(rc=-9)되던 원인).
+- #27/#28 (2026-07-17): attempt eval `RLIMIT_AS` 기본값을 1.5GiB→6GiB로 복원(#20이 낮췄던 값 — mac-server Colima VM을 8→16GiB로 증설해 근본
+해결, 신규 대회 bootstrap 전체가 SIGKILL(rc=-9)되던 원인).
 - BON-275 (2026-07-19): 제출(`bin.submit`) 타임아웃 600s→1200s 상향 — s5e5(75만 행) 5-seed bagging이 기존 값을 넘겨 매번 타임아웃.
 - #29 (2026-07-18): README에 "지원 대회 조건" 섹션 추가.
 - #31 (2026-07-18): promote 시점 submission CSV 캐싱 — 매일 auto-submit이 daemon(ops-vm, 2 OCPU)에서 매번 fit하며 CPU를 포화시키던 경로 대체.
@@ -166,33 +230,48 @@
 - #40 (2026-07-19): 대회 4건 온보딩 — s4e2(multiclass)/s5e7(binary)/s4e9(regression)/s6e2(binary), accuracy 메트릭 최초 실사용.
 
 ## 이미지 빌드를 Airflow DAG로 이관, release.sh는 daemon 전용으로 축소 (2026-07-14)
-- ADR-022: daemon+task 이미지 빌드+push를 airflow-stack의 `reflexion_rondo_deploy` DAG(ops 큐 docker.sock 재사용)로 이관. 여러 repo가 재사용할 공용 헬퍼(`dags/lib/image_deploy.py`, airflow-stack)라 신규 credential이 필요 없다(public repo clone 무인증, registry 무인증).
-- task 이미지 태그의 source of truth가 git(DAG 파일)에서 Airflow Variable(`rondo_task_image_version`)로 이동 — DAG가 빌드 직후 즉시 bump, git push/GitDagBundle 지연 없음.
+- ADR-022: daemon+task 이미지 빌드+push를 airflow-stack의 `reflexion_rondo_deploy` DAG(ops 큐 docker.sock 재사용)로 이관. 여러 repo가
+재사용할 공용 헬퍼(`dags/lib/image_deploy.py`, airflow-stack)라 신규 credential이 필요 없다(public repo clone 무인증, registry 무인증).
+- task 이미지 태그의 source of truth가 git(DAG 파일)에서 Airflow Variable(`rondo_task_image_version`)로 이동 — DAG가 빌드 직후 즉시 bump, git
+push/GitDagBundle 지연 없음.
 - `deploy/release.sh`(issue #17)가 build 단계를 잃고 registry 태그 존재 확인 + daemon 사전검증(issue #15 순서 유지) + compose.yml bump+재시작만 남김.
 - `deploy/build.sh` 주석 정정(release.sh가 더 이상 정본 빌드 경로가 아님).
 
 ## release.sh 사전검증 순서 수정 (2026-07-14)
-- issue #15: 스모크가 태그 bump(compose.yml+DAG, 양쪽 repo)/daemon 재시작보다 늦게 실행되던 순서 버그 수정. 이제 daemon+task 이미지를 일회성 컨테이너로 먼저 검증하고, 통과한 뒤에만 태그 bump+재시작이 진행된다.
+- issue #15: 스모크가 태그 bump(compose.yml+DAG, 양쪽 repo)/daemon 재시작보다 늦게 실행되던 순서 버그 수정. 이제 daemon+task 이미지를 일회성 컨테이너로 먼저
+검증하고, 통과한 뒤에만 태그 bump+재시작이 진행된다.
 - task 이미지는 이전엔 검증 대상이 아니었다(스모크는 daemon 컨테이너 exec뿐) — import 스모크로 신규 편입.
 - `docs/runbook.md` §2 "이미지 배포" 절을 실제 흐름과 일치하도록 갱신, GitDagBundle 60초 반영 지연 사실 추가.
 - `deploy/build.sh`의 존재하지 않는 `promote.sh` 참조 주석 정정.
 
 ## 문서 로직 서술 재싱크 — spec/architecture/runbook (2026-07-14)
 - spec.md §3 지표 레지스트리: `qwk`(TBD→구현됨, metric_class ordinal→classification), `balanced_accuracy`(BON-273) 신규 행 추가.
-- spec.md §4 label 규칙: `z` 기본값 1.0→실제 `LABEL_Z=2.0`(BON-194) 정정. jump 판정이 harness 절대-마진의 잠정값이며 `cycle/run.py`가 `is_significant_gain`(paired per-fold t-test, BON-247/267)으로 재확정한다는 사실 반영. 완벽점수·회귀 trivial-baseline 누수 가드 2종과 `is_noop_tie`(BON-239) 추가.
-- spec.md §5 / architecture.md §5 / runbook.md §6: "네트워크 sandbox 미구현" 서술이 stale — 프로덕션에서 `os.unshare(CLONE_NEWNET)` egress 차단 + rlimit이 이미 구현됨(ADR-017)으로 정정, 파일시스템 sandbox만 미구현 유지. 코드생성 재생성 횟수도 1회→실제 2회로 정정.
+- spec.md §4 label 규칙: `z` 기본값 1.0→실제 `LABEL_Z=2.0`(BON-194) 정정. jump 판정이 harness 절대-마진의 잠정값이며 `cycle/run.py`가
+`is_significant_gain`(paired per-fold t-test, BON-247/267)으로 재확정한다는 사실 반영. 완벽점수·회귀 trivial-baseline 누수 가드 2종과
+`is_noop_tie`(BON-239) 추가.
+- spec.md §5 / architecture.md §5 / runbook.md §6: "네트워크 sandbox 미구현" 서술이 stale — 프로덕션에서 `os.unshare(CLONE_NEWNET)`
+egress 차단 + rlimit이 이미 구현됨(ADR-017)으로 정정, 파일시스템 sandbox만 미구현 유지. 코드생성 재생성 횟수도 1회→실제 2회로 정정.
 
 ## 문서·docstring 코드 싱크 정리 (2026-07-13)
-- BON-240 반영: Coder 모델 문서 표기를 `qwen3.5:397b`(출력 토큰 과다) → `gpt-oss:120b`로 전 문서 정정(README, architecture, spec, setup, decisions ADR-016 amend).
-- `lb_score`/제출 추적 상태 정정: `raw.kaggle_submissions` 폴링(`/api/submissions/*`)이 이미 lb_score를 attempts까지 기록하는데 "미구현"으로 서술되어 있던 architecture.md·runbook.md 정정. `submission_budget` 일일 상한 enforcement만 여전히 미구현.
-- spec.md 스키마 누락 보강: `raw.kaggle_submissions`(§1.11 신설), `holdout_cv_gap_trend` 뷰, `raw.attempts.{holdout_score,confirm_seed_gains,fold_scores}`, `raw.pipelines.{pipeline_sha256,oof_preds}`, `raw.super_cycle_context` PK가 `queue_id`→`run_id`(BON-237)로 변경된 사실, `/api/health`+`/api/submissions/*` 엔드포인트 5종.
-- README 프로젝트 구조 트리를 실제 파일과 일치시킴 — 존재하지 않는 `cycle/super_cycle.py` 참조 제거, 신규 파일 6개(`bin/blend.py`, `bin/export_results.py`, `bin/rebuild_best_pipeline.py`, `bin/seed_competition_data.py`, `cycle/promotion.py`, `store/train_data.py`) 추가.
+- BON-240 반영: Coder 모델 문서 표기를 `qwen3.5:397b`(출력 토큰 과다) → `gpt-oss:120b`로 전 문서 정정(README, architecture, spec, setup,
+decisions ADR-016 amend).
+- `lb_score`/제출 추적 상태 정정: `raw.kaggle_submissions` 폴링(`/api/submissions/*`)이 이미 lb_score를 attempts까지 기록하는데 "미구현"으로 서술되어
+있던 architecture.md·runbook.md 정정. `submission_budget` 일일 상한 enforcement만 여전히 미구현.
+- spec.md 스키마 누락 보강: `raw.kaggle_submissions`(§1.11 신설), `holdout_cv_gap_trend` 뷰,
+`raw.attempts.{holdout_score,confirm_seed_gains,fold_scores}`, `raw.pipelines.{pipeline_sha256,oof_preds}`,
+`raw.super_cycle_context` PK가 `queue_id`→`run_id`(BON-237)로 변경된 사실, `/api/health`+`/api/submissions/*` 엔드포인트 5종.
+- README 프로젝트 구조 트리를 실제 파일과 일치시킴 — 존재하지 않는 `cycle/super_cycle.py` 참조 제거, 신규 파일 6개(`bin/blend.py`,
+`bin/export_results.py`, `bin/rebuild_best_pipeline.py`, `bin/seed_competition_data.py`, `cycle/promotion.py`,
+`store/train_data.py`) 추가.
 - 죽은 코드 삭제: `main.py`(uv-init 스텁, 미참조), `bin/run_cycle.py`(Phase-0 PoC, `cycle/run.py`+`run_cycle_task.py`로 대체됨).
 - `api.md`(관측 API 설계, ~30 엔드포인트 대부분 미구현) — 코드가 아니라 gitignore된 미추적 로컬 스크래치 파일이었음이 드러나 GitHub Issue #11로 이관 후 삭제.
 
 ## 학습 신호 회복 — jump 라벨 붕괴 수정 + 코드생성 정적 가드 (2026-07-05)
-- ADR-012 amend(BON-267): label의 jump 판정을 harness 절대-마진에서 promotion과 동일한 paired 유의성 검정(`is_significant_gain`)으로 통일. 전체 7447건 attempt 중 jump 0건이던 근본원인 수정 — bandit 보상·stagnation 감지·reflection 게이트가 전부 이 label에 의존해 함께 정상화됨.
-- BON-268: `evaluator/contract.py`의 `validate_patch`에 정적 검사 2종 추가 — pandas-only API(`.groupby`/`.map_dict`/`.take`/`.apply`/`.iterrows`/`.applymap`/`.get_dummies`) 금지, candidate patch 자신의 undefined-name 검사(실행 격리 모델과 일치하는 범위로 검증). `agents/coder.py` contract 프롬프트에도 동일 금지 목록 반영.
+- ADR-012 amend(BON-267): label의 jump 판정을 harness 절대-마진에서 promotion과 동일한 paired 유의성 검정(`is_significant_gain`)으로 통일. 전체
+7447건 attempt 중 jump 0건이던 근본원인 수정 — bandit 보상·stagnation 감지·reflection 게이트가 전부 이 label에 의존해 함께 정상화됨.
+- BON-268: `evaluator/contract.py`의 `validate_patch`에 정적 검사 2종 추가 — pandas-only
+API(`.groupby`/`.map_dict`/`.take`/`.apply`/`.iterrows`/`.applymap`/`.get_dummies`) 금지, candidate patch 자신의
+undefined-name 검사(실행 격리 모델과 일치하는 범위로 검증). `agents/coder.py` contract 프롬프트에도 동일 금지 목록 반영.
 - BON-269: reflection이 실패에서만 학습한다는 문제 제기는 재검토 결과 BON-267로 이미 구조적으로 해결됨을 확인(게이트 자체엔 버그 없었음, jump가 0건이라 죽어 있던 코드였을 뿐) — 코드 변경 없이 종료.
 
 ## Coder 모델 교체 (2026-07-02)
@@ -225,7 +304,8 @@
 - ADR-016 신설: 역할별 모델 배정. Reflexion Actor = Strategist(정책) + Coder(실행), Reflector = self-reflection.
   - 처음부터 3모델 분리: Strategist `deepseek-v4-pro` / Reflector `kimi-k2.6`(다른 패밀리, glm-5에서 변경) / Coder `qwen3-coder-next`.
   - Reflector를 Strategist와 다른 패밀리로 고정 — 근거: 상관된 맹점 완화(자기 가설을 스스로 합리화하는 편향).
-- ADR-008 개정: 임베딩 `nomic-embed-text`(768d) → `qwen3-embedding:0.6b`(1024d, MRL). 2026 MTEB v2 오픈웨이트 최상위. 스키마 `reflections.embedding` → `float[1024]`.
+- ADR-008 개정: 임베딩 `nomic-embed-text`(768d) → `qwen3-embedding:0.6b`(1024d, MRL). 2026 MTEB v2 오픈웨이트 최상위. 스키마
+`reflections.embedding` → `float[1024]`.
 - 모델 ID 변동성 주의: 확정 전 ollama.com/search?c=cloud 재확인.
 
 ## DuckDB 단일 스토어로 통합 (2026-05-31)

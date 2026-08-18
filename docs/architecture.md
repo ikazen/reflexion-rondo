@@ -33,7 +33,8 @@
      +--------------- next attempt -----------------> [Strategize]
 ```
 
-외부 채널(§8, ADR-019, 미구현): Kaggle 화이트리스트 source → 주간 추출 LLM → `raw.external_ideas` 별도 게이트웨이. Strategize 가 **reflexion 단계만** 톰슨 샘플링으로 노출. reflections 풀과 검색·마트·가중치 모두 분리.
+외부 채널(§8, ADR-019, 미구현): Kaggle 화이트리스트 source → 주간 추출 LLM → `raw.external_ideas` 별도 게이트웨이. Strategize 가
+**reflexion 단계만** 톰슨 샘플링으로 노출. reflections 풀과 검색·마트·가중치 모두 분리.
 
 ## 3. Reflexion 슈퍼사이클 (1 super-cycle = 1 retrieve + 3 parallel attempts + 1 promote)
 
@@ -43,21 +44,34 @@ attempt만 실행한다.
 
 Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
 
-1. **Retrieve** (`bin/run_retrieve_task.py`): 검색 키 → Postgres/pgvector 코사인 검색으로 교훈 top-k. 동시에 `action_bandit`(Beta-Bernoulli)에서 Thompson sample 1회로 3개 attempt에 서로 다른 `action_type`을 배정(`assign_super_cycle_actions`). 결과를 `raw.super_cycle_context`에 upsert.
+1. **Retrieve** (`bin/run_retrieve_task.py`): 검색 키 → Postgres/pgvector 코사인 검색으로 교훈 top-k. 동시에
+`action_bandit`(Beta-Bernoulli)에서 Thompson sample 1회로 3개 attempt에 서로 다른 `action_type`을 배정(`assign_super_cycle_actions`).
+결과를 `raw.super_cycle_context`에 upsert.
 2. **Attempt × 3** (병렬, `bin/run_attempt_task.py`): 각 attempt는 배정받은 `action_type`으로 강제 실행.
    - **Strategize**: EDA 카드 + 검색 교훈 + forced_action_type → 가설 1개. 실제 채택 교훈 id 출력.
    - **Generate**: 가설 → `class Patch` (action_type별 허용 훅만 구현). **bootstrap 외 단계는 best 코드를 `prev_code`로 받아 한 군데만 수정** (1변경 규율, §4).
    - **Evaluate**: k-fold CV + 지표 (inner holdout으로 param 사전 선정). 결정적 코드. `label`·`gain_vs_best` 계산.
    - **Persist**: `raw.attempts`에 기록 (`super_cycle_id`, `was_promoted=NULL`).
-3. **Promote** (`bin/run_promote_task.py`): 3개 attempt 중 `gain_vs_best` 최대값 → winner. winner는 곧바로 `raw.pipelines`에 승격되지 않는다 — `cycle/promotion.py:confirm_and_measure`가 cross-seed paired 재현 + audit holdout(dummy target으로 추론 조건 재현, 현재 best 대비 악화 시 거부) 양쪽을 통과해야 승격된다(`spec.md` §4). `was_promoted=true/false` 플래그 업데이트. Reflect 호출:
+3. **Promote** (`bin/run_promote_task.py`): 3개 attempt 중 `gain_vs_best` 최대값 → winner. winner는 곧바로 `raw.pipelines`에 승격되지
+않는다 — `cycle/promotion.py:confirm_and_measure`가 cross-seed paired 재현 + audit holdout(dummy target으로 추론 조건 재현, 현재 best 대비
+악화 시 거부) 양쪽을 통과해야 승격된다(`spec.md` §4). `was_promoted=true/false` 플래그 업데이트. Reflect 호출:
    - **winner**: jump/regression/error일 때만 reflect.
    - **loser**: neutral 포함 전부 reflect ("이 시도는 효과 없었다"도 학습 신호).
-4. **Submit?**: (별도 스크립트) best 후보 → submission CSV/Kaggle. `raw.kaggle_submissions` + daemon API(`POST /api/submissions`, `/auto`, `/{id}/refresh`)가 제출·상태 폴링·`lb_score` 기록(attempts 테이블 backfill 포함)까지 수행한다. daemon 유휴 틱마다 `status IN ('submitted','pending')` 제출을 지수 백오프로 자동 재폴링한다 — 수동 `/refresh` 호출 없이도 동작. `submission_budget` 스키마는 있으나 일일 상한 자동 enforcement는 아직 미구현이다.
+4. **Submit?**: (별도 스크립트) best 후보 → submission CSV/Kaggle. `raw.kaggle_submissions` + daemon
+API(`POST /api/submissions`, `/auto`, `/{id}/refresh`)가 제출·상태 폴링·`lb_score` 기록(attempts 테이블 backfill 포함)까지 수행한다. daemon
+유휴 틱마다 `status IN ('submitted','pending')` 제출을 지수 백오프로 자동 재폴링한다 — 수동 `/refresh` 호출 없이도 동작. `submission_budget` 스키마는 있으나
+일일 상한 자동 enforcement는 아직 미구현이다.
 
-`action_bandit`(BON-109): `reflexion` 단계 attempt 완료 시 action_type별 α/β 업데이트. jump/gain>0 → α++, regression/error → β++, neutral → 소량 양방향. attempt 생성 시점의 잠정 label(confirm 이전)로 1차 업데이트되고, 승자가 confirm(cross-seed+holdout)에서 jump가 거부되면 `bin/run_promote_task.py`가 `effective_label`로 regression 방향 보정 신호를 추가한다(ADR-030) — confirm 결과가 없으면 그 자기강화 루프를 못 끊는다.
-`assign_super_cycle_actions`는 super_cycle retrieve에서만 action_type을 강제 배정하며, **LLM 개입 없는 결정론적 top-N 배정**이다(advisory 아님). 정상 reflexion 사이클(직접모드)에서만 `get_action_prior`가 LLM Strategist 프롬프트에 텍스트 prior로 제공되고 최종 action 선택은 LLM이 한다(advisory, regret 보장 없음 — ADR-005/014).
+`action_bandit`(BON-109): `reflexion` 단계 attempt 완료 시 action_type별 α/β 업데이트. jump/gain>0 → α++, regression/error → β++,
+neutral → 소량 양방향. attempt 생성 시점의 잠정 label(confirm 이전)로 1차 업데이트되고, 승자가 confirm(cross-seed+holdout)에서 jump가 거부되면
+`bin/run_promote_task.py`가 `effective_label`로 regression 방향 보정 신호를 추가한다(ADR-030) — confirm 결과가 없으면 그 자기강화 루프를 못 끊는다.
+`assign_super_cycle_actions`는 super_cycle retrieve에서만 action_type을 강제 배정하며, **LLM 개입 없는 결정론적 top-N 배정**이다(advisory 아님).
+정상 reflexion 사이클(직접모드)에서만 `get_action_prior`가 LLM Strategist 프롬프트에 텍스트 prior로 제공되고 최종 action 선택은 LLM이 한다(advisory,
+regret 보장 없음 — ADR-005/014).
 
-피드백 신호 정책: **CV = 주 신호**(무제한·결정적), **LB = 확인용 희소 신호**. `cv_lb_calibration` 뷰가 대회별 제출 시계열의 cv↔LB 부호 일치를 추적하고, CV는 개선인데 LB가 악화된 제출이 나오면 원천 pipeline을 격리하고 해당 대회 auto-submit을 중단하는 발산 트립와이어가 이미 동작한다(자동 해제 없음 — `runbook.md`). 일일 제출 예산 게이트(`submission_budget` 상한 enforcement)는 아직 미구현이다.
+피드백 신호 정책: **CV = 주 신호**(무제한·결정적), **LB = 확인용 희소 신호**. `cv_lb_calibration` 뷰가 대회별 제출 시계열의 cv↔LB 부호 일치를 추적하고, CV는 개선인데
+LB가 악화된 제출이 나오면 원천 pipeline을 격리하고 해당 대회 auto-submit을 중단하는 발산 트립와이어가 이미 동작한다(자동 해제 없음 — `runbook.md`). 일일 제출 예산
+게이트(`submission_budget` 상한 enforcement)는 아직 미구현이다.
 
 ## 4. Stage 라벨과 1변경 규율
 
@@ -67,7 +81,8 @@ Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
 | `reflexion` | 정상 루프. 시도당 1변경 | 강제 |
 | `exploitation` | best 후보 안정화 (시드 변경, 앙상블 결정 등) | 예외 |
 
-1변경 규율은 문서 규약이 아니라 코드로 강제된다: `reflexion`/`exploitation` 단계는 best(에러 없는) attempt의 저장 코드(`code_path`)를 `prev_code`로 Coder에 주입하고 "한 군데만 수정"을 지시한다. bootstrap만 면제(prev_code 없음 → from-scratch).
+1변경 규율은 문서 규약이 아니라 코드로 강제된다: `reflexion`/`exploitation` 단계는 best(에러 없는) attempt의 저장 코드(`code_path`)를 `prev_code`로 Coder에
+주입하고 "한 군데만 수정"을 지시한다. bootstrap만 면제(prev_code 없음 → from-scratch).
 
 `reflection_impact`는 `reflexion` 단계 attempt만 집계한다 (`stg_attempts`에서 필터). 인과 귀속을 깨끗하게 유지.
 
@@ -81,8 +96,12 @@ Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
 Coder가 만든 `class Patch`는 `runtime/isolate.py`가 subprocess로 실행한다 (ADR-013).
 - tmpdir에 source.py / input.json / train.parquet 기록 → `runtime/runner.py` subprocess 실행 → output.json 수거.
 - 타임아웃 1200s(BON-275, s5e5/s6e6 등 대형 데이터셋 대응 600s→상향). 에러·타임아웃은 `error_trace`로 기록되어 Reflector가 실패에서 교훈을 뽑는다.
-- 네트워크 격리(ADR-017): 프로덕션(CAP_SYS_ADMIN 있음)에서 preexec_fn이 `os.unshare(CLONE_NEWNET)`으로 subprocess의 network namespace를 분리해 egress를 차단한다. 컨테이너 자체 네트워크는 유지(Postgres/MinIO/Ollama 접근용) — 차단은 subprocess 레벨에서만. `RLIMIT_AS`(VSZ, ADR-027)도 병행. CAP_SYS_ADMIN 없으면(로컬 mac 등) 조용히 스킵하고 allowlist+rlimit+timeout만 적용.
-- 리소스 워치독(ADR-028): 부모(`isolate.py`)의 2초 폴링 루프가 RSS와 CPU 시간을 직접 감시해 상한 초과 시 원인이 명시된 error_trace로 선제 kill한다. `RLIMIT_CPU`는 폴링이 놓쳤을 때만 발동하는 soft<hard 백스톱(rc=-24)일 뿐, 주 집행 수단이 아니다 — soft==hard로 걸면 커널이 SIGXCPU 없이 곧장 SIGKILL(rc=-9)을 보내 OOM killer 사망과 구분이 안 됐던 과거 실패를 반복하지 않도록 이 구분을 유지할 것.
+- 네트워크 격리(ADR-017): 프로덕션(CAP_SYS_ADMIN 있음)에서 preexec_fn이 `os.unshare(CLONE_NEWNET)`으로 subprocess의 network namespace를 분리해
+egress를 차단한다. 컨테이너 자체 네트워크는 유지(Postgres/MinIO/Ollama 접근용) — 차단은 subprocess 레벨에서만. `RLIMIT_AS`(VSZ, ADR-027)도 병행.
+CAP_SYS_ADMIN 없으면(로컬 mac 등) 조용히 스킵하고 allowlist+rlimit+timeout만 적용.
+- 리소스 워치독(ADR-028): 부모(`isolate.py`)의 2초 폴링 루프가 RSS와 CPU 시간을 직접 감시해 상한 초과 시 원인이 명시된 error_trace로 선제 kill한다.
+`RLIMIT_CPU`는 폴링이 놓쳤을 때만 발동하는 soft<hard 백스톱(rc=-24)일 뿐, 주 집행 수단이 아니다 — soft==hard로 걸면 커널이 SIGXCPU 없이 곧장 SIGKILL(rc=-9)을
+보내 OOM killer 사망과 구분이 안 됐던 과거 실패를 반복하지 않도록 이 구분을 유지할 것.
 - subprocess 환경변수는 allowlist 필터링 (`OMP_NUM_THREADS` 등 포함, BON-104).
 - `OMP_NUM_THREADS=2` / `OPENBLAS_NUM_THREADS=2` / `MKL_NUM_THREADS=2` — worker-vm 2코어에서 CPU 포화 방지.
 
@@ -101,7 +120,8 @@ LLM 역할 3개:
 - **Memory/Retriever**: Postgres/pgvector `vector(1024)` 컬럼 + 임베딩 + 메타필터 + MMR 재순위 (코사인 `<=>`, BON-98).
 - **Fingerprinter**: 결정적 메타피처 계산기.
 
-역할별 모델 배정은 ADR-016 참조 (세 역할을 처음부터 분리). Reflexion 관점에서 **Actor = Strategist(정책) + Coder(실행)**, **Reflector = self-reflection**, Evaluator = 결정적 코드.
+역할별 모델 배정은 ADR-016 참조 (세 역할을 처음부터 분리). Reflexion 관점에서 **Actor = Strategist(정책) + Coder(실행)**,
+**Reflector = self-reflection**, Evaluator = 결정적 코드.
 
 ## 7. Cross-Competition Transfer
 
@@ -114,7 +134,8 @@ LLM 역할 3개:
 사용자 목표의 핵심: *"다른 Playground Series 하나 넣으면 예전 경험에 기반해 빠르게 시작."* 이를 메커니즘으로 보장한다.
 
 - **Fingerprint** (`store/fingerprint.py`): Polars로 1회 계산하는 결정적 메타피처(스키마는 `spec.md`). 같은 데이터셋이면 항상 같은 값. 타깃 통계는 train fold 평균/분산만 사용해 누수 방지.
-- **유사 대회 검색** (`memory/transfer.py`): Postgres에서 competition fingerprint를 읽어 Python에서 가중 거리 top-k를 계산한다. 가중치 — `task_type`/`metric_class` 불일치 = 큰 페널티, `size_class` 차이 = 중간, missing/cardinality 차이 = 작게.
+- **유사 대회 검색** (`memory/transfer.py`): Postgres에서 competition fingerprint를 읽어 Python에서 가중 거리 top-k를 계산한다. 가중치 —
+`task_type`/`metric_class` 불일치 = 큰 페널티, `size_class` 차이 = 중간, missing/cardinality 차이 = 작게.
 - **교훈 일반화 레벨** (`generality`): `L1_local`(이 대회 전용, transfer 제외) / `L2_class`(유사 fingerprint 부류) / `L3_general`(정형 대회 보편).
 - **Cold-start 검색**: 새 대회 N+1 →
   1. `similar = find_similar_competitions(fp_new, k=3)`
@@ -122,7 +143,8 @@ LLM 역할 3개:
   3. Top-K 교훈 → Strategist 첫 컨텍스트
   4. `raw.pipelines`에서 `competition_id IN similar AND gain_vs_best > 0` 코드 1~2개를 seed 후보로 저장
   5. `bin/run_reflexion.py --cold-start` 첫 bootstrap에서 seed code를 `prev_code`로 주입
-- **측정**: `cold_start_progression` 마트 — 누적 경험량 vs 새 대회 첫 시도의 best 대비 비율(`warm_start_ratio`). 우상향하면 transfer 작동. 아니면 fingerprint 가중치/generality 라벨링/검색 메타필터 점검.
+- **측정**: `cold_start_progression` 마트 — 누적 경험량 vs 새 대회 첫 시도의 best 대비 비율(`warm_start_ratio`). 우상향하면 transfer 작동. 아니면
+fingerprint 가중치/generality 라벨링/검색 메타필터 점검.
 
 ### Cold-start 절차 (새 대회 시작)
 
@@ -143,13 +165,20 @@ LLM 역할 3개:
 
 > **상태: 설계만 (미구현, ADR-019).** 스키마/스케줄러+추출/Strategist 통합은 Linear BON-86~89.
 
-목적: Strategist+Coder prior 의 천장을 외부 ML 지식으로 들어 올린다 (ADR-019). 누적 시도가 같은 모델 prior 안에 갇히지 않도록 외부 자극을 별도 채널로 주입하되, earned knowledge 풀(`raw.reflections`)을 오염시키지 않는다.
+목적: Strategist+Coder prior 의 천장을 외부 ML 지식으로 들어 올린다 (ADR-019). 누적 시도가 같은 모델 prior 안에 갇히지 않도록 외부 자극을 별도 채널로 주입하되, earned
+knowledge 풀(`raw.reflections`)을 오염시키지 않는다.
 
-- **격리된 게이트웨이**: `raw.external_ideas` 가 `raw.reflections` 와 완전 분리(목표 스키마는 `spec.md` §1.12). retrieval / `reflection_impact` 마트 / 검색 score 가중치에 안 섞임.
-- **소스 → 추출 → 게이트웨이**: 주간 systemd timer(ADR-017 daemon 흡수) 가 화이트리스트 소스(우승 writeup / pinned tips / gold·silver solution) 조회 → 추출 LLM(Strategist/Reflector 와 다른 호출) → 가드 4개(실측 수치 인용 / 다수 동의 / 조건부 진술만 / 500자 상한 + 코드 블록 분리) → `raw.external_ideas` insert (Beta(1, 1) 균일 prior).
-- **노출 = stage 게이팅 + 톰슨 샘플링**: `reflexion` Strategist 만, `applies_when` fingerprint 1차 필터 → 각 후보 θ ~ Beta(α, β) 샘플 → top-3. `bootstrap`/`exploitation` 은 외부 idea 차단 (cold-start lessons + seed_code 가 이미 외부 신호, exploitation 은 안정화 우선).
-- **승격 = 시스템 기본 루프**: 외부 idea 채택 → Coder 실행 → Evaluator 결정적 신호 → Reflector 정상 reflection. 검증된 부분만 자연히 lessons 풀로 진입. 외부 idea 자체는 `verified` 마킹 없이 영구 게이트웨이.
-- **사후 학습**: 채택+jump → α++, 채택+regression → β++, 미채택 무변화. `external_idea_bandit` 뷰가 사후 상태 노출. 자동 archive: `trials ≥ 10 AND posterior_mean < 0.1` (source 단위 archive 는 사람 수동).
+- **격리된 게이트웨이**: `raw.external_ideas` 가 `raw.reflections` 와 완전 분리(목표 스키마는 `spec.md` §1.12). retrieval /
+`reflection_impact` 마트 / 검색 score 가중치에 안 섞임.
+- **소스 → 추출 → 게이트웨이**: 주간 systemd timer(ADR-017 daemon 흡수) 가 화이트리스트 소스(우승 writeup / pinned tips / gold·silver solution)
+조회 → 추출 LLM(Strategist/Reflector 와 다른 호출) → 가드 4개(실측 수치 인용 / 다수 동의 / 조건부 진술만 / 500자 상한 + 코드 블록 분리) →
+`raw.external_ideas` insert (Beta(1, 1) 균일 prior).
+- **노출 = stage 게이팅 + 톰슨 샘플링**: `reflexion` Strategist 만, `applies_when` fingerprint 1차 필터 → 각 후보 θ ~ Beta(α, β) 샘플 →
+top-3. `bootstrap`/`exploitation` 은 외부 idea 차단 (cold-start lessons + seed_code 가 이미 외부 신호, exploitation 은 안정화 우선).
+- **승격 = 시스템 기본 루프**: 외부 idea 채택 → Coder 실행 → Evaluator 결정적 신호 → Reflector 정상 reflection. 검증된 부분만 자연히 lessons 풀로 진입. 외부
+idea 자체는 `verified` 마킹 없이 영구 게이트웨이.
+- **사후 학습**: 채택+jump → α++, 채택+regression → β++, 미채택 무변화. `external_idea_bandit` 뷰가 사후 상태 노출. 자동 archive:
+`trials ≥ 10 AND posterior_mean < 0.1` (source 단위 archive 는 사람 수동).
 
 ### Cold-start lessons 와 구분 (ADR-010 vs ADR-019)
 
@@ -166,6 +195,7 @@ LLM 역할 3개:
 
 - **추출 노이즈**: 일화 잡음이 false signal 양산 — 가드 4개로 1차 방어, α/β 누적으로 사후 정제.
 - **천장 vs 1변경 규율 충돌**: 외부 복합 아이디어를 한 사이클에 다 적용 못함 — 같은 idea 가 다음 사이클 다시 톰슨 샘플링되면 다른 부분/다른 `action_type` 으로 채택. 의도된 점진 분해.
-- **노출 대상 격리 필요**: Coder 노출 시 검증 안 된 코드 카피 위험 → `prev_code` 위 1변경 컨트랙트(ADR-014) 파괴. Reflector 노출 시 자기 추론을 외부 주장으로 정당화 → ADR-016 cross-family critic 효과 깎임. Strategist 단일 진입점으로 격리.
+- **노출 대상 격리 필요**: Coder 노출 시 검증 안 된 코드 카피 위험 → `prev_code` 위 1변경 컨트랙트(ADR-014) 파괴. Reflector 노출 시 자기 추론을 외부 주장으로 정당화 →
+ADR-016 cross-family critic 효과 깎임. Strategist 단일 진입점으로 격리.
 - **승격 평가의 인과 한계**: `reflection_impact` 와 같은 상관 한계(ADR-015). ablation 도입 시 같이 캘리브레이션.
 - **톰슨 staleness**: 시간 decay 없음 — 누적 우위 idea 가 영구 우위. 트렌드 변화 시 weekly decay 도입 가능.
