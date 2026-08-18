@@ -39,7 +39,8 @@ cd data/<competition-id> && unzip -q *.zip
 - `IS_CLASSIFICATION`, `DROP_COLS` (id 계열 컬럼)
 - `DATA_DIR`, `S3_DATA_PATH`
 - `EDA_CARD` — feature별 dtype 명시 필수 (pl.String 컬럼 인코딩 방법 포함)
-- `MAX_TRAIN_ROWS` (opt-in, 대형 데이터셋만) — 설정하면 `load_train`이 고정 시드 층화 샘플링으로 상한 적용. attempt-eval과 promote(cross-seed confirm)가 동일 데이터를 봐야 `cv_score`가 재현되므로 시드는 코드에 고정돼 있다. s4e7(11.5M행, OOM으로 전량 실패했던 사례)이 1.5M로 설정된 참고 예시.
+- `MAX_TRAIN_ROWS` (opt-in, 대형 데이터셋만) — 설정하면 `load_train`이 고정 시드 층화 샘플링으로 상한 적용. attempt-eval과 promote(cross-seed
+confirm)가 동일 데이터를 봐야 `cv_score`가 재현되므로 시드는 코드에 고정돼 있다. s4e7(11.5M행, OOM으로 전량 실패했던 사례)이 1.5M로 설정된 참고 예시.
 
 ### 1-3. cold-start 등록
 ```bash
@@ -95,12 +96,17 @@ curl -X PATCH http://localhost:8000/api/queue/<queue_id> \
 ```
 
 실행 모드:
-- **airflow 모드 (운영)**: `AIRFLOW_URL` 환경변수가 있으면 Airflow DAG `reflexion_rondo_cycle` 트리거. 1 DAG run = 1 슈퍼사이클 (retrieve → attempt_0/1/2 병렬 → promote). retrieve는 default 큐, attempt/promote는 big 큐(순차 실행이라 동시 점유는 없음).
-- **direct 모드 (로컬 테스트)**: `AIRFLOW_URL` 없으면 daemon 프로세스 안에서 단일 `run_cycle()` attempt만 실행한다. forced action 배정, 3-way 병렬 attempt, promote/loser reflection은 실행하지 않는다.
+- **airflow 모드 (운영)**: `AIRFLOW_URL` 환경변수가 있으면 Airflow DAG `reflexion_rondo_cycle` 트리거. 1 DAG run = 1 슈퍼사이클 (retrieve →
+attempt_0/1/2 병렬 → promote). retrieve는 default 큐, attempt/promote는 big 큐(순차 실행이라 동시 점유는 없음).
+- **direct 모드 (로컬 테스트)**: `AIRFLOW_URL` 없으면 daemon 프로세스 안에서 단일 `run_cycle()` attempt만 실행한다. forced action 배정, 3-way 병렬
+attempt, promote/loser reflection은 실행하지 않는다.
 
 **이미지 배포 (semver, issue #17 이후 2단계)**
 
-1단계(빌드): airflow-stack의 `reflexion_rondo_deploy` DAG를 Airflow UI에서 `{"tag": "v1.2.0"}` conf로 트리거(Trigger DAG w/ config) — daemon+task 두 이미지를 ops-vm의 Airflow `ops` 큐(docker.sock 재사용, airflow-stack decisions.md L29)가 clone+build+push하고, 일회성 컨테이너로 사전검증까지 마친 뒤 `rondo_task_image_version` Airflow Variable을 bump한다. **task 이미지는 이 시점에 이미 라이브다** — git push도, `release.sh`도 필요 없다.
+1단계(빌드): airflow-stack의 `reflexion_rondo_deploy` DAG를 Airflow UI에서 `{"tag": "v1.2.0"}` conf로 트리거(Trigger DAG w/ config)
+— daemon+task 두 이미지를 ops-vm의 Airflow `ops` 큐(docker.sock 재사용, airflow-stack decisions.md L29)가 clone+build+push하고, 일회성
+컨테이너로 사전검증까지 마친 뒤 `rondo_task_image_version` Airflow Variable을 bump한다. **task 이미지는 이 시점에 이미 라이브다** — git push도,
+`release.sh`도 필요 없다.
 
 2단계(daemon 컷오버): WSL에서 daemon만 실제로 배포.
 
@@ -109,7 +115,8 @@ curl -X PATCH http://localhost:8000/api/queue/<queue_id> \
 bash deploy/release.sh v1.2.0
 ```
 
-흐름: registry에 해당 태그 존재 확인(없으면 "DAG 먼저 트리거하라" 에러) → 사전검증(일회성 컨테이너로 daemon `bin/healthcheck.py`, 컷오버 시점 재확인) → compose.yml 태그 bump+push → ops-vm 재시작 → heartbeat 확인.
+흐름: registry에 해당 태그 존재 확인(없으면 "DAG 먼저 트리거하라" 에러) → 사전검증(일회성 컨테이너로 daemon `bin/healthcheck.py`, 컷오버 시점 재확인) → compose.yml
+태그 bump+push → ops-vm 재시작 → heartbeat 확인.
 
 사전검증 실패 시 태그 bump 없이 중단된다 — compose.yml도 실 daemon도 바뀌지 않는다(issue #15 순서 수정을 daemon 전용 버전으로 유지).
 
@@ -159,9 +166,11 @@ dagrun(=사이클) 하나가 실패해도 배치를 중단하지 않는다 — �
 ## 4. 제출·LB score 추적
 
 - `POST /api/submissions` — attempt 지정 제출. `POST /api/submissions/auto` — 최근 window 내 대회별 best attempt 자동 선별 제출(이미 제출한 best는 skip).
-- `POST /api/submissions/{id}/refresh` — Kaggle 상태 1회 수동 폴링. `complete`면 `raw.kaggle_submissions.lb_score` 갱신 + 해당 `attempt_id`의 `raw.attempts.lb_score`까지 backfill.
+- `POST /api/submissions/{id}/refresh` — Kaggle 상태 1회 수동 폴링. `complete`면 `raw.kaggle_submissions.lb_score` 갱신 + 해당
+`attempt_id`의 `raw.attempts.lb_score`까지 backfill.
 - daemon도 유휴 틱마다 `status IN ('submitted','pending')` 제출을 지수 백오프로 자동 재폴링한다(`refresh_submission_row` 공유 헬퍼) — 수동 `refresh` 호출은 즉시 반영이 필요할 때만.
-- `submission_budget` 테이블은 스키마에 존재하나, 일일 제출 상한 자동 enforcement는 아직 미구현 — 현재는 `auto_submit`의 "best unchanged면 skip" 로직 + cv-LB 발산 트립와이어(아래 §4-2)가 과다 제출을 억제한다.
+- `submission_budget` 테이블은 스키마에 존재하나, 일일 제출 상한 자동 enforcement는 아직 미구현 — 현재는 `auto_submit`의 "best unchanged면 skip" 로직 +
+cv-LB 발산 트립와이어(아래 §4-2)가 과다 제출을 억제한다.
 
 ### 4-1. 누수 파이프라인 격리
 
@@ -192,13 +201,18 @@ uv run python -m bin.establish_baseline --dry-run                              #
 uv run python -m bin.establish_baseline --competition <competition-id>         # 확인 후 실제 반영
 ```
 
-top-k(기본 5) attempt를 cv 순으로 순회하며 cross-seed+holdout을 통과하는 첫 후보를 승격한다 — 상위 후보가 phantom(비정상적으로 좋은 CV)이면 자동으로 다음 순위로 내려간다(decisions.md ADR-025 한계 참조).
+top-k(기본 5) attempt를 cv 순으로 순회하며 cross-seed+holdout을 통과하는 첫 후보를 승격한다 — 상위 후보가 phantom(비정상적으로 좋은 CV)이면 자동으로 다음 순위로
+내려간다(decisions.md ADR-025 한계 참조).
 
-**메모리 주의**: 이 스크립트는 실제 모델 학습을 여러 번 반복한다. 검증된 프로덕션 환경(mac-server/worker-vm/ops-vm task 컨테이너) 밖에서 돌리면 `runtime/isolate.py`의 `RLIMIT_AS`(VSZ 기준, decisions.md ADR-027)에 걸려 물리 메모리가 남아도 전량 실패할 수 있다 — WSL 등 미검증 환경에서 실패가 반복되면 ops-vm의 task 이미지로 `docker run --network host --cap-add SYS_ADMIN`으로 직접 실행할 것.
+**메모리 주의**: 이 스크립트는 실제 모델 학습을 여러 번 반복한다. 검증된 프로덕션 환경(mac-server/worker-vm/ops-vm task 컨테이너) 밖에서 돌리면
+`runtime/isolate.py`의 `RLIMIT_AS`(VSZ 기준, decisions.md ADR-027)에 걸려 물리 메모리가 남아도 전량 실패할 수 있다 — WSL 등 미검증 환경에서 실패가 반복되면
+ops-vm의 task 이미지로 `docker run --network host --cap-add SYS_ADMIN`으로 직접 실행할 것.
 
 ### 4-3. auto-submit 일시중단 복구
 
-cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_paused_reason`이 채워지고 해당 대회의 자동 제출이 멈춘다(decisions.md ADR-026). 발동 조건은 최근 3개 delta 중 2개 이상이 `|prev_lb|`의 0.1% 데드밴드를 넘는 발산(#175) — 단발 노이즈로는 안 걸린다. **자동 해제 없음** — 원인을 확인(`cv_lb_calibration` 뷰, `GET /api/cv-lb-calibration`)한 뒤 사람이 직접 NULL로 되돌려야 재개된다.
+cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_paused_reason`이 채워지고 해당 대회의 자동 제출이 멈춘다(decisions.md ADR-026). 발동 조건은
+최근 3개 delta 중 2개 이상이 `|prev_lb|`의 0.1% 데드밴드를 넘는 발산(#175) — 단발 노이즈로는 안 걸린다. **자동 해제 없음** — 원인을 확인(`cv_lb_calibration` 뷰,
+`GET /api/cv-lb-calibration`)한 뒤 사람이 직접 NULL로 되돌려야 재개된다.
 
 ```bash
 # 현재 일시중단된 대회 확인
@@ -218,7 +232,8 @@ Postgres가 concurrent read를 처리한다. daemon은 단일 프로세스로 �
 
 - 타임아웃: 1200초 (기본값, `DEFAULT_TIMEOUT` — BON-275, 원래 600초에서 s5e5/s6e6 등 대형 데이터셋 대응으로 상향)
 - 타임아웃·에러 → `error_trace` 기록 → Reflect 단계가 실패에서 교훈 추출
-- 격리 수준: subprocess 분리 + env allowlist 필터링 (BON-104) + 네트워크 격리(프로덕션 CAP_SYS_ADMIN 있을 때 `os.unshare(CLONE_NEWNET)`로 egress 차단, ADR-017). CAP_SYS_ADMIN 없는 폴백은 네트워크 차단 스킵. 파일시스템 sandbox는 미구현.
+- 격리 수준: subprocess 분리 + env allowlist 필터링 (BON-104) + 네트워크 격리(프로덕션 CAP_SYS_ADMIN 있을 때 `os.unshare(CLONE_NEWNET)`로
+egress 차단, ADR-017). CAP_SYS_ADMIN 없는 폴백은 네트워크 차단 스킵. 파일시스템 sandbox는 미구현.
 - `OMP_NUM_THREADS=2` 등 스레드 제한은 Dockerfile ENV + subprocess allowlist 양쪽에 설정.
 
 ## 7. 모니터링
@@ -228,7 +243,9 @@ Postgres가 concurrent read를 처리한다. daemon은 단일 프로세스로 �
 - 로컬 개발: `uv run streamlit run dashboard.py`
 - daemon API를 거치지 않고 Postgres에 직결 — daemon이 죽어 있어도 독립 동작(GH #65 설계 의도)
 
-대회 선택(사이드바) 종속 패널: Health 신호등 4칸(accumulation/bandit/antipattern/exploration, `bin/api.py:/api/reflexion-health`와 동일 임계값을 API 미호출로 재현) · CV score 진행 곡선(jump 마커 오버레이) · CV vs Holdout Divergence · Action/Label 분포 · Lesson Funnel(+Dead/Duplicates 탭) · Bandit Calibration · Error Recurrence · Top Lessons by Impact · Recent Attempts.
+대회 선택(사이드바) 종속 패널: Health 신호등 4칸(accumulation/bandit/antipattern/exploration, `bin/api.py:/api/reflexion-health`와 동일
+임계값을 API 미호출로 재현) · CV score 진행 곡선(jump 마커 오버레이) · CV vs Holdout Divergence · Action/Label 분포 · Lesson
+Funnel(+Dead/Duplicates 탭) · Bandit Calibration · Error Recurrence · Top Lessons by Impact · Recent Attempts.
 전역(대회 무관) 패널: Cold-start Progression, Transfer Matrix 히트맵.
 
 **Daemon API**

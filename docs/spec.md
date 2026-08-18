@@ -1,6 +1,7 @@
 # 명세 (스키마·분석 뷰·API·컨트랙트)
 
-스토어: ops-vm Postgres + pgvector (`raw` 스키마). ADR-007 2026-06 amend로 DuckDB → Postgres 전환. 임베딩은 `vector(1024)` 컬럼, 검색은 코사인 `<=>` 연산자. 분석 뷰는 SQL view.
+스토어: ops-vm Postgres + pgvector (`raw` 스키마). ADR-007 2026-06 amend로 DuckDB → Postgres 전환. 임베딩은 `vector(1024)` 컬럼, 검색은
+코사인 `<=>` 연산자. 분석 뷰는 SQL view.
 
 ## 1. DB 스키마 (Postgres `raw`)
 
@@ -198,7 +199,8 @@ error          text,
 checked_at     timestamp
 ```
 
-수동 폴링은 `POST /api/submissions/{id}/refresh`. daemon도 유휴 틱마다 `status IN ('submitted','pending')` 제출을 지수 백오프로 자동 재폴링한다(`refresh_submission_row` 공유 헬퍼, `runbook.md §4`).
+수동 폴링은 `POST /api/submissions/{id}/refresh`. daemon도 유휴 틱마다 `status IN ('submitted','pending')` 제출을 지수 백오프로 자동
+재폴링한다(`refresh_submission_row` 공유 헬퍼, `runbook.md §4`).
 
 ### 1.12 `raw.external_ideas` (계획, 미구현) — ADR-019, BON-86
 
@@ -226,7 +228,8 @@ adopted_attempt_ids    text[]          -- 채택 attempt 역추적 (디버깅·�
 
 ### 1.13 `raw.blend_weights`
 
-승격 시점마다 재계산되는 blend 가중치. `bin/blend.py:compute_and_store_blend`가 양쪽 승격 경로(`cycle/run.py`, `bin/run_promote_task.py`)에서 best-effort로 호출한다 — 실패해도 예외를 던지지 않고 조용히 스킵, 승격을 막지 않는다. **`bin/submit.py`는 이 값을 소비하지 않는다**(계산·저장까지만, 실제 제출 배선은 범위 밖).
+승격 시점마다 재계산되는 blend 가중치. `bin/blend.py:compute_and_store_blend`가 양쪽 승격 경로(`cycle/run.py`, `bin/run_promote_task.py`)에서
+best-effort로 호출한다 — 실패해도 예외를 던지지 않고 조용히 스킵, 승격을 막지 않는다. **`bin/submit.py`는 이 값을 소비하지 않는다**(계산·저장까지만, 실제 제출 배선은 범위 밖).
 
 ```sql
 competition_id  text primary key,
@@ -247,7 +250,8 @@ generated_at    timestamp
 - `preprocessing` (결측 처리, 스케일, 인코딩)
 - `ensemble` (averaging, stacking — contract에서 모든 훅 허용. `ensemble_spec` 선언형 프리미티브 권장, §5)
 
-`bootstrap`은 `ACTION_TYPES`(Strategist 선택지)엔 없지만 실재하는 `action_type` 값이다 — bootstrap stage에서 `prev_code`가 없으면 `cycle/run.py`가 강제로 `action_type="bootstrap"`을 부여하고(Strategist 미개입), contract에서 모든 훅을 허용한다.
+`bootstrap`은 `ACTION_TYPES`(Strategist 선택지)엔 없지만 실재하는 `action_type` 값이다 — bootstrap stage에서 `prev_code`가 없으면
+`cycle/run.py`가 강제로 `action_type="bootstrap"`을 부여하고(Strategist 미개입), contract에서 모든 훅을 허용한다.
 
 `generality` (Reflector 출력):
 - `L1_local`: 이 대회 칼럼명/특이값 의존. transfer 대상 아님.
@@ -296,19 +300,33 @@ regression  if delta < -z * fold_std
 neutral     otherwise
 ```
 
-- `z = LABEL_Z = 2.0`(`config/settings.py`). 1σ(구 기본값)는 노이즈를 상시 jump로 잘못 잡아 `reflection_impact` 검색 부스팅을 오염시켰다 — ADR-012 amend(BON-194) 방어적 기본값, 재캘리브레이션은 TBD(`decisions.md`).
-- **jump 재판정(BON-267)**: 위 절대-마진 jump는 harness가 계산한 잠정값이다. `cycle/run.py`가 eval 직후 `is_significant_gain()`(`evaluator/harness.py`, BON-247 — candidate/baseline fold_scores의 **paired per-fold t-test**, `t_stat > LABEL_Z`)로 재확정한다: 유의하면 `jump` 확정, 절대-마진만 통과하고 paired 미달이면 `neutral`로 강등. 절대-마진 단독 기준은 수렴한 대회에서 사실상 도달 불가해 실승격 attempt도 전부 neutral로 남는 문제가 있었다. `bin/run_promote_task.py`도 promotion(reflect 여부) 판단에 동일 함수를 재사용한다.
+- `z = LABEL_Z = 2.0`(`config/settings.py`). 1σ(구 기본값)는 노이즈를 상시 jump로 잘못 잡아 `reflection_impact` 검색 부스팅을 오염시켰다 — ADR-012
+amend(BON-194) 방어적 기본값, 재캘리브레이션은 TBD(`decisions.md`).
+- **jump 재판정(BON-267)**: 위 절대-마진 jump는 harness가 계산한 잠정값이다. `cycle/run.py`가 eval 직후
+`is_significant_gain()`(`evaluator/harness.py`, BON-247 — candidate/baseline fold_scores의 **paired per-fold t-test**,
+`t_stat > LABEL_Z`)로 재확정한다: 유의하면 `jump` 확정, 절대-마진만 통과하고 paired 미달이면 `neutral`로 강등. 절대-마진 단독 기준은 수렴한 대회에서 사실상 도달 불가해 실승격
+attempt도 전부 neutral로 남는 문제가 있었다. `bin/run_promote_task.py`도 promotion(reflect 여부) 판단에 동일 함수를 재사용한다.
 - `prev_best_cv`가 없으면(첫 attempt) label = `neutral`, gain = null.
-- 실패 attempt(`error_trace` 존재)는 label = `error`, gain = null. 정적 검증 실패 외에도 세 가지 결정적 누수 가드가 `ValueError`로 error를 유발한다: (1) 완벽점수 가드 — `cv_score`가 임계(`_LEAK_PERFECT_HIGH=0.9999`/`_LEAK_PERFECT_LOW=1e-9`)를 넘으면 target leakage 의심, (2) 회귀 trivial-baseline 비율 가드(issue #4) — `regression_error` 메트릭에서 train-fold 타깃 평균만 예측하는 baseline보다 10배 이상 좋으면(`_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO`, 2026-08 100→10 하향) 스케일/타깃 누수 의심, (3) preprocess 타깃 누수 가드(`_check_preprocess_target_leak`) — fold0에서 `preprocess`를 실제 valid와 마스킹된 valid 양쪽으로 실행해 결과가 다르면(=valid 타깃을 직접 읽음) 확정 error. 정적 AST 가드(`evaluator/contract.py:_preprocess_reads_valid_target`)가 코드 생성 단계에서 1차로 걸러내지만 우회 가능해, (3)의 런타임 동등성 검사가 본체다(decisions.md ADR-025).
+- 실패 attempt(`error_trace` 존재)는 label = `error`, gain = null. 정적 검증 실패 외에도 세 가지 결정적 누수 가드가 `ValueError`로 error를 유발한다:
+(1) 완벽점수 가드 — `cv_score`가 임계(`_LEAK_PERFECT_HIGH=0.9999`/`_LEAK_PERFECT_LOW=1e-9`)를 넘으면 target leakage 의심, (2) 회귀
+trivial-baseline 비율 가드(issue #4) — `regression_error` 메트릭에서 train-fold 타깃 평균만 예측하는 baseline보다 10배 이상
+좋으면(`_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO`, 2026-08 100→10 하향) 스케일/타깃 누수 의심, (3) preprocess 타깃 누수
+가드(`_check_preprocess_target_leak`) — fold0에서 `preprocess`를 실제 valid와 마스킹된 valid 양쪽으로 실행해 결과가 다르면(=valid 타깃을 직접 읽음) 확정
+error. 정적 AST 가드(`evaluator/contract.py:_preprocess_reads_valid_target`)가 코드 생성 단계에서 1차로 걸러내지만 우회 가능해, (3)의 런타임 동등성 검사가
+본체다(decisions.md ADR-025).
 
-승격 게이트는 label 계산과 별개다. 후보는 cross-seed paired 재현(seed만 바꾼 CV, seed 불변 누수엔 장님) + audit holdout(dummy target으로 실제 추론 조건 재현, 현재 best 대비 악화면 `holdout_regressed=True`) 양쪽을 통과해야 `raw.pipelines`에 승격된다(`cycle/promotion.py:confirm_and_measure`, decisions.md ADR-024). holdout은 예전엔 기록만 됐지만 지금은 `confirmed = confirmed and not holdout_regressed`로 차단 게이트다.
-- `is_noop_tie`(BON-239): `cv_score`가 직전 best와 부동소수 완전 일치하면 patch hook이 base pipeline으로 위임돼 유효 변경이 없었다는 신호. label 자체를 바꾸진 않고 attempt에 플래그로 남는다.
+승격 게이트는 label 계산과 별개다. 후보는 cross-seed paired 재현(seed만 바꾼 CV, seed 불변 누수엔 장님) + audit holdout(dummy target으로 실제 추론 조건 재현,
+현재 best 대비 악화면 `holdout_regressed=True`) 양쪽을 통과해야 `raw.pipelines`에 승격된다(`cycle/promotion.py:confirm_and_measure`,
+decisions.md ADR-024). holdout은 예전엔 기록만 됐지만 지금은 `confirmed = confirmed and not holdout_regressed`로 차단 게이트다.
+- `is_noop_tie`(BON-239): `cv_score`가 직전 best와 부동소수 완전 일치하면 patch hook이 base pipeline으로 위임돼 유효 변경이 없었다는 신호. label 자체를
+바꾸진 않고 attempt에 플래그로 남는다.
 
 Reflector는 이 숫자를 보고 **왜 그런 결과가 나왔는지**(교훈 본문)만 쓴다. 정성 판정은 `reflector_label`로 분리.
 
 ## 5. Coder 컨트랙트 (class Patch)
 
-Coder는 `class Patch`를 생성한다. action_type에 따라 허용된 훅(hook)만 구현하고, 나머지는 현재 best pipeline이 제공한다. IO·k-fold 분할·시드·CV 루프·파라미터 선정은 Evaluator가 소유하므로 Coder 코드에 등장하지 않는다.
+Coder는 `class Patch`를 생성한다. action_type에 따라 허용된 훅(hook)만 구현하고, 나머지는 현재 best pipeline이 제공한다. IO·k-fold 분할·시드·CV 루프·파라미터
+선정은 Evaluator가 소유하므로 Coder 코드에 등장하지 않는다.
 
 ```python
 import polars as pl
@@ -340,7 +358,8 @@ def ensemble_spec(self, ctx) -> dict | None
 
 ### `ensemble_spec` — 선언형 앙상블 프리미티브 (`ensemble`/`bootstrap`만 허용, decisions.md ADR-023)
 
-자유형 wrapper 클래스(직접 `fit`/`predict` 구현) 대신 "무엇을 조합할지"만 선언한다. 정의돼 있으면(non-None) `build_model`/`param_candidates` 대신 harness가 멤버 생성·적합·결합을 전담한다 — `preselect_params`는 하이퍼파라미터가 이미 스펙 안에 있으므로 빈 dict를 반환한다.
+자유형 wrapper 클래스(직접 `fit`/`predict` 구현) 대신 "무엇을 조합할지"만 선언한다. 정의돼 있으면(non-None) `build_model`/`param_candidates` 대신
+harness가 멤버 생성·적합·결합을 전담한다 — `preselect_params`는 하이퍼파라미터가 이미 스펙 안에 있으므로 빈 dict를 반환한다.
 
 ```python
 def ensemble_spec(self, ctx) -> dict | None:
@@ -382,9 +401,15 @@ for tr_idx, va_idx in folds(seed):
 cv_score = mean(scores); cv_fold_var = var(scores)
 ```
 
-검증 게이트(실행 전): `class Patch` 존재 여부, 허용 import만, 금지 호출(`eval`/`exec`/`open`) 없음, 구현 훅의 인자 수(arity) 일치, `Patch.action_type == 배정 action_type`, `n_jobs`/`thread_count` 등에 0 이하 리터럴(전체 코어 요청) 없음(ADR-029). 위반 시 최대 2회 재생성(`cycle/run.py:_MAX_CODE_RETRIES`), 그래도 실패면 `error_trace` 기록 후 Reflect로 진행.
+검증 게이트(실행 전): `class Patch` 존재 여부, 허용 import만, 금지 호출(`eval`/`exec`/`open`) 없음, 구현 훅의 인자 수(arity) 일치,
+`Patch.action_type == 배정 action_type`, `n_jobs`/`thread_count` 등에 0 이하 리터럴(전체 코어 요청) 없음(ADR-029). 위반 시 최대 2회
+재생성(`cycle/run.py:_MAX_CODE_RETRIES`), 그래도 실패면 `error_trace` 기록 후 Reflect로 진행.
 
-격리 실행: `runtime/isolate.py`가 tmpdir에 source/input/train 파일을 쓰고 `runtime/runner.py`를 subprocess로 실행한다. runner 내부에서는 생성 코드를 `exec`로 로드한다. 프로덕션(Linux, CAP_SYS_ADMIN 있음)에서는 preexec_fn에서 `os.unshare(os.CLONE_NEWNET)`으로 network namespace를 분리해 subprocess egress를 차단하고, `RLIMIT_AS`(VSZ, ADR-027)를 병행한다(ADR-017). CAP_SYS_ADMIN 없는 폴백(로컬 mac 등)은 env allowlist + rlimit + timeout만 적용하고 네트워크 차단은 조용히 스킵한다. 파일시스템 sandbox(예: tmpdir 밖 접근 차단)는 아직 미구현이다. 부모의 2초 폴링 루프가 RSS·CPU 시간을 직접 감시해 상한(각각 4GiB, 900초 기본값) 초과 시 명시적 원인으로 선제 kill한다 — `RLIMIT_CPU`는 폴링이 놓쳤을 때만 발동하는 soft<hard 백스톱일 뿐이다(ADR-028).
+격리 실행: `runtime/isolate.py`가 tmpdir에 source/input/train 파일을 쓰고 `runtime/runner.py`를 subprocess로 실행한다. runner 내부에서는 생성
+코드를 `exec`로 로드한다. 프로덕션(Linux, CAP_SYS_ADMIN 있음)에서는 preexec_fn에서 `os.unshare(os.CLONE_NEWNET)`으로 network namespace를 분리해
+subprocess egress를 차단하고, `RLIMIT_AS`(VSZ, ADR-027)를 병행한다(ADR-017). CAP_SYS_ADMIN 없는 폴백(로컬 mac 등)은 env allowlist + rlimit
++ timeout만 적용하고 네트워크 차단은 조용히 스킵한다. 파일시스템 sandbox(예: tmpdir 밖 접근 차단)는 아직 미구현이다. 부모의 2초 폴링 루프가 RSS·CPU 시간을 직접 감시해 상한(각각
+4GiB, 900초 기본값) 초과 시 명시적 원인으로 선제 kill한다 — `RLIMIT_CPU`는 폴링이 놓쳤을 때만 발동하는 soft<hard 백스톱일 뿐이다(ADR-028).
 
 ## 6. 분석 뷰 (dbt 아님 — `store/schema.sql` 내 SQL view)
 
