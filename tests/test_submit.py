@@ -33,9 +33,6 @@ from bin.submit import (
 )
 
 
-# ---------------------------------------------------------------------------
-# (a) _load_best_code
-# ---------------------------------------------------------------------------
 
 def _conn_with(row) -> MagicMock:
     conn = MagicMock()
@@ -125,9 +122,6 @@ def test_explicit_attempt_id_skips_hash_verification() -> None:
     assert sha is None
 
 
-# ---------------------------------------------------------------------------
-# _load_pipeline sha256 무결성 검증
-# ---------------------------------------------------------------------------
 
 def test_load_pipeline_raises_on_sha256_mismatch() -> None:
     """MinIO에서 받은 best_pipeline.py가 신뢰 해시와 다르면 exec 전에 raise한다."""
@@ -177,9 +171,6 @@ def test_load_pipeline_default_path_preserves_class_attributes() -> None:
     assert pipeline.build_model({}, None).predict() == "ensembled"
 
 
-# ---------------------------------------------------------------------------
-# attempt_only는 MinIO best_pipeline.py를 참조하지 않아야 한다
-# ---------------------------------------------------------------------------
 
 def test_load_pipeline_attempt_only_skips_minio_download() -> None:
     """attempt_only=True면 download_best_pipeline을 아예 호출하지 않는다."""
@@ -236,13 +227,11 @@ def test_load_pipeline_attempt_only_preserves_class_attributes() -> None:
     assert pipeline.build_model({}, None) == ["low", "high"]
 
 
-# ---------------------------------------------------------------------------
 # attempt_only + base_source — #80 회귀 테스트
 #
 # param_candidates만 오버라이드하는 attempt(하이퍼파라미터 탐색)를 base 없이
 # 제출하면 build_model/preprocess 등 나머지 hook이 BasePipeline 기본값으로
 # 떨어져 cv_score와 무관한(대개 훨씬 나쁜) 예측을 낸다 — s4e12 실사고(#80).
-# ---------------------------------------------------------------------------
 
 def test_load_pipeline_attempt_only_with_base_source_inherits_unoverridden_hooks() -> None:
     """base_source가 있으면 patch가 오버라이드하지 않은 hook은 base에서 온다."""
@@ -296,9 +285,6 @@ def test_load_pipeline_attempt_only_base_source_without_patch_falls_back() -> No
     assert type(pipeline.base) is BasePipeline
 
 
-# ---------------------------------------------------------------------------
-# cycle.materialize.replay_best_pipeline
-# ---------------------------------------------------------------------------
 
 def test_replay_best_pipeline_folds_history_in_run_ts_order() -> None:
     from cycle.materialize import replay_best_pipeline
@@ -369,9 +355,7 @@ def test_replay_best_pipeline_strict_sha_raises_on_mismatch() -> None:
         replay_best_pipeline(conn, "s4e1", strict_sha=True)
 
 
-# ---------------------------------------------------------------------------
 # cycle.materialize.load_base_snapshot — #89
-# ---------------------------------------------------------------------------
 
 def test_load_base_snapshot_prefers_materialized_code() -> None:
     import hashlib
@@ -433,9 +417,6 @@ def test_load_base_snapshot_passes_before_run_ts() -> None:
     assert cutoff in params
 
 
-# ---------------------------------------------------------------------------
-# _bagged_predict seed bagging
-# ---------------------------------------------------------------------------
 
 def _bagging_ctx():
     from evaluator.harness import PipelineContext
@@ -486,9 +467,7 @@ def test_bagged_predict_uses_binary_proba_for_classification_metric() -> None:
     assert list(result) == [0.8, 0.4]
 
 
-# ---------------------------------------------------------------------------
 # _fit_full_train — 생성자 early-stopping 파라미터 폴백 (#71)
-# ---------------------------------------------------------------------------
 
 def test_bagged_predict_retries_without_early_stopping_params() -> None:
     """eval_set 없이 fit이 죽으면 early-stopping 키를 벗긴 params로 재시도한다."""
@@ -559,9 +538,6 @@ def test_fit_full_train_no_early_stopping_keys_reraises_immediately() -> None:
     assert pipeline.build_model.call_count == 1
 
 
-# ---------------------------------------------------------------------------
-# (b) _predict_raw
-# ---------------------------------------------------------------------------
 
 def test_predict_raw_binary_proba_calls_predict_proba() -> None:
     model = MagicMock()
@@ -582,9 +558,6 @@ def test_predict_raw_non_proba_calls_predict(metric_class: str) -> None:
     assert list(result) == [1, 0]
 
 
-# ---------------------------------------------------------------------------
-# (c) _submission_value_col
-# ---------------------------------------------------------------------------
 
 def test_submission_value_col_uses_sample_second_column() -> None:
     assert _submission_value_col(["id", "target_prob"], "target") == "target_prob"
@@ -594,9 +567,6 @@ def test_submission_value_col_falls_back_when_missing() -> None:
     assert _submission_value_col(["id"], "target") == "target"
 
 
-# ---------------------------------------------------------------------------
-# (d) _impute_train_test_median
-# ---------------------------------------------------------------------------
 
 def test_impute_train_test_median_fills_both() -> None:
     train_np = np.array([[1.0, np.nan], [3.0, 4.0], [5.0, 6.0]])
@@ -620,9 +590,6 @@ def test_impute_train_test_median_noop_when_no_nan() -> None:
     assert np.array_equal(test_out, test_np)
 
 
-# ---------------------------------------------------------------------------
-# _dummy_target_value
-# ---------------------------------------------------------------------------
 # 타입만 맞춘 placeholder(예: 0)는 Patch가 타깃을 exhaustive 매핑(replace_strict without
 # default)으로 인코딩할 때 매핑에 없는 값이라 크래시한다(s5e7 실측). 더미값은 반드시
 # train에 실재하는 값이어야 어떤 인코딩 로직과도 호환된다.

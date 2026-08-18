@@ -1,3 +1,4 @@
+"""store.fingerprint.compute의 데이터셋 지문(키 완전성, task_type별 통계) 단위 테스트."""
 import numpy as np
 import polars as pl
 import pytest

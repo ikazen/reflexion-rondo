@@ -1,3 +1,4 @@
+"""runtime.runner._load_best_pipeline_class의 소스 로드 및 실패 시 fail-hard 동작 단위 테스트."""
 from __future__ import annotations
 
 import pytest

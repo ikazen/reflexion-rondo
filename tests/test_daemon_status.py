@@ -1,3 +1,4 @@
+"""bin.run_daemon._final_status의 사이클 배치 결과 -> 최종 상태 매핑 단위 테스트."""
 from bin.run_daemon import _final_status
 
 

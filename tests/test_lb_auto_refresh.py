@@ -17,7 +17,6 @@ def _now() -> datetime:
     return datetime(2026, 8, 2, 12, 0, 0, tzinfo=timezone.utc)
 
 
-# --- _submission_refresh_due 백오프 ---
 
 def test_refresh_due_when_never_checked():
     assert _submission_refresh_due(_now(), None, _now()) is True
@@ -79,7 +78,6 @@ def test_refresh_due_naive_and_aware_inputs_agree_on_result():
     )
 
 
-# --- _sweep_stale_submissions ---
 
 def test_sweep_respects_module_level_rate_gate(monkeypatch):
     """직전 스윕 이후 SWEEP_INTERVAL이 안 지났으면 DB 조회 자체를 안 한다."""
@@ -153,7 +151,6 @@ def test_sweep_refreshes_submitting_past_timeout_window(monkeypatch):
     mock_refresh.assert_called_once_with(conn, "sub-1")
 
 
-# --- refresh_submission_row (bin/api.py) ---
 
 def _row_conn(row):
     conn = MagicMock()
@@ -212,7 +209,6 @@ def test_refresh_submission_row_error_status_records_error_field():
     assert "kaggle: error" in rec["error"]
 
 
-# --- cv↔LB 발산 트립와이어 ---
 # cv는 개선인데 LB가 악화된 제출을 감지해 원천 pipeline을 격리하고
 # 해당 대회 auto-submit을 중단한다.
 
@@ -346,7 +342,6 @@ def test_refresh_submission_row_complete_without_divergence_does_not_pause():
     assert len(comp_calls) == 0
 
 
-# --- auto_submit 일시중단 게이트 ---
 
 def test_auto_submit_skips_paused_competition(monkeypatch):
     import bin.api as api_mod
@@ -369,7 +364,6 @@ def test_auto_submit_skips_paused_competition(monkeypatch):
     assert "auto-submit paused" in body["skipped"][0]["reason"]
 
 
-# --- GET /api/cv-lb-calibration ---
 
 def test_cv_lb_calibration_endpoint_returns_rows():
     from bin.api import DaemonState, create_app

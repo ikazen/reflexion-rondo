@@ -1,3 +1,4 @@
+"""evaluator.metrics.get의 메트릭 레지스트리(sklearn 대조, 부호 규약) 단위 테스트."""
 import numpy as np
 import pytest
 from sklearn.metrics import root_mean_squared_error

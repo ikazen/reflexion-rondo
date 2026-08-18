@@ -81,7 +81,7 @@ def test_fit_blend_returns_nonnegative_weights():
     assert np.isfinite(intercept)
 
 
-# --- compute_and_store_blend (#75 — 승격 시점 자동 배선) ---
+# compute_and_store_blend (#75 — 승격 시점 자동 배선)
 
 def _train_df(n: int = 50) -> pl.DataFrame:
     rng = np.random.default_rng(0)
@@ -133,7 +133,7 @@ def test_compute_and_store_blend_succeeds_and_upserts():
     assert upsert_calls[0].args[1][0] == "s4e1"
 
 
-# --- _encode_target (#145 — s6e3 실측 회귀: 문자열 이진 타깃 캐스팅 실패) ---
+# _encode_target (#145 — s6e3 실측 회귀: 문자열 이진 타깃 캐스팅 실패)
 
 def test_encode_target_passes_through_numeric():
     train = pl.DataFrame({"y": [0, 1, 1, 0]})

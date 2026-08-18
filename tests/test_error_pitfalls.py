@@ -1,3 +1,4 @@
+"""cycle.error_pitfalls의 에러 시그니처 정규화(normalize_error)와 pitfall 조회 단위 테스트."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch

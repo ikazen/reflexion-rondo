@@ -121,7 +121,7 @@ def test_error_trace_forces_error_label_and_skips_significance_check():
     mock_sig.assert_not_called()
 
 
-# --- confirm 결과를 bandit/lesson 보상에 반영 (#164) ---
+# confirm 결과를 bandit/lesson 보상에 반영 (#164)
 #
 # defer_promotion=False(직접모드)에서만 run_attempt_core 자신이 confirm_and_measure를
 # 돌린다. 로컬 유의성(is_significant_gain)만으로 확정된 label="jump"가 나중에

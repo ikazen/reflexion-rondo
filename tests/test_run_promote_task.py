@@ -119,7 +119,6 @@ def test_promote_task_imports_by_slug_not_full_id() -> None:
         )
 
 
-# --- A-1 / A-2 --------------------------------------------------------------
 
 _FULL_ID = "playground-series-s4e1"
 _SLUG = "s4e1"
@@ -322,9 +321,6 @@ def test_super_cycle_context_deleted_after_read() -> None:
     assert len(delete_calls) == 1
 
 
-# ---------------------------------------------------------------------------
-# merge-verify eval
-# ---------------------------------------------------------------------------
 
 def test_merge_verify_matching_cv_allows_promotion() -> None:
     """병합본 cv_score가 winner cv_score와 (허용오차 내) 일치하면 정상 승격된다."""
@@ -438,10 +434,8 @@ def test_merge_verify_eval_error_blocks_promotion() -> None:
     assert conn.upload_best_pipeline_mock.call_count == 0
 
 
-# ---------------------------------------------------------------------------
-# promote 시점 submission CSV 캐싱 — ops-vm 아침 CPU 스파이크 원인
-# 제거(auto-submit이 이 자리에서 fit하는 대신 캐시를 재사용하도록)
-# ---------------------------------------------------------------------------
+# promote 시점 submission CSV 캐싱 — ops-vm 아침 CPU 스파이크 원인 제거
+# (auto-submit이 이 자리에서 fit하는 대신 캐시를 재사용하도록)
 
 def test_submission_csv_cached_using_global_best_attempt() -> None:
     """캐싱은 이번 super-cycle의 승격 winner가 아니라 대회 전역 best attempt
@@ -523,9 +517,7 @@ def test_submission_csv_caching_failure_does_not_block_promotion() -> None:
     assert conn.upload_submission_csv_mock.call_count == 0
 
 
-# ---------------------------------------------------------------------------
 # bandit/lesson 보상 신호를 confirm 결과와 연동 (#164)
-# ---------------------------------------------------------------------------
 # winner row(_ATTEMPT_ROWS[0])는 label="jump" action_type="model_swap" gain=0.05.
 
 def test_confirm_rejected_jump_corrects_bandit_to_regression() -> None:

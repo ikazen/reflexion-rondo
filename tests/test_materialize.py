@@ -1,3 +1,4 @@
+"""cycle.materialize.materialize_best_pipeline의 hook 병합 및 undefined-name 가드 단위 테스트."""
 from __future__ import annotations
 
 import ast
@@ -160,7 +161,6 @@ def test_toplevel_helpers_appear_before_class():
     assert helper_pos < class_pos
 
 
-# --- _validate_materialized ---
 
 def test_validate_materialized_valid_source():
     _validate_materialized(_PATCH)  # should not raise
@@ -185,7 +185,6 @@ def test_materialize_invalid_merge_raises():
         materialize_best_pipeline(broken_base, _PATCH)
 
 
-# --- undefined-name guard ---
 # 재현: best_pipeline.py에서 build_model이 WeightedEnsemble(...)을 호출하는데
 # 그 클래스 정의가 파일 어디에도 없어 NameError가 반복 발생했다.
 
@@ -324,7 +323,6 @@ def test_undefined_name_for_with_except_walrus_binding_ok():
     _validate_materialized(source)  # should not raise
 
 
-# --- optional-dependency 가드 보존 ---
 # try/except로 조건부 바인딩하는 패턴
 # (`try: import catboost; FLAG=True except ImportError: FLAG=False`)이
 # _extract_toplevel_helpers의 named-helper 분류(class/def/assign)에 안 걸려
@@ -381,7 +379,6 @@ def test_other_toplevel_statements_deduplicated_across_base_and_patch():
     assert result.count("CATBOOST_AVAILABLE = True") == 1
 
 
-# --- helper/member name collision ---
 
 _BASE_WITH_ENCODE = textwrap.dedent("""
     def _encode(x):
@@ -454,7 +451,6 @@ def test_no_collision_no_warning(caplog):
     assert not any("collision" in rec.message for rec in caplog.records)
 
 
-# --- nested class members in Patch (ensemble wrapper 패턴) ---
 # 재현: ensemble action_type이 build_model에서 참조하는 wrapper 클래스를 Patch 안에
 # 중첩 정의하는 패턴 — cross-seed confirm까지 통과한 뒤 materialize 단계에서만
 # 그 클래스가 사라져 merge-verify가 AttributeError로 크래시했다(#83).

@@ -29,7 +29,6 @@ def _c(sim: float, avg_gain: float, lesson_type: str = "normal", seed: int = 0) 
     }
 
 
-# --- _apply_impact_score ---
 
 def test_impact_same_sim_high_gain_wins():
     """동일 sim, avg_gain 높은 쪽의 final score가 더 크다."""
@@ -89,7 +88,6 @@ def test_impact_score_bounded():
         assert 0.8 * 0.5 <= c["score"] <= 0.8 * 1.5 + 1e-9
 
 
-# --- _mmr_rerank ---
 
 def test_mmr_first_is_top_score():
     """첫 번째 선택은 항상 score 최고 후보."""

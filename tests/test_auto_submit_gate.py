@@ -34,7 +34,6 @@ def _conn_for(metric_sign, candidate_row, baseline_row):
     return conn
 
 
-# --- _submission_gain_significant ---
 
 def test_noise_level_gain_is_not_significant():
     """s6e7 07-25 재현: cv 차이가 fold_std의 0.07배뿐이면 유의하지 않다."""
@@ -87,7 +86,6 @@ def test_missing_attempt_data_fails_open():
     assert _submission_gain_significant(conn, "comp", "cand", "base")
 
 
-# --- /api/submissions/auto 엔드포인트 — skip 사유 배선 확인 ---
 
 def _client_for_auto_submit(monkeypatch, *, active_competitions, best, last, significant):
     import bin.api as api_mod
