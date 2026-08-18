@@ -1,3 +1,4 @@
+"""cycle.stagnation.detect_stagnation의 정체 판정(연속 에러/jump 리셋) 단위 테스트."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock

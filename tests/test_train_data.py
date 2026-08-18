@@ -63,9 +63,6 @@ def test_drop_cols_applied():
     assert result == "dropped"
 
 
-# ---------------------------------------------------------------------------
-# EXTRA_TRAIN_PATHS 병합
-# ---------------------------------------------------------------------------
 
 def test_no_extra_paths_omits_is_original_column():
     """EXTRA_TRAIN_PATHS 미설정(기본값 [])이면 is_original 컬럼조차 추가하지 않는다 —
@@ -110,9 +107,7 @@ def test_extra_paths_selects_only_common_columns():
     assert result["engineered"].to_list() == [9, 9, None]
 
 
-# ---------------------------------------------------------------------------
 # MAX_TRAIN_ROWS (#84 — s4e7 11.5M행 OOM 대응)
-# ---------------------------------------------------------------------------
 
 def _big_binary_df(n: int = 1000, minority_frac: float = 0.2) -> pl.DataFrame:
     n_minority = int(n * minority_frac)

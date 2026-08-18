@@ -1,3 +1,4 @@
+"""agents.coder 코드 추출(_extract_code)과 generate_code 호출 배선 단위 테스트."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -145,7 +146,6 @@ def test_generate_code_bootstrap_contract_declares_available_libs() -> None:
     assert "NOT available: tabpfn" in system_msg
 
 
-# --- action_type별 허용 hook 동적 강조 (생성 이전 가드) ---
 
 def test_generate_code_injects_action_type_specific_hook_directive() -> None:
     """user 메시지에 이번 호출의 action_type이 허용하는 hook만 명시돼야 한다.
@@ -187,7 +187,6 @@ def test_generate_code_hook_directive_matches_contract_source_of_truth() -> None
     assert str(expected) in user_msg
 
 
-# --- multiclass 라벨 왕복(round-trip) 가드 문구 ---
 
 def test_reflexion_contract_warns_about_multiclass_label_roundtrip() -> None:
     """s6e7 실측(45건): 타깃을 정수로 인코딩해놓고 postprocess에서 원복 안 해
@@ -197,7 +196,7 @@ def test_reflexion_contract_warns_about_multiclass_label_roundtrip() -> None:
     assert "Mix of label input types" in _BOOTSTRAP_CONTRACT
 
 
-# --- #74: s6e7 ensemble action_type 70% 크래시 가드 문구 ---
+# #74: s6e7 ensemble action_type 70% 크래시 가드 문구
 
 def test_contracts_replace_strict_example_has_default() -> None:
     """replace_strict 예시 자체에 default= 가 없으면 Coder가 그대로 베껴 unseen

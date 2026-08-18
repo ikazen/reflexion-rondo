@@ -1,3 +1,4 @@
+"""cycle.action_optimizer 밴딧(assign_super_cycle_actions/update_bandit/get_action_prior) 단위 테스트."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -21,7 +22,6 @@ def _conn(rows: list[tuple] | None = None) -> MagicMock:
     return mock
 
 
-# --- assign_super_cycle_actions ---
 
 def test_assign_returns_n_attempts():
     conn = _conn()
@@ -82,7 +82,6 @@ def test_assign_seed_makes_deterministic():
     assert r1 == r2
 
 
-# --- update_bandit ---
 
 def _update(label: str, gain: float | None, error: str | None, action: str = "feature_engineering"):
     conn = _conn()
@@ -153,7 +152,6 @@ def test_update_unknown_action_type_skips_db():
     conn.execute.assert_not_called()
 
 
-# --- get_action_prior ---
 
 def test_get_action_prior_returns_all_action_types():
     result = get_action_prior(_conn(), "s4e1")

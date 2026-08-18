@@ -1,3 +1,4 @@
+"""evaluator.harness의 평가 파이프라인 — 유의성 검정, 조기종료, 누수 가드, ensemble_spec 등 단위 테스트."""
 from __future__ import annotations
 
 import pytest
@@ -56,7 +57,6 @@ class _TwoCandidates(BasePipeline):
         return [{"max_iter": 1}, {"max_iter": 200}]
 
 
-# --- is_significant_gain ---
 
 def test_is_significant_gain_none_is_false():
     assert not is_significant_gain(None, 0.01)
@@ -90,7 +90,6 @@ def test_is_significant_gain_zero_fold_var_zero_gain():
     assert not is_significant_gain(0.0, 0.0)
 
 
-# --- is_significant_gain paired per-fold delta ---
 
 def test_paired_mode_detects_consistent_small_improvement():
     """절대 gain은 작아도 모든 fold에서 일관되게 개선되면(분산 작음) paired 검정은 유의로 본다."""
@@ -158,7 +157,6 @@ def test_label_z_imported_from_settings():
     assert settings_LABEL_Z == harness_LABEL_Z
 
 
-# --- PipelineContext.best_params ---
 
 def test_pipeline_context_best_params_defaults_to_none():
     assert _ctx().best_params is None
@@ -172,7 +170,6 @@ def test_pipeline_context_best_params_settable():
     assert ctx.best_params == {"max_depth": 4}
 
 
-# --- _fit_with_early_stopping ---
 
 _XTR, _YTR, _XVA, _YVA = np.zeros((3, 2)), np.zeros(3), np.zeros((2, 2)), np.zeros(2)
 
@@ -274,7 +271,7 @@ def test_fit_early_stopping_falls_back_on_exception():
     assert model.fit_calls == [{}]  # eval_set 시도 실패 후 plain fit로 폴백, 1회만 기록
 
 
-# --- _build_model_safe (#74 후속: stale kwarg 프롬프트 경고가 안 먹혀 런타임 안전망 추가) ---
+# _build_model_safe — #74 후속: stale kwarg 프롬프트 경고가 안 먹혀 런타임 안전망 추가
 
 class _BuildModelRejectsKwarg:
     """LogisticRegression(multi_class=...) 흉내 — 특정 kwarg가 있으면 TypeError."""
@@ -343,7 +340,6 @@ def test_build_model_safe_reraises_when_retries_exhausted():
     assert pipeline.calls == _MAX_BUILD_MODEL_RETRIES
 
 
-# --- EvalResult.selected_params 배관 ---
 
 def test_evaluate_pipeline_returns_selected_params():
     """preselect_params가 고른 params가 EvalResult까지 흘러나와야 ctx.best_params의
@@ -357,7 +353,6 @@ def test_eval_result_selected_params_defaults_to_empty_dict():
     assert result.selected_params == {}
 
 
-# --- EvalResult.oof_preds / collect_oof ---
 
 def test_collect_oof_false_by_default_leaves_oof_preds_none():
     result = evaluate_pipeline(BasePipeline(), _make_df(), _ctx())
@@ -374,7 +369,6 @@ def test_collect_oof_true_fills_every_row_no_nan():
     assert not any(math.isnan(v) for v in result.oof_preds)
 
 
-# --- preselect ---
 
 def test_preselect_single_candidate_returned_directly():
     result = preselect_params(_SingleCandidate(), _make_df(), _ctx())
@@ -426,7 +420,7 @@ def test_harness_regression_rmse_scores_without_error():
     assert np.isfinite(result.cv_score)
 
 
-# --- rmsle 이중 log 채점 회귀 테스트 (s5e5 phantom cv 원인, 2026-07) ---
+# rmsle 이중 log 채점 회귀 테스트 (s5e5 phantom cv 원인, 2026-07)
 # preprocess가 타깃을 log1p로 변환하면, rmsle 스코어러(evaluator/metrics.py)가 그 위에
 # log1p를 한 번 더 적용해 이중 log 압축이 발생한다. harness는 반드시 변환 이전의 raw
 # 타깃으로 채점해야 하며, 파이프라인이 postprocess_predictions에서 expm1로 역변환하지
@@ -517,7 +511,6 @@ def test_preselect_params_scores_against_raw_target_not_log_transformed():
     assert result in pipeline.param_candidates(_ctx_rmsle())
 
 
-# --- 회귀 메트릭 phantom(구현 불가 수준 저점수) 방어 가드 ---
 
 class _ScaleLeakPatch:
     """preprocess가 (작은 노이즈만 섞은) 타깃 사본을 feature로 흘리는 스케일 누수 패치.
@@ -572,7 +565,6 @@ def test_regression_phantom_guard_does_not_trip_on_honest_score():
     assert np.isfinite(result.cv_score)
 
 
-# --- degenerate 회귀 gain_vs_best 클립 가드 ---
 # rmse degenerate 예측(모델이 완전히 빗나간 상수를 반환하는 등)은 raise 가드(위)에
 # 걸리지 않으면서도 gain_vs_best를 비정상적으로 큰 음수로 만든다. 이 값이 그대로
 # reflection_impact에 흘러가면 전역 z-score(memory/retriever.py._global_gain_stats)를
@@ -619,7 +611,6 @@ def test_honest_regression_gain_is_not_clipped():
     assert result.gain_vs_best == pytest.approx(raw_delta)
 
 
-# --- gain_vs_best_relative: metric 스케일 정규화 ---
 
 def test_regression_error_gain_relative_is_scaled_by_baseline():
     """regression_error는 gain_vs_best_relative = gain_vs_best / baseline_cv 여야 한다."""
@@ -669,7 +660,6 @@ def test_preselect_evaluates_all_candidates():
     assert {p["tag"] for p in evaluated} == {"a", "b", "c"}
 
 
-# --- target leakage guard tests ---
 
 class _LeakyPatch:
     """feature_transform이 target 컬럼을 drop하지 않는 패치."""
@@ -897,7 +887,7 @@ def test_logloss_tripwire_raises_on_perfect_leak():
         evaluate_pipeline(pipeline, df, ctx)
 
 
-# --- _check_preprocess_target_leak (#97, GH #96) ---
+# _check_preprocess_target_leak (#97, GH #96)
 # s5e10 확정 승격 파이프라인이 preprocess에서 valid[target]으로 quantile bin을 만들어
 # CV가 2.6배 "개선"됐지만 LB는 5배 악화됐다. feature_transform과 달리 preprocess는
 # _mask_target을 못 받으므로(타깃 변환이 정당한 용도라) 별도 동등성 검사로 잡는다.
@@ -962,7 +952,6 @@ def test_preprocess_crash_on_masked_target_is_treated_as_leak():
         evaluate_pipeline(pipeline, df, _ctx_rmse())
 
 
-# --- is_noop_tie ---
 
 def test_no_prev_best_is_not_noop_tie():
     """prev_best 없음(첫 attempt)은 no-op tie 판정 대상이 아니다."""
@@ -997,7 +986,6 @@ def test_different_prev_best_is_not_noop_tie():
     assert result.is_noop_tie is False
 
 
-# --- split_audit_holdout ---
 
 def test_split_audit_holdout_deterministic():
     """같은 입력 → 항상 같은 분리 (고정 seed)."""
@@ -1076,7 +1064,7 @@ def test_tripwire_rejects_perfect_classification_score():
         evaluate_pipeline(pipeline, df, ctx)
 
 
-# --- ensemble_spec: 선언형 앙상블 (#74) ---
+# ensemble_spec: 선언형 앙상블 (#74)
 # #42 fix 이후에도 자유형 ensemble wrapper 클래스의 크래시율이 70%→55%에서
 # 멈춘 근본 원인(harness가 볼 수 없는 exec된 클래스 몸체 내부의 super() 오용·
 # stale kwarg·하위 모델 재구성 실패)에 대한 구조적 대안 — LLM은 "무엇을 조합할지"만
@@ -1186,7 +1174,6 @@ def test_fit_predict_ensemble_regression_end_to_end():
     assert np.corrcoef(preds, yva)[0, 1] > 0.8
 
 
-# --- ensemble_spec 배선: PatchedPipeline / preselect_params / evaluate_pipeline ---
 
 class _EnsembleSpecPatch:
     action_type = "ensemble"

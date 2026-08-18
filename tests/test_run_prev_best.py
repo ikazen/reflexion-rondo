@@ -1,3 +1,4 @@
+"""cycle.run._prev_best/_prev_best_params/_prev_best_fold_scores의 확정 pipeline 조회 단위 테스트."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -41,7 +42,6 @@ def test_pipelines_query_uses_pipelines_table():
     assert "raw.pipelines" in sql
 
 
-# --- _prev_best_params ---
 
 def test_prev_best_params_returns_dict_row():
     conn = _conn_seq(({"max_depth": 4},))
@@ -77,7 +77,6 @@ def test_prev_best_params_joins_attempts_and_pipelines():
     assert "raw.attempts" in sql
 
 
-# --- _prev_best_fold_scores ---
 
 def test_prev_best_fold_scores_returns_list_row():
     conn = _conn_seq(([0.9, 0.91, 0.89],))
@@ -115,7 +114,7 @@ def test_prev_best_fold_scores_joins_attempts_and_pipelines():
     assert "raw.attempts" in sql
 
 
-# --- invalid_reason 격리 필터 (#99, GH #96) ---
+# invalid_reason 격리 필터 (#99, GH #96)
 # 누수로 격리(bin/quarantine_leaks.py)된 pipeline은 baseline/advisory 어디에도
 # 쓰이면 안 된다 — 부풀려진 cv_score가 다시 게이트를 오염시키기 때문.
 

@@ -95,7 +95,6 @@ def test_make_preexec_returns_callable_that_applies_budget() -> None:
     )
 
 
-# --- eval_isolated: subprocess 격리 경계 필드 전달 ---
 #
 # eval_isolated는 내부적으로 subprocess.run 대신 Popen + RSS 폴링 루프를 쓴다
 # (runner exited rc=-9 OOM kill이 평균 773초를 태우고서야 죽는 것을 워치독으로

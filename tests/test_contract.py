@@ -1,3 +1,4 @@
+"""evaluator.contract.validate_patch 정적 가드(pandas-only API, 무제한 병렬성, undefined-name 등) 단위 테스트."""
 from __future__ import annotations
 
 import pytest
@@ -121,7 +122,6 @@ def test_allowed_hooks_covers_all_action_types():
     )
 
 
-# --- pandas-only API 정적 금지 ---
 
 @pytest.mark.parametrize("attr", [
     "groupby", "map_dict", "take", "apply", "iterrows", "applymap", "get_dummies",
@@ -158,7 +158,6 @@ def test_value_counts_not_forbidden():
     assert not any("pandas-only API" in e for e in errs)
 
 
-# --- 무제한 병렬성(n_jobs=-1 등) 정적 거부 ---
 
 def _build_model_patch(model_call: str) -> str:
     return (
@@ -210,7 +209,6 @@ def test_unbounded_parallelism_via_variable_not_flagged():
     assert not any("unbounded parallelism" in e for e in errs)
 
 
-# --- candidate patch 자체의 undefined-name 검사 ---
 
 def test_undefined_name_in_hook_caught():
     """hook 안에서 자기 소스 어디에도 정의되지 않은 이름을 참조하면 에러.
@@ -249,7 +247,7 @@ def test_undefined_name_resolved_via_import_or_toplevel_helper_ok():
     assert not any("undefined name" in e for e in errs)
 
 
-# --- preprocess valid-target 직접 참조 정적 가드 (#97, GH #96) ---
+# preprocess valid-target 직접 참조 정적 가드 (#97, GH #96)
 # s5e10 승격 패턴(valid[target]로 quantile bin 생성)을 재생성 왕복 전에 값싸게
 # 미리 걸러낸다. 본체는 evaluator.harness._check_preprocess_target_leak(런타임
 # 동등성 검사) — 이건 흔한 패턴에 대한 보조 lint.
@@ -329,7 +327,7 @@ def test_star_import_skips_undefined_name_check():
     assert not any("undefined name" in e for e in errs)
 
 
-# --- ensemble_spec 훅 (#74) ---
+# ensemble_spec 훅 (#74)
 
 _VALID_ENSEMBLE_SPEC = """
 class Patch:

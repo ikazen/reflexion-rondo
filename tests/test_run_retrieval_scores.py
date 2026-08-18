@@ -1,3 +1,4 @@
+"""cycle.run._retrieval_scores의 lesson score 추출 단위 테스트."""
 from __future__ import annotations
 
 from cycle.run import _retrieval_scores

@@ -216,7 +216,7 @@ def test_baseline_eval_error_not_confirmed():
     assert "RuntimeError" in result.seed_gains["7"]["error"]
 
 
-# --- holdout_regressed 게이트 (#98) ---
+# holdout_regressed 게이트 (#98)
 # candidate holdout이 baseline(현재 best 또는 콜드스타트면 BasePipeline) holdout보다
 # 나쁘면 cross-seed confirm을 통과해도 confirmed=False로 강제한다 — cross-seed는
 # seed만 바꾼 CV라 preprocess의 valid-target 의존 누수(#96/#97)처럼 seed 불변인
@@ -342,7 +342,7 @@ def test_best_source_none_uses_noop_patch():
     assert result.confirmed is True
 
 
-# --- effective_label: bandit/lesson 보상 신호를 confirm 결과와 연동 (#164) ---
+# effective_label: bandit/lesson 보상 신호를 confirm 결과와 연동 (#164)
 #
 # update_bandit/reflect가 confirm 이전의 잠정 label(jump)을 그대로 쓰면, confirm이
 # 나중에 cross-seed 미재현이나 holdout 악화로 거부해도 그 보상이 되돌아가지 않아
@@ -390,7 +390,7 @@ def test_effective_label_non_jump_unaffected(label: str):
     assert effective_label(label, _confirmed()) == label
 
 
-# --- confirm 게이트 캐시 (#166/#167/#168) ---
+# confirm 게이트 캐시 (#166/#167/#168)
 #
 # cache 인자를 생략(None)한 위 테스트 전부가 회귀 가드다 — confirm_and_measure의
 # 캐시 관련 분기는 cache is not None일 때만 진입하므로, 기존 테스트가 수정 없이
@@ -440,7 +440,7 @@ def _ctx_key(**overrides) -> tuple:
     return _eval_context_key(**kwargs)
 
 
-# --- 행동 지문 회귀 가드: 2026-08 실측 s6e1 confirm 39회 리플레이 ---
+# 행동 지문 회귀 가드: 2026-08 실측 s6e1 confirm 39회 리플레이
 # 운영 DB(playground-series-s6e1, confirm_seed_gains not null) 실측값 — 소스는
 # 39개 전부 distinct(AST 정규화 후에도)인데 이 지문 기준으로는 3그룹으로
 # 붕괴해야 negative memo가 실제로 효과가 있다. 붕괴하지 않으면 #166은 무의미
@@ -471,7 +471,6 @@ def test_rounded_signature_does_not_over_merge_distinct_candidates():
     assert sig_a != sig_b
 
 
-# --- _eval_context_key: best_source/데이터 변경 시 캐시 자동 무효화 ---
 
 def test_ctx_key_changes_with_best_source():
     """best_source가 바뀌면(=승격 발생) 캐시 키도 달라져 자동 무효화된다."""
@@ -489,7 +488,6 @@ def test_ctx_key_changes_with_train_schema():
     assert key_a != key_b
 
 
-# --- confirm memo: hit 시 eval 0회, negative-only 저장 ---
 
 def test_confirm_memo_hit_skips_all_eval():
     fake = _FakeCache()
@@ -554,7 +552,6 @@ def test_cache_none_default_ignores_candidate_cv():
     assert result.confirmed is True
 
 
-# --- baseline eval 캐시: 변하지 않은 best pipeline 재평가 방지 ---
 
 def test_baseline_cv_cache_hit_skips_baseline_eval():
     fake = _FakeCache()
@@ -623,7 +620,6 @@ def test_baseline_eval_error_not_cached():
     assert fake.put_baseline_calls == []
 
 
-# --- 판정 확정 후 낭비 eval 제거: cross-seed 에러 거부 시에만 holdout 스킵 ---
 
 def test_cross_seed_error_rejection_skips_holdout_eval():
     """candidate eval 에러로 cross-seed가 거부하면 holdout eval을 아예 안 돈다
