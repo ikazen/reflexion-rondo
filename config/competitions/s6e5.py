@@ -1,3 +1,7 @@
+"""Kaggle Playground s6e5 — F1 Pit Stops Prediction 대회 config (metric=auc).
+
+대회별 데이터 경로/컬럼/EDA 카드 상수만 담는다 — 로직 없음.
+"""
 from pathlib import Path
 
 COMPETITION_ID    = "playground-series-s6e5"

@@ -1,3 +1,7 @@
+"""Kaggle Playground s5e5 — Predict Calorie Expenditure 대회 config (metric=rmsle).
+
+대회별 데이터 경로/컬럼/EDA 카드 상수만 담는다 — 로직 없음.
+"""
 from pathlib import Path
 
 COMPETITION_ID    = "playground-series-s5e5"
