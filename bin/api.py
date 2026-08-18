@@ -558,23 +558,26 @@ def _submission_gain_significant(
     )
 
 
+_LB_DEADBAND_REL = 0.001  # |prev_lb| 대비 비율. 실측(2026-08) 노이즈 군집 최대 0.047%,
+# 실제 발산 군집 최소 0.128% 사이에 걸쳐 metric 스케일(auc/accuracy처럼 [0,1] bounded든
+# rmse/rmsle처럼 unbounded든) 무관하게 전부 정확히 갈린다.
+
+
+def _cv_lb_diverged(delta_cv: float, delta_lb: float, prev_lb: float) -> bool:
+    return delta_cv > 0 and delta_lb < -_LB_DEADBAND_REL * abs(prev_lb)
+
+
 def _detect_cv_lb_divergence(
     conn: PgConn, competition_id: str, attempt_id: str, lb_score: float, submitted_at,
 ) -> str | None:
-    """이번 완료 제출의 cv_score를 직전 완료 제출의 cv/LB와 비교한다.
+    """최근 4회 제출(연속 delta 3개) 중 2개 이상이 cv-LB 발산이면 사유 문자열을 반환한다.
 
-    cv는 개선인데 LB가 악화됐으면 사유 문자열을 반환 — cross-seed confirm은
-    seed만 바꾼 CV라 이런 발산은 못 잡고, holdout 게이트도 사후 실측(실제 LB)만큼
-    확실하진 않다. 이건 그 실제 LB 신호 자체로 잡는 마지막 방어선.
+    cross-seed confirm은 seed만 바꾼 CV라 이런 발산은 못 잡고, holdout 게이트도
+    사후 실측(실제 LB)만큼 확실하진 않다 — 이건 그 실제 LB 신호로 잡는 마지막
+    방어선. n=1 단발 발산으로 대회를 영구 정지시키지 않는다(자동 해제 없음이라
+    확률적 래칫이 됨 — 2026-08 실측 상 배포 이후 pause 5건 전부 이 경로의 오탐).
     """
-    cur_row = conn.execute(
-        "select cv_score from raw.attempts where attempt_id = %s", [attempt_id]
-    ).fetchone()
-    if not cur_row or cur_row[0] is None:
-        return None
-    cv_score = cur_row[0]
-
-    prev_row = conn.execute(
+    rows = conn.execute(
         """
         select a.cv_score, s.lb_score, c.metric_sign
         from raw.kaggle_submissions s
@@ -586,21 +589,36 @@ def _detect_cv_lb_divergence(
           and s.submitted_at < %s
           and a.cv_score is not null
         order by s.submitted_at desc
-        limit 1
+        limit 3
         """,
         [competition_id, submitted_at],
-    ).fetchone()
-    if not prev_row:
+    ).fetchall()
+    if not rows:
         return None
-    prev_cv, prev_lb, metric_sign = prev_row
+    metric_sign = rows[0][2]
 
-    delta_cv = metric_sign * (cv_score - prev_cv)
-    delta_lb = metric_sign * (lb_score - prev_lb)
-    if delta_cv > 0 and delta_lb < 0:
-        return (
-            f"cv_lb_divergence: cv improved {delta_cv:+.6f} but LB regressed {delta_lb:+.6f} "
-            f"(prev_cv={prev_cv:.6f} prev_lb={prev_lb:.6f} cv={cv_score:.6f} lb={lb_score:.6f})"
-        )
+    cur_row = conn.execute(
+        "select cv_score from raw.attempts where attempt_id = %s", [attempt_id]
+    ).fetchone()
+    if not cur_row or cur_row[0] is None:
+        return None
+
+    chain = [(cur_row[0], lb_score)] + [(r[0], r[1]) for r in rows]
+    diverged_count = 0
+    latest_reason: str | None = None
+    for (cv, lb), (prev_cv, prev_lb) in zip(chain, chain[1:]):
+        delta_cv = metric_sign * (cv - prev_cv)
+        delta_lb = metric_sign * (lb - prev_lb)
+        if _cv_lb_diverged(delta_cv, delta_lb, prev_lb):
+            diverged_count += 1
+            if latest_reason is None:
+                latest_reason = (
+                    f"cv_lb_divergence: cv improved {delta_cv:+.6f} but LB regressed "
+                    f"{delta_lb:+.6f} (prev_cv={prev_cv:.6f} prev_lb={prev_lb:.6f} "
+                    f"cv={cv:.6f} lb={lb:.6f})"
+                )
+    if diverged_count >= 2:
+        return f"{latest_reason} [{diverged_count} of last {len(chain) - 1} diverged]"
     return None
 
 
@@ -610,10 +628,19 @@ def _apply_cv_lb_divergence_tripwire(
     """원천 pipeline을 격리하고(invalid_reason) 대회 auto-submit을 중단한다.
     자동 해제 없음 — 사람이 원인을 확인하고 raw.competitions.
     auto_submit_paused_reason을 직접 NULL로 되돌려야 재개된다."""
-    conn.execute(
-        "update raw.pipelines set invalid_reason = %s where attempt_id = %s and invalid_reason is null",
+    isolated = conn.execute(
+        """
+        update raw.pipelines set invalid_reason = %s
+        where attempt_id = %s and invalid_reason is null
+        returning pipeline_id
+        """,
         [reason, attempt_id],
-    )
+    ).fetchall()
+    if not isolated:
+        print(
+            f"  [tripwire/warn] no raw.pipelines row to isolate for attempt_id={attempt_id} "
+            f"(competition_id={competition_id}) — attempt was never confirmed/promoted"
+        )
     conn.execute(
         "update raw.competitions set auto_submit_paused_reason = %s where competition_id = %s",
         [reason, competition_id],

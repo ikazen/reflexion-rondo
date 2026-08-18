@@ -198,7 +198,7 @@ top-k(기본 5) attempt를 cv 순으로 순회하며 cross-seed+holdout을 통�
 
 ### 4-3. auto-submit 일시중단 복구
 
-cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_paused_reason`이 채워지고 해당 대회의 자동 제출이 멈춘다(decisions.md ADR-026). **자동 해제 없음** — 원인을 확인(`cv_lb_calibration` 뷰, `GET /api/cv-lb-calibration`)한 뒤 사람이 직접 NULL로 되돌려야 재개된다.
+cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_paused_reason`이 채워지고 해당 대회의 자동 제출이 멈춘다(decisions.md ADR-026). 발동 조건은 최근 3개 delta 중 2개 이상이 `|prev_lb|`의 0.1% 데드밴드를 넘는 발산(#175) — 단발 노이즈로는 안 걸린다. **자동 해제 없음** — 원인을 확인(`cv_lb_calibration` 뷰, `GET /api/cv-lb-calibration`)한 뒤 사람이 직접 NULL로 되돌려야 재개된다.
 
 ```bash
 # 현재 일시중단된 대회 확인
