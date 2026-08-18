@@ -478,10 +478,13 @@ CREATE TABLE IF NOT EXISTS raw.kaggle_submissions (
 
 -- cv↔LB 정합성 — 완료된 제출을 시간순으로 이어 delta_cv/delta_lb를 계산한다.
 -- 둘 다 metric_sign을 곱해 "개선이면 양수"로 방향을 통일했다. diverged=true는
--- cv는 개선인데 LB는 악화된 제출. 실시간 차단은 이 뷰가 아니라
+-- cv는 개선인데 LB가 |prev_lb|의 0.1%를 넘게 악화된 제출(bin/api.py의
+-- _LB_DEADBAND_REL과 동일 기준, #175) — 노이즈 수준(관측된 오탐 최대 0.047%)은
+-- 여기서도 걸러진다. 단 이 컬럼은 단일 제출 기준이라 실시간 차단 조건(최근
+-- 3개 delta 중 2개 이상, ADR-026)과는 다르다 — diverged=true가 몇 건 연속인지는
+-- 이 뷰를 읽는 쪽에서 확인할 것. 실시간 차단은 이 뷰가 아니라
 -- bin/api.py:refresh_submission_row의 트립와이어가 담당(승격 시점에 즉시
--- invalid_reason/auto_submit_paused_reason을 채움, docs/decisions.md ADR-026) —
--- 이 뷰는 그 판정의 사후 관측·검증용.
+-- invalid_reason/auto_submit_paused_reason을 채움) — 이 뷰는 그 판정의 사후 관측·검증용.
 CREATE OR REPLACE VIEW cv_lb_calibration AS
 WITH ordered AS (
     SELECT
@@ -510,7 +513,7 @@ SELECT
     CASE WHEN prev_lb IS NOT NULL THEN metric_sign * (lb_score - prev_lb) END AS delta_lb,
     (prev_cv IS NOT NULL AND prev_lb IS NOT NULL
         AND metric_sign * (cv_score - prev_cv) > 0
-        AND metric_sign * (lb_score - prev_lb) < 0) AS diverged
+        AND metric_sign * (lb_score - prev_lb) < -0.001 * abs(prev_lb)) AS diverged
 FROM ordered;
 
 -- bin/blend.py 가중치 — 대회당 최신 1건만 유지(competition_id PK, upsert).

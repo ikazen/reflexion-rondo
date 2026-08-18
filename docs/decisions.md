@@ -243,6 +243,7 @@
 - 대안: 발산 감지 후 자동으로 이전 baseline으로 롤백 — 발산 원인이 다양해서(진짜 누수/우연한 shake-up/데이터 drift) 자동 판단이 오히려 위험하다고 판단해 기각.
 - 근거: LB 회수가 자동화(ADR-003 amend)되면서 발산을 감지할 수 있게 됐지만, 감지만으로는 재발을 못 막는다 — auto-submit을 계속 돌리면 같은 문제로 반복 소모된다. 수동 해제는 의도적인 마찰이다: 자동 시스템이 "이 pipeline은 신뢰 못 함"이라고 판단했으면, 그 판단을 뒤집는 건 자동화가 아니라 사람의 확인이어야 한다.
 - 한계: 해제를 잊으면 해당 대회는 무기한 자동 제출이 멈춘다 — 운영자가 주기적으로 `auto_submit_paused_reason IS NOT NULL`인 대회를 점검해야 한다(`docs/runbook.md`).
+- **추가 결정(2026-08, #175)**: 원래 판정(`delta_cv > 0 and delta_lb < 0`, 크기 무관 + 단발 관측)이 실제로는 노이즈에만 반응했다 — 배포 이후 실제로 정지된 5개 대회(s4e4/s6e8/s6e4/s6e3/s6e5)의 `|delta_lb|`가 전부 `|prev_lb|`의 0.05% 미만이었고, 배포 이전 관측된 큰 발산(4e12 8.3%, 5e10 434%)은 전부 그보다 한 자릿수 이상 큰 폭이었다. **해제 자동화가 없는 상태에서 노이즈에 반응하면 그건 확률적 래칫**이다 — 제출할 때마다 대회가 정지될 확률이 생기고, 정지된 대회는 절대 돌아오지 않는다. `_detect_cv_lb_divergence`를 (a) `|prev_lb|`의 0.1% 데드밴드(metric 스케일 auc/accuracy처럼 bounded든 rmse/rmsle처럼 unbounded든 실측 상 노이즈/실발산 군집을 정확히 가른다) + (b) 최근 3개 delta 중 2개 이상일 때만 정지, 로 변경. `_apply_cv_lb_divergence_tripwire`의 pipeline 격리 UPDATE가 0행 매치하면(#178 — auto-submit이 confirm 안 거친 attempt를 제출한 경우 raw.pipelines에 행 자체가 없음) 조용히 넘기지 않고 경고 로그를 남긴다.
 
 ## ADR-027 — 격리 subprocess 메모리 상한은 RSS가 아닌 VSZ(RLIMIT_AS) 기준
 
@@ -271,6 +272,13 @@
 - 대안: (a) 같은 아이디어의 재생성을 코드 내용(hash) 기준으로 캐싱해 재검증을 건너뛰기 — 증상(반복되는 22분짜리 confirm)만 가리고 원인(왜 같은 아이디어가 계속 최고 후보로 뽑히는가)은 안 건드린다. 바이트 단위로 동일한 코드만 잡아 사소한 변형에는 무력하다 — 기각. (b) `update_bandit`을 confirm 완료까지 지연 — 프로덕션은 retrieve/attempt×3/promote가 별도 Airflow task/컨테이너라 "승자가 될지" 자체가 attempt 생성 시점엔 미정이라 구조적으로 불가능. 대신 승자에 한해 confirm 이후 보정 delta를 추가하는 현재 설계를 택함.
 - 근거: `cycle/action_optimizer.py:update_bandit`은 `label=="jump"`에 α+=1.0(최강 보상)을 준다. `cycle/run.py`가 `defer_promotion` 여부와 무관하게 이 함수를 무조건 호출하는데, confirm(cross-seed+holdout, `bin/run_promote_task.py`에서 승자만 별도로 나중에 실행)은 이 시점에 아직 모른다 — 실제로 `bin/run_promote_task.py`는 `update_bandit`을 아예 호출하지 않았다(grep 확인, #164 전). 그 α/β를 소비하는 `assign_super_cycle_actions`는 `get_action_prior`(advisory, LLM이 최종 결정)와 달리 LLM 개입 없는 결정론적 top-N 배정이라 안전판도 없다. 실측(2026-08-09~10): s6e1의 `preprocessing` 후보가 cv_score 소수점 10자리까지 동일한 채로 32회 재생성됐고 매번 holdout에서 거부됐다 — jump→α+=1.0→다음 cycle 당첨 확률↑→재생성→다시 jump→... 자기강화 루프가 confirm 결과와 무관하게 돌아간 것으로 설명된다. `reflect()`도 같은 결함 — confirm 이전 raw label을 그대로 lesson에 반영해 strategist가 "이 방향 성공했다"고 계속 학습했다.
 - 한계: bandit은 decay(0.95)가 있는 노이즈 추정기라, 이 보정은 이전에 쐈던 α+=1.0을 수학적으로 정확히 되돌리는 게 아니라 β 쪽에 새 delta를 더하는 것이다(반대 방향 신호를 추가하는 것) — 여러 cycle에 걸쳐 수렴하는 설계고, 단발 보정으로 즉시 상쇄되진 않는다. 효과(재생성 빈도 감소)는 배포 후 며칠 관찰이 필요하며 즉시 검증 가능한 항목이 아니다.
+
+## ADR-031 — auto-submit은 confirmed pipeline만 제출
+
+- 결정: `bin/api.py:_best_attempt()`가 `raw.attempts` 전체 max cv_score가 아니라 `raw.pipelines`(cross-seed+holdout 확정, `invalid_reason is null`)로 후보를 제한한다. 확정 pipeline이 없는 대회는 auto-submit이 "no confirmed pipeline"으로 skip한다.
+- 대안: escape hatch(`bin/submit.py --attempt-id`, 미확정 attempt를 사람이 명시 지정하는 용도)를 auto-submit에서 그대로 두고 `_best_attempt()`에 별도 신뢰도 필터만 추가 — 필터 기준을 새로 설계해야 하고, escape hatch의 원래 의도(사람의 명시적 override)와 자동화 경로가 계속 뒤섞여 기각.
+- 근거: `_start_submission`이 항상 attempt_id를 넘기고 `_kaggle_submit`이 이를 `--attempt-id`로 그대로 전달하는데, 이 플래그는 원래 "사람이 명시적으로 고른 attempt(미확정이어도 허용)" escape hatch였다(`bin/submit.py` docstring). 자동화가 매번 이 경로를 타면서 promotion 게이트(cross-seed 재현+holdout 감사)가 자동 제출에는 사실상 무의미해졌다 — reflexion 사이클은 3-attempt 단위로 돌고 그 승자만 유의성 검정을 통과해야 confirm이 실행되는데, `_best_attempt()`는 그 검증과 무관하게 역대 전체 attempt 중 cv_score 최댓값을 고른다. 수백~수천 회 시도 중 fold 노이즈로 우연히 최고값이 나온 attempt가 뽑히는 건 통계적으로 사실상 필연(multiple comparisons/승자의 저주)이고, 그게 그대로 Kaggle에 제출됐다. 실측(2026-08): 완료 제출 74건 중 confirmed 출처는 29건(39%)뿐, 61%는 검증을 한 번도 통과한 적 없는 코드였다.
+- 한계: `_kaggle_submit`/`bin/submit.py` 자체는 변경하지 않았다 — confirmed attempt의 code_path는 cross-seed/holdout 평가 시점에 이미 self-contained 파이프라인으로 검증되고 merge-verify까지 통과했으므로 `raw.pipelines.code`와 기능적으로 동등하다고 보고 CSV 캐시(`download_submission_csv`, attempt_id 키)도 그대로 재사용한다. 확정 pipeline이 아예 없는 대회(콜드스타트 등)는 auto-submit이 완전히 멈추는데, 이건 이미 ADR-025(phantom-max 폐지)가 처리하는 콜드스타트 baseline 확립 경로(`establish_bootstrap_baseline`/`bin/establish_baseline.py`)에 의존한다.
 
 ---
 
