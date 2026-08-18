@@ -60,6 +60,7 @@ def main() -> None:
         k_retrieve=5,
         is_classification=comp.IS_CLASSIFICATION,
         slug=args.competition,
+        cpu_budget_secs=getattr(comp, "CPU_BUDGET_SECS", None),
     )
 
     result = run_cycle(conn, config)

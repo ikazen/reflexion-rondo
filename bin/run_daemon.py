@@ -422,6 +422,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                 seed=42,
                 k_retrieve=5,
                 is_classification=comp.IS_CLASSIFICATION,
+                cpu_budget_secs=getattr(comp, "CPU_BUDGET_SECS", None),
             )
             try:
                 result = run_cycle(conn, config)

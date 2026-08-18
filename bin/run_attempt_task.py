@@ -83,6 +83,7 @@ def main() -> None:
         is_classification=comp.IS_CLASSIFICATION,
         slug=args.competition,
         holdout=holdout,
+        cpu_budget_secs=getattr(comp, "CPU_BUDGET_SECS", None),
     )
 
     data = run_attempt_core(

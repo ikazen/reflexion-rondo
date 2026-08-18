@@ -19,7 +19,7 @@ from cycle.stagnation import StagnationSignal
 from runtime.isolate import IsolatedResult
 
 
-def _config() -> CycleConfig:
+def _config(cpu_budget_secs: float | None = None) -> CycleConfig:
     return CycleConfig(
         competition_id="s4e1",
         train=pl.DataFrame({"f": [1.0, 2.0, 3.0], "target": [0, 1, 0]}),
@@ -27,6 +27,7 @@ def _config() -> CycleConfig:
         metric="auc",
         stage="reflexion",
         eda_card="n_rows=3",
+        cpu_budget_secs=cpu_budget_secs,
     )
 
 
@@ -39,7 +40,7 @@ def _cpu_kill(peak_cpu_sec: float, budget: float = 900) -> IsolatedResult:
     )
 
 
-def _run(eval_side_effect, generate_code_mock=None):
+def _run(eval_side_effect, generate_code_mock=None, cpu_budget_secs=None):
     conn = MagicMock()
     generate_code_mock = generate_code_mock or MagicMock(return_value="source")
     with (
@@ -62,7 +63,7 @@ def _run(eval_side_effect, generate_code_mock=None):
         patch("cycle.run.update_bandit"),
     ):
         data = run_attempt_core(
-            conn, _config(), lessons=[], prev_best_cv=0.89,
+            conn, _config(cpu_budget_secs), lessons=[], prev_best_cv=0.89,
             defer_promotion=True,
         )
     return data, mock_insert, mock_eval, generate_code_mock
@@ -107,6 +108,21 @@ def test_retry_uses_remaining_budget_when_first_eval_partially_spends():
     kwargs = mock_eval.call_args_list[1].kwargs
     assert kwargs["cpu_budget_sec"] == 800.0  # 900 - 100
     assert data.label == "neutral"
+
+
+def test_config_cpu_budget_overrides_env_default():
+    """comp.CPU_BUDGET_SECS(config.cpu_budget_secs)가 설정되면 env/DEFAULT_CPU_BUDGET_SECS
+    보다 우선한다(#176) — s6e8처럼 900s 벽에서 성공 attempt가 계속 죽는 대회를
+    대회별로 넉넉히 풀어주기 위함."""
+    data, mock_insert, mock_eval, generate_code_mock = _run(
+        eval_side_effect=[_cpu_kill(peak_cpu_sec=3600.0, budget=3600)],
+        cpu_budget_secs=3600.0,
+    )
+
+    assert mock_eval.call_count == 1
+    assert mock_eval.call_args_list[0].kwargs["cpu_budget_sec"] == 3600.0
+    row = mock_insert.call_args[0][1]
+    assert row["peak_cpu_sec"] == 3600.0
 
 
 def test_regenerate_feedback_is_actionable_not_raw_rc_message():

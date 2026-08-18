@@ -52,6 +52,7 @@ class CycleConfig:
     seed_code: str | None = None
     slug: str | None = None  # S3 경로용 모듈명 (e.g. s4e1), 미설정 시 competition_id fallback
     holdout: pl.DataFrame | None = None  # audit holdout 10% — 승격 시 1회 측정·기록에만 사용
+    cpu_budget_secs: float | None = None  # comp.CPU_BUDGET_SECS 오버라이드, 미설정 시 env/DEFAULT_CPU_BUDGET_SECS
 
 
 @dataclass
@@ -535,8 +536,10 @@ def run_attempt_core(
         # 다 쓰면 2회차는 애초에 돌리지 않는다 — 최악 소모가 절반으로 줄고, 다
         # 못 쓴 나머지 예산은 그대로 2회차에 넘어가 재시도가 낭비가 아니라
         # 실제 성공 기회가 된다(피드백도 아래에서 실행 가능한 지시로 바꾼다).
-        cpu_budget_total = float(
-            os.environ.get("EVAL_CPU_BUDGET_SECS", str(DEFAULT_CPU_BUDGET_SECS))
+        cpu_budget_total = (
+            config.cpu_budget_secs
+            if config.cpu_budget_secs is not None
+            else float(os.environ.get("EVAL_CPU_BUDGET_SECS", str(DEFAULT_CPU_BUDGET_SECS)))
         )
         cpu_spent = 0.0
         for _eval_i in range(2):

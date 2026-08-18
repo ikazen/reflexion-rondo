@@ -188,6 +188,7 @@ def _run_cycle(competition: str) -> None:
         seed=42,
         k_retrieve=5,
         is_classification=comp.IS_CLASSIFICATION,
+        cpu_budget_secs=getattr(comp, "CPU_BUDGET_SECS", None),
     )
     t0 = time.time()
     result = run_cycle(conn, config)
