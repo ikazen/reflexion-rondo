@@ -111,6 +111,7 @@ def main() -> None:
             is_classification=comp.IS_CLASSIFICATION,
             seed_code=this_seed,
             holdout=holdout,
+            cpu_budget_secs=getattr(comp, "CPU_BUDGET_SECS", None),
         )
         try:
             result = run_cycle(conn, config)
