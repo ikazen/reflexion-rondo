@@ -220,7 +220,7 @@ def _run_in_pgroup(
     except subprocess.TimeoutExpired:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        proc.communicate()  # reap
+        proc.communicate()
         raise
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
@@ -927,7 +927,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         _cache.set(cache_key, result)
         return result
 
-    # ---- 관측: 건강질문 직결 8개, 데이터는 store/schema.sql 파생 뷰 ----
+    # 관측: 건강질문 직결 8개, 데이터는 store/schema.sql 파생 뷰
 
     @app.get("/api/score/timeline")
     def get_score_timeline(competition: str, limit: int = 2000):
@@ -1197,7 +1197,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         _cache.set(cache_key, result)
         return result
 
-    # ---- 관측: 상위 레이어(대회 요약/점수/최고전략) ----
+    # 관측: 상위 레이어(대회 요약/점수/최고전략)
     # best_cv 계산은 cycle/run.py:_prev_best와 동일 로직: 확정 pipelines 우선,
     # 없으면(cold-start) attempts max로 폴백.
     _BEST_CV_SQL = """
@@ -1355,7 +1355,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         _cache.set(cache_key, result)
         return result
 
-    # ---- 관측: 밴딧 리플레이(posterior 시계열/선택 concordance) ----
+    # 관측: 밴딧 리플레이(posterior 시계열/선택 concordance)
 
     @app.get("/api/bandit/timeline")
     def get_bandit_timeline(competition: str):
@@ -1405,7 +1405,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         _cache.set(cache_key, result)
         return result
 
-    # ---- 관측: 교훈 generality-mix + 에러 rate-timeline/repeat-offenders ----
+    # 관측: 교훈 generality-mix + 에러 rate-timeline/repeat-offenders
 
     @app.get("/api/lessons/generality-mix")
     def get_generality_mix(competition: str, bucket: str = "week"):
@@ -1480,7 +1480,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         _cache.set(cache_key, result)
         return result
 
-    # ---- 관측: 승격 타임라인 + 전이 리더보드/fp-distance ----
+    # 관측: 승격 타임라인 + 전이 리더보드/fp-distance
 
     @app.get("/api/promotions")
     def get_promotions(competition: str):
