@@ -1,3 +1,8 @@
+"""단일 attempt 실행 루프: strategize -> generate_code -> eval_isolated -> 라벨링/영속화.
+
+CPU 예산은 attempt 전체 기준으로 집행(1회차 소진 시 2회차 스킵). run_attempt_core가
+핵심 진입점 — Airflow 프로덕션 모드(defer_promotion=True)와 직접모드(run_cycle) 공유.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -301,7 +306,6 @@ def _dynamic_eda_context(
     best_str = f"{prev_best_cv:.5f}" if prev_best_cv is not None else "none yet"
     lines.append(f"- best CV so far: {best_str}")
 
-    # 최근 window 개 attempt의 action_type 분포
     dist_rows = conn.execute(
         """
         select action_type, count(*) as cnt
@@ -320,7 +324,6 @@ def _dynamic_eda_context(
         dist_str = ", ".join(f"{r[0]} x{r[1]}" for r in dist_rows)
         lines.append(f"- recent {window} attempts: {dist_str}")
 
-    # 최근 실패 패턴: regression + error 합산, action_type별 횟수
     fail_rows = conn.execute(
         """
         select action_type, count(*) as cnt,
@@ -476,7 +479,6 @@ def run_attempt_core(
         forced_action_type=forced_action,
     )
     _LOG.info("strategize done in %.1fs", time.monotonic() - _t_strategize)
-    # bootstrap with no established pipeline → generate full pipeline from scratch
     if config.stage == "bootstrap" and config.seed_code:
         prev_code: str | None = config.seed_code
     else:

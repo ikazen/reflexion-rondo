@@ -1,3 +1,7 @@
+"""메트릭 레지스트리(get) — auc/rmse/rmsle/accuracy 등, metric_sign 포함.
+
+metric_sign은 gain 계산 시 "개선이면 양수"로 방향을 통일하는 데 쓰인다.
+"""
 from sklearn.metrics import roc_auc_score, log_loss, accuracy_score, f1_score
 from sklearn.metrics import mean_absolute_error, cohen_kappa_score, balanced_accuracy_score
 from sklearn.metrics import root_mean_squared_error, root_mean_squared_log_error

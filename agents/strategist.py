@@ -1,3 +1,7 @@
+"""LLM 전략 선택 — 다음 attempt의 action_type과 가설을 결정한다(strategize).
+
+bandit posterior는 advise-only(get_action_prior) — 최종 결정은 LLM이 한다(ADR-020).
+"""
 from __future__ import annotations
 
 import logging

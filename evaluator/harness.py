@@ -1,3 +1,7 @@
+"""CV 평가 하네스 — BasePipeline/PatchedPipeline 실행, 유의성 검정, 누수 가드, ensemble_spec.
+
+runtime/isolate.py가 이 모듈을 별도 subprocess에서 호출해 격리 실행한다.
+"""
 from __future__ import annotations
 
 import inspect
@@ -226,7 +230,7 @@ def _fit_with_early_stopping(model: object, Xtr, ytr, Xva, yva) -> None:
     model.fit(Xtr, ytr)
 
 
-# --- ensemble_spec: 선언형 앙상블 (decisions.md ADR-023) ---
+# ensemble_spec: 선언형 앙상블 (decisions.md ADR-023)
 # Patch는 "무엇을 조합할지"만 선언하고, 모델 생성·적합·결합은 이 모듈이 전담한다.
 # 기존 자유형 build_model 기반 ensemble 훅은 병행 허용.
 

@@ -1,3 +1,8 @@
+"""승격 winner의 Patch를 현재 best pipeline 소스에 병합(materialize_best_pipeline).
+
+action_type이 허용한 hook만 교체하고 나머지는 base에서 보존 — 병합 결과는
+undefined-name/optional-dependency 가드로 검증한다.
+"""
 from __future__ import annotations
 
 import ast

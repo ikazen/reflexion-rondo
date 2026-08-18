@@ -1,3 +1,7 @@
+"""LLM 코드 생성 — Patch 클래스 소스를 만든다(generate_code).
+
+action_type별 허용 hook을 시스템 프롬프트에 강제하고, 응답에서 코드 블록만 추출한다.
+"""
 from __future__ import annotations
 
 import logging

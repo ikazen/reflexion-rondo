@@ -1,3 +1,5 @@
+"""전역 설정 — 모델 이름, LLM 옵션, LABEL_Z 등 임계값. .env를 로드한다.
+"""
 from pathlib import Path
 from dotenv import load_dotenv
 import os

@@ -38,7 +38,7 @@ class ConfirmResult:
     holdout_regressed: bool = False
 
 
-# --- confirm 게이트 캐시 (raw.confirm_memo / raw.baseline_eval_cache) ---
+# confirm 게이트 캐시 (raw.confirm_memo / raw.baseline_eval_cache)
 #
 # 2026-08 실측(s6e1): confirm 39회가 (cv_score, fold_scores) 행동 지문 기준
 # 4그룹으로 붕괴 — 35회가 이미 확정된 거부 판정을 재계산했다. 소스 기반 dedupe는
