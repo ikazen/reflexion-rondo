@@ -97,7 +97,6 @@ def main() -> None:
         conn.close()
         return
 
-    # Pick winner: max gain_vs_best (includes negative), fallback to any with cv_score
     with_gain = [(i, r[1]) for i, r in enumerate(rows) if r[1] is not None]
     winner_idx = max(with_gain, key=lambda x: x[1])[0] if with_gain else None
     if winner_idx is None:

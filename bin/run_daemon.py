@@ -31,7 +31,7 @@ from memory.retriever import EmbeddingUnavailableError
 from store.db import connect, ensure_competition
 from store.train_data import load_train
 
-POLL_INTERVAL = 10  # 빈 큐 대기 간격 (초)
+POLL_INTERVAL_SEC = 10
 MAX_CONSECUTIVE_CYCLE_FAILURES = int(os.getenv("RONDO_MAX_CONSECUTIVE_FAILURES", "5"))
 # 큐 항목 하나가 daemon을 통째로 붙잡지 않도록 리스당 최대 사이클 수를 제한한다
 # (2026-08 실측: 30~100-cycle 큐 하나가 며칠씩 다른 13개 대회의 실행 기회를 막음).
@@ -194,6 +194,14 @@ def _final_status(cycles_done: int, skipped: int, failed_cycles: int) -> tuple[s
 _SUBMISSION_SWEEP_INTERVAL_SEC = 60  # 이 주기로만 훑는다 — daemon 루프 자체는 10s poll
 _last_submission_sweep: float = 0.0
 
+_REFRESH_WINDOW_10MIN_SEC = 600
+_REFRESH_WINDOW_1H_SEC = 3600
+_REFRESH_WINDOW_6H_SEC = 6 * 3600
+_REFRESH_INTERVAL_UNDER_10MIN_SEC = 120
+_REFRESH_INTERVAL_UNDER_1H_SEC = 600
+_REFRESH_INTERVAL_UNDER_6H_SEC = 1800
+_REFRESH_INTERVAL_OVER_6H_SEC = 7200
+
 
 def _submission_refresh_due(submitted_at: datetime, checked_at, now: datetime) -> bool:
     """제출 경과 시간에 따라 재확인 간격을 늘리는 백오프.
@@ -213,14 +221,14 @@ def _submission_refresh_due(submitted_at: datetime, checked_at, now: datetime) -
     if checked_at is None:
         return True
     elapsed_since_submit = (now - submitted_at).total_seconds()
-    if elapsed_since_submit < 600:
-        interval = 120       # 첫 10분: 2분 간격
-    elif elapsed_since_submit < 3600:
-        interval = 600       # 1시간까지: 10분 간격
-    elif elapsed_since_submit < 6 * 3600:
-        interval = 1800      # 6시간까지: 30분 간격
+    if elapsed_since_submit < _REFRESH_WINDOW_10MIN_SEC:
+        interval = _REFRESH_INTERVAL_UNDER_10MIN_SEC
+    elif elapsed_since_submit < _REFRESH_WINDOW_1H_SEC:
+        interval = _REFRESH_INTERVAL_UNDER_1H_SEC
+    elif elapsed_since_submit < _REFRESH_WINDOW_6H_SEC:
+        interval = _REFRESH_INTERVAL_UNDER_6H_SEC
     else:
-        interval = 7200       # 그 이후: 2시간 간격
+        interval = _REFRESH_INTERVAL_OVER_6H_SEC
     return (now - checked_at).total_seconds() >= interval
 
 
@@ -571,7 +579,7 @@ def main() -> None:
         _sweep_low_gain_lessons(conn)
         item = _pop_pending(conn)
         if item is None:
-            time.sleep(POLL_INTERVAL)
+            time.sleep(POLL_INTERVAL_SEC)
             continue
         _process(conn, item, pacer, state)
 
