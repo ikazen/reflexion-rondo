@@ -140,6 +140,23 @@ def test_auto_submit_submits_when_gain_significant(monkeypatch):
     assert body["submitted"][0]["attempt_id"] == "cand-attempt"
 
 
+def test_auto_submit_skips_when_no_confirmed_pipeline(monkeypatch):
+    """_best_attempt가 None이면(확정 pipeline 없음, #178) 유의성 검정 없이 skip한다."""
+    client = _client_for_auto_submit(
+        monkeypatch,
+        active_competitions=["playground-series-s6e8"],
+        best=None,
+        last="base-attempt",
+        significant=False,  # 호출되면 안 됨
+    )
+    resp = client.post("/api/submissions/auto", json={"window_hours": 24})
+    body = resp.json()
+    assert body["submitted"] == []
+    assert body["skipped"] == [
+        {"competition": "playground-series-s6e8", "reason": "no confirmed pipeline"}
+    ]
+
+
 def test_auto_submit_first_submission_skips_gain_check(monkeypatch):
     """직전 유효 제출이 없으면(콜드스타트) 유의성 검정 없이 그대로 제출한다."""
     client = _client_for_auto_submit(

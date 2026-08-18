@@ -469,14 +469,18 @@ def _competition_id_to_slug() -> dict[str, str]:
 
 
 def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None:
+    """raw.pipelines(cross-seed+holdout 확정, 격리 제외)로 후보를 제한한다 —
+    안 그러면 미검증 attempt가 --attempt-id escape hatch로 그대로 제출된다(#178)."""
     row = conn.execute(
         """
         select a.attempt_id, a.cv_score
         from raw.attempts a
+        join raw.pipelines p on p.attempt_id = a.attempt_id
         join raw.competitions c using (competition_id)
         where a.competition_id = %s
           and a.cv_score is not null
           and a.error_trace is null
+          and p.invalid_reason is null
         order by c.metric_sign * a.cv_score desc, a.run_ts asc, a.attempt_id asc
         limit 1
         """,
@@ -1687,7 +1691,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
 
             best = _best_attempt(conn, competition_id)
             if not best:
-                skipped.append({"competition": competition_id, "reason": "no valid attempt"})
+                skipped.append({"competition": competition_id, "reason": "no confirmed pipeline"})
                 continue
             best_attempt_id, best_cv = best
 
