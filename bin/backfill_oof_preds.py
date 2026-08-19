@@ -118,6 +118,7 @@ def main() -> None:
                 seed=42,
                 is_classification=comp.IS_CLASSIFICATION,
                 collect_oof=True,
+                cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
             )
 
             if eval_result.error_trace or eval_result.cv_score is None:

@@ -169,6 +169,26 @@ def test_holdout10_triggers_holdout_eval():
     assert holdout_called
 
 
+def test_cpu_budget_sec_propagates_to_all_eval_paths():
+    """comp.CPU_BUDGET_SECS 오버라이드가 confirm baseline/candidate/holdout eval
+    3경로 전부에 전달돼야 한다 — 안 그러면 메인 eval에서 통과한 대회별 상향
+    예산(#176)이 confirm에서 기본값 900s로 되돌아가 영원히 재현 실패한다(#195)."""
+    calls: list[float | None] = []
+
+    def _se(*args, **kwargs):
+        calls.append(kwargs.get("cpu_budget_sec"))
+        if kwargs.get("holdout_data") is not None:
+            return _ok_with_holdout(holdout_score=0.82)
+        return _baseline() if kwargs.get("best_source") is None else _ok()
+
+    with patch("cycle.promotion.eval_isolated", side_effect=_se):
+        confirm_and_measure(
+            **_COMMON, holdout10=_df(), confirm_seeds=[7], cpu_budget_sec=3600.0,
+        )
+    assert calls, "eval_isolated가 호출되지 않았다"
+    assert all(c == 3600.0 for c in calls), calls
+
+
 def test_holdout_none_no_holdout_score():
     """holdout10=None → holdout_score=None. 1 seed → eval_isolated 2회(baseline+candidate)."""
     with patch("cycle.promotion.eval_isolated", side_effect=_paired_side_effect()) as mock_eval:

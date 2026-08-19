@@ -136,6 +136,7 @@ def _promote(conn, comp: object, attempt_id: str, cv_score: float, source: str, 
             seed=42,
             is_classification=comp.IS_CLASSIFICATION,
             collect_oof=True,
+            cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
         )
         if not merge_eval.error_trace and merge_eval.cv_score is not None:
             merge_oof_preds = merge_eval.oof_preds
@@ -193,6 +194,7 @@ def establish_for_competition(conn, comp: object, top_k: int, dry_run: bool) -> 
             competition_id=comp.COMPETITION_ID,
             candidate_cv=cv_score,
             candidate_fold_scores=fold_scores,
+            cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
         )
         reason = (
             "confirmed" if confirm.confirmed
