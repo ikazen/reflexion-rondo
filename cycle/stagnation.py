@@ -34,10 +34,11 @@ def detect_stagnation(
     competition_id: str,
     window: int = 5,
 ) -> StagnationSignal:
-    # window*3: 슈퍼사이클당 최대 3 attempt(승자+패자2) 감안한 여유 확보.
-    rows = conn.execute(
+    # window*3: 슈퍼사이클당 최대 3 attempt(승자+패자2) 감안한 여유 확보 — action_type
+    # 커버리지는 승자/패자 구분 없이 전체 attempt에서 보는 지표라 이 근사가 그대로 맞다.
+    action_rows = conn.execute(
         """
-        select was_promoted, label, action_type
+        select action_type
         from raw.attempts
         where competition_id = %s
         order by run_ts desc
@@ -46,7 +47,7 @@ def detect_stagnation(
         [competition_id, window * 3],
     ).fetchall()
 
-    if not rows:
+    if not action_rows:
         return StagnationSignal(
             is_stagnant=False,
             jumps_in_window=0,
@@ -54,10 +55,24 @@ def detect_stagnation(
             stagnant_for=0,
         )
 
-    used_actions = {action for _, _, action in rows}
+    used_actions = {action for (action,) in action_rows}
     underused_actions = tuple(a for a in ACTION_TYPES if a not in used_actions)
 
-    winner_labels = [label for was_promoted, label, _ in rows if was_promoted][:window]
+    # 승자는 raw attempts의 고정 배수로 근사할 수 없다 — attempt_gate(#203) 도입 후
+    # 사이클당 확정 attempt 수가 0~3으로 가변적이라(#215), window*3행 안에 window개
+    # 만큼의 승자가 없을 수 있다. 승자 자체를 직접, 원하는 개수만큼 조회한다.
+    winner_rows = conn.execute(
+        """
+        select label
+        from raw.attempts
+        where competition_id = %s and was_promoted = true
+        order by run_ts desc
+        limit %s
+        """,
+        [competition_id, window],
+    ).fetchall()
+
+    winner_labels = [label for (label,) in winner_rows]
 
     jumps_in_window = sum(1 for label in winner_labels if label == "jump")
 
