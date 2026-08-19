@@ -569,3 +569,5 @@ CREATE TABLE IF NOT EXISTS raw.baseline_eval_cache (
 CREATE INDEX IF NOT EXISTS idx_attempts_comp_ts     ON raw.attempts (competition_id, run_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_attempts_comp_action ON raw.attempts (competition_id, action_type);
 CREATE INDEX IF NOT EXISTS idx_reflections_comp_arch ON raw.reflections (competition_id, archived);
+-- attempt_gate(15초 주기)와 promote가 둘 다 이 조건으로 스캔한다 (#203).
+CREATE INDEX IF NOT EXISTS idx_attempts_super_cycle ON raw.attempts (super_cycle_id);
