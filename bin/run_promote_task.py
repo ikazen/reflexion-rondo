@@ -1,14 +1,13 @@
 """Super-cycle promote step — Airflow task 4 of 4.
 
-Picks winner from 3 attempts, updates was_promoted, reflects winner.
-cross-seed confirmation + audit holdout 측정 후 confirmed=True일 때만 승격.
+Picks winner from whichever attempts exist for this super-cycle at gate(#203) time
+(not always exactly 3), updates was_promoted, reflects winner. cross-seed
+confirmation + audit holdout 측정 후 confirmed=True일 때만 승격.
 
-context lookup/delete key is --run-id (Airflow dag_run_id), not --queue-id.
-queue_id is shared by every cycle of the same super-cycle (max_active_runs=4 lets
-several run concurrently) — keying by queue_id let a later cycle's retrieve
-overwrite an earlier cycle's context row, and whichever promote ran first would
-delete it out from under the other (hard "no context" failure, or worse: silently
-promoting the wrong cycle's winner).
+context lookup key is --run-id (Airflow dag_run_id), not --queue-id. queue_id is
+shared by every cycle of the same super-cycle (max_active_runs=4 lets several run
+concurrently) — keying by queue_id let a later cycle's retrieve overwrite an
+earlier cycle's context row.
 
 Usage (container):
     uv run python -m bin.run_promote_task --queue-id <id> --run-id <run_id>
@@ -71,14 +70,11 @@ def main() -> None:
 
     super_cycle_id, competition_id = ctx_row
 
-    # 컨텍스트를 다 읽은 시점이라 즉시 삭제 — 이후 모든 return 경로를
-    # 일괄 커버(no attempts/no winner 포함). ON CONFLICT UPDATE라 재실행 시 재삽입 정상.
-    # run_id로 삭제 — queue_id는 같은 super-cycle의 다른(동시 실행) cycle과
-    # 공유되므로 그 키로 지우면 다른 cycle의 아직 안 읽은 context까지 지워버린다.
-    conn.execute(
-        "DELETE FROM raw.super_cycle_context WHERE run_id = %s",
-        [args.run_id],
-    )
+    # 여기서 즉시 DELETE하지 않는다(과거엔 했었음, #206) — attempt_gate(#203) 도입 후
+    # promote가 3개 attempt를 다 기다리지 않고 일찍 뜰 수 있는데, 아직 시작도 안 한
+    # straggler가 그 사이 이 context를 못 찾으면 bin/run_attempt_task.py가 sys.exit(1)로
+    # 하드 실패한다. bin/run_retrieve_task.py의 7일 TTL 청소가 이미 위생을 보장하므로
+    # (attempt 45분 timeout 대비 압도적으로 여유) 여기서 다시 지울 필요가 없다.
 
     rows = conn.execute(
         """
