@@ -17,6 +17,7 @@ import os
 import signal
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,7 +25,7 @@ from pathlib import Path
 import polars as pl
 
 import bin.airflow_client as airflow_client
-from bin.api import _SUBMIT_TIMEOUT_SEC, DaemonState, create_app, refresh_submission_row
+from bin.api import _SUBMIT_TIMEOUT_SEC, DaemonState, _competition_id_to_slug, create_app, refresh_submission_row
 from bin.archive_lessons import archive_low_gain_lessons
 from cycle.run import CycleConfig, establish_bootstrap_baseline, run_cycle
 from memory.retriever import EmbeddingUnavailableError
@@ -295,6 +296,61 @@ def _sweep_low_gain_lessons(conn) -> None:
             print(f"[daemon] archived {len(archived_ids)} low-gain lesson(s)")
     except Exception as exc:
         print(f"[daemon] lesson archive sweep failed: {exc}")
+
+
+# cycle_queue 완전 고갈 시 자동 재보급 — 안 그러면 사람이 enqueue할 때까지 daemon 전체가
+# idle에 멈춘다(#196 실측: 2026-08-17~18 큐 소진 후 27시간 attempt 0건). pending/running이
+# 하나도 없을 때만, config/competitions/*.py 전체 중 최근 _QUEUE_REFILL_IDLE_HOURS시간
+# 이상 attempt가 없던(또는 한 번도 없던) 대회를 재큐잉한다.
+_QUEUE_REFILL_SWEEP_INTERVAL_SEC = 1800
+_QUEUE_REFILL_IDLE_HOURS = 6
+_QUEUE_REFILL_N_CYCLES = 20
+_last_queue_refill_sweep: float = 0.0
+
+
+def _sweep_queue_refill(conn) -> None:
+    global _last_queue_refill_sweep
+    now_mono = time.monotonic()
+    if now_mono - _last_queue_refill_sweep < _QUEUE_REFILL_SWEEP_INTERVAL_SEC:
+        return
+    _last_queue_refill_sweep = now_mono
+
+    active = conn.execute(
+        "select 1 from raw.cycle_queue where status in ('pending', 'running') limit 1"
+    ).fetchone()
+    if active:
+        return
+
+    # bin.api._competition_id_to_slug()는 {competition_id: slug} — cycle_queue.competition
+    # 컬럼은 slug를 쓰므로(예: "s6e8") 여기서 뒤집는다.
+    slug_to_cid = {slug: cid for cid, slug in _competition_id_to_slug().items()}
+    if not slug_to_cid:
+        return
+
+    last_run = dict(conn.execute(
+        "select competition_id, max(run_ts) from raw.attempts where competition_id = any(%s) group by 1",
+        [list(slug_to_cid.values())],
+    ).fetchall())
+
+    now = datetime.now(timezone.utc)
+    idle_cutoff = now - timedelta(hours=_QUEUE_REFILL_IDLE_HOURS)
+    idle_slugs = sorted(
+        slug for slug, cid in slug_to_cid.items()
+        if last_run.get(cid) is None or last_run[cid] < idle_cutoff
+    )
+    if not idle_slugs:
+        return
+
+    for slug in idle_slugs:
+        conn.execute(
+            """
+            insert into raw.cycle_queue
+                (queue_id, competition, stage, n_cycles, priority, status, created_at)
+            values (%s, %s, 'reflexion', %s, 0, 'pending', %s)
+            """,
+            [str(uuid.uuid4()), slug, _QUEUE_REFILL_N_CYCLES, now],
+        )
+    print(f"[daemon] queue refill — {len(idle_slugs)} idle competition(s) re-enqueued: {idle_slugs}")
 
 
 def _run_api(state: DaemonState) -> None:
@@ -578,6 +634,7 @@ def main() -> None:
     while _running:
         _sweep_stale_submissions(conn)
         _sweep_low_gain_lessons(conn)
+        _sweep_queue_refill(conn)
         item = _pop_pending(conn)
         if item is None:
             time.sleep(POLL_INTERVAL_SEC)

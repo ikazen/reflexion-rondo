@@ -1,0 +1,90 @@
+"""bin/run_daemon.py — cycle_queue 고갈 시 자동 재보급 스윕 (#196).
+
+2026-08-17~18 실측: 큐가 완전히 비면 daemon이 idle에 멈추고 사람이 enqueue할
+때까지 27시간 attempt 0건이었다. _sweep_queue_refill이 pending/running이
+하나도 없을 때만, 오래 idle한(또는 한 번도 안 돈) 대회를 재큐잉하는지 검증한다.
+"""
+from __future__ import annotations
+
+import time
+from unittest.mock import MagicMock, patch
+
+import bin.run_daemon as run_daemon
+from bin.run_daemon import _QUEUE_REFILL_SWEEP_INTERVAL_SEC, _sweep_queue_refill
+
+
+def _long_ago() -> float:
+    return time.monotonic() - _QUEUE_REFILL_SWEEP_INTERVAL_SEC - 1
+
+
+def test_sweep_respects_rate_gate(monkeypatch):
+    monkeypatch.setattr(run_daemon, "_last_queue_refill_sweep", time.monotonic())
+    conn = MagicMock()
+    _sweep_queue_refill(conn)
+    conn.execute.assert_not_called()
+
+
+def test_sweep_skips_when_queue_not_empty(monkeypatch):
+    """pending/running이 하나라도 있으면 재큐잉하지 않는다 — 정상 순환 중에
+    끼어들어 우선순위를 어지럽히면 안 된다."""
+    monkeypatch.setattr(run_daemon, "_last_queue_refill_sweep", _long_ago())
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = (1,)
+    with patch("bin.run_daemon._competition_id_to_slug") as mock_scan:
+        _sweep_queue_refill(conn)
+    mock_scan.assert_not_called()
+
+
+def test_sweep_reenqueues_idle_and_never_run_competitions(monkeypatch):
+    """max(run_ts)가 임계값보다 오래됐거나(idle) attempt가 아예 없던(신규) 대회만
+    재큐잉하고, 최근에 돈 대회는 건드리지 않는다."""
+    monkeypatch.setattr(run_daemon, "_last_queue_refill_sweep", _long_ago())
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None  # 큐 비어있음
+
+    import datetime as dt
+    now = dt.datetime.now(dt.timezone.utc)
+    conn.execute.return_value.fetchall.return_value = [
+        ("playground-series-s6e8", now),  # 방금 돔 — idle 아님
+        ("playground-series-s6e1", now - dt.timedelta(hours=100)),  # idle
+    ]
+
+    # bin.api._competition_id_to_slug()의 실제 반환 형태({competition_id: slug}).
+    comp_slugs = {
+        "playground-series-s6e8": "s6e8",
+        "playground-series-s6e1": "s6e1",
+        "playground-series-s6e2": "s6e2",
+    }
+    with patch("bin.run_daemon._competition_id_to_slug", return_value=comp_slugs):
+        _sweep_queue_refill(conn)
+
+    insert_calls = [
+        c for c in conn.execute.call_args_list
+        if "insert into raw.cycle_queue" in c.args[0]
+    ]
+    inserted_slugs = {c.args[1][1] for c in insert_calls}
+    # s6e1(idle 100h)과 s6e2(never run, max(run_ts) 자체가 없음)는 재큐잉,
+    # s6e8(방금 돔)은 제외.
+    assert inserted_slugs == {"s6e1", "s6e2"}
+
+
+def test_sweep_noop_when_nothing_idle(monkeypatch):
+    monkeypatch.setattr(run_daemon, "_last_queue_refill_sweep", _long_ago())
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None
+
+    import datetime as dt
+    now = dt.datetime.now(dt.timezone.utc)
+    conn.execute.return_value.fetchall.return_value = [("playground-series-s6e8", now)]
+
+    with patch(
+        "bin.run_daemon._competition_id_to_slug",
+        return_value={"playground-series-s6e8": "s6e8"},  # {competition_id: slug}
+    ):
+        _sweep_queue_refill(conn)
+
+    insert_calls = [
+        c for c in conn.execute.call_args_list
+        if "insert into raw.cycle_queue" in c.args[0]
+    ]
+    assert insert_calls == []
