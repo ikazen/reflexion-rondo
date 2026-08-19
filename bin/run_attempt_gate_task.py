@@ -26,6 +26,7 @@ _CONTEXT_LOOKUP_RETRY_SEC = 60
 
 
 def _should_fire(
+    n_success: int,
     n_done: int,
     span_sec: float | None,
     waited_sec: float,
@@ -33,8 +34,14 @@ def _should_fire(
     grace_sec: float,
     max_wait_sec: float,
 ) -> str | None:
-    """발화 사유(quorum/grace/maxwait) 또는 아직 대기(None). 순수 함수 — 테스트는 이것만 검증."""
-    if n_done >= min_done:
+    """발화 사유(quorum/grace/maxwait) 또는 아직 대기(None). 순수 함수 — 테스트는 이것만 검증.
+
+    quorum은 n_success(성공만) 기준 — n_done(성공+실패)으로 세면 실패 2개만으로도
+    발화해 promote가 winner 없이 바로 종료되고(#214), 아직 도는 세 번째(성공할
+    수도 있는) attempt는 이 사이클에서 영영 빠진다. grace/maxwait는 "뭐라도 결과가
+    나오는 대로 무기한 대기하지 않는다"는 안전장치라 n_done/경과시간 그대로 둔다 —
+    전부 에러여도 grace/maxwait는 발화해야 사이클이 안 막힌다."""
+    if n_success >= min_done:
         return "quorum"
     if n_done >= 1 and span_sec is not None and span_sec >= grace_sec:
         return "grace"
@@ -85,23 +92,24 @@ def main() -> None:
             # 조용히 틀어진다. AT TIME ZONE 'utc' 캐스트를 지우지 말 것.
             row = conn.execute(
                 """
-                SELECT count(*) FILTER (WHERE cv_score IS NOT NULL OR error_trace IS NOT NULL),
+                SELECT count(*) FILTER (WHERE cv_score IS NOT NULL),
+                       count(*) FILTER (WHERE cv_score IS NOT NULL OR error_trace IS NOT NULL),
                        EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'utc') - min(run_ts)))
                 FROM raw.attempts
                 WHERE super_cycle_id = %s
                 """,
                 [super_cycle_id],
             ).fetchone()
-            n_done, span_sec = (row[0] or 0, row[1]) if row else (0, None)
+            n_success, n_done, span_sec = (row[0] or 0, row[1] or 0, row[2]) if row else (0, 0, None)
         except Exception as exc:
             print(f"[run_attempt_gate_task] poll failed(무시하고 계속): {exc}", file=sys.stderr)
             time.sleep(_POLL_SEC)
             continue
 
-        reason = _should_fire(n_done, span_sec, waited_sec, args.min_done, grace_sec, max_wait_sec)
+        reason = _should_fire(n_success, n_done, span_sec, waited_sec, args.min_done, grace_sec, max_wait_sec)
         if reason:
             print(
-                f"[run_attempt_gate_task] fired reason={reason} n_done={n_done} "
+                f"[run_attempt_gate_task] fired reason={reason} n_success={n_success} n_done={n_done} "
                 f"span_sec={span_sec} waited_sec={waited_sec:.0f} super_cycle={super_cycle_id[:8]}"
             )
             break
