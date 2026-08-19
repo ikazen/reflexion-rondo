@@ -39,6 +39,10 @@ MAX_CONSECUTIVE_CYCLE_FAILURES = int(os.getenv("RONDO_MAX_CONSECUTIVE_FAILURES",
 # 리스 소진 시 pending으로 되돌려 다음으로 오래 기다린 항목에 순서를 넘긴다 —
 # 큐 슬롯 자체(big=3)는 그대로라 처리량 이득은 없고 대회 간 커버리지만 회복한다.
 DAEMON_CYCLES_PER_LEASE = int(os.getenv("DAEMON_CYCLES_PER_LEASE", "5"))
+# attempt_gate(#203)와 짝을 이루는 전환 — off가 기본값이라 gate만 배포해도 아무 동작
+# 변화가 없다. gate가 며칠 안정화된 뒤에만 on으로 바꾼다(이미지 재빌드 없이 되돌릴
+# 수 있는 롤백 레버, #204).
+_WAIT_ON_PROMOTE_TI = os.getenv("RONDO_WAIT_ON_PROMOTE_TI", "") not in ("", "0", "false", "False")
 ROOT = Path(__file__).parent.parent
 
 _running = True
@@ -445,7 +449,14 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                     queue_id=qid,
                 )
                 print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} dag_run={dag_run_id}")
-                final_state = airflow_client.wait_for_dag_run(dag_run_id)
+                if _WAIT_ON_PROMOTE_TI:
+                    # attempt_gate(#203) 도입 후 straggler attempt는 여전히 45분
+                    # execution_timeout까지 DAG run을 running 상태로 붙잡는다 — DAG run
+                    # 전체를 기다리면 gate를 추가한 의미가 없다(#204). promote task
+                    # instance 하나의 완료만 기다린다.
+                    final_state = airflow_client.wait_for_task_instance(dag_run_id, "promote")
+                else:
+                    final_state = airflow_client.wait_for_dag_run(dag_run_id)
             except Exception as exc:
                 final_state, err_msg = "error", str(exc)
                 print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} airflow error: {err_msg}")

@@ -18,7 +18,8 @@ _AIRFLOW_USER = os.getenv("AIRFLOW_USER", "admin")
 _AIRFLOW_PASSWORD = os.getenv("AIRFLOW_PASSWORD", "")
 
 DAG_ID = "reflexion_rondo_cycle"
-_TERMINAL = {"success", "failed", "cancelled"}
+_TERMINAL = {"success", "failed", "cancelled"}  # dag_run state
+_TI_TERMINAL = {"success", "failed", "upstream_failed", "skipped", "removed"}  # task instance state
 
 _token: str | None = None
 _token_expires: float = 0.0
@@ -91,6 +92,39 @@ def wait_for_dag_run(
     while time.time() < deadline:
         state = get_dag_run_state(dag_run_id)
         if state in _TERMINAL:
+            return state
+        time.sleep(poll_interval)
+    return "timeout"
+
+
+def get_task_instance_state(dag_run_id: str, task_id: str) -> str:
+    """단일 task instance state. 아직 스케줄 안 됐으면(state=null) 또는 아예 아직 DB에
+    안 잡혔으면(404, dag_run 트리거 직후 레이스) 둘 다 빈 문자열(non-terminal)로 정규화 —
+    호출부가 예외 처리 없이 그대로 폴링 루프에 쓸 수 있게 한다."""
+    resp = requests.get(
+        f"{_AIRFLOW_URL}/api/v2/dags/{DAG_ID}/dagRuns/{dag_run_id}/taskInstances/{task_id}",
+        headers=_headers(),
+        timeout=15,
+    )
+    if resp.status_code == 404:
+        return ""
+    resp.raise_for_status()
+    return resp.json().get("state") or ""
+
+
+def wait_for_task_instance(
+    dag_run_id: str,
+    task_id: str = "promote",
+    poll_interval: int = 15,
+    timeout: int = 3600,
+) -> str:
+    """attempt_gate(#203) 도입 후 daemon은 DAG run 전체가 아니라 promote task 하나의
+    완료만 기다리면 된다 — straggler attempt는 DAG run을 계속 running 상태로 붙잡지만
+    (#204), 다음 사이클을 시작하는 데는 더 이상 걸림돌이 아니다."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        state = get_task_instance_state(dag_run_id, task_id)
+        if state in _TI_TERMINAL:
             return state
         time.sleep(poll_interval)
     return "timeout"
