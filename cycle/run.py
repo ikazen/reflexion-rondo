@@ -681,6 +681,13 @@ def run_attempt_core(
         row["super_cycle_id"] = super_cycle_id
     if was_promoted is not None:
         row["was_promoted"] = was_promoted
+    elif super_cycle_id is not None and defer_promotion:
+        # promote task가 winner만 나중에 True로 뒤집는다. NULL로 두면
+        # `reflection_impact`(store/schema.sql) 뷰가 `IS NOT FALSE`로 NULL을
+        # "legacy(승격됨)"로 취급하는 기존 관례 때문에, gate(#203)가 있는
+        # sequence에서 늦게 도착한 attempt가 영구 NULL로 남아 승자로 잘못
+        # 집계된다(#205) — False로 시작해 promote가 확정할 때만 뒤집는다.
+        row["was_promoted"] = False
     insert_attempt(conn, row)
 
     # defer_promotion=True: caller (super_cycle / Airflow promote task) handles winner-only promotion.
