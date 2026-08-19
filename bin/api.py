@@ -491,11 +491,13 @@ def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None
 
 def _last_submitted_attempt(conn: PgConn, competition_id: str) -> str | None:
     """오래 안 풀린 'submitted'는 미확정으로 보고 제외한다 — 안 그러면 재제출
-    조건이 영원히 안 걸린다."""
+    조건이 영원히 안 걸린다. attempt_id가 NULL인 행(수동 probe 등, #198)도 제외 —
+    안 그러면 그 뒤 auto_submit이 last=None으로 착각해 유의성 게이트를 건너뛴다."""
     row = conn.execute(
         """
         select attempt_id from raw.kaggle_submissions
         where competition_id = %s
+          and attempt_id is not null
           and status not in ('error', 'invalid', 'timeout')
           and not (status = 'submitted' and checked_at < now() - interval '1 hour')
         order by submitted_at desc

@@ -156,3 +156,13 @@ def test_last_submitted_attempt_query_excludes_stale_submitted() -> None:
     assert "'submitted'" in sql
     assert "interval '1 hour'" in sql
     assert result == "attempt-x"
+
+
+def test_last_submitted_attempt_query_excludes_null_attempt_id() -> None:
+    """attempt_id가 NULL인 제출행(수동 probe 등)이 쿼리에서 제외돼야 한다 — 안 그러면
+    auto_submit이 last=None으로 착각해 유의성 게이트를 건너뛴다(#198)."""
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None
+    _last_submitted_attempt(conn, "playground-series-s6e8")
+    sql = conn.execute.call_args[0][0]
+    assert "attempt_id is not null" in sql
