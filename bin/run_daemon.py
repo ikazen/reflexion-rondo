@@ -527,6 +527,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                     metric=comp.METRIC,
                     n_splits=getattr(comp, "N_SPLITS", 5),
                     is_classification=comp.IS_CLASSIFICATION,
+                    cpu_budget_secs=getattr(comp, "CPU_BUDGET_SECS", None),
                 )
                 print(
                     f"[daemon] queue_id={qid} bootstrap baseline "

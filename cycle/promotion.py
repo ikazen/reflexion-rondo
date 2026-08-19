@@ -226,6 +226,7 @@ def confirm_and_measure(
     competition_id: str | None = None,
     candidate_cv: float | None = None,
     candidate_fold_scores: list[float] | None = None,
+    cpu_budget_sec: float | None = None,
 ) -> ConfirmResult:
     """Cross-seed paired 재현 확인 + audit holdout 1회 측정·게이트.
 
@@ -275,6 +276,7 @@ def confirm_and_measure(
         cache=cache,
         ctx_key=ctx_key,
         competition_id=competition_id,
+        cpu_budget_sec=cpu_budget_sec,
     )
 
     # cross-seed가 candidate eval 에러로 거부했으면 holdout도 같은 후보를 평가하는
@@ -299,6 +301,7 @@ def confirm_and_measure(
             seed=seed,
             is_classification=is_classification,
             action_type=action_type,
+            cpu_budget_sec=cpu_budget_sec,
         )
         if holdout_score is not None:
             baseline_holdout_score = cache.get_baseline(ctx_key, "holdout", seed) if ctx_key is not None else None
@@ -314,6 +317,7 @@ def confirm_and_measure(
                     seed=seed,
                     is_classification=is_classification,
                     action_type=action_type,
+                    cpu_budget_sec=cpu_budget_sec,
                 )
                 if baseline_holdout_score is not None and ctx_key is not None:
                     cache.put_baseline(ctx_key, "holdout", seed, competition_id, baseline_holdout_score)
@@ -362,6 +366,7 @@ def _baseline_cv(
     cache: PromotionCache | None = None,
     ctx_key: tuple | None = None,
     competition_id: str | None = None,
+    cpu_budget_sec: float | None = None,
 ) -> tuple[float | None, str | None]:
     """best pipeline(또는 BasePipeline)을 seed 고정으로 단독 평가해 (cv_score, error) 반환.
 
@@ -388,6 +393,7 @@ def _baseline_cv(
         is_classification=is_classification,
         action_type=action_type,
         best_source=None,
+        cpu_budget_sec=cpu_budget_sec,
     )
     if res.error_trace or res.cv_score is None:
         _LOG.warning("baseline eval failed seed=%d err=%s", seed, bool(res.error_trace))
@@ -413,6 +419,7 @@ def _cross_seed_confirm(
     cache: PromotionCache | None = None,
     ctx_key: tuple | None = None,
     competition_id: str | None = None,
+    cpu_budget_sec: float | None = None,
 ) -> tuple[bool, dict]:
     if not confirm_seeds:
         return True, {}
@@ -432,6 +439,7 @@ def _cross_seed_confirm(
             cache=cache,
             ctx_key=ctx_key,
             competition_id=competition_id,
+            cpu_budget_sec=cpu_budget_sec,
         )
         if base_cv is None:
             _LOG.warning("cross-seed=%d baseline eval 실패 → 승격 취소: %s", cseed, base_err)
@@ -454,6 +462,7 @@ def _cross_seed_confirm(
             is_classification=is_classification,
             action_type=action_type,
             best_source=best_source,
+            cpu_budget_sec=cpu_budget_sec,
         )
 
         seed_gains[str(cseed)] = {
@@ -489,6 +498,7 @@ def _measure_holdout(
     seed: int,
     is_classification: bool,
     action_type: str,
+    cpu_budget_sec: float | None = None,
 ) -> float | None:
     result = eval_isolated(
         source=source,
@@ -502,6 +512,7 @@ def _measure_holdout(
         action_type=action_type,
         best_source=best_source,
         holdout_data=holdout10,
+        cpu_budget_sec=cpu_budget_sec,
     )
     if result.holdout_score is not None:
         _LOG.info("holdout_score=%.6f", result.holdout_score)

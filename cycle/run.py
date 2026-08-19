@@ -176,6 +176,7 @@ def establish_bootstrap_baseline(
     metric: str,
     n_splits: int,
     is_classification: bool,
+    cpu_budget_secs: float | None = None,
 ) -> bool:
     """bootstrap 배치 종료 시 최고 attempt를 BasePipeline 대비 검증해 확정 baseline으로 승격한다.
 
@@ -236,6 +237,7 @@ def establish_bootstrap_baseline(
         competition_id=competition_id,
         candidate_cv=cv_score,
         candidate_fold_scores=fold_scores,
+        cpu_budget_sec=cpu_budget_secs,
     )
     if confirm.holdout_score is not None:
         conn.execute(
@@ -703,6 +705,7 @@ def run_attempt_core(
             competition_id=config.competition_id,
             candidate_cv=cv_score,
             candidate_fold_scores=fold_scores,
+            cpu_budget_sec=config.cpu_budget_secs,
         )
         if confirm.holdout_score is not None:
             conn.execute(
@@ -745,6 +748,7 @@ def run_attempt_core(
                     seed=config.seed,
                     is_classification=config.is_classification,
                     collect_oof=True,
+                    cpu_budget_sec=config.cpu_budget_secs,
                 )
                 if not merge_eval.error_trace and merge_eval.cv_score is not None:
                     merge_oof_preds = merge_eval.oof_preds

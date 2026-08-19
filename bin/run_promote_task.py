@@ -206,6 +206,7 @@ def main() -> None:
                     competition_id=competition_id,
                     candidate_cv=winner_row[2],
                     candidate_fold_scores=winner_fold_scores,
+                    cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
                 )
                 if confirm.holdout_score is not None:
                     conn.execute(
@@ -269,6 +270,7 @@ def main() -> None:
                         seed=42,
                         is_classification=is_classification,
                         collect_oof=True,  # 이 1회 eval에 얹어 OOF 확보(추가 비용 없음)
+                        cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
                     )
                     if merge_eval.error_trace or merge_eval.cv_score is None:
                         merge_ok = False
