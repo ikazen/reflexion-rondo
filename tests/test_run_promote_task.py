@@ -150,10 +150,12 @@ class _Conn:
 
     def __init__(self):
         self.executed: list[str] = []
+        self.executed_params: list[object] = []
 
     def execute(self, sql, params=None):
         s = " ".join(sql.split())
         self.executed.append(s)
+        self.executed_params.append(params)
         if "FROM raw.super_cycle_context" in s:
             return _Cur(one=("sc-id", _FULL_ID))
         if "FROM raw.attempts" in s and "ORDER BY run_ts" in s:
@@ -308,8 +310,10 @@ def test_prev_best_fold_scores_called_with_competition_id_only() -> None:
     assert args[1] if len(args) > 1 else kwargs.get("competition_id")
 
 
-def test_super_cycle_context_deleted_after_read() -> None:
-    """컨텍스트를 읽은 뒤 해당 run_id 행을 삭제해야 한다."""
+def test_super_cycle_context_not_deleted_by_promote() -> None:
+    """promote는 super_cycle_context를 더 이상 즉시 삭제하지 않는다(#206) — attempt_gate
+    도입 후 아직 시작 안 한 straggler가 그 사이 context를 못 찾아 하드 실패하는 경합을
+    막기 위해서다. 청소는 bin/run_retrieve_task.py의 7일 TTL 스윕이 전담한다."""
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
     confirm_mock = MagicMock()
     conn = _run_promote_with_mocks(
@@ -318,7 +322,32 @@ def test_super_cycle_context_deleted_after_read() -> None:
         confirm_mock,
     )
     delete_calls = [s for s in conn.executed if "DELETE FROM raw.super_cycle_context" in s]
-    assert len(delete_calls) == 1
+    assert delete_calls == []
+
+
+def test_winner_selection_tolerates_fewer_than_three_attempts(monkeypatch) -> None:
+    """attempt_gate(#203) 도입 후 promote가 3개를 다 기다리지 않고 2개(또는 1개)만 있는
+    상태로 뜰 수 있다 — winner 선정이 enumerate 기반이라 행 수와 무관하게 동작해야 한다."""
+    two_rows = [
+        ("w0000000", 0.05, _WINNER_CV, "jump", None, "hyp-w", "model_swap", [], 0.0, "s3://w", None),
+        ("l1111111", 0.01, 0.81, "neutral", None, "hyp-1", "feature_engineering", [], 0.0, "s3://l1", None),
+    ]
+    monkeypatch.setattr(sys.modules[__name__], "_ATTEMPT_ROWS", two_rows)
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None, holdout_regressed=False),
+        reflect_mock,
+        confirm_mock,
+    )
+    update_calls = [
+        (s, p) for s, p in zip(conn.executed, conn.executed_params)
+        if "UPDATE raw.attempts SET was_promoted" in s
+    ]
+    assert len(update_calls) == 2
+    winners = {p[1]: p[0] for _, p in update_calls}
+    assert winners["w0000000"] is True
+    assert winners["l1111111"] is False
 
 
 
