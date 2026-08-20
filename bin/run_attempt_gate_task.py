@@ -28,21 +28,29 @@ _CONTEXT_LOOKUP_RETRY_SEC = 60
 def _should_fire(
     n_success: int,
     n_done: int,
+    n_expected: int,
     span_sec: float | None,
     waited_sec: float,
     min_done: int,
     grace_sec: float,
     max_wait_sec: float,
 ) -> str | None:
-    """발화 사유(quorum/grace/maxwait) 또는 아직 대기(None). 순수 함수 — 테스트는 이것만 검증.
+    """발화 사유(quorum/all_done/grace/maxwait) 또는 아직 대기(None). 순수 함수 — 테스트는
+    이것만 검증.
 
     quorum은 n_success(성공만) 기준 — n_done(성공+실패)으로 세면 실패 2개만으로도
     발화해 promote가 winner 없이 바로 종료되고(#214), 아직 도는 세 번째(성공할
     수도 있는) attempt는 이 사이클에서 영영 빠진다. grace/maxwait는 "뭐라도 결과가
     나오는 대로 무기한 대기하지 않는다"는 안전장치라 n_done/경과시간 그대로 둔다 —
-    전부 에러여도 grace/maxwait는 발화해야 사이클이 안 막힌다."""
+    전부 에러여도 grace/maxwait는 발화해야 사이클이 안 막힌다.
+
+    n_done>=n_expected(전부 끝남)면 성공 개수와 무관하게 즉시 발화한다(#219) — 3개가
+    전부 몇 분 만에 에러로 끝나도 이 조건이 없으면 성공이 안 나온 채로 grace(900s)가
+    찰 때까지 남은 시간을 그냥 흘려보낸다. 더 기다려도 나올 게 없는 상태다."""
     if n_success >= min_done:
         return "quorum"
+    if n_done >= n_expected:
+        return "all_done"
     if n_done >= 1 and span_sec is not None and span_sec >= grace_sec:
         return "grace"
     if waited_sec >= max_wait_sec:
@@ -106,7 +114,9 @@ def main() -> None:
             time.sleep(_POLL_SEC)
             continue
 
-        reason = _should_fire(n_success, n_done, span_sec, waited_sec, args.min_done, grace_sec, max_wait_sec)
+        reason = _should_fire(
+            n_success, n_done, args.expected, span_sec, waited_sec, args.min_done, grace_sec, max_wait_sec,
+        )
         if reason:
             print(
                 f"[run_attempt_gate_task] fired reason={reason} n_success={n_success} n_done={n_done} "
