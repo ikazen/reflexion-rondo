@@ -1,5 +1,14 @@
 # 변경 이력
 
+## v1.5.7 — daemon 크래시루프: _sweep_queue_refill naive/aware datetime 비교 수정 (2026-08-23)
+- #223: `#196`의 `_sweep_queue_refill`이 timezone 없는 `raw.attempts.run_ts`(naive)를
+  aware `idle_cutoff`와 Python에서 직접 비교해 `TypeError`. `raw.cycle_queue`가
+  하나라도 pending/running이면 건드리지 않는 가드가 있어 지금까지 발화 안 하다가,
+  v1.5.6 컷오버 시점에 큐가 처음으로 완전히 드레인되며 매 daemon startup마다 즉시
+  크래시루프. `idle_cutoff`를 naive UTC로 맞춰서 비교하도록 수정. 기존
+  `tests/test_daemon_queue_refill.py`도 aware `run_ts`를 mock해 이 버그를 못 잡고
+  있었던 것을 naive로 정정.
+
 ## v1.5.6 — auto-submit AmbiguousColumn 500 수정 (2026-08-23)
 - #221: `#178`에서 `_best_attempt()`에 `raw.pipelines` JOIN을 추가하면서 그 아래
   `join raw.competitions c using (competition_id)`가 그대로 남아 `raw.attempts`/

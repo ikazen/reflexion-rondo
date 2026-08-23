@@ -337,7 +337,11 @@ def _sweep_queue_refill(conn) -> None:
     ).fetchall())
 
     now = datetime.now(timezone.utc)
-    idle_cutoff = now - timedelta(hours=_QUEUE_REFILL_IDLE_HOURS)
+    # raw.attempts.run_ts는 timezone 없는 컬럼이라 psycopg2가 naive datetime으로
+    # 반환한다 — aware idle_cutoff와 그대로 비교하면 TypeError(#223). 이 repo에서
+    # timestamp 컬럼에 쓰는 aware datetime은 전부 UTC 기준으로 저장되므로 naive로
+    # 맞춰서 비교한다.
+    idle_cutoff = (now - timedelta(hours=_QUEUE_REFILL_IDLE_HOURS)).replace(tzinfo=None)
     idle_slugs = sorted(
         slug for slug, cid in slug_to_cid.items()
         if last_run.get(cid) is None or last_run[cid] < idle_cutoff
