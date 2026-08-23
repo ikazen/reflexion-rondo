@@ -25,6 +25,9 @@ from evaluator.harness import (
     _weighted_majority_vote,
     _fit_predict_ensemble,
     fit_predict,
+    _make_folds,
+    _extract_is_original,
+    _synthetic_indices,
 )
 from runtime.runner import _eval_holdout
 
@@ -1489,3 +1492,131 @@ def test_fit_predict_precomputed_spec_skips_recomputation():
     )
     assert model is not None
     pipeline.ensemble_spec.assert_not_called()
+
+
+# #228 (원본 데이터 병합, store/train_data.py:load_train의 EXTRA_TRAIN_PATHS)가 붙이는
+# is_original 컬럼 처리 — 원본(실제) 행은 어떤 fold/holdout의 validation에도 들어가면
+# 안 되고(CV/holdout이 재는 대상이 실제 Kaggle 제출 조건인 100% synthetic이어야 하므로),
+# Patch 훅(preprocess/feature_transform)에는 이 bookkeeping 컬럼 자체가 안 보여야 한다.
+
+def test_extract_is_original_splits_column_when_present():
+    df = pl.DataFrame({"x": [1, 2, 3], "y": [0, 1, 0], "is_original": [False, True, False]})
+    stripped, is_original = _extract_is_original(df)
+    assert "is_original" not in stripped.columns
+    assert list(is_original) == [False, True, False]
+
+
+def test_extract_is_original_noop_when_absent():
+    df = pl.DataFrame({"x": [1, 2], "y": [0, 1]})
+    stripped, is_original = _extract_is_original(df)
+    assert stripped is df
+    assert is_original is None
+
+
+def test_synthetic_indices_none_treats_everything_as_synthetic():
+    synth, orig = _synthetic_indices(None, 5)
+    assert list(synth) == [0, 1, 2, 3, 4]
+    assert list(orig) == []
+
+
+def test_make_folds_never_places_original_rows_in_validation():
+    rng = np.random.default_rng(0)
+    n_synth, n_orig = 60, 20
+    y = np.concatenate([rng.integers(0, 2, n_synth), rng.integers(0, 2, n_orig)])
+    is_original = np.concatenate([np.zeros(n_synth, dtype=bool), np.ones(n_orig, dtype=bool)])
+    ctx = _ctx(is_classification=True)
+
+    folds = _make_folds(y, ctx, is_original=is_original)
+
+    orig_idx = set(np.where(is_original)[0])
+    assert len(folds) == ctx.n_splits
+    for tr_idx, va_idx in folds:
+        assert orig_idx.isdisjoint(set(va_idx)), "원본 행이 validation fold에 들어감"
+        assert orig_idx <= set(tr_idx), "원본 행이 어떤 fold의 train에도 안 들어감"
+
+
+def test_make_folds_without_is_original_behaves_as_before():
+    y = np.array([0, 1] * 20)
+    ctx = _ctx(is_classification=True)
+    folds_default = _make_folds(y, ctx)
+    folds_explicit_none = _make_folds(y, ctx, is_original=None)
+    assert len(folds_default) == len(folds_explicit_none) == ctx.n_splits
+    for (tr1, va1), (tr2, va2) in zip(folds_default, folds_explicit_none):
+        assert list(tr1) == list(tr2)
+        assert list(va1) == list(va2)
+
+
+def test_split_audit_holdout_excludes_original_rows_from_holdout():
+    n_synth, n_orig = 80, 20
+    rng = np.random.default_rng(1)
+    df = pl.DataFrame({
+        "x": rng.standard_normal(n_synth + n_orig),
+        "y": np.concatenate([rng.integers(0, 2, n_synth), rng.integers(0, 2, n_orig)]),
+        "is_original": [False] * n_synth + [True] * n_orig,
+    })
+    train90, holdout10 = split_audit_holdout(df, "y", is_classification=True, frac=0.2)
+
+    assert holdout10["is_original"].to_list() == [False] * len(holdout10), (
+        "원본 행이 audit holdout에 들어감"
+    )
+    assert train90["is_original"].sum() == n_orig, "원본 행 일부가 train90에서 유실됨"
+
+
+def test_preselect_params_excludes_original_rows_from_inner_validation():
+    """원본 행이 param_candidates 내부 80/20 split의 검증 쪽에 들어가면 그 스코어가
+    실제 제출 조건과 다른 신호로 파라미터를 고르게 된다 — 절대 들어가면 안 된다."""
+    n_synth, n_orig = 80, 20
+    rng = np.random.default_rng(2)
+    x = rng.standard_normal(n_synth + n_orig)
+    y = (x > 0).astype(float)
+    df = pl.DataFrame({
+        "x0": x, "x1": rng.standard_normal(n_synth + n_orig), "y": y,
+        "is_original": [False] * n_synth + [True] * n_orig,
+    })
+
+    class _RecordingPatch(_TwoCandidates):
+        seen_va_sizes: list[int] = []
+
+        def feature_transform(self, train, valid, target, ctx):
+            _RecordingPatch.seen_va_sizes.append(valid.height)
+            cols = [c for c in train.columns if c != target]
+            return train.select(cols), valid.select(cols)
+
+    pipeline = PatchedPipeline(BasePipeline(), _RecordingPatch())
+    ctx = _ctx(is_classification=True)
+    preselect_params(pipeline, df, ctx)
+
+    # inner 80/20 split은 synthetic n_synth=80행 기준이어야 한다(원본 20행은 전부
+    # train으로 편입) — va 크기가 (80+20)*0.2=20이 아니라 80*0.2=16이어야 원본이
+    # validation에서 빠졌다는 뜻.
+    assert _RecordingPatch.seen_va_sizes[-1] == 16
+
+
+def test_evaluate_pipeline_never_exposes_is_original_to_patch_hooks():
+    """Patch 훅이 is_original bookkeeping 컬럼을 보면 안 된다 — 보이면 실제 feature로
+    오인돼 인코딩되거나, train/valid 컬럼 수가 안 맞아 크래시할 수 있다."""
+    n_synth, n_orig = 80, 20
+    rng = np.random.default_rng(3)
+    x = rng.standard_normal(n_synth + n_orig)
+    y = x * 2.0 + rng.standard_normal(n_synth + n_orig) * 3.0
+    df = pl.DataFrame({
+        "x0": x, "x1": rng.standard_normal(n_synth + n_orig), "y": y,
+        "is_original": [False] * n_synth + [True] * n_orig,
+    })
+
+    class _AssertingPatch(BasePipeline):
+        def preprocess(self, train, valid, target, ctx):
+            assert "is_original" not in train.columns
+            assert "is_original" not in valid.columns
+            return train, valid
+
+        def feature_transform(self, train, valid, target, ctx):
+            assert "is_original" not in train.columns
+            assert "is_original" not in valid.columns
+            cols = [c for c in train.columns if c != target]
+            return train.select(cols), valid.select(cols)
+
+    pipeline = PatchedPipeline(BasePipeline(), _AssertingPatch())
+    ctx = _ctx(is_classification=False)
+    result = evaluate_pipeline(pipeline, df, ctx)
+    assert np.isfinite(result.cv_score)

@@ -1,5 +1,30 @@
 # 변경 이력
 
+## v1.5.11 — 원본 데이터 병합: deep tier 5개 전부 배선 (2026-08-24)
+- #228(Milestone v1.6.0): `EXTRA_TRAIN_PATHS` 병합 메커니즘(`store/train_data.py`)은
+  이미 있었지만 27개 대회 전부 빈 배열로 방치돼 있던 것을, deep tier 5개(`s4e10`/
+  `s4e11`/`s5e4`/`s6e8`) 중 Kaggle에서 컬럼 일치가 확인된 4개에 실제 원본 데이터셋을
+  연결(`s4e12`는 신뢰할 만한 원본을 못 찾아 보류). MinIO `kaggle/{slug}/data/
+  original.csv`에 업로드 + 로컬 `data/playground-series-*/`에도 배치.
+  - `s4e10`(Loan Approval): `laotse/credit-risk-dataset`, 컬럼 완전 일치.
+    `#225` 스파이크 실험에서 이미 실측(5-fold 전부 개선, +0.0018 AUC).
+  - `s4e11`(Depression): `hopesb/student-depression-dataset`, 19개 중 17개 컬럼 일치
+    (학생 전용 서브셋이라 `Name`/`Working Professional or Student` 없음 — 자동 null 채움).
+  - `s5e4`(Podcast): `sangampaudel530/original-podcast-dataset`, 컬럼 완전 일치.
+  - `s6e8`(Smartphone Addiction): `zahranusratt/smartphone-usage-and-addiction-
+    analysis-dataset`, 핵심 피처 전부 일치(`transaction_id`/`user_id`/`addiction_level`은
+    대회에 없는 컬럼이라 자동 배제).
+  - **`evaluator/harness.py`에 `is_original`-aware 분할 신설**: `_make_folds`/
+    `split_audit_holdout`/`preselect_params`가 원본(실제) 데이터 행을 모든 fold·holdout·
+    inner-split의 **train 쪽에만** 넣고 validation/holdout 쪽에는 절대 안 넣도록 수정
+    — CV/holdout이 재는 대상이 실제 Kaggle 제출 조건(100% synthetic)이어야 하는데
+    원본 행이 섞이면 그 프록시가 오염된다(leakage는 아니지만 측정 대상 자체가 달라짐).
+    `runtime/runner.py`/`bin/submit.py`는 Patch 훅에 넘기기 전 `is_original` bookkeeping
+    컬럼을 제거하도록 배선.
+  - CV_SCHEME(Group/TimeSeries 오버라이드)은 deep tier 5개 전부 iid 데이터라 불필요 —
+    도입 안 함.
+  - 회귀 테스트 8개 추가(fold/holdout/preselect 분할 검증 + Patch 훅에 컬럼 미노출 검증).
+
 ## v1.5.10 — #226 adversarial review 후속: ensemble_spec 상속 무력화 + 조기종료 재시도 (2026-08-24)
 - #239: `/code-review max`로 c8a116b..HEAD(#221~#227) 전체를 adversarial review한 결과,
   #226 자체는 올바르지만 그 수정이 정확히 동작하기 시작하면서 새로 노출되는 문제 2건 발견.

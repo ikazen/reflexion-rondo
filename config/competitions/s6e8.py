@@ -14,7 +14,11 @@ IS_CLASSIFICATION = True
 DROP_COLS         = ["id"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s6e8/data/"
-EXTRA_TRAIN_PATHS: list[str] = []
+EXTRA_TRAIN_PATHS: list[str] = ["original.csv"]  # zahranusratt/smartphone-usage-and-
+# addiction-analysis-dataset — 핵심 피처 컬럼 전부 일치. transaction_id/user_id/
+# addiction_level은 대회에 없는 컬럼이라 store/train_data.py의 컬럼 교집합으로 자동
+# 제외됨(addiction_level은 타깃 addicted_label과 다른 파생 라벨이라 누수 없이 정확히
+# 배제돼야 함 — 의도된 동작). MinIO kaggle/s6e8/data/original.csv.
 ACTIVE            = True  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
 CPU_BUDGET_SECS   = 3600  # 기본 900s 대비 4배(#176) — 9일 실측 kill률 35%, 성공 attempt
 # p99=841s로 벽에 붙어 있었고 900s 위 분포는 완전히 검열돼 있었다. kill은 산출물 0에

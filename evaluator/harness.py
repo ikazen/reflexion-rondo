@@ -537,12 +537,51 @@ class PatchedPipeline:
         return self.base.ensemble_spec(ctx)
 
 
-def _make_folds(y: np.ndarray, ctx: PipelineContext) -> list:
+# 원본 데이터 병합(#228, store/train_data.py:load_train의 EXTRA_TRAIN_PATHS)이 붙인
+# is_original 컬럼을 여기서 소비한다. 원본(실제) 행이 fold/holdout의 validation 쪽에
+# 들어가면 CV·holdout이 실제 Kaggle 리더보드(100% synthetic) 대신 "실제 데이터 예측
+# 성능"을 일부 측정하게 돼 두 분포가 섞인 편향된 프록시가 된다 — leakage는 아니지만
+# CV가 measuring하려는 대상 자체가 오염된다. 원본 행은 모든 분할에서 train 쪽에만
+# 들어가고 validation/holdout 쪽에는 절대 안 들어간다.
+def _extract_is_original(train: pl.DataFrame) -> tuple[pl.DataFrame, np.ndarray | None]:
+    """train에 is_original 컬럼이 있으면 분리해서 (컬럼 없는 train, bool array)로
+    반환한다. 없으면 (train 그대로, None) — EXTRA_TRAIN_PATHS 미설정 대회는 동작 완전
+    불변. Patch 훅(preprocess/feature_transform)은 이 bookkeeping 컬럼을 몰라야
+    하므로, 분할에 쓴 뒤에는 반드시 이걸로 제거하고 넘긴다."""
+    if "is_original" in train.columns:
+        return train.drop("is_original"), train["is_original"].to_numpy()
+    return train, None
+
+
+def _synthetic_indices(is_original: np.ndarray | None, n: int) -> tuple[np.ndarray, np.ndarray]:
+    if is_original is None:
+        return np.arange(n), np.array([], dtype=int)
+    idx = np.arange(n)
+    return idx[~is_original], idx[is_original]
+
+
+def _synthetic_only_splits(splits_on_synth, synth_idx: np.ndarray, orig_idx: np.ndarray) -> list:
+    """synth_idx 부분집합 기준으로 계산된 (tr_local, va_local) 인덱스를 전체 배열
+    인덱스로 되돌리고, orig_idx(원본 데이터 행)를 모든 분할의 train 쪽에 무조건
+    합친다 — validation/holdout 쪽에는 절대 안 들어간다."""
+    result = []
+    for tr_local, va_local in splits_on_synth:
+        tr_idx = np.concatenate([synth_idx[tr_local], orig_idx]) if len(orig_idx) else synth_idx[tr_local]
+        va_idx = synth_idx[va_local]
+        result.append((tr_idx, va_idx))
+    return result
+
+
+def _make_folds(y: np.ndarray, ctx: PipelineContext, is_original: np.ndarray | None = None) -> list:
+    synth_idx, orig_idx = _synthetic_indices(is_original, len(y))
+    y_synth = y[synth_idx]
     if ctx.is_classification:
         kf = StratifiedKFold(n_splits=ctx.n_splits, shuffle=True, random_state=ctx.seed)
-        return list(kf.split(np.zeros(len(y)), y))
-    kf = KFold(n_splits=ctx.n_splits, shuffle=True, random_state=ctx.seed)
-    return list(kf.split(np.zeros(len(y))))
+        splits = kf.split(np.zeros(len(y_synth)), y_synth)
+    else:
+        kf = KFold(n_splits=ctx.n_splits, shuffle=True, random_state=ctx.seed)
+        splits = kf.split(np.zeros(len(y_synth)))
+    return _synthetic_only_splits(splits, synth_idx, orig_idx)
 
 
 def split_audit_holdout(
@@ -556,15 +595,26 @@ def split_audit_holdout(
     반환: (train90, holdout10).
     train90은 모든 CV/preselect에 사용하고, holdout10은 승격 시 1회 측정·기록에만 사용한다.
     내부 k-fold나 파라미터 선택에 절대 사용하지 않는다.
+
+    is_original 컬럼(#228)이 있으면 원본 데이터 행은 train90에만 들어가고 holdout10에는
+    안 들어간다 — audit holdout은 실제 Kaggle 제출 조건(100% synthetic)에 대한 일반화를
+    재는 게 목적이라, 원본 행이 섞이면 그 측정이 오염된다. 두 반환값 모두 is_original
+    컬럼은 그대로 들고 있다 — 이후 evaluate_pipeline/preselect_params/_eval_holdout이
+    각자 다시 소비·제거한다.
     """
     n = len(train)
     y = train[target].to_numpy()
+    is_original = train["is_original"].to_numpy() if "is_original" in train.columns else None
+    synth_idx, orig_idx = _synthetic_indices(is_original, n)
+    y_synth = y[synth_idx]
     if is_classification:
         sss = StratifiedShuffleSplit(n_splits=1, test_size=frac, random_state=_AUDIT_SEED)
-        tr_idx, ho_idx = next(sss.split(np.zeros(n), y))
+        tr_local, ho_local = next(sss.split(np.zeros(len(y_synth)), y_synth))
     else:
         ss = ShuffleSplit(n_splits=1, test_size=frac, random_state=_AUDIT_SEED)
-        tr_idx, ho_idx = next(ss.split(np.zeros(n)))
+        tr_local, ho_local = next(ss.split(np.zeros(len(y_synth))))
+    tr_idx = np.concatenate([synth_idx[tr_local], orig_idx]) if len(orig_idx) else synth_idx[tr_local]
+    ho_idx = synth_idx[ho_local]
     return train[list(tr_idx)], train[list(ho_idx)]
 
 
@@ -582,6 +632,10 @@ def preselect_params(
 
     ensemble_spec이 정의된 파이프라인은 하이퍼파라미터가 스펙의 멤버별
     params에 이미 들어있어 이 탐색 대상이 아니다 — 빈 dict를 그대로 반환한다.
+
+    is_original 컬럼(#228)이 있으면 원본 데이터 행은 inner-split의 train 쪽에만
+    들어가고 va(검증) 쪽에는 안 들어간다 — 파라미터 선택도 synthetic 전용 신호로
+    해야 실제 제출 조건과 일치한다.
     """
     if pipeline.ensemble_spec(ctx) is not None:
         return {}
@@ -590,15 +644,20 @@ def preselect_params(
     if len(candidates) <= 1:
         return candidates[0] if candidates else {}
 
+    train, is_original = _extract_is_original(train)
     fn, metric_sign, metric_class = get_metric(ctx.metric)
     y = train[ctx.target_col].to_numpy()
+    synth_idx, orig_idx = _synthetic_indices(is_original, len(y))
+    y_synth = y[synth_idx]
 
     if ctx.is_classification:
         sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=ctx.seed)
-        tr_idx, va_idx = next(sss.split(np.zeros(len(y)), y))
+        tr_local, va_local = next(sss.split(np.zeros(len(y_synth)), y_synth))
     else:
         ss = ShuffleSplit(n_splits=1, test_size=0.2, random_state=ctx.seed)
-        tr_idx, va_idx = next(ss.split(np.zeros(len(y))))
+        tr_local, va_local = next(ss.split(np.zeros(len(y_synth))))
+    tr_idx = np.concatenate([synth_idx[tr_local], orig_idx]) if len(orig_idx) else synth_idx[tr_local]
+    va_idx = synth_idx[va_local]
 
     tr = train[list(tr_idx)]
     va = train[list(va_idx)]
@@ -649,10 +708,13 @@ def evaluate_pipeline(
     (bin/run_promote_task.py)에서만 True로 호출해 추가 평가 비용 없이 확보한다.
     """
     fn, metric_sign, metric_class = get_metric(ctx.metric)
+    # preselect_params는 is_original이 붙은 원본 train을 그대로 받아야 자기 내부
+    # split에서도 원본 행을 validation으로 안 보낸다(#228) — 여기서 미리 벗기지 않는다.
+    selected_params = preselect_params(pipeline, train, ctx)
+    train, is_original = _extract_is_original(train)
     y = train[ctx.target_col].to_numpy()
     compute_importance = ctx.action_type in _IMPORTANCE_ACTIONS
 
-    selected_params = preselect_params(pipeline, train, ctx)
     # fold마다 한 번씩 물으면 매번 같은 dict를 만드는 patch 구현에 낭비 — 1회 조회.
     ensemble_spec_dict = pipeline.ensemble_spec(ctx)
 
@@ -667,13 +729,16 @@ def evaluate_pipeline(
     # 예측이라(멀티클래스는 문자열 라벨) float OOF 배열에 못 담는다(ValueError) — Ridge
     # 블렌딩(bin/blend.py) 대상도 아니므로 애초에 수집하지 않는다. blend.py는 이미
     # oof_preds IS NULL인 pipeline을 자동 제외해 이 경로와 정합적이다.
+    # is_original 행은 어떤 fold의 validation에도 안 들어가므로(#228) 그 위치는
+    # NaN으로 영구히 남는다 — bin/blend.py는 실패해도 승격을 안 막는 best-effort
+    # 호출이라(spec.md §1.13) 감수. blend.py 자체가 #231에서 폐기 예정.
     oof = (
         np.full(len(train), np.nan)
         if (collect_oof and metric_class != "classification")
         else None
     )
 
-    for fold_idx, (tr_idx, va_idx) in enumerate(_make_folds(y, ctx)):
+    for fold_idx, (tr_idx, va_idx) in enumerate(_make_folds(y, ctx, is_original=is_original)):
         tr = train[list(tr_idx)]
         va = train[list(va_idx)]
         # preprocess가 타깃을 변환(log1p 등)할 수 있으므로 채점은 변환 이전의 raw

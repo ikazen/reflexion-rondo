@@ -14,7 +14,8 @@ IS_CLASSIFICATION = True
 DROP_COLS         = ["id"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s4e10/data/"
-EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
+EXTRA_TRAIN_PATHS: list[str] = ["original.csv"]  # laotse/credit-risk-dataset — 컬럼 완전
+# 일치(#228 실측: 5-fold 전부 개선, +0.0018 AUC). MinIO kaggle/s4e10/data/original.csv.
 ACTIVE            = True  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
 
 EDA_CARD = """competition: playground-series-s4e10 (Loan Approval Prediction)
