@@ -476,7 +476,7 @@ def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None
         select a.attempt_id, a.cv_score
         from raw.attempts a
         join raw.pipelines p on p.attempt_id = a.attempt_id
-        join raw.competitions c using (competition_id)
+        join raw.competitions c on c.competition_id = a.competition_id
         where a.competition_id = %s
           and a.cv_score is not null
           and a.error_trace is null

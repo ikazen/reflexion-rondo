@@ -8,9 +8,13 @@
 """
 from __future__ import annotations
 
+import os
 import sys
+import uuid
 from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 ROOT = Path(__file__).parent.parent
 if str(ROOT) not in sys.path:
@@ -18,7 +22,7 @@ if str(ROOT) not in sys.path:
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from bin.api import DaemonState, _submission_gain_significant, create_app  # noqa: E402
+from bin.api import DaemonState, _best_attempt, _submission_gain_significant, create_app  # noqa: E402
 
 
 def _conn_for(metric_sign, candidate_row, baseline_row):
@@ -168,3 +172,41 @@ def test_auto_submit_first_submission_skips_gain_check(monkeypatch):
     body = resp.json()
     assert body["skipped"] == []
     assert len(body["submitted"]) == 1
+
+
+@pytest.mark.skipif(
+    not os.getenv("RONDO_DB_URL"),
+    reason="RONDO_DB_URL not set — DB-backed _best_attempt SQL test skipped",
+)
+def test_best_attempt_join_does_not_raise_ambiguous_column():
+    """#221 재현: raw.attempts와 raw.pipelines 둘 다 competition_id를 가져
+    join raw.competitions ... using (competition_id)가 psycopg2.errors.AmbiguousColumn으로
+    500을 낸다. 이전 테스트는 conn을 MagicMock으로 대체해 SQL을 실행하지 않아 이 버그를
+    못 잡았다 — 여기는 실제 Postgres에 SQL을 태워 플랜 단계 실패를 검증한다."""
+    from store.db import connect
+
+    conn = connect(apply_schema=True)
+    competition_id = f"bon221-test-{uuid.uuid4().hex[:8]}"
+    attempt_id = f"{competition_id}-a0"
+    try:
+        conn.execute(
+            "INSERT INTO raw.competitions (competition_id, name, task_type, metric, metric_sign)"
+            " VALUES (%s, 'ambiguous-join test', 'binary', 'auc', 1)",
+            [competition_id],
+        )
+        conn.execute(
+            "INSERT INTO raw.attempts (attempt_id, competition_id, run_ts, stage, cv_score)"
+            " VALUES (%s, %s, now(), 'reflexion', 0.9)",
+            [attempt_id, competition_id],
+        )
+        conn.execute(
+            "INSERT INTO raw.pipelines (pipeline_id, attempt_id, competition_id)"
+            " VALUES (%s, %s, %s)",
+            [f"{attempt_id}-p", attempt_id, competition_id],
+        )
+        assert _best_attempt(conn, competition_id) == (attempt_id, 0.9)
+    finally:
+        conn.execute("DELETE FROM raw.pipelines WHERE competition_id = %s", [competition_id])
+        conn.execute("DELETE FROM raw.attempts WHERE competition_id = %s", [competition_id])
+        conn.execute("DELETE FROM raw.competitions WHERE competition_id = %s", [competition_id])
+        conn.close()
