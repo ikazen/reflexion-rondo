@@ -247,10 +247,11 @@ def _bagged_predict(
     seed 루프와 최종 집계(평균/다수결)만 담당.
     """
     from evaluator.harness import PipelineContext, fit_predict
-    # ensemble_spec은 seed(ctx.seed)에 의존하지 않는다는 전제로 루프 밖에서 1회만
-    # 조회한다(evaluate_pipeline과 동일 관례) — Patch.ensemble_spec(ctx)가 ctx.seed를
-    # 참조해 멤버 구성을 바꾸는 구현이 나오면 이 가정이 깨진다.
+    # ensemble_spec/model_spec은 seed(ctx.seed)에 의존하지 않는다는 전제로 루프 밖에서
+    # 1회만 조회한다(evaluate_pipeline과 동일 관례) — Patch.ensemble_spec/model_spec(ctx)이
+    # ctx.seed를 참조해 구성을 바꾸는 구현이 나오면 이 가정이 깨진다.
     ensemble_spec_dict = pipeline.ensemble_spec(ctx)
+    model_spec_dict = pipeline.model_spec(ctx) if ensemble_spec_dict is None else None
     bag_preds = []
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -270,7 +271,7 @@ def _bagged_predict(
             # 제출 방법론 자체가 바뀌므로 이번 범위에서 제외 — CV 경로(harness.py)만 적용.
             raw_preds, _ = fit_predict(
                 pipeline, params, bag_ctx, X_train_np, y_train, X_test_np, None, metric_class,
-                ensemble_spec_dict=ensemble_spec_dict,
+                ensemble_spec_dict=ensemble_spec_dict, model_spec_dict=model_spec_dict,
             )
             bag_preds.append(raw_preds)
     if metric_class == "classification":

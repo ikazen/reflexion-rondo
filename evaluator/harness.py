@@ -1,11 +1,10 @@
-"""CV 평가 하네스 — BasePipeline/PatchedPipeline 실행, 유의성 검정, 누수 가드, ensemble_spec.
+"""CV 평가 하네스 — BasePipeline/PatchedPipeline 실행, 유의성 검정, 누수 가드, ensemble_spec/model_spec.
 
 runtime/isolate.py가 이 모듈을 별도 subprocess에서 호출해 격리 실행한다.
 """
 from __future__ import annotations
 
 import inspect
-import re
 import warnings
 from dataclasses import dataclass, field
 
@@ -18,6 +17,7 @@ _AUDIT_SEED = 2025  # 고정 seed — 대회·재시작과 무관하게 항상 �
 
 from config.settings import LABEL_Z
 from evaluator.metrics import get as get_metric
+from evaluator.models import build_registry_model, construct_with_kwarg_retry
 
 _PI_REPEATS = 3
 _PI_TOP_N = 20
@@ -172,44 +172,15 @@ def _encode_residual_categoricals(
 
 _IMPORTANCE_ACTIONS = frozenset({"feature_engineering", "preprocessing"})
 
-_MAX_BUILD_MODEL_RETRIES = 3
-_UNEXPECTED_KWARG_RE = re.compile(r"unexpected keyword argument '(\w+)'")
-_MULTIPLE_KWARG_RE = re.compile(r"got multiple values for keyword argument '(\w+)'")
-
-
-def _construct_with_kwarg_retry(build_fn, params: dict):
-    """params로 build_fn(params)를 호출하되, 제거된/불명 kwarg로 인한 TypeError면
-    그 키 하나만 벗기고 재시도한다.
-
-    _build_model_safe(Patch.build_model 경유)와 _build_ensemble_member(ensemble_spec
-    멤버 생성)가 이 재시도 로직을 공유한다 — 둘 다 LLM이 stale
-    constructor kwarg(예: LogisticRegression의 구 `multi_class`)를 params dict에
-    넣는 동일한 실패 양상을 겪는다.
-    """
-    current = dict(params)
-    last_exc: TypeError | None = None
-    for _ in range(_MAX_BUILD_MODEL_RETRIES):
-        try:
-            return build_fn(current)
-        except TypeError as exc:
-            msg = str(exc)
-            m = _UNEXPECTED_KWARG_RE.search(msg) or _MULTIPLE_KWARG_RE.search(msg)
-            if not m or m.group(1) not in current:
-                raise
-            current = {k: v for k, v in current.items() if k != m.group(1)}
-            last_exc = exc
-    raise last_exc
-
-
 def _build_model_safe(pipeline: object, params: dict, ctx: object) -> object:
     """build_model()이 제거된 kwarg를 params로 받아 생성자에서 TypeError로 죽으면
     그 kwarg 하나만 벗기고 재시도한다.
 
     범위 밖: 생성된 wrapper 클래스 자신의 fit() 메서드 몸체 안에서 내부적으로
     하는 하위 모델 호출은 harness가 볼 수 없는 exec된 코드 내부라 이 함수로
-    못 잡는다 — ensemble_spec(선언형)이 이 범위 밖 문제 자체를 우회한다.
+    못 잡는다 — ensemble_spec/model_spec(선언형)이 이 범위 밖 문제 자체를 우회한다.
     """
-    return _construct_with_kwarg_retry(lambda p: pipeline.build_model(p, ctx), params)
+    return construct_with_kwarg_retry(lambda p: pipeline.build_model(p, ctx), params)
 
 
 def _fit_with_early_stopping(model: object, Xtr, ytr, Xva, yva) -> None:
@@ -271,38 +242,7 @@ def _fit_with_retry(build_fn, params: dict, Xtr, ytr, Xva, yva) -> object:
 # ensemble_spec: 선언형 앙상블 (decisions.md ADR-023)
 # Patch는 "무엇을 조합할지"만 선언하고, 모델 생성·적합·결합은 이 모듈이 전담한다.
 # 기존 자유형 build_model 기반 ensemble 훅은 병행 허용.
-
-_ENSEMBLE_MODEL_REGISTRY: dict[str, dict[str, str]] = {
-    "lgbm":          {"module": "lightgbm",           "classifier": "LGBMClassifier",                "regressor": "LGBMRegressor"},
-    "xgboost":       {"module": "xgboost",             "classifier": "XGBClassifier",                  "regressor": "XGBRegressor"},
-    "catboost":      {"module": "catboost",             "classifier": "CatBoostClassifier",             "regressor": "CatBoostRegressor"},
-    "hgb":           {"module": "sklearn.ensemble",     "classifier": "HistGradientBoostingClassifier", "regressor": "HistGradientBoostingRegressor"},
-    "random_forest": {"module": "sklearn.ensemble",     "classifier": "RandomForestClassifier",         "regressor": "RandomForestRegressor"},
-    "ridge":         {"module": "sklearn.linear_model", "classifier": "RidgeClassifier",                "regressor": "Ridge"},
-}
-
-
-def _resolve_ensemble_model_class(model_name: str, is_classification: bool) -> type:
-    entry = _ENSEMBLE_MODEL_REGISTRY.get(model_name)
-    if entry is None:
-        raise ValueError(
-            f"ensemble_spec: unknown member model {model_name!r} — allowed: "
-            f"{sorted(_ENSEMBLE_MODEL_REGISTRY)}"
-        )
-    import importlib
-    module = importlib.import_module(entry["module"])
-    cls_name = entry["classifier"] if is_classification else entry["regressor"]
-    return getattr(module, cls_name)
-
-
-def _build_ensemble_member(model_name: str, params: dict, ctx: "PipelineContext") -> object:
-    """레지스트리 기반으로 멤버 모델을 직접 생성한다 — LLM이 작성한 코드가 아니라
-    harness 자신이 생성자를 호출하므로 super() 오용·stale kwarg 문제가 구조적으로
-    발생하지 않는다. random_state는 params가 명시하지 않으면 ctx.seed로 채운다."""
-    cls = _resolve_ensemble_model_class(model_name, ctx.is_classification)
-    base_params = dict(params or {})
-    base_params.setdefault("random_state", ctx.seed)
-    return _construct_with_kwarg_retry(lambda p: cls(**p), base_params)
+# 멤버 모델 생성은 evaluator.models.build_registry_model(레지스트리 공유, #229)에 위임한다.
 
 
 def _weighted_majority_vote(member_preds: list[np.ndarray], weights: list[float]) -> np.ndarray:
@@ -367,7 +307,7 @@ def _fit_predict_ensemble(
         model_name = member.get("model")
         params = member.get("params") or {}
         built = _fit_with_retry(
-            lambda p, _name=model_name: _build_ensemble_member(_name, p, ctx),
+            lambda p, _name=model_name: build_registry_model(_name, p, ctx),
             params, Xtr, ytr, Xva, yva,
         )
         if metric_class == "binary_proba":
@@ -396,21 +336,26 @@ def fit_predict(
     yva: np.ndarray | None,
     metric_class: str,
     ensemble_spec_dict: dict | None = _NOT_GIVEN,  # type: ignore[assignment]
+    model_spec_dict: dict | None = _NOT_GIVEN,  # type: ignore[assignment]
 ) -> tuple[np.ndarray, object | None]:
     """pipeline이 ensemble_spec을 정의했으면(자기 것이든 base에서 상속했든) harness가
-    멤버를 생성·적합·결합하고, 아니면 단일 build_model 경로를 쓴다. CV(evaluate_pipeline)/
+    멤버를 생성·적합·결합하고, model_spec을 정의했으면 레지스트리로 단일 모델을 직접
+    생성·적합하고, 둘 다 없으면 자유형 build_model 경로를 쓴다. CV(evaluate_pipeline)/
     holdout(_eval_holdout)/제출(_bagged_predict) 세 경로가 공유하는 유일한 "fit 후 예측"
     진입점이다 — #226 전엔 세 곳이 각자 구현해서 ensemble_spec을 두 곳(제출, holdout)이
     놓쳤고, #226 수정 후에도 세 곳이 분기 로직만 개별 복제해서 네 번째 호출부가 생기면
-    같은 실수가 재발할 수 있는 구조였다(#239, adversarial review).
+    같은 실수가 재발할 수 있는 구조였다(#239, adversarial review). model_spec(#229)도
+    처음부터 이 단일 진입점에 넣어 같은 함정을 피한다.
 
     반환은 (raw_preds, fitted_single_model_or_None) — ensemble이면 단일 estimator 개념이
     없어 두 번째 값이 None(evaluate_pipeline의 permutation importance가 이 None으로
-    ensemble attempt를 자동 제외).
+    ensemble attempt를 자동 제외). model_spec 경로는 실제 fitted 단일 모델을 반환하므로
+    importance 대상에서 제외되지 않는다.
 
-    ensemble_spec_dict를 미리 계산해 넘기면(예: fold/bag_seed 루프 밖에서 1회) 매
-    호출마다 pipeline.ensemble_spec(ctx)를 다시 안 부른다 — patch가 ctx.seed에 따라
-    다른 spec을 반환하지 않는다는 전제(현재 어떤 구현도 그렇게 안 함)에서만 안전하다.
+    ensemble_spec_dict/model_spec_dict를 미리 계산해 넘기면(예: fold/bag_seed 루프 밖에서
+    1회) 매 호출마다 pipeline.ensemble_spec(ctx)/model_spec(ctx)를 다시 안 부른다 — patch가
+    ctx.seed에 따라 다른 spec을 반환하지 않는다는 전제(현재 어떤 구현도 그렇게 안 함)에서만
+    안전하다.
     """
     if ensemble_spec_dict is _NOT_GIVEN:
         ensemble_spec_dict = pipeline.ensemble_spec(ctx)
@@ -418,9 +363,19 @@ def fit_predict(
         raw_preds = _fit_predict_ensemble(ensemble_spec_dict, Xtr, ytr, Xva, yva, ctx, metric_class)
         return raw_preds, None
 
-    model = _fit_with_retry(
-        lambda p: _build_model_safe(pipeline, p, ctx), params, Xtr, ytr, Xva, yva,
-    )
+    if model_spec_dict is _NOT_GIVEN:
+        model_spec_dict = pipeline.model_spec(ctx)
+    if model_spec_dict is not None:
+        model_name = model_spec_dict.get("model")
+        spec_params = model_spec_dict.get("params") or {}
+        model = _fit_with_retry(
+            lambda p, _name=model_name: build_registry_model(_name, p, ctx),
+            spec_params, Xtr, ytr, Xva, yva,
+        )
+    else:
+        model = _fit_with_retry(
+            lambda p: _build_model_safe(pipeline, p, ctx), params, Xtr, ytr, Xva, yva,
+        )
     if metric_class == "binary_proba":
         raw_preds = model.predict_proba(Xva)[:, 1]
     else:
@@ -446,6 +401,9 @@ class EvalResult:
     # metric마다 gain_vs_best 스케일이 달라 reflection_impact 전역 z-score가
     # 오염된다 — regression_error는 baseline_cv로 나눈 상대값, 나머지는 gain_vs_best 그대로.
     gain_vs_best_relative: float | None = None
+    # model_spec(#229)이 선언한 레지스트리 모델 이름(예: "lgbm") — model_spec을 안 쓰는
+    # attempt(자유형 build_model, ensemble)는 None. 분석/모델다양성 추적용 부가 필드.
+    model_type: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,6 +450,13 @@ class BasePipeline:
         harness가 직접 생성·적합·결합한다(_fit_predict_ensemble)."""
         return None
 
+    def model_spec(self, ctx: PipelineContext) -> dict | None:
+        """정의돼 있으면(형태: {"model": "lgbm", "params": {...}}) harness가
+        evaluator.models.build_registry_model로 생성자를 직접 호출한다(ADR-034, #229).
+        ensemble_spec의 단일 모델 버전 — model_swap이 build_model 대신 이걸 쓰면
+        LLM 작성 wrapper의 super() 오용·stale kwarg 문제 자체가 발생하지 않는다."""
+        return None
+
 
 class PatchedPipeline:
     def __init__(self, base: BasePipeline, patch: object) -> None:
@@ -522,19 +487,36 @@ class PatchedPipeline:
         fn = getattr(self.patch, "ensemble_spec", None)
         if fn:
             return fn(ctx)
-        # build_model/param_candidates를 직접 정의하는 patch(model_swap/hyperparam_search,
-        # evaluator/contract.py:_ALLOWED_HOOKS가 이 둘엔 ensemble_spec을 아예 허용 안 함)는
-        # 단일모델 의도가 명확하다 — base의 ensemble_spec을 그대로 상속하면
-        # evaluate_pipeline/holdout/제출이 전부 ensemble 분기로 빠져 patch의 실제 변경이
-        # 한 번도 호출되지 않고 base와 완전히 동일한 cv_score만 재현한다. 확정 best가
-        # ensemble인 대회는 이 두 action_type이 영구 무력화되는 셈이었다(#239, #226이 base
-        # ensemble_spec 복원을 고치면서 새로 노출됨 — 그 전엔 base가 애초에 ensemble_spec을
-        # 못 가져와 이 문제 자체가 없었다). feature_engineering/preprocessing처럼 모델 관련
-        # 훅을 안 건드리는 patch는 반대로 상속돼야 한다 — "이 feature가 ensemble에도
-        # 통하는지"가 그 attempt의 질문이므로, 아래 else로 정상 위임.
-        if hasattr(self.patch, "build_model") or hasattr(self.patch, "param_candidates"):
+        # build_model/param_candidates/model_spec을 직접 정의하는 patch(model_swap/
+        # hyperparam_search, evaluator/contract.py:_ALLOWED_HOOKS가 이들엔 ensemble_spec을
+        # 아예 허용 안 함)는 단일모델 의도가 명확하다 — base의 ensemble_spec을 그대로
+        # 상속하면 evaluate_pipeline/holdout/제출이 전부 ensemble 분기로 빠져 patch의
+        # 실제 변경이 한 번도 호출되지 않고 base와 완전히 동일한 cv_score만 재현한다.
+        # 확정 best가 ensemble인 대회는 이 action_type들이 영구 무력화되는 셈이었다
+        # (#239, #226이 base ensemble_spec 복원을 고치면서 새로 노출됨 — 그 전엔 base가
+        # 애초에 ensemble_spec을 못 가져와 이 문제 자체가 없었다). feature_engineering/
+        # preprocessing처럼 모델 관련 훅을 안 건드리는 patch는 반대로 상속돼야 한다 —
+        # "이 feature가 ensemble에도 통하는지"가 그 attempt의 질문이므로, 아래 else로
+        # 정상 위임.
+        if hasattr(self.patch, "build_model") or hasattr(self.patch, "param_candidates") or hasattr(self.patch, "model_spec"):
             return None
         return self.base.ensemble_spec(ctx)
+
+    def model_spec(self, ctx):
+        fn = getattr(self.patch, "model_spec", None)
+        if fn:
+            return fn(ctx)
+        # build_model/ensemble_spec/param_candidates를 직접 정의하는 patch는 model_spec
+        # 상속을 원치 않는다는 의도가 명확하다 — 위 ensemble_spec 상속 억제와 대칭인 이유:
+        # base가 model_spec을 갖고 있는데 patch가 build_model로 완전히 다른 모델을 쓰려
+        # 하면, model_spec을 그대로 상속시켜 fit_predict가 model_spec 경로로 빠지는 순간
+        # patch.build_model이 한 번도 안 불린다. param_candidates(hyperparam_search)도
+        # 마찬가지 — model_spec이 상속되면 preselect_params가 하이퍼파라미터 탐색 자체를
+        # 건너뛰어(빈 dict 반환) patch.param_candidates가 한 번도 안 불린다(#239와 동일
+        # 클래스의 버그).
+        if hasattr(self.patch, "build_model") or hasattr(self.patch, "ensemble_spec") or hasattr(self.patch, "param_candidates"):
+            return None
+        return self.base.model_spec(ctx)
 
 
 # 원본 데이터 병합(#228, store/train_data.py:load_train의 EXTRA_TRAIN_PATHS)이 붙인
@@ -630,14 +612,15 @@ def preselect_params(
     계산 비용(k^2 모델 피팅)이 크다. 현재 구현은 단일 inner holdout으로 절충
     (see docs/decisions.md ADR-021).
 
-    ensemble_spec이 정의된 파이프라인은 하이퍼파라미터가 스펙의 멤버별
-    params에 이미 들어있어 이 탐색 대상이 아니다 — 빈 dict를 그대로 반환한다.
+    ensemble_spec/model_spec이 정의된 파이프라인은 하이퍼파라미터가 스펙 자체(멤버별
+    params 또는 단일 params)에 이미 들어있어 이 탐색 대상이 아니다 — 빈 dict를 그대로
+    반환한다.
 
     is_original 컬럼(#228)이 있으면 원본 데이터 행은 inner-split의 train 쪽에만
     들어가고 va(검증) 쪽에는 안 들어간다 — 파라미터 선택도 synthetic 전용 신호로
     해야 실제 제출 조건과 일치한다.
     """
-    if pipeline.ensemble_spec(ctx) is not None:
+    if pipeline.ensemble_spec(ctx) is not None or pipeline.model_spec(ctx) is not None:
         return {}
 
     candidates = pipeline.param_candidates(ctx)[:_MAX_PARAM_CANDIDATES]
@@ -717,6 +700,8 @@ def evaluate_pipeline(
 
     # fold마다 한 번씩 물으면 매번 같은 dict를 만드는 patch 구현에 낭비 — 1회 조회.
     ensemble_spec_dict = pipeline.ensemble_spec(ctx)
+    model_spec_dict = pipeline.model_spec(ctx) if ensemble_spec_dict is None else None
+    model_type = model_spec_dict.get("model") if model_spec_dict is not None else None
 
     fold_scores: list[float] = []
     # regression_error 메트릭 전용 trivial baseline(train fold 타깃 평균으로만
@@ -770,7 +755,7 @@ def evaluate_pipeline(
             warnings.simplefilter("ignore", UserWarning)
             raw_preds, best_model = fit_predict(
                 pipeline, selected_params, ctx, Xtr_np, ytr, Xva_np, yva, metric_class,
-                ensemble_spec_dict=ensemble_spec_dict,
+                ensemble_spec_dict=ensemble_spec_dict, model_spec_dict=model_spec_dict,
             )
         preds = pipeline.postprocess_predictions(raw_preds, ctx)
         fold_scores.append(float(fn(yva_raw, preds)))
@@ -881,4 +866,5 @@ def evaluate_pipeline(
         selected_params=selected_params,
         oof_preds=oof.tolist() if oof is not None else None,
         gain_vs_best_relative=gain_vs_best_relative,
+        model_type=model_type,
     )

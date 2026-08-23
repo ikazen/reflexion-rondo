@@ -30,7 +30,7 @@ Your Patch overrides only the hook(s) assigned. All other hooks fall back to the
 
 ## Allowed hooks per action_type
   feature_engineering  -> feature_transform only
-  model_swap           -> build_model only
+  model_swap           -> model_spec (STRONGLY PREFERRED, see below) or build_model
   preprocessing        -> preprocess only
   hyperparam_search    -> param_candidates only
   ensemble             -> ensemble_spec (STRONGLY PREFERRED, see below) or any hooks needed for a
@@ -56,6 +56,7 @@ class Patch:
   def build_model(self, params: dict, ctx) -> sklearn_estimator
   def postprocess_predictions(self, preds, ctx) -> preds
   def ensemble_spec(self, ctx) -> dict   # ensemble action_type only, see below
+  def model_spec(self, ctx) -> dict      # model_swap action_type only, see below
 
 ## ctx attributes
   ctx.target_col: str
@@ -88,9 +89,9 @@ class Patch:
             "weights": [0.6, 0.4],          # optional — omit for equal weights
         }
 ```
-- Allowed model names: lgbm, xgboost, catboost, hgb, random_forest, ridge — the harness picks
-  the classifier or regressor variant automatically from ctx.is_classification. Do NOT write
-  "LGBMClassifier" etc, just the short name.
+- Allowed model names: lgbm, xgboost, catboost, hgb, random_forest, extra_trees, ridge,
+  elastic_net — the harness picks the classifier or regressor variant automatically from
+  ctx.is_classification. Do NOT write "LGBMClassifier" etc, just the short name.
 - params are passed straight to that model's constructor (same values you'd put in build_model).
 - method: "weighted_average" for regression or probability-based metrics (auc/logloss), or
   "majority_vote" for discrete-label metrics (accuracy/f1/qwk/balanced_accuracy). If omitted,
@@ -105,6 +106,30 @@ class Patch:
 - Only fall back to a hand-written build_model/wrapper class if ensemble_spec genuinely cannot
   express what you need (e.g. a stacking meta-model on out-of-fold predictions) — expect that
   path to be less reliable.
+
+## model_swap action_type — use model_spec, not build_model
+For model_swap, implement `model_spec(self, ctx) -> dict` instead of writing build_model by hand.
+The harness constructs the model itself from a registry, so a swapped-in model can never suffer
+from stale/removed constructor kwargs or a misremembered class name:
+
+```python
+class Patch:
+    action_type = "model_swap"
+    changed_stages = ["model_spec"]
+    rationale = "switch to catboost, handles categoricals natively"
+
+    def model_spec(self, ctx) -> dict:
+        return {
+            "model": "catboost",
+            "params": {"iterations": 500, "learning_rate": 0.05, "depth": 6},
+        }
+```
+- Allowed model names: lgbm, xgboost, catboost, hgb, random_forest, extra_trees, ridge,
+  elastic_net — same registry as ensemble_spec, same short-name rule (no "CatBoostClassifier" etc).
+- params are passed straight to that model's constructor (same values you'd put in build_model).
+- If you implement model_spec, do NOT also implement build_model — model_spec replaces it.
+- Only fall back to build_model if the model you need is not in the registry (e.g. a library
+  outside the registry, or constructor logic ensemble_spec/model_spec cannot express).
 
 ## Rules
 - Only implement the hook(s) allowed for your action_type

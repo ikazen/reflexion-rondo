@@ -179,6 +179,7 @@ def main() -> None:
         "oof_preds": result.oof_preds,
         "error_trace": None,
         "holdout_score": holdout_score,
+        "model_type": result.model_type,
     })
 
 

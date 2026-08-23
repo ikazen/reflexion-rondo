@@ -488,6 +488,28 @@ attempt_id 키)도 그대로 재사용한다. 확정 pipeline이 아예 없는 �
 - 한계: 동결된 22개 대회는 새 역량의 혜택을 못 받는다. deep tier에서 새 역량이 검증되면 순차
   확대할지, 계속 5개로 유지할지는 v1.6.0 로드맵 완료 후 재검토(4주 성공 기준 참고).
 
+## ADR-034 — model_swap도 선언형 프리미티브(`model_spec`), `ensemble_spec`과 레지스트리 공유
+
+- 결정: `model_swap`(+ `ensemble`/`bootstrap`) action_type에 7번째 훅 `model_spec(self, ctx) -> dict | None`을
+추가한다. Patch는 `{"model": <registry key>, "params": {...}}`만 반환하고, 생성자 호출은 `evaluator/models.py`
+(ADR-023의 앙상블 멤버 레지스트리를 `_ENSEMBLE_MODEL_REGISTRY`에서 이 모듈의 `MODEL_REGISTRY`로 승격·공유)가
+전담한다. 레지스트리를 `extra_trees`/`elastic_net`으로 확장했다. 기존 자유형 `build_model`은 병행 허용.
+`PatchedPipeline.ensemble_spec`/`model_spec`은 서로 상대 훅(및 `build_model`)의 존재를 상호 억제 조건에 넣어,
+base가 어느 한쪽을 정의해도 patch가 다른 쪽(또는 자유형)을 선택하면 그 의도가 상속에 가려지지 않게 한다
+(#239가 고친 ensemble_spec/build_model 상호 억제를 model_spec까지 대칭 확장).
+- 대안: (a) `model_swap`은 그대로 자유형 `build_model`만 허용 — ADR-023이 해소한 문제(super() 오용, stale
+kwarg, 하드코딩된 오래된 클래스명)가 단일 모델 교체에도 동일하게 재발하므로 기각. (b) 레지스트리를
+`ensemble_spec` 전용으로 남기고 `model_spec`은 별도 레지스트리를 새로 둔다 — 멤버 모델과 단일 모델이 실제로
+같은 라이브러리 집합을 쓰므로 분리할 이유가 없고 드리프트 위험만 커져 기각.
+- 근거: ADR-023의 논거(exec된 코드 내부 실패는 harness가 볼 수도 안전망을 못 걸 수도 없음)가 앙상블 멤버뿐
+아니라 단일 모델 교체에도 그대로 적용된다 — model_swap의 build_model도 같은 클래스의 실패(제거된 kwarg,
+오탈자 클래스명)를 겪어왔다. 레지스트리 자체를 harness/models.py 공용 모듈로 옮겨 ensemble_spec과 model_spec이
+동일한 `build_registry_model`/`construct_with_kwarg_retry`를 공유하게 하면, 레지스트리 확장(신규 모델 추가)이
+두 훅 모두에 자동으로 적용돼 드리프트가 구조적으로 불가능해진다.
+- 한계: 레지스트리에 없는 모델은 `model_spec`으로 표현 불가 — 자유형 `build_model`이 여전히 유일한 선택지.
+`EvalResult.model_type`(model_spec이 선언한 레지스트리 이름, 자유형/ensemble은 None)을 attempt 테이블에
+영속화해 모델 다양성을 추적할 수 있게 했으나 아직 분석 대시보드는 없다.
+
 ---
 
 ## 미정 항목 (TBD)

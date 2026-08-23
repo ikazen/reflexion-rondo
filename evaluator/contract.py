@@ -51,11 +51,16 @@ _ALL_HOOKS = frozenset({
     # ensemble/bootstrap에 자동 포함(둘 다 _ALL_HOOKS를 그대로 씀); 단일 변경
     # 원칙(ADR-006)이 적용되는 4개 제한 action_type에는 포함 안 됨.
     "ensemble_spec",
+    # model_spec(ADR-034, #229) — ensemble_spec의 단일 모델 버전. 레지스트리
+    # 이름+params만 선언하면 evaluator.models.build_registry_model이 생성자를
+    # 직접 호출한다 — model_swap이 build_model 대신 이걸 쓰면 LLM 작성
+    # wrapper의 super() 오용·stale kwarg 문제 자체가 발생하지 않는다.
+    "model_spec",
 })
 
 _ALLOWED_HOOKS: dict[str, frozenset[str]] = {
     "feature_engineering": frozenset({"feature_transform"}),
-    "model_swap":          frozenset({"build_model"}),
+    "model_swap":          frozenset({"build_model", "model_spec"}),
     "preprocessing":       frozenset({"preprocess"}),
     "hyperparam_search":   frozenset({"param_candidates"}),
     "ensemble":            _ALL_HOOKS,
@@ -69,6 +74,7 @@ _HOOK_ARITY = {
     "build_model":              3,
     "postprocess_predictions":  3,
     "ensemble_spec":            2,
+    "model_spec":               2,
 }
 
 

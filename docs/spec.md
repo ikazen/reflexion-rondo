@@ -350,6 +350,7 @@ def param_candidates(self, ctx) -> list[dict]           # 후보 파라미터 di
 def build_model(self, params: dict, ctx) -> sklearn_estimator
 def postprocess_predictions(self, preds, ctx) -> preds
 def ensemble_spec(self, ctx) -> dict | None
+def model_spec(self, ctx) -> dict | None
 ```
 
 `ctx` 주요 속성: `target_col`, `metric`, `seed`, `is_classification`.  
@@ -370,10 +371,30 @@ def ensemble_spec(self, ctx) -> dict | None:
     }
 ```
 
-- `model` 레지스트리(`evaluator/harness.py:_ENSEMBLE_MODEL_REGISTRY`): `lgbm` / `xgboost` / `catboost` / `hgb` / `random_forest` / `ridge`.
+- `model` 레지스트리(`evaluator/models.py:MODEL_REGISTRY`): `lgbm` / `xgboost` / `catboost` / `hgb` / `random_forest` /
+  `extra_trees` / `ridge` / `elastic_net` — `model_spec`(아래)과 공유하는 동일 레지스트리.
 - `method` 기본값: 이산 라벨 분류(`metric_class == "classification"`)는 `majority_vote`, 그 외는 `weighted_average`.
 - 각 멤버는 `random_state=ctx.seed`가 기본으로 들어간다.
 - 기존 자유형 `build_model` 기반 ensemble 훅도 병행 허용 — 강제 마이그레이션 아님.
+
+### `model_spec` — 선언형 단일 모델 프리미티브 (`model_swap`/`ensemble`/`bootstrap`만 허용, decisions.md ADR-034)
+
+`ensemble_spec`의 단일 모델 버전. `model_swap`이 자유형 `build_model` 대신 레지스트리 이름+params만 선언하면
+harness(`evaluator/models.py:build_registry_model`)가 생성자를 직접 호출한다 — LLM이 작성한 wrapper의
+super() 오용·stale kwarg 문제가 구조적으로 발생하지 않는다.
+
+```python
+def model_spec(self, ctx) -> dict | None:
+    return {"model": "catboost", "params": {"iterations": 500, "depth": 6}}
+```
+
+- 정의돼 있으면(non-None) `build_model`이 아니라 이 스펙으로 harness가 모델을 생성한다 — `preselect_params`는
+  `ensemble_spec`과 동일하게 하이퍼파라미터가 스펙 안에 이미 있으므로 빈 dict를 반환한다.
+- `EvalResult.model_type`(= 스펙의 `"model"` 값)이 `raw.attempts.model_type`으로 영속화된다. `ensemble_spec`이나
+  자유형 `build_model`을 쓰는 attempt는 `model_type = NULL`.
+- `PatchedPipeline.ensemble_spec`/`model_spec`은 서로의 존재(및 `build_model`)를 상속 억제 조건으로 삼는다 —
+  base가 한쪽을 정의해도 patch가 다른 쪽을 선택하면 그 의도가 상속에 가려지지 않는다(#239가 고친 상호 억제를
+  대칭 확장).
 
 action_type별 허용 훅 (`evaluator/contract.py:_ALLOWED_HOOKS`):
 
@@ -381,9 +402,9 @@ action_type별 허용 훅 (`evaluator/contract.py:_ALLOWED_HOOKS`):
 |---|---|
 | `feature_engineering` | `feature_transform` |
 | `preprocessing` | `preprocess` |
-| `model_swap` | `build_model` |
+| `model_swap` | `build_model`, `model_spec` |
 | `hyperparam_search` | `param_candidates` |
-| `ensemble` | (제한 없음 — 모든 훅 허용, `ensemble_spec` 포함) |
+| `ensemble` | (제한 없음 — 모든 훅 허용, `ensemble_spec`/`model_spec` 포함) |
 | `bootstrap` | (제한 없음 — 모든 훅 허용) |
 
 Evaluator 실행 골격(개념):
