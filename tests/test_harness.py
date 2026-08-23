@@ -842,6 +842,28 @@ def test_eval_holdout_dummy_target_blocks_preprocess_leak():
     assert score < _LEAK_PERFECT_HIGH
 
 
+class _EnsembleForHoldoutPatch:
+    action_type = "ensemble"
+
+    def ensemble_spec(self, ctx):
+        return {"members": [{"model": "ridge"}, {"model": "random_forest", "params": {"n_estimators": 10}}]}
+
+
+def test_eval_holdout_routes_ensemble_spec_to_declarative_path():
+    """#226: _eval_holdout이 ensemble_spec을 무시하고 build_model만 호출하면
+    confirm 게이트의 holdout 점수가 실제 제출될 ensemble이 아니라 엉뚱한 단일
+    모델을 측정한 값이 된다 — CV 경로(evaluate_pipeline)와 다른 모델을 감사하는
+    셈이라 게이트가 무의미해진다. ensemble 경로를 타면 에러 없이 finite score가
+    나와야 한다(구체적 수치보다 '경로를 안 놓친다'가 이 테스트의 목적)."""
+    df = _make_df(n=200, is_classification=False)
+    ctx = _ctx(is_classification=False)
+    train90, holdout10 = split_audit_holdout(df, "y", is_classification=False)
+    pipeline = PatchedPipeline(BasePipeline(), _EnsembleForHoldoutPatch())
+    score = _eval_holdout(pipeline, train90, holdout10, ctx)
+    assert score is not None
+    assert np.isfinite(score)
+
+
 class _PerfectLoglossLeakyViaPreprocessPatch:
     """preprocess가 valid[target]을 새 컬럼명(leaked)으로 복사하고,
     postprocess_predictions가 모델 출력을 극값(1e-10 / 1-1e-10)으로 클리핑한다.
@@ -1172,6 +1194,26 @@ def test_fit_predict_ensemble_regression_end_to_end():
     assert preds.shape == (20,)
     # 신호가 강한 데이터라 예측이 실제 타깃과 대체로 같은 부호/스케일이어야 함
     assert np.corrcoef(preds, yva)[0, 1] > 0.8
+
+
+def test_fit_predict_ensemble_no_early_stopping_when_yva_none():
+    """#226: yva=None(라벨 없는 예측 대상, 제출/전체학습 상황)이면 조기종료 없이
+    전체 학습해야 한다 — 이 분기가 없어서 이전엔 bin/submit.py와 runtime/runner.py의
+    holdout이 ensemble_spec을 아예 호출하지 못하고 각자 build_model 단일 경로로
+    조용히 대체했다."""
+    rng = np.random.default_rng(0)
+    Xtr = rng.standard_normal((60, 3))
+    ytr = Xtr[:, 0] * 2 + rng.standard_normal(60) * 0.01
+    Xtest = rng.standard_normal((20, 3))
+
+    spec = {
+        "members": [{"model": "ridge"}, {"model": "ridge", "params": {"alpha": 5.0}}],
+        "method": "weighted_average",
+        "weights": [0.7, 0.3],
+    }
+    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xtest, None, _reg_ctx(), "regression_error")
+    assert preds.shape == (20,)
+    assert np.all(np.isfinite(preds))
 
 
 

@@ -1,5 +1,22 @@
 # 변경 이력
 
+## v1.5.8 — ensemble_spec이 제출·CV 재평가 경로에서 누락되던 3중 버그 수정 (2026-08-23)
+- #226(v1.6.0 "천장 돌파" 진단 중 발견): `bin/submit.py`가 `ensemble_spec`을 호출하는
+  코드가 아예 없어, 확정된 ensemble pipeline이 제출 시점엔 조용히 단일 `build_model`로
+  대체됐다. 더 심각하게는 `runtime/runner.py`의 `_load_best_pipeline_class`가 고정 훅
+  이름 목록(`_HOOK_NAMES`)으로 base pipeline을 재구성하면서 `ensemble_spec`을 빠뜨려,
+  ensemble이 한 번 승격되면 그 다음 사이클부터 모든 attempt의 CV 재평가 base가 조용히
+  non-ensemble로 퇴화했다(`prev_best_cv`는 ensemble 기준인데 이후 비교는 퇴화한 base
+  기준이라 영구 정체를 만드는 메커니즘). audit holdout도 동일 사각지대 공유.
+  `bin/submit.py`가 이미 겪고 고친 것과 같은 클래스의 버그(#83, `type(...)` 훅 복사가
+  훅 밖 클래스 속성/nested class를 유실)라 `runtime/runner.py`도 동일하게
+  `PatchedPipeline(BasePipeline(), patch_cls())`로 통일. `_fit_predict_ensemble`에
+  `yva=None`(조기종료 없는 전체학습) 분기를 추가해 submit/holdout 양쪽이 실제로 이
+  경로를 탈 수 있게 배선. `score_progression`/`cold_start_progression`의 `best_so_far`가
+  확정 여부와 무관한 raw max라 `label`(confirmed 기준, ADR-025)과 괴리될 수 있다는
+  점도 발견해 스키마 주석으로 명시(s6e1 실측: 30일 jump 라벨 43건, best_so_far는
+  463회 무변화 — 별도 버그 아니라 의도된 정의 차이).
+
 ## v1.5.7 — daemon 크래시루프: _sweep_queue_refill naive/aware datetime 비교 수정 (2026-08-23)
 - #223: `#196`의 `_sweep_queue_refill`이 timezone 없는 `raw.attempts.run_ts`(naive)를
   aware `idle_cutoff`와 Python에서 직접 비교해 `TypeError`. `raw.cycle_queue`가
