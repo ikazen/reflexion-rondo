@@ -51,7 +51,12 @@ def test_sweep_reenqueues_idle_and_never_run_competitions(monkeypatch):
     conn.execute.return_value.fetchone.return_value = None  # 큐 비어있음
 
     import datetime as dt
-    now = dt.datetime.now()  # raw.attempts.run_ts는 naive(#223) — psycopg2 실반환 형태
+    # raw.attempts.run_ts는 naive(#223) — psycopg2 실반환 형태. 프로덕션 idle_cutoff는
+    # UTC 기준(datetime.now(timezone.utc) - 6h)이므로 fixture도 로컬 datetime.now()가
+    # 아니라 naive UTC로 만들어야 한다 — 안 그러면 UTC보다 6시간 이상 뒤처진 타임존
+    # (미국 서부 등)에서 이 테스트가 허위로 실패한다(#239, adversarial review — #223을
+    # 막으려던 테스트 파일에서 같은 클래스의 타임존 버그가 재발할 뻔함).
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     conn.execute.return_value.fetchall.return_value = [
         ("playground-series-s6e8", now),  # 방금 돔 — idle 아님
         ("playground-series-s6e1", now - dt.timedelta(hours=100)),  # idle
@@ -106,13 +111,51 @@ def test_sweep_skips_inactive_competitions(monkeypatch):
     assert inserted_slugs == {"s6e8"}
 
 
+def test_sweep_skips_slug_when_import_fails(monkeypatch):
+    """#239(adversarial review): ACTIVE 필터의 import_module이 한 슬러그에서
+    실패해도(예: config 파일 삭제·오탈자) 그 슬러그만 건너뛰고 daemon 메인 루프
+    전체가 죽지 않아야 한다 — #223과 같은 클래스의 크래시를 새 필터가 재도입하면
+    안 된다."""
+    monkeypatch.setattr(run_daemon, "_last_queue_refill_sweep", _long_ago())
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None  # 큐 비어있음
+    conn.execute.return_value.fetchall.return_value = []  # 둘 다 신규 취급
+
+    comp_slugs = {
+        "playground-series-s6e8": "s6e8",   # import 성공, ACTIVE=True
+        "playground-series-s4e1": "s4e1",   # import 실패
+    }
+
+    def _import(name: str):
+        slug = name.rsplit(".", 1)[-1]
+        if slug == "s4e1":
+            raise ModuleNotFoundError(f"no module named {name!r}")
+        return type("StubComp", (), {"ACTIVE": True})
+
+    with patch("bin.run_daemon._competition_id_to_slug", return_value=comp_slugs), \
+         patch("bin.run_daemon.importlib.import_module", side_effect=_import):
+        _sweep_queue_refill(conn)  # 예외 없이 끝나야 함
+
+    insert_calls = [
+        c for c in conn.execute.call_args_list
+        if "insert into raw.cycle_queue" in c.args[0]
+    ]
+    inserted_slugs = {c.args[1][1] for c in insert_calls}
+    assert inserted_slugs == {"s6e8"}
+
+
 def test_sweep_noop_when_nothing_idle(monkeypatch):
     monkeypatch.setattr(run_daemon, "_last_queue_refill_sweep", _long_ago())
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = None
 
     import datetime as dt
-    now = dt.datetime.now()  # raw.attempts.run_ts는 naive(#223) — psycopg2 실반환 형태
+    # raw.attempts.run_ts는 naive(#223) — psycopg2 실반환 형태. 프로덕션 idle_cutoff는
+    # UTC 기준(datetime.now(timezone.utc) - 6h)이므로 fixture도 로컬 datetime.now()가
+    # 아니라 naive UTC로 만들어야 한다 — 안 그러면 UTC보다 6시간 이상 뒤처진 타임존
+    # (미국 서부 등)에서 이 테스트가 허위로 실패한다(#239, adversarial review — #223을
+    # 막으려던 테스트 파일에서 같은 클래스의 타임존 버그가 재발할 뻔함).
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     conn.execute.return_value.fetchall.return_value = [("playground-series-s6e8", now)]
 
     with patch(

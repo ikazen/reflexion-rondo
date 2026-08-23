@@ -1,6 +1,8 @@
 """evaluator.harness의 평가 파이프라인 — 유의성 검정, 조기종료, 누수 가드, ensemble_spec 등 단위 테스트."""
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 import numpy as np
 import polars as pl
@@ -13,6 +15,7 @@ from evaluator.harness import (
     _LEAK_PERFECT_HIGH,
     _EARLY_STOPPING_ROUNDS,
     _fit_with_early_stopping,
+    _fit_with_retry,
     _build_model_safe,
     _MAX_BUILD_MODEL_RETRIES,
     _ENSEMBLE_MODEL_REGISTRY,
@@ -21,6 +24,7 @@ from evaluator.harness import (
     _combine_predictions,
     _weighted_majority_vote,
     _fit_predict_ensemble,
+    fit_predict,
 )
 from runtime.runner import _eval_holdout
 
@@ -1286,3 +1290,202 @@ def test_evaluate_pipeline_ensemble_binary_classification_weighted_average():
     pipeline = PatchedPipeline(BasePipeline(), _BinaryEnsemblePatch())
     result = evaluate_pipeline(pipeline, df, ctx)
     assert 0.0 <= result.cv_score <= 1.0
+
+
+# #239 (adversarial review of #226): ensemble_spec 상속이 model_swap/hyperparam_search를
+# 영구 무력화하던 문제. confirmed best가 ensemble_spec을 정의하면, 그 위에 model_swap/
+# hyperparam_search patch(build_model/param_candidates만 정의 — evaluator/contract.py:
+# _ALLOWED_HOOKS가 이 둘엔 ensemble_spec을 허용 안 함)를 얹었을 때 상속을 끊어야
+# patch의 실제 변경이 호출된다.
+
+class _ModelSwapPatch:
+    action_type = "model_swap"
+
+    def __init__(self):
+        self.called = False
+
+    def build_model(self, params, ctx):
+        self.called = True
+        from sklearn.linear_model import LogisticRegression, Ridge
+        # RidgeClassifier가 아니라 LogisticRegression — auc(binary_proba)가
+        # predict_proba를 요구하는데 RidgeClassifier엔 없음.
+        return LogisticRegression() if ctx.is_classification else Ridge()
+
+
+class _HyperparamSearchPatch:
+    action_type = "hyperparam_search"
+
+    def __init__(self):
+        self.called = False
+
+    def param_candidates(self, ctx):
+        self.called = True
+        return [{"alpha": 1.0}, {"alpha": 2.0}]
+
+
+def test_ensemble_spec_not_inherited_when_patch_defines_build_model():
+    base_with_spec = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
+    pipeline = PatchedPipeline(base_with_spec, _ModelSwapPatch())
+    assert pipeline.ensemble_spec(_reg_ctx()) is None
+
+
+def test_ensemble_spec_not_inherited_when_patch_defines_param_candidates():
+    base_with_spec = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
+    pipeline = PatchedPipeline(base_with_spec, _HyperparamSearchPatch())
+    assert pipeline.ensemble_spec(_reg_ctx()) is None
+
+
+def test_model_swap_on_ensemble_base_actually_invokes_new_build_model():
+    """핵심 회귀 테스트: base가 ensemble이어도 model_swap patch의 build_model이
+    실제로 호출돼야 한다 — #239 이전엔 ensemble_spec이 상속돼 evaluate_pipeline이
+    ensemble 분기로 빠지고 patch.build_model이 한 번도 안 불렸다(매번 base와
+    동일한 cv_score만 재현, 사실상 is_noop_tie)."""
+    base_with_spec = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
+    patch = _ModelSwapPatch()
+    pipeline = PatchedPipeline(base_with_spec, patch)
+
+    # classification 사용 — regression_error의 스케일 누수 가드(#97)는 clean 합성
+    # 타깃에서 Ridge 단독으로도 오탐하기 쉽다(이 테스트의 목적은 그 가드가 아니라
+    # build_model이 실제로 호출되는지 확인).
+    df = _make_df(is_classification=True, n=150)
+    ctx = _ctx(is_classification=True)
+    evaluate_pipeline(pipeline, df, ctx)
+
+    assert patch.called, "model_swap patch의 build_model이 호출되지 않음 — ensemble_spec 상속 문제 재발"
+
+
+def test_hyperparam_search_on_ensemble_base_actually_invokes_param_candidates():
+    base_with_spec = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
+    patch = _HyperparamSearchPatch()
+    pipeline = PatchedPipeline(base_with_spec, patch)
+
+    df = _make_df(is_classification=False, n=150)
+    ctx = _reg_ctx()
+    preselect_params(pipeline, df, ctx)
+
+    assert patch.called, "hyperparam_search patch의 param_candidates가 호출되지 않음 — ensemble_spec 상속 문제 재발"
+
+
+# _fit_with_retry — 조기종료 kwarg 재시도 (#71, harness 공용화는 #226/#239)
+
+def test_fit_with_retry_strips_early_stopping_params_on_failure():
+    failing_model = MagicMock()
+    failing_model.fit.side_effect = ValueError(
+        "For early stopping, at least one dataset and eval metric is required for evaluation"
+    )
+    working_model = MagicMock()
+    build_fn = MagicMock(side_effect=[failing_model, working_model])
+
+    params = {"n_estimators": 100, "early_stopping_rounds": 50, "learning_rate": 0.05}
+    model = _fit_with_retry(build_fn, params, np.zeros((2, 1)), np.zeros(2), None, None)
+
+    assert model is working_model
+    assert build_fn.call_count == 2
+    retry_params = build_fn.call_args_list[1].args[0]
+    assert "early_stopping_rounds" not in retry_params
+    assert retry_params == {"n_estimators": 100, "learning_rate": 0.05}
+
+
+def test_fit_with_retry_reraises_when_retry_also_fails():
+    model = MagicMock()
+    model.fit.side_effect = ValueError("still broken")
+    build_fn = MagicMock(return_value=model)
+
+    with pytest.raises(ValueError, match="still broken"):
+        _fit_with_retry(build_fn, {"early_stopping_rounds": 50}, np.zeros((2, 1)), np.zeros(2), None, None)
+
+
+def test_fit_with_retry_no_early_stopping_keys_reraises_immediately():
+    model = MagicMock()
+    model.fit.side_effect = RuntimeError("unrelated failure")
+    build_fn = MagicMock(return_value=model)
+
+    with pytest.raises(RuntimeError, match="unrelated failure"):
+        _fit_with_retry(build_fn, {"learning_rate": 0.05}, np.zeros((2, 1)), np.zeros(2), None, None)
+    assert build_fn.call_count == 1
+
+
+def test_fit_with_retry_does_not_strip_when_fit_succeeds():
+    model = MagicMock()
+    build_fn = MagicMock(return_value=model)
+    params = {"early_stopping_rounds": 50, "learning_rate": 0.05}
+
+    result = _fit_with_retry(build_fn, params, np.zeros((2, 1)), np.zeros(2), None, None)
+
+    assert result is model
+    assert build_fn.call_count == 1
+    assert build_fn.call_args.args[0] == params
+
+
+def test_fit_with_retry_uses_early_stopping_when_yva_given():
+    """yva가 주어지면(CV/holdout) 조기종료 키 재시도가 아니라
+    _fit_with_early_stopping 경로를 타 eval_set이 실제로 전달돼야 한다."""
+    model = _LGBMLikeModel()
+    _fit_with_retry(lambda p: model, {}, _XTR, _YTR, _XVA, _YVA)
+    assert len(model.fit_calls) == 1
+    assert model.fit_calls[0]["eval_set"] == [(_XVA, _YVA)]
+
+
+# fit_predict — CV/holdout/제출 세 경로 공유 진입점 (#239)
+
+def test_fit_predict_routes_to_ensemble_when_spec_present():
+    pipeline = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
+    ctx = _reg_ctx()
+    rng = np.random.default_rng(0)
+    Xtr, ytr = rng.standard_normal((40, 3)), rng.standard_normal(40)
+    Xva = rng.standard_normal((10, 3))
+
+    raw_preds, model = fit_predict(pipeline, {}, ctx, Xtr, ytr, Xva, None, "regression_error")
+
+    assert raw_preds.shape == (10,)
+    assert model is None  # ensemble엔 단일 estimator가 없음
+
+
+def test_fit_predict_routes_to_single_model_when_no_spec():
+    class _NoEnsemblePatch:
+        action_type = "feature_engineering"
+
+    pipeline = PatchedPipeline(BasePipeline(), _NoEnsemblePatch())
+    ctx = _reg_ctx()
+    rng = np.random.default_rng(0)
+    Xtr, ytr = rng.standard_normal((40, 3)), rng.standard_normal(40)
+    Xva = rng.standard_normal((10, 3))
+
+    raw_preds, model = fit_predict(pipeline, {}, ctx, Xtr, ytr, Xva, None, "regression_error")
+
+    assert raw_preds.shape == (10,)
+    assert model is not None
+
+
+def test_patched_pipeline_forwards_all_contract_hooks():
+    """#239(adversarial review): PatchedPipeline이 훅마다 개별 forwarding 메서드를
+    수동으로 나열한다 — evaluator/contract.py:_ALL_HOOKS에 훅이 추가되는데
+    PatchedPipeline에 대응 메서드가 안 생기면, 그 훅을 정의한 patch가 base로 감싸질 때
+    조용히 사라진다(정확히 #226/runtime/runner.py의 버그와 같은 클래스). 두 목록을
+    동기화 상태로 묶어두는 회귀 가드."""
+    from evaluator.contract import _ALL_HOOKS
+    patched_pipeline_hooks = {
+        name for name in _ALL_HOOKS
+        if callable(getattr(PatchedPipeline, name, None))
+    }
+    assert patched_pipeline_hooks == _ALL_HOOKS, (
+        f"PatchedPipeline이 forwarding하지 않는 훅: {_ALL_HOOKS - patched_pipeline_hooks}"
+    )
+
+
+def test_fit_predict_precomputed_spec_skips_recomputation():
+    """ensemble_spec_dict를 미리 넘기면 pipeline.ensemble_spec()을 다시 안 부른다 —
+    fold/bag_seed 루프에서 매번 재조회하는 낭비를 피하는 게 이 파라미터의 목적."""
+    pipeline = MagicMock()
+    pipeline.ensemble_spec.side_effect = AssertionError("재조회하면 안 됨")
+    ctx = _reg_ctx()
+    rng = np.random.default_rng(0)
+    Xtr, ytr = rng.standard_normal((40, 3)), rng.standard_normal(40)
+    Xva = rng.standard_normal((10, 3))
+
+    raw_preds, model = fit_predict(
+        pipeline, {}, ctx, Xtr, ytr, Xva, None, "regression_error",
+        ensemble_spec_dict=None,  # "미리 계산했더니 None(ensemble 아님)"
+    )
+    assert model is not None
+    pipeline.ensemble_spec.assert_not_called()

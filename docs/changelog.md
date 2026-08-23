@@ -1,5 +1,31 @@
 # 변경 이력
 
+## v1.5.10 — #226 adversarial review 후속: ensemble_spec 상속 무력화 + 조기종료 재시도 (2026-08-24)
+- #239: `/code-review max`로 c8a116b..HEAD(#221~#227) 전체를 adversarial review한 결과,
+  #226 자체는 올바르지만 그 수정이 정확히 동작하기 시작하면서 새로 노출되는 문제 2건 발견.
+  - **critical**: `PatchedPipeline.ensemble_spec()`이 patch가 직접 정의 안 하면 base로
+    무조건 폴백해, 확정 best가 ensemble이면 `model_swap`/`hyperparam_search`
+    (`evaluator/contract.py:_ALLOWED_HOOKS`가 이 둘엔 `ensemble_spec` 정의 자체를 금지)
+    attempt가 매 사이클 base와 완전히 동일한 cv_score만 재현하며 영구 무력화됐다 —
+    #226 이전엔 base가 애초에 ensemble_spec을 못 가져와 불가능했던 시나리오. patch가
+    `build_model`/`param_candidates`를 직접 정의하면(단일모델 의도가 명확하면) 상속을
+    끊도록 수정.
+  - `_fit_predict_ensemble`의 `yva=None`(제출·holdout) 분기가 `_fit_full_train`(#71)의
+    조기종료 kwarg 재시도 안전망 없이 그냥 `fit()`을 호출해, ensemble 멤버 params에
+    조기종료 키가 있으면(코더 컨트랙트가 명시적으로 허용) 제출이 죽거나(에러) holdout
+    게이트가 조용히 무력화될 수 있었다.
+  - 세 호출부(`evaluate_pipeline`/`_eval_holdout`/`_bagged_predict`)가 ensemble 분기
+    로직을 개별 복제하던 것(#226 PR에서 통일하겠다고 했으나 미완이었음)을
+    `evaluator/harness.py:fit_predict()` 공유 헬퍼로 실제 통일 — `bin/submit.py`의
+    `_fit_full_train`/`_predict_raw`/`_EARLY_STOPPING_KEYS`는 이제 죽은 코드라 삭제.
+  - 부수: `run_daemon.py` ACTIVE 필터의 오해의 소지 있는 코멘트 정정(동결 대회는
+    auto-submit 24h 윈도우로 자연 배제됨), `importlib.import_module` 실패 시 슬러그
+    하나만 건너뛰도록 가드(#223과 같은 클래스의 크래시 방지), 테스트 fixture의
+    로컬 타임존 의존성(#223을 막으려던 테스트에서 재발할 뻔함) 제거.
+  - 회귀 테스트: ensemble base 위 model_swap/hyperparam_search가 실제로 자기 훅을
+    호출하는지, `PatchedPipeline`이 `evaluator/contract.py:_ALL_HOOKS`와 계속
+    동기화되는지 검증하는 영구 테스트 추가.
+
 ## v1.5.9 — fleet 동결: 27개 동시 운영 → deep tier 5개 (2026-08-24)
 - #227(ADR-032, Milestone v1.6.0): `config/competitions/*.py`에 `ACTIVE` bool 추가.
   `s6e8`/`s4e12`/`s4e10`/`s5e4`/`s4e11` 5개만 `ACTIVE=True`로 남기고 나머지 22개는 동결
