@@ -41,10 +41,9 @@ def _eval_holdout(
     """
     import warnings
     from evaluator.harness import (
-        _build_model_safe,
         _encode_residual_categoricals,
-        _fit_predict_ensemble,
         _strip_target,
+        fit_predict,
         preselect_params,
         replace_with_dummy_target,
     )
@@ -66,18 +65,10 @@ def _eval_holdout(
     Xtr_np, Xho_np = Xtr.to_numpy(), Xho.to_numpy()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        spec = pipeline.ensemble_spec(ctx)
-        if spec is not None:
-            # ensemble_spec 파이프라인도 이 게이트를 거쳐야 한다(#226) — 이전엔
-            # build_model만 호출해 ensemble이 조용히 단일 모델로 대체됐다.
-            raw_preds = _fit_predict_ensemble(spec, Xtr_np, ytr, Xho_np, None, ctx, metric_class)
-        else:
-            model = _build_model_safe(pipeline, params, ctx)
-            model.fit(Xtr_np, ytr)
-            if metric_class == "binary_proba":
-                raw_preds = model.predict_proba(Xho_np)[:, 1]
-            else:
-                raw_preds = model.predict(Xho_np)
+        # yva=None(라벨 없는 holdout — 타깃은 dummy 상수) → ensemble_spec 파이프라인도
+        # build_model 단일 경로도 fit_predict()가 동일하게 처리한다(#226/#239) —
+        # bin/submit.py의 제출 경로와 정확히 같은 진입점을 공유.
+        raw_preds, _ = fit_predict(pipeline, params, ctx, Xtr_np, ytr, Xho_np, None, metric_class)
     preds = pipeline.postprocess_predictions(raw_preds, ctx)
     return float(fn(yho_raw, preds))
 

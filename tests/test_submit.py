@@ -24,11 +24,9 @@ if str(ROOT) not in sys.path:
 from bin.submit import (
     _bagged_predict,
     _dummy_target_value,
-    _fit_full_train,
     _impute_train_test_median,
     _load_best_code,
     _load_pipeline,
-    _predict_raw,
     _submission_value_col,
 )
 
@@ -496,98 +494,6 @@ def test_bagged_predict_routes_ensemble_spec_to_declarative_path() -> None:
     pipeline.build_model.assert_not_called()
 
 
-# _fit_full_train — 생성자 early-stopping 파라미터 폴백 (#71)
-
-def test_bagged_predict_retries_without_early_stopping_params() -> None:
-    """eval_set 없이 fit이 죽으면 early-stopping 키를 벗긴 params로 재시도한다."""
-    ctx = _bagging_ctx()
-    pipeline = MagicMock()
-    failing_model = MagicMock()
-    failing_model.fit.side_effect = ValueError(
-        "For early stopping, at least one dataset and eval metric is required for evaluation"
-    )
-    working_model = MagicMock()
-    working_model.predict.return_value = np.array([1.0, 2.0])
-    pipeline.build_model.side_effect = [failing_model, working_model]
-
-    params = {"n_estimators": 100, "early_stopping_rounds": 50, "learning_rate": 0.05}
-    model = _fit_full_train(pipeline, params, ctx, np.zeros((2, 1)), np.zeros(2))
-
-    assert model is working_model
-    assert pipeline.build_model.call_count == 2
-    retry_params = pipeline.build_model.call_args_list[1].args[0]
-    assert "early_stopping_rounds" not in retry_params
-    assert retry_params == {"n_estimators": 100, "learning_rate": 0.05}
-
-
-def test_bagged_predict_reraises_when_retry_also_fails() -> None:
-    """벗긴 params로도 fit이 죽으면 예외를 그대로 전파한다 — 조용한 실패 금지."""
-    ctx = _bagging_ctx()
-    pipeline = MagicMock()
-    model = MagicMock()
-    model.fit.side_effect = ValueError("still broken")
-    pipeline.build_model.return_value = model
-
-    params = {"early_stopping_rounds": 50}
-    with pytest.raises(ValueError, match="still broken"):
-        _fit_full_train(pipeline, params, ctx, np.zeros((2, 1)), np.zeros(2))
-
-
-def test_bagged_predict_does_not_strip_when_fit_succeeds() -> None:
-    """정상 fit이면 재시도 없이 원래 params 그대로 build_model 1회만 호출한다
-
-    (HistGradientBoosting/CatBoost처럼 eval_set 없이도 자체 검증 분할로 동작하는
-    estimator의 early-stopping 설정을 조용히 바꾸지 않기 위한 보장).
-    """
-    ctx = _bagging_ctx()
-    pipeline = MagicMock()
-    model = MagicMock()
-    model.predict.return_value = np.array([1.0, 2.0])
-    pipeline.build_model.return_value = model
-
-    params = {"early_stopping_rounds": 50, "learning_rate": 0.05}
-    result = _fit_full_train(pipeline, params, ctx, np.zeros((2, 1)), np.zeros(2))
-
-    assert result is model
-    assert pipeline.build_model.call_count == 1
-    assert pipeline.build_model.call_args.args[0] == params
-
-
-def test_fit_full_train_no_early_stopping_keys_reraises_immediately() -> None:
-    """params에 애초에 early-stopping 키가 없으면 재시도할 게 없어 원래 예외를 바로 올린다."""
-    ctx = _bagging_ctx()
-    pipeline = MagicMock()
-    model = MagicMock()
-    model.fit.side_effect = RuntimeError("unrelated failure")
-    pipeline.build_model.return_value = model
-
-    params = {"learning_rate": 0.05}
-    with pytest.raises(RuntimeError, match="unrelated failure"):
-        _fit_full_train(pipeline, params, ctx, np.zeros((2, 1)), np.zeros(2))
-    assert pipeline.build_model.call_count == 1
-
-
-
-def test_predict_raw_binary_proba_calls_predict_proba() -> None:
-    model = MagicMock()
-    model.predict_proba.return_value = np.array([[0.1, 0.9], [0.8, 0.2]])
-    result = _predict_raw(model, np.zeros((2, 3)), "binary_proba")
-    model.predict_proba.assert_called_once()
-    model.predict.assert_not_called()
-    assert list(result) == [0.9, 0.2]
-
-
-@pytest.mark.parametrize("metric_class", ["classification", "regression_error"])
-def test_predict_raw_non_proba_calls_predict(metric_class: str) -> None:
-    model = MagicMock()
-    model.predict.return_value = np.array([1, 0])
-    result = _predict_raw(model, np.zeros((2, 3)), metric_class)
-    model.predict.assert_called_once()
-    model.predict_proba.assert_not_called()
-    assert list(result) == [1, 0]
-
-
-
 def test_submission_value_col_uses_sample_second_column() -> None:
     assert _submission_value_col(["id", "target_prob"], "target") == "target_prob"
 
@@ -643,25 +549,3 @@ def test_dummy_target_value_works_for_numeric_target() -> None:
     assert result == 10.5
 
 
-def test_fit_full_train_strips_duplicate_kwarg_like_eval_path() -> None:
-    """#94: build_model이 중복/stale kwarg TypeError로 죽으면 평가 경로(#79
-    _build_model_safe)와 동일하게 그 kwarg를 벗겨 재시도해야 한다 — 안 그러면
-    merge-verify를 통과한 병합본이 제출에서만 크래시한다 (s5e4 실사고)."""
-    ctx = _bagging_ctx()
-    working_model = MagicMock()
-
-    def build_model(params, _ctx):
-        if "random_state" in params:
-            raise TypeError(
-                "lightgbm.sklearn.LGBMRegressor() got multiple values for keyword argument 'random_state'"
-            )
-        return working_model
-
-    pipeline = MagicMock()
-    pipeline.build_model.side_effect = build_model
-
-    params = {"n_estimators": 100, "random_state": 42}
-    model = _fit_full_train(pipeline, params, ctx, np.zeros((2, 1)), np.zeros(2))
-
-    assert model is working_model
-    working_model.fit.assert_called_once()

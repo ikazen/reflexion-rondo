@@ -25,6 +25,16 @@ _MAX_PARAM_CANDIDATES = 12
 _LEAK_PERFECT_HIGH = 0.9999
 _LEAK_PERFECT_LOW = 1e-9
 _EARLY_STOPPING_ROUNDS = 50
+# LightGBM/XGBoost/CatBoost가 생성자에서 받는 early-stopping 관련 키. param_candidates()가
+# CV 경로(_fit_with_early_stopping, eval_set 있음)를 염두에 두고 넣은 값인데, 라벨 없는
+# 예측 대상(제출·holdout)으로 전체 학습할 땐 eval_set이 없어 이 키가 있으면 fit()이
+# 죽는다(#71) — _fit_or_retry_without_early_stopping()이 실패 시에만 이 키를 벗기고
+# 재시도한다. 원래 bin/submit.py에만 있었으나 #239(#226 후속)에서 ensemble 멤버 fit에도
+# 같은 재시도가 필요해져 공유 상수로 옮김.
+_EARLY_STOPPING_KEYS = frozenset({
+    "early_stopping_rounds", "early_stopping_round", "early_stopping",
+    "n_iter_no_change", "callbacks", "od_wait", "od_type", "validation_fraction",
+})
 # 회귀 error 메트릭(rmse/mae/rmsle)이 trivial baseline(train 타깃 평균 예측)보다
 # 이 배수 이상 좋으면 스케일/타깃 누수로 간주한다. _check_preprocess_target_leak은
 # "훅이 target 컬럼을 읽었는가"만 보는 메커니즘 검사라 다른 경로의 스케일 누수
@@ -230,6 +240,34 @@ def _fit_with_early_stopping(model: object, Xtr, ytr, Xva, yva) -> None:
     model.fit(Xtr, ytr)
 
 
+def _fit_with_retry(build_fn, params: dict, Xtr, ytr, Xva, yva) -> object:
+    """build_fn(params)로 모델을 만들어 fit한다. yva가 있으면(CV/holdout) opt-in
+    early stopping을 쓰고, 없으면(제출처럼 라벨 없는 예측 대상) 전체 학습한다.
+
+    후자에서 생성자에 박힌 조기종료 kwarg(_EARLY_STOPPING_KEYS) 때문에 eval_set 없이
+    fit()이 죽으면(#71) 그 키만 벗기고 한 번 더 시도한다 — 원래 bin/submit.py의
+    _fit_full_train에만 있던 안전망인데, ensemble_spec 멤버 fit(#226의 yva=None 분기)엔
+    없어서 agents/coder.py가 명시적으로 허용하는 멤버 params(조기종료 키 포함)가 제출
+    시점에 죽을 수 있었다(#239, adversarial review에서 발견). CV/holdout/제출 세 경로와
+    단일모델/ensemble 멤버 양쪽이 이 하나의 재시도 로직을 공유한다.
+    """
+    model = build_fn(params)
+    if yva is not None:
+        _fit_with_early_stopping(model, Xtr, ytr, Xva, yva)
+        return model
+    try:
+        model.fit(Xtr, ytr)
+        return model
+    except Exception:
+        stripped = {k: v for k, v in params.items() if k not in _EARLY_STOPPING_KEYS}
+        if stripped == params:
+            raise
+        print(f"  [fit_predict] fit failed with early-stopping params, retrying without: {sorted(set(params) - set(stripped))}")
+        model = build_fn(stripped)
+        model.fit(Xtr, ytr)
+        return model
+
+
 # ensemble_spec: 선언형 앙상블 (decisions.md ADR-023)
 # Patch는 "무엇을 조합할지"만 선언하고, 모델 생성·적합·결합은 이 모듈이 전담한다.
 # 기존 자유형 build_model 기반 ensemble 훅은 병행 허용.
@@ -309,7 +347,9 @@ def _fit_predict_ensemble(
     yva가 주어지면(라벨 있는 검증 데이터, CV/holdout)멤버별 early stopping에 쓴다.
     None이면(제출처럼 라벨 없는 예측 대상) 조기종료 없이 전체 학습한다 — 이 분기가
     없어서 이전엔 submit.py/holdout 양쪽이 이 함수를 아예 호출하지 못하고 각자
-    build_model 단일 경로로 대체해 ensemble_spec을 조용히 무시했다(#226).
+    build_model 단일 경로로 대체해 ensemble_spec을 조용히 무시했다(#226). 멤버별 fit은
+    _fit_with_retry를 거쳐 조기종료 kwarg가 eval_set 없이 fit을 죽이면 그 키만 벗기고
+    재시도한다(#239).
     """
     members = spec.get("members") or []
     if not members:
@@ -326,11 +366,10 @@ def _fit_predict_ensemble(
     for member in members:
         model_name = member.get("model")
         params = member.get("params") or {}
-        built = _build_ensemble_member(model_name, params, ctx)
-        if yva is not None:
-            _fit_with_early_stopping(built, Xtr, ytr, Xva, yva)
-        else:
-            built.fit(Xtr, ytr)
+        built = _fit_with_retry(
+            lambda p, _name=model_name: _build_ensemble_member(_name, p, ctx),
+            params, Xtr, ytr, Xva, yva,
+        )
         if metric_class == "binary_proba":
             member_preds.append(built.predict_proba(Xva)[:, 1])
         else:
@@ -341,6 +380,52 @@ def _fit_predict_ensemble(
             member_preds.append(np.asarray(built.predict(Xva)).reshape(-1))
 
     return _combine_predictions(member_preds, method, weights, metric_class)
+
+
+_NOT_GIVEN = object()  # ensemble_spec_dict 파라미터에서 "미리 계산 안 함"과 "계산했더니
+# None(ensemble 아님)"을 구분하기 위한 sentinel — None 자체가 유효한 값이라 재사용 불가.
+
+
+def fit_predict(
+    pipeline: "BasePipeline | PatchedPipeline",
+    params: dict,
+    ctx: "PipelineContext",
+    Xtr: np.ndarray,
+    ytr: np.ndarray,
+    Xva: np.ndarray,
+    yva: np.ndarray | None,
+    metric_class: str,
+    ensemble_spec_dict: dict | None = _NOT_GIVEN,  # type: ignore[assignment]
+) -> tuple[np.ndarray, object | None]:
+    """pipeline이 ensemble_spec을 정의했으면(자기 것이든 base에서 상속했든) harness가
+    멤버를 생성·적합·결합하고, 아니면 단일 build_model 경로를 쓴다. CV(evaluate_pipeline)/
+    holdout(_eval_holdout)/제출(_bagged_predict) 세 경로가 공유하는 유일한 "fit 후 예측"
+    진입점이다 — #226 전엔 세 곳이 각자 구현해서 ensemble_spec을 두 곳(제출, holdout)이
+    놓쳤고, #226 수정 후에도 세 곳이 분기 로직만 개별 복제해서 네 번째 호출부가 생기면
+    같은 실수가 재발할 수 있는 구조였다(#239, adversarial review).
+
+    반환은 (raw_preds, fitted_single_model_or_None) — ensemble이면 단일 estimator 개념이
+    없어 두 번째 값이 None(evaluate_pipeline의 permutation importance가 이 None으로
+    ensemble attempt를 자동 제외).
+
+    ensemble_spec_dict를 미리 계산해 넘기면(예: fold/bag_seed 루프 밖에서 1회) 매
+    호출마다 pipeline.ensemble_spec(ctx)를 다시 안 부른다 — patch가 ctx.seed에 따라
+    다른 spec을 반환하지 않는다는 전제(현재 어떤 구현도 그렇게 안 함)에서만 안전하다.
+    """
+    if ensemble_spec_dict is _NOT_GIVEN:
+        ensemble_spec_dict = pipeline.ensemble_spec(ctx)
+    if ensemble_spec_dict is not None:
+        raw_preds = _fit_predict_ensemble(ensemble_spec_dict, Xtr, ytr, Xva, yva, ctx, metric_class)
+        return raw_preds, None
+
+    model = _fit_with_retry(
+        lambda p: _build_model_safe(pipeline, p, ctx), params, Xtr, ytr, Xva, yva,
+    )
+    if metric_class == "binary_proba":
+        raw_preds = model.predict_proba(Xva)[:, 1]
+    else:
+        raw_preds = model.predict(Xva)
+    return raw_preds, model
 
 
 @dataclass
@@ -435,7 +520,21 @@ class PatchedPipeline:
 
     def ensemble_spec(self, ctx):
         fn = getattr(self.patch, "ensemble_spec", None)
-        return fn(ctx) if fn else self.base.ensemble_spec(ctx)
+        if fn:
+            return fn(ctx)
+        # build_model/param_candidates를 직접 정의하는 patch(model_swap/hyperparam_search,
+        # evaluator/contract.py:_ALLOWED_HOOKS가 이 둘엔 ensemble_spec을 아예 허용 안 함)는
+        # 단일모델 의도가 명확하다 — base의 ensemble_spec을 그대로 상속하면
+        # evaluate_pipeline/holdout/제출이 전부 ensemble 분기로 빠져 patch의 실제 변경이
+        # 한 번도 호출되지 않고 base와 완전히 동일한 cv_score만 재현한다. 확정 best가
+        # ensemble인 대회는 이 두 action_type이 영구 무력화되는 셈이었다(#239, #226이 base
+        # ensemble_spec 복원을 고치면서 새로 노출됨 — 그 전엔 base가 애초에 ensemble_spec을
+        # 못 가져와 이 문제 자체가 없었다). feature_engineering/preprocessing처럼 모델 관련
+        # 훅을 안 건드리는 patch는 반대로 상속돼야 한다 — "이 feature가 ensemble에도
+        # 통하는지"가 그 attempt의 질문이므로, 아래 else로 정상 위임.
+        if hasattr(self.patch, "build_model") or hasattr(self.patch, "param_candidates"):
+            return None
+        return self.base.ensemble_spec(ctx)
 
 
 def _make_folds(y: np.ndarray, ctx: PipelineContext) -> list:
@@ -598,26 +697,16 @@ def evaluate_pipeline(
         Xtr_np = Xtr.to_numpy()
         Xva_np = Xva.to_numpy()
 
-        if ensemble_spec_dict is not None:
-            # harness가 멤버를 직접 생성·적합·결합. best_model=None: 앙상블은
-            # 단일 estimator 개념이 없고, ensemble action_type은 애초에
-            # _IMPORTANCE_ACTIONS 밖이라 permutation importance 대상도 아니다.
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", UserWarning)
-                raw_preds = _fit_predict_ensemble(
-                    ensemble_spec_dict, Xtr_np, ytr, Xva_np, yva, ctx, metric_class,
-                )
-            best_model = None
-        else:
-            model = _build_model_safe(pipeline, selected_params, ctx)
-            _fit_with_early_stopping(model, Xtr_np, ytr, Xva_np, yva)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", UserWarning)
-                if metric_class == "binary_proba":
-                    raw_preds = model.predict_proba(Xva_np)[:, 1]
-                else:
-                    raw_preds = model.predict(Xva_np)
-            best_model = model
+        # best_model은 ensemble이면 None — 단일 estimator 개념이 없고, ensemble
+        # action_type은 애초에 _IMPORTANCE_ACTIONS 밖이라 permutation importance
+        # 대상도 아니다. ensemble_spec_dict를 폴드 루프 밖에서 이미 1회 조회해뒀으므로
+        # 매 폴드 재조회하지 않도록 그대로 넘긴다.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            raw_preds, best_model = fit_predict(
+                pipeline, selected_params, ctx, Xtr_np, ytr, Xva_np, yva, metric_class,
+                ensemble_spec_dict=ensemble_spec_dict,
+            )
         preds = pipeline.postprocess_predictions(raw_preds, ctx)
         fold_scores.append(float(fn(yva_raw, preds)))
         if metric_class == "regression_error":

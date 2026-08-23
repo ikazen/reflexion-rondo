@@ -27,16 +27,6 @@ CODE_SEP = "# " + "-" * 60
 # 5-seed 예측 평균(bagging) — 단일 seed=42 fit 대비 거의 공짜인 LB 이득.
 _BAG_SEEDS = [42, 101, 7, 13, 29]
 
-# LightGBM/XGBoost/CatBoost가 생성자에서 받는 early-stopping 관련 키.
-# param_candidates()가 CV 경로(harness._fit_with_early_stopping, eval_set 있음)를
-# 염두에 두고 넣은 값인데, 이 모듈은 전체 train으로 최종 fit해 eval_set이 없다 —
-# LightGBM은 이 키가 있으면 eval_set 유무와 무관하게 조기종료 콜백을 등록해버려
-# fit()이 죽는다(#71). _fit_full_train()의 재시도 폴백에서만 제거해 쓴다.
-_EARLY_STOPPING_KEYS = frozenset({
-    "early_stopping_rounds", "early_stopping_round", "early_stopping",
-    "n_iter_no_change", "callbacks", "od_wait", "od_type", "validation_fraction",
-})
-
 
 def _load_best_code(
     competition_id: str, attempt_id: str | None
@@ -213,16 +203,6 @@ def _load_pipeline(
     return PatchedPipeline(BasePipeline(), patch_cls())
 
 
-def _predict_raw(model, X, metric_class: str):
-    """metric_class(evaluator/metrics.get 3번째 값) 기준으로 proba/label
-    분기 — comp.IS_CLASSIFICATION 기준이면 accuracy/f1/qwk 같은 label-metric
-    classification 대회에서 predict_proba를 잘못 쓰게 된다.
-    """
-    if metric_class == "binary_proba":
-        return model.predict_proba(X)[:, 1]
-    return model.predict(X)
-
-
 def _submission_value_col(sample_columns: list[str], fallback: str) -> str:
     """제출 값 컬럼명은 sample_submission.csv의 실제 2번째 컬럼을 따른다."""
     return sample_columns[1] if len(sample_columns) > 1 else fallback
@@ -247,31 +227,6 @@ def _impute_train_test_median(train_np, test_np):
     return train_np, test_np
 
 
-def _fit_full_train(pipeline: object, params: dict, ctx: object, X: np.ndarray, y: np.ndarray) -> object:
-    """params로 build_model+fit. eval_set 없이 죽으면(#71) early-stopping 키를
-    벗긴 params로 한 번 더 시도한다. HistGradientBoosting/CatBoost처럼 eval_set
-    없이도 내부 검증 분할로 동작하는 estimator는 첫 시도가 그대로 성공하므로
-    건드리지 않는다 — 실패할 때만 개입해 방법론을 조용히 안 바꾼다.
-
-    build_model은 harness의 _build_model_safe로 호출한다(#94) — 평가 경로(#79)와
-    동일한 stale/중복 kwarg 스트립. 이게 빠지면 merge-verify를 통과한 병합본이
-    제출에서만 크래시하는 평가/제출 비대칭이 생긴다.
-    """
-    from evaluator.harness import _build_model_safe
-    model = _build_model_safe(pipeline, params, ctx)
-    try:
-        model.fit(X, y)
-        return model
-    except Exception:
-        stripped = {k: v for k, v in params.items() if k not in _EARLY_STOPPING_KEYS}
-        if stripped == params:
-            raise
-        print(f"  [submit] fit failed with early-stopping params, retrying without: {sorted(set(params) - set(stripped))}")
-        model = _build_model_safe(pipeline, stripped, ctx)
-        model.fit(X, y)
-        return model
-
-
 def _bagged_predict(
     pipeline: object,
     params: dict,
@@ -286,8 +241,16 @@ def _bagged_predict(
 
     preprocess/feature_transform은 seed 무관이라 호출부에서 1회만 수행되고,
     이 함수는 이미 변환된 X_train_np/X_test_np를 받아 모델 fit만 반복한다.
+
+    단일모델/ensemble_spec 분기와 조기종료 키 재시도(#71)는 evaluator.harness.fit_predict
+    (+ _fit_with_retry)가 CV/holdout/제출 세 경로를 통틀어 전담한다(#226/#239) — 이 함수는
+    seed 루프와 최종 집계(평균/다수결)만 담당.
     """
-    from evaluator.harness import PipelineContext, _fit_predict_ensemble
+    from evaluator.harness import PipelineContext, fit_predict
+    # ensemble_spec은 seed(ctx.seed)에 의존하지 않는다는 전제로 루프 밖에서 1회만
+    # 조회한다(evaluate_pipeline과 동일 관례) — Patch.ensemble_spec(ctx)가 ctx.seed를
+    # 참조해 멤버 구성을 바꾸는 구현이 나오면 이 가정이 깨진다.
+    ensemble_spec_dict = pipeline.ensemble_spec(ctx)
     bag_preds = []
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -302,24 +265,14 @@ def _bagged_predict(
                 action_type=ctx.action_type,
                 best_params=ctx.best_params,
             )
-            # 여기선 early stopping(harness._fit_with_early_stopping) 미적용 —
-            # 전체 train으로 최종 fit하는 자리라 라벨 있는 held-out validation이 없음
-            # (test_np는 unlabeled). 억지로 train 일부를 떼면 최종 제출 방법론 자체가
-            # 바뀌므로 이번 범위에서 제외 — CV 경로(harness.py)만 적용.
-            # 다만 params가 생성자 인자로 early-stopping 키를 담고 있으면(#71,
-            # eval_set 없이 fit이 죽음) _fit_full_train이 그 키만 벗겨 재시도한다.
-            spec = pipeline.ensemble_spec(bag_ctx)
-            if spec is not None:
-                # ensemble_spec 파이프라인은 params(preselect_params가 이미 {}로
-                # 반환)가 아니라 spec 자체의 멤버별 params로 학습한다 — 이전엔
-                # 이 분기가 없어서 확정된 ensemble이 제출 시점엔 조용히 단일
-                # build_model(params={})로 대체됐다(#226).
-                bag_preds.append(
-                    _fit_predict_ensemble(spec, X_train_np, y_train, X_test_np, None, bag_ctx, metric_class)
-                )
-            else:
-                model = _fit_full_train(pipeline, params, bag_ctx, X_train_np, y_train)
-                bag_preds.append(_predict_raw(model, X_test_np, metric_class))
+            # yva=None — 전체 train으로 최종 fit하는 자리라 라벨 있는 held-out
+            # validation이 없음(test_np는 unlabeled). 억지로 train 일부를 떼면 최종
+            # 제출 방법론 자체가 바뀌므로 이번 범위에서 제외 — CV 경로(harness.py)만 적용.
+            raw_preds, _ = fit_predict(
+                pipeline, params, bag_ctx, X_train_np, y_train, X_test_np, None, metric_class,
+                ensemble_spec_dict=ensemble_spec_dict,
+            )
+            bag_preds.append(raw_preds)
     if metric_class == "classification":
         # discrete label 예측(멀티클래스 문자열 라벨 포함, s6e6)은 평균이 의미 없다 —
         # 문자열이면 np.mean이 TypeError로 죽고, 정수 인코딩이어도 평균은 라벨이 아니다.

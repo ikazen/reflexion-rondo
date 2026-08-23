@@ -330,12 +330,25 @@ def _sweep_queue_refill(conn) -> None:
     slug_to_cid = {slug: cid for cid, slug in _competition_id_to_slug().items()}
     # ACTIVE=False(#227, Milestone v1.6.0 — fleet 동결 후 deep tier만 유지)인 대회는
     # 재보급 대상에서 제외한다. 이 헬퍼는 auto-submit 등 다른 소비자와 공유하는
-    # _competition_id_to_slug()는 건드리지 않고 여기서만 필터링 — 확정 pipeline이
-    # 있는 동결 대회의 auto-submit까지 막을 이유는 없다.
-    slug_to_cid = {
-        slug: cid for slug, cid in slug_to_cid.items()
-        if getattr(importlib.import_module(f"config.competitions.{slug}"), "ACTIVE", True)
-    }
+    # _competition_id_to_slug()는 건드리지 않고 여기서만 필터링한다 — 다만 동결 대회의
+    # auto-submit이 "계속된다"는 보장은 아니다: bin/api.py:auto_submit()은
+    # raw.attempts.run_ts가 최근 window_hours(airflow-stack에서 24h 하드코딩) 이내인
+    # 대회만 보므로, 새 attempt가 안 들어오는 동결 대회는 재보급 여부와 무관하게
+    # 24~48h 내에 auto-submit 대상에서도 자연히 빠진다(#239, adversarial review) — 그게
+    # 실제로 원하는 동작이다(동결 대회에 컴퓨트도 제출 예산도 더 안 쓴다).
+    #
+    # import_module이 실패하면(예: config 파일 삭제·오탈자) 그 슬러그만 건너뛴다 —
+    # 안 그러면 daemon 메인 루프 전체가 죽는 #223과 같은 클래스의 크래시가 된다.
+    active_slug_to_cid: dict[str, str] = {}
+    for slug, cid in slug_to_cid.items():
+        try:
+            comp = importlib.import_module(f"config.competitions.{slug}")
+        except Exception as exc:
+            print(f"[daemon] queue refill — config.competitions.{slug} import 실패, 건너뜀: {exc}")
+            continue
+        if getattr(comp, "ACTIVE", True):
+            active_slug_to_cid[slug] = cid
+    slug_to_cid = active_slug_to_cid
     if not slug_to_cid:
         return
 
