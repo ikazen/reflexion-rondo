@@ -38,10 +38,16 @@ def _eval_holdout(
     holdout_score(0.02135)가 cv_score(0.02151)와 거의 같아 전혀 못 걸렀다.
     dummy는 상수라 feature_transform이 읽어도 정보 누수가 없으므로, 여기서부터는
     submit.py와 동일하게 별도 마스킹 없이 그대로 흘린다.
+
+    train90/holdout10에 is_original 컬럼(#228, 원본 데이터 병합)이 있으면
+    preselect_params 호출 후 제거한다 — Patch 훅은 이 bookkeeping 컬럼을 모른다.
+    holdout10은 split_audit_holdout이 이미 synthetic 행만으로 구성해 넘기므로
+    (#228) 여기서는 컬럼만 벗기면 된다.
     """
     import warnings
     from evaluator.harness import (
         _encode_residual_categoricals,
+        _extract_is_original,
         _strip_target,
         fit_predict,
         preselect_params,
@@ -51,6 +57,8 @@ def _eval_holdout(
 
     fn, _, metric_class = get_metric(ctx.metric)
     params = preselect_params(pipeline, train90, ctx)
+    train90, _ = _extract_is_original(train90)
+    holdout10, _ = _extract_is_original(holdout10)
     # preprocess가 타깃을 변환(log1p 등)할 수 있으므로 채점은 변환 이전의 raw
     # 타깃(yho_raw)으로 한다 — evaluator/harness.py의 evaluate_pipeline/preselect_params와
     # 동일 계약.

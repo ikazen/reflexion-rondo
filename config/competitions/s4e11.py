@@ -14,7 +14,9 @@ IS_CLASSIFICATION = True
 DROP_COLS         = ["id", "Name"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s4e11/data/"
-EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
+EXTRA_TRAIN_PATHS: list[str] = ["original.csv"]  # hopesb/student-depression-dataset —
+# 17/19 컬럼 일치(Name/Working Professional or Student 없음, 학생 전용 서브셋이라
+# store/train_data.py의 컬럼 교집합+null 채움으로 자동 처리). MinIO kaggle/s4e11/data/original.csv.
 ACTIVE            = True  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
 
 EDA_CARD = """competition: playground-series-s4e11 (Exploring Mental Health — Depression)

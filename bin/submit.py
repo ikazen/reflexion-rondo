@@ -331,7 +331,7 @@ def generate_submission_csv(
         else:
             print("no prior promoted pipeline — base is BasePipeline()")
 
-    from evaluator.harness import PipelineContext, preselect_params
+    from evaluator.harness import PipelineContext, _extract_is_original, preselect_params
     from store.train_data import load_train
     pipeline = _load_pipeline(
         comp.COMPETITION_ID, extra_source=source, expected_sha256=pipeline_sha256,
@@ -358,6 +358,10 @@ def generate_submission_csv(
     )
 
     params = preselect_params(pipeline, train, ctx)
+    # 최종 제출 fit은 전체 train을 무조건 다 쓴다(원본/합성 구분 없이, fold 분할 없는
+    # 단계라 validation 오염 우려 자체가 없음) — is_original은 preselect_params의
+    # 내부 split에만 필요했으므로 여기서부터는 벗긴다(#228, Patch 훅이 모르는 컬럼).
+    train, _ = _extract_is_original(train)
     train_proc, test_proc = pipeline.preprocess(train, test_with_dummy, comp.TARGET, ctx)
     X_train, X_test = pipeline.feature_transform(train_proc, test_proc, comp.TARGET, ctx)
     y_train = train_proc[comp.TARGET].to_numpy()
