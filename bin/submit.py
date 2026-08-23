@@ -144,7 +144,7 @@ def _load_pipeline(
     소스(cycle.materialize.load_base_snapshot — raw.pipelines.materialized_code
     스냅샷 우선, MinIO가 아니라 Postgres 신뢰 사본이라 위 하이재킹 우려와 무관하다,
     #89). 평가 경로
-    (runtime/runner.py:_load_best_pipeline_class)가 base+patch 위에서 cv_score를
+    (runtime/runner.py:_load_best_pipeline)가 base+patch 위에서 cv_score를
     측정하는데, 여기서 base 없이 patch만 실행하면(#80) hook을 하나만 오버라이드하는
     attempt(예: param_candidates만 바꾼 하이퍼파라미터 탐색)가 나머지 hook에서
     BasePipeline 기본 모델로 조용히 떨어져 평가와 전혀 다른(대개 훨씬 나쁜) 예측을
@@ -287,7 +287,7 @@ def _bagged_predict(
     preprocess/feature_transform은 seed 무관이라 호출부에서 1회만 수행되고,
     이 함수는 이미 변환된 X_train_np/X_test_np를 받아 모델 fit만 반복한다.
     """
-    from evaluator.harness import PipelineContext
+    from evaluator.harness import PipelineContext, _fit_predict_ensemble
     bag_preds = []
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -308,8 +308,18 @@ def _bagged_predict(
             # 바뀌므로 이번 범위에서 제외 — CV 경로(harness.py)만 적용.
             # 다만 params가 생성자 인자로 early-stopping 키를 담고 있으면(#71,
             # eval_set 없이 fit이 죽음) _fit_full_train이 그 키만 벗겨 재시도한다.
-            model = _fit_full_train(pipeline, params, bag_ctx, X_train_np, y_train)
-            bag_preds.append(_predict_raw(model, X_test_np, metric_class))
+            spec = pipeline.ensemble_spec(bag_ctx)
+            if spec is not None:
+                # ensemble_spec 파이프라인은 params(preselect_params가 이미 {}로
+                # 반환)가 아니라 spec 자체의 멤버별 params로 학습한다 — 이전엔
+                # 이 분기가 없어서 확정된 ensemble이 제출 시점엔 조용히 단일
+                # build_model(params={})로 대체됐다(#226).
+                bag_preds.append(
+                    _fit_predict_ensemble(spec, X_train_np, y_train, X_test_np, None, bag_ctx, metric_class)
+                )
+            else:
+                model = _fit_full_train(pipeline, params, bag_ctx, X_train_np, y_train)
+                bag_preds.append(_predict_raw(model, X_test_np, metric_class))
     if metric_class == "classification":
         # discrete label 예측(멀티클래스 문자열 라벨 포함, s6e6)은 평균이 의미 없다 —
         # 문자열이면 np.mean이 TypeError로 죽고, 정수 인코딩이어도 평균은 라벨이 아니다.

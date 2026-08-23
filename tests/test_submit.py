@@ -426,6 +426,7 @@ def _bagging_ctx():
 def test_bagged_predict_calls_build_model_once_per_seed() -> None:
     ctx = _bagging_ctx()
     pipeline = MagicMock()
+    pipeline.ensemble_spec.return_value = None
     model = MagicMock()
     model.predict.return_value = np.array([1.0, 2.0])
     pipeline.build_model.return_value = model
@@ -442,6 +443,7 @@ def test_bagged_predict_calls_build_model_once_per_seed() -> None:
 def test_bagged_predict_averages_predictions() -> None:
     ctx = _bagging_ctx()
     pipeline = MagicMock()
+    pipeline.ensemble_spec.return_value = None
     model = MagicMock()
     model.predict.side_effect = [np.array([1.0, 3.0]), np.array([3.0, 5.0])]
     pipeline.build_model.return_value = model
@@ -456,6 +458,7 @@ def test_bagged_predict_averages_predictions() -> None:
 def test_bagged_predict_uses_binary_proba_for_classification_metric() -> None:
     ctx = _bagging_ctx()
     pipeline = MagicMock()
+    pipeline.ensemble_spec.return_value = None
     model = MagicMock()
     model.predict_proba.return_value = np.array([[0.2, 0.8], [0.6, 0.4]])
     pipeline.build_model.return_value = model
@@ -465,6 +468,32 @@ def test_bagged_predict_uses_binary_proba_for_classification_metric() -> None:
         ctx, "binary_proba", bag_seeds=[1],
     )
     assert list(result) == [0.8, 0.4]
+
+
+def test_bagged_predict_routes_ensemble_spec_to_declarative_path() -> None:
+    """#226: pipeline.ensemble_spec()이 정의돼 있으면 build_model이 아니라
+    harness._fit_predict_ensemble로 가야 한다 — 이전엔 이 분기 자체가 없어
+    확정된 ensemble이 제출 시점엔 조용히 build_model(params={})로 대체됐다."""
+    ctx = _bagging_ctx()
+    rng = np.random.default_rng(0)
+    X_train = rng.standard_normal((60, 3))
+    y_train = (X_train[:, 0] > 0).astype(float)
+    X_test = rng.standard_normal((10, 3))
+
+    pipeline = MagicMock()
+    pipeline.ensemble_spec.return_value = {
+        "members": [{"model": "hgb"}, {"model": "random_forest", "params": {"n_estimators": 10}}],
+        "method": "weighted_average",
+    }
+
+    result = _bagged_predict(
+        pipeline, {}, X_train, y_train, X_test, ctx, "binary_proba", bag_seeds=[1, 2],
+    )
+    assert result.shape == (10,)
+    assert np.all(np.isfinite(result))
+    # build_model은 ensemble_spec 경로에서 전혀 호출되면 안 된다 — 호출되면
+    # harness가 아니라 다시 단일 모델로 새는 것.
+    pipeline.build_model.assert_not_called()
 
 
 # _fit_full_train — 생성자 early-stopping 파라미터 폴백 (#71)

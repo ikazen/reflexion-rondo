@@ -296,7 +296,7 @@ def _combine_predictions(
 
 
 def _fit_predict_ensemble(
-    spec: dict, Xtr: np.ndarray, ytr: np.ndarray, Xva: np.ndarray, yva: np.ndarray,
+    spec: dict, Xtr: np.ndarray, ytr: np.ndarray, Xva: np.ndarray, yva: np.ndarray | None,
     ctx: "PipelineContext", metric_class: str,
 ) -> np.ndarray:
     """Patch.ensemble_spec(ctx)이 선언한 멤버를 harness가 직접 생성·적합·결합한다.
@@ -305,6 +305,11 @@ def _fit_predict_ensemble(
                 "method": "weighted_average" | "majority_vote", "weights": [...]}.
     method 생략 시 metric_class에 따라 기본값을 고른다(discrete label 채점이면
     다수결, 아니면 가중평균). weights 생략 시 균등가중.
+
+    yva가 주어지면(라벨 있는 검증 데이터, CV/holdout)멤버별 early stopping에 쓴다.
+    None이면(제출처럼 라벨 없는 예측 대상) 조기종료 없이 전체 학습한다 — 이 분기가
+    없어서 이전엔 submit.py/holdout 양쪽이 이 함수를 아예 호출하지 못하고 각자
+    build_model 단일 경로로 대체해 ensemble_spec을 조용히 무시했다(#226).
     """
     members = spec.get("members") or []
     if not members:
@@ -322,7 +327,10 @@ def _fit_predict_ensemble(
         model_name = member.get("model")
         params = member.get("params") or {}
         built = _build_ensemble_member(model_name, params, ctx)
-        _fit_with_early_stopping(built, Xtr, ytr, Xva, yva)
+        if yva is not None:
+            _fit_with_early_stopping(built, Xtr, ytr, Xva, yva)
+        else:
+            built.fit(Xtr, ytr)
         if metric_class == "binary_proba":
             member_preds.append(built.predict_proba(Xva)[:, 1])
         else:

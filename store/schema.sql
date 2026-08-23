@@ -147,6 +147,13 @@ CREATE TABLE IF NOT EXISTS raw.cycle_queue (
 -- 항목이 자연히 뒤로 밀리게 한다. NULL이면(리스 이력 없음) created_at으로 폴백.
 ALTER TABLE raw.cycle_queue ADD COLUMN IF NOT EXISTS last_leased_at timestamp;
 
+-- best_so_far는 raw.attempts.cv_score의 running max다 — 확정 여부(raw.pipelines.
+-- invalid_reason)와 무관하다. label/gain_vs_best의 기준선(cycle/run.py:_prev_best,
+-- ADR-025)은 confirmed pipeline만 보므로, 확정 안 된 attempt가 raw max를 먼저
+-- 갱신해두면 이후 attempt가 confirmed 기준으론 "jump"인데 best_so_far는 안
+-- 움직이는 괴리가 생긴다(s6e1 실측, #226). 의도된 차이(전자는 낙관적 이력,
+-- 후자는 신뢰된 기준선)이지 버그는 아니다 — 대시보드에서 "jump인데 그래프가
+-- 안 오른다"를 보면 이 차이를 먼저 의심할 것.
 CREATE OR REPLACE VIEW score_progression AS
 SELECT
     a.attempt_id,
@@ -257,6 +264,7 @@ SELECT
 FROM raw.action_bandit
 ORDER BY scope, scope_key, posterior_mean DESC;
 
+-- best_so_far 정의는 score_progression과 동일 — 확정 여부 무관 raw max(#226 코멘트 참고).
 CREATE OR REPLACE VIEW cold_start_progression AS
 SELECT
     a.competition_id,
