@@ -17,10 +17,6 @@ from evaluator.harness import (
     _fit_with_early_stopping,
     _fit_with_retry,
     _build_model_safe,
-    _MAX_BUILD_MODEL_RETRIES,
-    _ENSEMBLE_MODEL_REGISTRY,
-    _resolve_ensemble_model_class,
-    _build_ensemble_member,
     _combine_predictions,
     _weighted_majority_vote,
     _fit_predict_ensemble,
@@ -28,6 +24,12 @@ from evaluator.harness import (
     _make_folds,
     _extract_is_original,
     _synthetic_indices,
+)
+from evaluator.models import (
+    MODEL_REGISTRY,
+    resolve_model_class,
+    build_registry_model,
+    _MAX_BUILD_MODEL_RETRIES,
 )
 from runtime.runner import _eval_holdout
 
@@ -1103,37 +1105,37 @@ def _reg_ctx() -> PipelineContext:
     return PipelineContext(target_col="y", metric="rmse", n_splits=3, seed=42, is_classification=False)
 
 
-def test_resolve_ensemble_model_class_known_names():
+def test_resolve_model_class_known_names():
     from sklearn.linear_model import Ridge, RidgeClassifier
-    assert _resolve_ensemble_model_class("ridge", is_classification=False) is Ridge
-    assert _resolve_ensemble_model_class("ridge", is_classification=True) is RidgeClassifier
+    assert resolve_model_class("ridge", is_classification=False) is Ridge
+    assert resolve_model_class("ridge", is_classification=True) is RidgeClassifier
 
 
-def test_resolve_ensemble_model_class_unknown_name_raises():
-    with pytest.raises(ValueError, match="unknown member model"):
-        _resolve_ensemble_model_class("not_a_real_model", is_classification=False)
+def test_resolve_model_class_unknown_name_raises():
+    with pytest.raises(ValueError, match="unknown registry model"):
+        resolve_model_class("not_a_real_model", is_classification=False)
 
 
-def test_ensemble_model_registry_covers_common_libraries():
-    """실제로 자유형 ensemble 사고에 등장했던 라이브러리(lgbm/xgboost/catboost)가
-    레지스트리에 있어야 declarative 대안이 실질적 대체가 된다."""
-    assert {"lgbm", "xgboost", "catboost", "hgb"}.issubset(_ENSEMBLE_MODEL_REGISTRY)
+def test_model_registry_covers_common_libraries():
+    """실제로 자유형 ensemble/model_swap 사고에 등장했던 라이브러리(lgbm/xgboost/
+    catboost)가 레지스트리에 있어야 declarative 대안이 실질적 대체가 된다."""
+    assert {"lgbm", "xgboost", "catboost", "hgb", "extra_trees", "elastic_net"}.issubset(MODEL_REGISTRY)
 
 
-def test_build_ensemble_member_defaults_random_state_to_ctx_seed():
-    model = _build_ensemble_member("ridge", {}, _reg_ctx())
+def test_build_registry_model_defaults_random_state_to_ctx_seed():
+    model = build_registry_model("ridge", {}, _reg_ctx())
     assert model.random_state == 42
 
 
-def test_build_ensemble_member_respects_explicit_random_state():
-    model = _build_ensemble_member("ridge", {"random_state": 7}, _reg_ctx())
+def test_build_registry_model_respects_explicit_random_state():
+    model = build_registry_model("ridge", {"random_state": 7}, _reg_ctx())
     assert model.random_state == 7
 
 
-def test_build_ensemble_member_strips_stale_kwarg_and_retries():
-    """생성자에 없는 kwarg(LLM의 stale API 지식)가 params에 섞여도 _construct_with_
+def test_build_registry_model_strips_stale_kwarg_and_retries():
+    """생성자에 없는 kwarg(LLM의 stale API 지식)가 params에 섞여도 construct_with_
     kwarg_retry가 벗기고 재시도한다 — _build_model_safe와 동일 안전망 공유."""
-    model = _build_ensemble_member("ridge", {"multi_class": "ovr"}, _reg_ctx())
+    model = build_registry_model("ridge", {"multi_class": "ovr"}, _reg_ctx())
     assert not hasattr(model, "multi_class")
 
 
@@ -1369,6 +1371,144 @@ def test_hyperparam_search_on_ensemble_base_actually_invokes_param_candidates():
     assert patch.called, "hyperparam_search patch의 param_candidates가 호출되지 않음 — ensemble_spec 상속 문제 재발"
 
 
+# model_spec — 선언형 단일 모델 (ADR-034, #229)
+# ensemble_spec과 동일한 문제를 model_swap 단일 모델에도 적용한다: LLM이 손으로 쓴
+# build_model이 stale kwarg/오탈자 클래스명으로 실패하는 대신, harness가 레지스트리에서
+# 생성자를 직접 호출한다.
+
+class _ModelSpecPatch:
+    action_type = "model_swap"
+
+    def model_spec(self, ctx):
+        return {"model": "ridge", "params": {"alpha": 2.0}}
+
+
+def test_base_pipeline_model_spec_defaults_to_none():
+    assert BasePipeline().model_spec(_reg_ctx()) is None
+
+
+def test_patched_pipeline_model_spec_delegates_to_patch():
+    pipeline = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
+    spec = pipeline.model_spec(_reg_ctx())
+    assert spec == {"model": "ridge", "params": {"alpha": 2.0}}
+
+
+def test_patched_pipeline_model_spec_falls_back_to_base_when_patch_lacks_it():
+    class _NoModelSpecPatch:
+        action_type = "feature_engineering"
+
+    base_with_spec = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
+    pipeline = PatchedPipeline(base_with_spec, _NoModelSpecPatch())
+    assert pipeline.model_spec(_reg_ctx()) is not None
+
+
+def test_model_spec_not_inherited_when_patch_defines_build_model():
+    base_with_spec = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
+    pipeline = PatchedPipeline(base_with_spec, _ModelSwapPatch())
+    assert pipeline.model_spec(_reg_ctx()) is None
+
+
+def test_model_spec_not_inherited_when_patch_defines_ensemble_spec():
+    base_with_spec = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
+    pipeline = PatchedPipeline(base_with_spec, _EnsembleSpecPatch())
+    assert pipeline.model_spec(_reg_ctx()) is None
+
+
+def test_model_spec_not_inherited_when_patch_defines_param_candidates():
+    """base가 model_spec을 가진 상태에서 hyperparam_search patch를 얹으면 상속을
+    끊어야 한다 — 안 그러면 preselect_params가 model_spec을 보고 탐색 자체를
+    건너뛰어(빈 dict) patch.param_candidates가 한 번도 안 불린다."""
+    base_with_spec = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
+    pipeline = PatchedPipeline(base_with_spec, _HyperparamSearchPatch())
+    assert pipeline.model_spec(_reg_ctx()) is None
+
+
+def test_hyperparam_search_on_model_spec_base_actually_invokes_param_candidates():
+    base_with_spec = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
+    patch = _HyperparamSearchPatch()
+    pipeline = PatchedPipeline(base_with_spec, patch)
+
+    df = _make_df(is_classification=False, n=150)
+    ctx = _reg_ctx()
+    preselect_params(pipeline, df, ctx)
+
+    assert patch.called, "hyperparam_search patch의 param_candidates가 호출되지 않음 — model_spec 상속 문제"
+
+
+def test_ensemble_spec_not_inherited_when_patch_defines_model_spec():
+    """model_spec을 정의하는 patch(단일모델 의도)가 base의 ensemble_spec을 상속하면
+    안 된다 — ensemble_spec 쪽 suppression 조건도 model_spec을 알아야 한다."""
+    base_with_spec = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
+    pipeline = PatchedPipeline(base_with_spec, _ModelSpecPatch())
+    assert pipeline.ensemble_spec(_reg_ctx()) is None
+
+
+def test_preselect_params_bypasses_search_when_model_spec_present():
+    class _ModelSpecWithManyCandidates(_ModelSpecPatch):
+        def param_candidates(self, ctx):
+            raise AssertionError("model_spec이 있으면 param_candidates를 호출하면 안 됨")
+
+    pipeline = PatchedPipeline(BasePipeline(), _ModelSpecWithManyCandidates())
+    result = preselect_params(pipeline, _make_df(is_classification=False), _reg_ctx())
+    assert result == {}
+
+
+def test_evaluate_pipeline_routes_model_spec_to_registry_path():
+    class _HgbModelSpecPatch:
+        action_type = "model_swap"
+
+        def model_spec(self, ctx):
+            # hgb는 auc(binary_proba)에 필요한 predict_proba를 지원 — ridge 분류기
+            # (RidgeClassifier)는 predict_proba가 없어 이 경로엔 안 맞는다.
+            return {"model": "hgb", "params": {"max_iter": 20}}
+
+    df = _make_df(is_classification=True, n=150)
+    ctx = _ctx(is_classification=True)
+    pipeline = PatchedPipeline(BasePipeline(), _HgbModelSpecPatch())
+    result = evaluate_pipeline(pipeline, df, ctx)
+    assert 0.0 <= result.cv_score <= 1.0
+    assert result.model_type == "hgb"
+
+
+def test_evaluate_pipeline_model_type_none_without_model_spec():
+    df = _make_df(is_classification=True, n=150)
+    ctx = _ctx(is_classification=True)
+    pipeline = PatchedPipeline(BasePipeline(), _ModelSwapPatch())
+    result = evaluate_pipeline(pipeline, df, ctx)
+    assert result.model_type is None
+
+
+def test_fit_predict_routes_to_model_spec_when_present():
+    pipeline = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
+    ctx = _reg_ctx()
+    rng = np.random.default_rng(0)
+    Xtr, ytr = rng.standard_normal((40, 3)), rng.standard_normal(40)
+    Xva = rng.standard_normal((10, 3))
+
+    raw_preds, model = fit_predict(pipeline, {}, ctx, Xtr, ytr, Xva, None, "regression_error")
+
+    assert raw_preds.shape == (10,)
+    assert model is not None
+    assert model.alpha == 2.0
+
+
+def test_fit_predict_model_spec_precomputed_skips_recomputation():
+    pipeline = MagicMock()
+    pipeline.ensemble_spec.return_value = None
+    pipeline.model_spec.side_effect = AssertionError("재조회하면 안 됨")
+    ctx = _reg_ctx()
+    rng = np.random.default_rng(0)
+    Xtr, ytr = rng.standard_normal((40, 3)), rng.standard_normal(40)
+    Xva = rng.standard_normal((10, 3))
+
+    raw_preds, model = fit_predict(
+        pipeline, {}, ctx, Xtr, ytr, Xva, None, "regression_error",
+        model_spec_dict={"model": "ridge", "params": {}},
+    )
+    assert model is not None
+    pipeline.model_spec.assert_not_called()
+
+
 # _fit_with_retry — 조기종료 kwarg 재시도 (#71, harness 공용화는 #226/#239)
 
 def test_fit_with_retry_strips_early_stopping_params_on_failure():
@@ -1481,6 +1621,7 @@ def test_fit_predict_precomputed_spec_skips_recomputation():
     fold/bag_seed 루프에서 매번 재조회하는 낭비를 피하는 게 이 파라미터의 목적."""
     pipeline = MagicMock()
     pipeline.ensemble_spec.side_effect = AssertionError("재조회하면 안 됨")
+    pipeline.model_spec.return_value = None
     ctx = _reg_ctx()
     rng = np.random.default_rng(0)
     Xtr, ytr = rng.standard_normal((40, 3)), rng.standard_normal(40)

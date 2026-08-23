@@ -1,5 +1,30 @@
 # 변경 이력
 
+## v1.5.12 — 선언형 단일 모델(model_spec, ADR-034), 모델 레지스트리 harness에서 분리 (2026-08-24)
+- #229(Milestone v1.6.0, keystone): `model_swap`에 7번째 훅 `model_spec(self, ctx) -> dict | None`
+  추가 — `ensemble_spec`(ADR-023)의 단일 모델 버전. `{"model": <registry key>, "params": {...}}`만
+  선언하면 harness가 레지스트리에서 직접 생성자를 호출해, LLM이 손으로 쓴 `build_model`의
+  super() 오용·stale kwarg·오탈자 클래스명 문제가 구조적으로 발생하지 않는다.
+- 모델 레지스트리(`_ENSEMBLE_MODEL_REGISTRY`)를 `evaluator/harness.py`에서 신설
+  `evaluator/models.py`(`MODEL_REGISTRY`)로 승격 — `ensemble_spec`과 `model_spec`이 동일
+  레지스트리·동일 생성자 헬퍼(`build_registry_model`/`construct_with_kwarg_retry`)를 공유해
+  드리프트가 구조적으로 불가능해졌다. `extra_trees`/`elastic_net` 두 모델 추가.
+- `PatchedPipeline.ensemble_spec`/`model_spec`이 서로의 존재(및 `build_model`)를 상속 억제
+  조건에 넣도록 대칭 확장 — #239가 고친 `ensemble_spec`↔`build_model`/`param_candidates` 상호
+  억제를 `model_spec`까지 반영하지 않으면, base가 `ensemble_spec`/`model_spec` 중 하나를 갖고
+  patch가 다른 쪽을 선택했을 때 상속이 patch의 실제 의도를 가릴 수 있었다.
+- `fit_predict()`(#239 공유 진입점)가 `ensemble_spec` → `model_spec` → 자유형 `build_model`
+  순으로 라우팅하도록 확장, `preselect_params`도 `model_spec` 존재 시 탐색을 건너뛴다.
+- `EvalResult.model_type`(model_spec이 선언한 레지스트리 이름, 그 외는 None) 신설 —
+  `runtime/isolate.py:IsolatedResult` → `cycle/run.py` → `raw.attempts.model_type`(기존
+  스키마 컬럼, 지금까지 항상 NULL이었음)까지 배선해 모델 다양성을 추적할 수 있게 했다.
+- `agents/coder.py` 컨트랙트 프롬프트에 model_swap 전용 model_spec 섹션 추가(ensemble_spec
+  섹션과 동일 구조), `evaluator/contract.py`(`_ALL_HOOKS`/`_ALLOWED_HOOKS['model_swap']`/
+  `_HOOK_ARITY`) 갱신.
+- 회귀 테스트 20여 개 추가: model_spec 상속/억제 대칭성, preselect_params 우회,
+  fit_predict 라우팅, contract 레벨 arity/allowed-hooks 검증(ensemble_spec 테스트 세트를
+  그대로 미러링).
+
 ## v1.5.11 — 원본 데이터 병합: deep tier 5개 전부 배선 (2026-08-24)
 - #228(Milestone v1.6.0): `EXTRA_TRAIN_PATHS` 병합 메커니즘(`store/train_data.py`)은
   이미 있었지만 27개 대회 전부 빈 배열로 방치돼 있던 것을, deep tier 5개(`s4e10`/

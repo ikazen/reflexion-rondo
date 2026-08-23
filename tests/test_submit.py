@@ -425,6 +425,7 @@ def test_bagged_predict_calls_build_model_once_per_seed() -> None:
     ctx = _bagging_ctx()
     pipeline = MagicMock()
     pipeline.ensemble_spec.return_value = None
+    pipeline.model_spec.return_value = None
     model = MagicMock()
     model.predict.return_value = np.array([1.0, 2.0])
     pipeline.build_model.return_value = model
@@ -442,6 +443,7 @@ def test_bagged_predict_averages_predictions() -> None:
     ctx = _bagging_ctx()
     pipeline = MagicMock()
     pipeline.ensemble_spec.return_value = None
+    pipeline.model_spec.return_value = None
     model = MagicMock()
     model.predict.side_effect = [np.array([1.0, 3.0]), np.array([3.0, 5.0])]
     pipeline.build_model.return_value = model
@@ -457,6 +459,7 @@ def test_bagged_predict_uses_binary_proba_for_classification_metric() -> None:
     ctx = _bagging_ctx()
     pipeline = MagicMock()
     pipeline.ensemble_spec.return_value = None
+    pipeline.model_spec.return_value = None
     model = MagicMock()
     model.predict_proba.return_value = np.array([[0.2, 0.8], [0.6, 0.4]])
     pipeline.build_model.return_value = model

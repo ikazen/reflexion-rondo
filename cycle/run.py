@@ -531,6 +531,7 @@ def run_attempt_core(
     selected_params: dict | None = None
     peak_rss_bytes: int | None = None
     peak_cpu_sec: float | None = None
+    model_type: str | None = None
 
     if not error_trace:
         # CPU 예산은 eval 회차가 아니라 attempt 전체 기준으로 집행한다 — 과거엔
@@ -575,6 +576,7 @@ def run_attempt_core(
                 is_noop_tie = iso.is_noop_tie
                 fold_scores = iso.fold_scores
                 selected_params = iso.selected_params
+                model_type = iso.model_type
                 gain_str = f"{gain_vs_best:+.6f}" if gain_vs_best is not None else "N/A"
                 _LOG.info(
                     "eval ok in %.1fs cv=%.6f fold_var=%.6f gain=%s label=%s",
@@ -676,6 +678,7 @@ def run_attempt_core(
         # 참고할 수 있도록 영속화 (이전엔 EvalResult 안에서만 존재하고 버려졌음).
         "fold_scores":      json.dumps(fold_scores) if fold_scores is not None else None,
         "params":           json.dumps(selected_params) if selected_params else None,
+        "model_type":       model_type,
     }
     if super_cycle_id is not None:
         row["super_cycle_id"] = super_cycle_id

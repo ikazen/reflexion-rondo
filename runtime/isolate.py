@@ -94,6 +94,7 @@ class IsolatedResult:
     gain_vs_best_relative: float | None = None
     peak_rss_bytes: int | None = None
     peak_cpu_sec: float | None = None
+    model_type: str | None = None
 
 
 def _read_rss_bytes(pid: int) -> int | None:
@@ -271,6 +272,7 @@ def eval_isolated(
             selected_params=out.get("selected_params"),
             oof_preds=out.get("oof_preds"),
             gain_vs_best_relative=out.get("gain_vs_best_relative"),
+            model_type=out.get("model_type"),
             peak_rss_bytes=peak_rss_bytes,
             peak_cpu_sec=peak_cpu_sec,
         )

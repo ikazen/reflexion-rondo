@@ -367,3 +367,46 @@ def test_ensemble_spec_wrong_arity_caught():
     )
     errs = validate_patch(source, "ensemble")
     assert any("ensemble_spec" in e and "expected 2 args" in e for e in errs)
+
+
+# model_spec (ADR-034, #229) — ensemble_spec의 단일 모델 버전. ensemble_spec 회귀
+# 세트를 그대로 미러링해 두 훅이 계약 레벨에서 대칭으로 취급되는지 확인한다.
+
+_VALID_MODEL_SPEC = """
+class Patch:
+    action_type = "model_swap"
+    changed_stages = ["model_spec"]
+    rationale = "declarative single model swap to catboost"
+
+    def model_spec(self, ctx):
+        return {"model": "catboost", "params": {"iterations": 500}}
+""".strip()
+
+
+def test_model_spec_allowed_for_model_swap_action_type():
+    assert validate_patch(_VALID_MODEL_SPEC, "model_swap") == []
+
+
+def test_model_spec_allowed_for_ensemble_action_type():
+    source = _VALID_MODEL_SPEC.replace('action_type = "model_swap"', 'action_type = "ensemble"')
+    assert validate_patch(source, "ensemble") == []
+
+
+def test_model_spec_disallowed_for_hyperparam_search():
+    """단일 변경 원칙(ADR-006)이 적용되는 제한 action_type에는 model_spec도 허용 안 됨."""
+    source = _VALID_MODEL_SPEC.replace('action_type = "model_swap"', 'action_type = "hyperparam_search"')
+    errs = validate_patch(source, "hyperparam_search")
+    assert any("may not implement hooks" in e and "model_spec" in e for e in errs)
+
+
+def test_model_spec_wrong_arity_caught():
+    source = (
+        'class Patch:\n'
+        '    action_type = "model_swap"\n'
+        '    changed_stages = ["model_spec"]\n'
+        '    rationale = "wrong arity"\n'
+        '    def model_spec(self, ctx, extra_arg):\n'
+        '        return {"model": "lgbm"}\n'
+    )
+    errs = validate_patch(source, "model_swap")
+    assert any("model_spec" in e and "expected 2 args" in e for e in errs)
