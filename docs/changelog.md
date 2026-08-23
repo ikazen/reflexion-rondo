@@ -1,5 +1,13 @@
 # 변경 이력
 
+## v1.5.6 — auto-submit AmbiguousColumn 500 수정 (2026-08-23)
+- #221: `#178`에서 `_best_attempt()`에 `raw.pipelines` JOIN을 추가하면서 그 아래
+  `join raw.competitions c using (competition_id)`가 그대로 남아 `raw.attempts`/
+  `raw.pipelines` 양쪽 `competition_id`가 충돌, `psycopg2.errors.AmbiguousColumn`으로
+  매 호출이 500을 냈다. 배포 시점(2026-08-18 22:40) 이후 auto-submit이 한 번도
+  성공하지 못해 Kaggle 제출이 3일간 0건이었다. `using` → `on c.competition_id =
+  a.competition_id`로 명시.
+
 ## v1.4.29 — s6e8 재가동: auto-submit confirmed-only + 트립와이어 데드밴드 + CPU 상한 (2026-08-19)
 - #178(근본원인): `bin/api.py:_best_attempt()`가 raw.attempts 전체 max cv_score를 확정
   여부와 무관하게 골라, `--attempt-id`(원래 사람이 미확정 attempt를 수동 지정하는
