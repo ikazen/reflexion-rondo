@@ -15,6 +15,7 @@ DROP_COLS         = ["id"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s4e7/data/"
 EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
+ACTIVE            = False  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
 
 # 1150만행 전량 로드 시 100-cycle 큐가 전량 OOM(RLIMIT_AS 6GiB, runtime/isolate.py).
 # 층화 샘플링(store/train_data.py:load_train, IS_CLASSIFICATION=True라 클래스 비율 보존)으로

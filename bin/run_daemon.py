@@ -328,6 +328,14 @@ def _sweep_queue_refill(conn) -> None:
     # bin.api._competition_id_to_slug()는 {competition_id: slug} — cycle_queue.competition
     # 컬럼은 slug를 쓰므로(예: "s6e8") 여기서 뒤집는다.
     slug_to_cid = {slug: cid for cid, slug in _competition_id_to_slug().items()}
+    # ACTIVE=False(#227, Milestone v1.6.0 — fleet 동결 후 deep tier만 유지)인 대회는
+    # 재보급 대상에서 제외한다. 이 헬퍼는 auto-submit 등 다른 소비자와 공유하는
+    # _competition_id_to_slug()는 건드리지 않고 여기서만 필터링 — 확정 pipeline이
+    # 있는 동결 대회의 auto-submit까지 막을 이유는 없다.
+    slug_to_cid = {
+        slug: cid for slug, cid in slug_to_cid.items()
+        if getattr(importlib.import_module(f"config.competitions.{slug}"), "ACTIVE", True)
+    }
     if not slug_to_cid:
         return
 

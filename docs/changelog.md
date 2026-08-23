@@ -1,5 +1,14 @@
 # 변경 이력
 
+## v1.5.9 — fleet 동결: 27개 동시 운영 → deep tier 5개 (2026-08-24)
+- #227(ADR-032, Milestone v1.6.0): `config/competitions/*.py`에 `ACTIVE` bool 추가.
+  `s6e8`/`s4e12`/`s4e10`/`s5e4`/`s4e11` 5개만 `ACTIVE=True`로 남기고 나머지 22개는 동결
+  (attempts 이력 보존, 삭제 아님). `bin/run_daemon.py:_sweep_queue_refill`이 `ACTIVE=False`
+  대회를 idle 재보급 대상에서 제외하도록 배선. 선정 기준: 최근 confirmed 갱신(아직 얕은 과실
+  있음) + `#225` 스파이크 실험으로 헤드룸 검증(s4e10) + task_type/metric 4종 다양성. 배경은
+  ADR-032 — attempts 최다 3개 대회가 정확히 가장 오래 정체된 대회였다는 실측(컴퓨트 문제
+  아님)과 breadth 전략의 근거였던 transfer 가설이 `#76`으로 이미 반증됨.
+
 ## v1.5.8 — ensemble_spec이 제출·CV 재평가 경로에서 누락되던 3중 버그 수정 (2026-08-23)
 - #226(v1.6.0 "천장 돌파" 진단 중 발견): `bin/submit.py`가 `ensemble_spec`을 호출하는
   코드가 아예 없어, 확정된 ensemble pipeline이 제출 시점엔 조용히 단일 `build_model`로
