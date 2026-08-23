@@ -17,6 +17,14 @@ def _long_ago() -> float:
     return time.monotonic() - _QUEUE_REFILL_SWEEP_INTERVAL_SEC - 1
 
 
+def _all_active_import(name: str):
+    """importlib.import_module 스텁 — 어떤 슬러그든 ACTIVE=True인 모듈처럼 동작.
+    idle-detection 로직 자체를 검증하는 테스트는 ACTIVE 필터(#227)와 무관하게
+    독립적으로 통과해야 하므로, 실제 config/competitions/*.py의 ACTIVE 값에
+    기대는 대신 이 스텁으로 격리한다."""
+    return type("StubComp", (), {"ACTIVE": True})
+
+
 def test_sweep_respects_rate_gate(monkeypatch):
     monkeypatch.setattr(run_daemon, "_last_queue_refill_sweep", time.monotonic())
     conn = MagicMock()
@@ -55,7 +63,8 @@ def test_sweep_reenqueues_idle_and_never_run_competitions(monkeypatch):
         "playground-series-s6e1": "s6e1",
         "playground-series-s6e2": "s6e2",
     }
-    with patch("bin.run_daemon._competition_id_to_slug", return_value=comp_slugs):
+    with patch("bin.run_daemon._competition_id_to_slug", return_value=comp_slugs), \
+         patch("bin.run_daemon.importlib.import_module", side_effect=_all_active_import):
         _sweep_queue_refill(conn)
 
     insert_calls = [
@@ -66,6 +75,35 @@ def test_sweep_reenqueues_idle_and_never_run_competitions(monkeypatch):
     # s6e1(idle 100h)과 s6e2(never run, max(run_ts) 자체가 없음)는 재큐잉,
     # s6e8(방금 돔)은 제외.
     assert inserted_slugs == {"s6e1", "s6e2"}
+
+
+def test_sweep_skips_inactive_competitions(monkeypatch):
+    """#227(Milestone v1.6.0 fleet 동결): ACTIVE=False 대회는 idle/never-run이어도
+    재큐잉 대상에서 제외한다 — 동결된 대회에 daemon이 다시 컴퓨트를 태우면 안 된다."""
+    monkeypatch.setattr(run_daemon, "_last_queue_refill_sweep", _long_ago())
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None  # 큐 비어있음
+    conn.execute.return_value.fetchall.return_value = []  # 둘 다 attempt 이력 없음(신규 취급)
+
+    comp_slugs = {
+        "playground-series-s6e8": "s6e8",   # ACTIVE=True
+        "playground-series-s4e1": "s4e1",   # ACTIVE=False
+    }
+
+    def _import(name: str):
+        slug = name.rsplit(".", 1)[-1]
+        return type("StubComp", (), {"ACTIVE": slug == "s6e8"})
+
+    with patch("bin.run_daemon._competition_id_to_slug", return_value=comp_slugs), \
+         patch("bin.run_daemon.importlib.import_module", side_effect=_import):
+        _sweep_queue_refill(conn)
+
+    insert_calls = [
+        c for c in conn.execute.call_args_list
+        if "insert into raw.cycle_queue" in c.args[0]
+    ]
+    inserted_slugs = {c.args[1][1] for c in insert_calls}
+    assert inserted_slugs == {"s6e8"}
 
 
 def test_sweep_noop_when_nothing_idle(monkeypatch):
@@ -80,7 +118,7 @@ def test_sweep_noop_when_nothing_idle(monkeypatch):
     with patch(
         "bin.run_daemon._competition_id_to_slug",
         return_value={"playground-series-s6e8": "s6e8"},  # {competition_id: slug}
-    ):
+    ), patch("bin.run_daemon.importlib.import_module", side_effect=_all_active_import):
         _sweep_queue_refill(conn)
 
     insert_calls = [

@@ -16,6 +16,7 @@ N_SPLITS          = 10
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s5e3/data/"
 EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
+ACTIVE            = False  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
 
 EDA_CARD = """competition: playground-series-s5e3 (Rainfall Prediction in Australia)
 task: binary classification  metric: AUC  target: rainfall

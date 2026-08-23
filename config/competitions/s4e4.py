@@ -15,6 +15,7 @@ DROP_COLS         = ["id"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s4e4/data/"
 EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
+ACTIVE            = False  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
 
 EDA_CARD = """competition: playground-series-s4e4 (Abalone Age Prediction — Rings)
 task: regression  metric: RMSLE  target: Rings (전복 나이 proxy, 정수 1~29)

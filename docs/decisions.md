@@ -463,6 +463,31 @@ self-contained 파이프라인으로 검증되고 merge-verify까지 통과했�
 attempt_id 키)도 그대로 재사용한다. 확정 pipeline이 아예 없는 대회(콜드스타트 등)는 auto-submit이 완전히 멈추는데, 이건 이미 ADR-025(phantom-max 폐지)가 처리하는
 콜드스타트 baseline 확립 경로(`establish_bootstrap_baseline`/`bin/establish_baseline.py`)에 의존한다.
 
+## ADR-032 — fleet은 27개 동시 운영에서 deep tier 5개로 좁힌다 (breadth-first 폐기)
+
+- 결정: `config/competitions/*.py`에 `ACTIVE` bool을 추가한다. `ACTIVE=False`인 대회는
+  `bin/run_daemon.py:_sweep_queue_refill`의 idle 재보급 대상에서 제외된다(#227, Milestone
+  v1.6.0). 27개 중 5개만 `ACTIVE=True`로 유지: `s6e8`(binary/auc), `s4e12`(regression/rmsle),
+  `s4e10`(binary/auc), `s5e4`(regression/rmse), `s4e11`(binary/accuracy). 나머지 22개는
+  attempts 이력을 보존한 채 동결한다(삭제 아님 — 이력 보존 원칙은 ADR-025와 동일).
+- 선정 기준: (1) 최근 confirmed 갱신(0.4~24일 이내, "아직 얕은 과실이 남아있는" 대회 우선),
+  (2) `#225` 스파이크 실험으로 헤드룸이 실측 검증된 대회(s4e10), (3) task_type/metric 조합
+  다양성(binary·regression × auc·rmsle·rmse·accuracy 4종 커버 — 새 역량(원본데이터/stacking/
+  튜닝)이 특정 문제 유형에만 통하는지 아닌지 판별 가능하도록).
+- 대안: 27개 전체 유지, 컴퓨트만 증설 — 2026-08-23 진단(3중 병렬 조사)이 이미 반증. attempts
+  최다 3개 대회(s5e3 3381/s4e1 2956/s4e10 2897, fleet 평균 6~8배)가 정확히 가장 오래
+  정체된 대회(마지막 개선 이후 각각 2566/2271/1224회, 60~67일 무변화) — 컴퓨트를 더 부어도
+  같은 얕은 툴킷을 반복 재탕할 뿐 전환율이 안 오른다는 게 실측으로 확인됨.
+- 근거: breadth-first 전략의 원래 근거는 ADR-010("cross-competition transfer를 1등 시민으로")의
+  "경험이 쌓일수록 새 대회 콜드스타트가 빨라진다"는 가설이었는데, `#76`(2026-08-02) 실측이 이미
+  이 가설을 반증했다(retrieval 사용/미사용 median gain 완전 동일). breadth를 유지할 근거가
+  없어진 상태에서 27-way 분산은 attempts만 늘리고 confirmed pipeline 전환율(0.31%, 29857건→94건)은
+  그대로인 낭비였다. Milestone v1.6.0의 새 역량(#228 원본데이터/#229 선언형 모델/#230 Optuna
+  튜닝/#231 진짜 stacking)은 attempt당 비용이 900s 예산보다 큰 별도 레인(#230)을 요구하므로,
+  이를 27개 대회에 동시 적용할 컴퓨트 여유가 없다 — 소수에 집중해야 검증 자체가 가능하다.
+- 한계: 동결된 22개 대회는 새 역량의 혜택을 못 받는다. deep tier에서 새 역량이 검증되면 순차
+  확대할지, 계속 5개로 유지할지는 v1.6.0 로드맵 완료 후 재검토(4주 성공 기준 참고).
+
 ---
 
 ## 미정 항목 (TBD)
