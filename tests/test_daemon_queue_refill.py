@@ -43,7 +43,7 @@ def test_sweep_reenqueues_idle_and_never_run_competitions(monkeypatch):
     conn.execute.return_value.fetchone.return_value = None  # 큐 비어있음
 
     import datetime as dt
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now()  # raw.attempts.run_ts는 naive(#223) — psycopg2 실반환 형태
     conn.execute.return_value.fetchall.return_value = [
         ("playground-series-s6e8", now),  # 방금 돔 — idle 아님
         ("playground-series-s6e1", now - dt.timedelta(hours=100)),  # idle
@@ -74,7 +74,7 @@ def test_sweep_noop_when_nothing_idle(monkeypatch):
     conn.execute.return_value.fetchone.return_value = None
 
     import datetime as dt
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now()  # raw.attempts.run_ts는 naive(#223) — psycopg2 실반환 형태
     conn.execute.return_value.fetchall.return_value = [("playground-series-s6e8", now)]
 
     with patch(
