@@ -27,7 +27,7 @@
 - **multiclass는 binary_proba metric(auc/logloss) 사용 불가** — 평가 하네스가 `predict_proba[:, 1]`로 2-클래스를 가정하므로 깨진다. multiclass는
 classification 계열 metric만 쓴다.
 - regression은 CV score가 mean-baseline 대비 10배 이상 좋으면 target 누수로 간주해 reject한다.
-- classification 계열 metric은 OOF를 수집하지 않아 Ridge blend(`bin/blend.py`) 대상에서 제외된다.
+- classification 계열 metric은 OOF를 수집하지 않는다(discrete label이라 float 배열에 못 담음).
 - `rmsle`는 예측값을 0 이상으로 clip한다.
 
 ## 환경
@@ -90,7 +90,7 @@ bin/             실행 진입점:
                    api.py (FastAPI 앱 팩토리)
                    airflow_client.py (Airflow REST API 클라이언트)
                    submit.py (best attempt → Kaggle 제출)
-                   blend.py (승격 파이프라인 OOF 예측 Ridge blend)
+                   tune_pipeline.py (Optuna 튜닝, 900s 예산 밖 별도 DAG)
                    rebuild_best_pipeline.py (raw.pipelines 히스토리 replay)
                    quarantine_leaks.py (타깃 누수 파이프라인 스캔·격리)
                    establish_baseline.py (baseline 없는 대회 소급 확립)
@@ -159,7 +159,7 @@ Polars API 사용 (pandas 스타일 혼용 금지). 컨트랙트 위반 코드�
 - `raw.kaggle_submissions` — Kaggle 제출 추적 (submission_id, status, lb_score, checked_at). `bin/api.py`의
 `/api/submissions*` 엔드포인트가 관리 (`docs/spec.md` §1.11/§7).
 - `raw.pipelines` — 승격 코드 메모리. `invalid_reason`이 non-null이면 격리(누수 확정, 삭제 아님) — baseline 조회는 전부 `IS NULL`로 제외.
-- `raw.blend_weights` — 승격 시점 재계산되는 blend 가중치. 계산·저장까지만, `bin/submit.py`는 미소비.
+- `raw.tuned_params` — Optuna 튜닝 결과(`bin/tune_pipeline.py`). `tuning_run_id`로 한 번의 튜닝 실행을 묶는다.
 
 스키마 변경 시: `store/schema.sql` 수정 후 `uv run python bin/reset.py --hard`.
 

@@ -17,7 +17,7 @@ _AUDIT_SEED = 2025  # 고정 seed — 대회·재시작과 무관하게 항상 �
 
 from config.settings import LABEL_Z
 from evaluator.metrics import get as get_metric
-from evaluator.models import build_registry_model, construct_with_kwarg_retry
+from evaluator.models import build_registry_model, construct_with_kwarg_retry, resolve_model_class
 
 _PI_REPEATS = 3
 _PI_TOP_N = 20
@@ -273,6 +273,95 @@ def _combine_predictions(
     return combined
 
 
+def _member_predict(built: object, Xva: np.ndarray, metric_class: str) -> np.ndarray:
+    if metric_class == "binary_proba":
+        return built.predict_proba(Xva)[:, 1]
+    # CatBoost의 multiclass predict()는 (n, 1) shape을 반환한다(다른 라이브러리와 다른
+    # 관례) — reshape(-1)로 정규화하지 않으면 _weighted_majority_vote가 행별 스칼라
+    # 대신 1-원소 배열을 카운트해 "unhashable type: numpy.ndarray"로 죽는다(실측 확인).
+    return np.asarray(built.predict(Xva)).reshape(-1)
+
+
+def _oof_member_predictions(
+    model_name: str, params: dict, Xtr: np.ndarray, ytr: np.ndarray,
+    ctx: "PipelineContext", metric_class: str, n_inner_splits: int = 5,
+) -> np.ndarray:
+    """멤버 모델의 inner K-fold out-of-fold 예측 — stacking meta 모델 학습 전용 입력.
+
+    각 inner fold에서 모델을 새로 fit해 held-out 구간만 예측하므로, 반환되는 예측은
+    그 모델이 한 번도 학습에 쓰지 않은 행에 대한 것이다 — meta 모델이 멤버의
+    train-fit 성능이 아니라 일반화 성능을 학습하게 된다(누수 방지, 표준 stacking 관례).
+    """
+    n = len(ytr)
+    k = max(2, min(n_inner_splits, n))
+    oof = np.full(n, np.nan, dtype=float)
+    if ctx.is_classification:
+        splits = StratifiedKFold(n_splits=k, shuffle=True, random_state=ctx.seed).split(np.zeros(n), ytr)
+    else:
+        splits = KFold(n_splits=k, shuffle=True, random_state=ctx.seed).split(np.zeros(n))
+    for inner_tr, inner_va in splits:
+        model = _fit_with_retry(
+            lambda p, _name=model_name: build_registry_model(_name, p, ctx),
+            params, Xtr[inner_tr], ytr[inner_tr], Xtr[inner_va], ytr[inner_va],
+        )
+        oof[inner_va] = _member_predict(model, Xtr[inner_va], metric_class).astype(float)
+    return oof
+
+
+def _fit_predict_stack(
+    spec: dict, Xtr: np.ndarray, ytr: np.ndarray, Xva: np.ndarray, yva: np.ndarray | None,
+    ctx: "PipelineContext", metric_class: str,
+) -> np.ndarray:
+    """method="stack" — 멤버 예측을 고정 가중치가 아니라 meta 모델(회귀)로 조합한다
+    (decisions.md ADR-036, #231). meta는 항상 회귀 변형으로 생성한다 — 멤버 출력이
+    확률/연속값 공간이라, 분류 변형(RidgeClassifier 등)을 썼다면 그 변형이
+    predict_proba 자체가 없는 모델(ridge 등)에서 곧바로 깨지고, 있는 모델이어도
+    "확률을 다시 이산화해 분류"하는 불필요한 손실이 생긴다.
+
+    discrete label 채점(metric_class == "classification")은 지원하지 않는다 — 멤버
+    출력이 문자열/카테고리 라벨이라 회귀 meta로 조합할 연속 공간 자체가 없다.
+    이 경우 method="majority_vote"를 쓸 것.
+    """
+    if metric_class not in ("binary_proba", "regression_error"):
+        raise ValueError(
+            f"ensemble_spec: method='stack'은 binary_proba/regression_error metric_class만 "
+            f"지원한다(연속값 출력 필요) — {metric_class!r}는 discrete label이라 majority_vote를 쓸 것"
+        )
+    members = spec.get("members") or []
+    if not members:
+        raise ValueError("ensemble_spec: 'members' must be a non-empty list")
+    meta = spec.get("meta") or {}
+    meta_model_name = meta.get("model")
+    if not meta_model_name:
+        raise ValueError("ensemble_spec: method='stack'은 'meta': {'model': ..., 'params': {...}}가 필요")
+
+    oof_cols: list[np.ndarray] = []
+    va_cols: list[np.ndarray] = []
+    for member in members:
+        model_name = member.get("model")
+        params = member.get("params") or {}
+        oof_cols.append(_oof_member_predictions(model_name, params, Xtr, ytr, ctx, metric_class))
+        # meta 학습 입력(OOF)과 달리, 실제 Xva 예측은 멤버를 outer fold의 Xtr 전체로
+        # 재적합해서 뽑는다 — 표준 stacking 관례(멤버는 가용 라벨을 전부 활용하고,
+        # meta만 inner OOF로 누수를 막는다).
+        full_model = _fit_with_retry(
+            lambda p, _name=model_name: build_registry_model(_name, p, ctx),
+            params, Xtr, ytr, Xva, yva,
+        )
+        va_cols.append(_member_predict(full_model, Xva, metric_class).astype(float))
+
+    oof_matrix = np.column_stack(oof_cols)
+    va_matrix = np.column_stack(va_cols)
+
+    meta_params = dict(meta.get("params") or {})
+    meta_params.setdefault("random_state", ctx.seed)
+    # is_classification=False 강제 — meta는 항상 회귀 변형(위 docstring 참고).
+    meta_cls = resolve_model_class(meta_model_name, is_classification=False)
+    meta_model = construct_with_kwarg_retry(lambda p: meta_cls(**p), meta_params)
+    meta_model.fit(oof_matrix, ytr)
+    return np.asarray(meta_model.predict(va_matrix), dtype=float)
+
+
 def _fit_predict_ensemble(
     spec: dict, Xtr: np.ndarray, ytr: np.ndarray, Xva: np.ndarray, yva: np.ndarray | None,
     ctx: "PipelineContext", metric_class: str,
@@ -280,9 +369,10 @@ def _fit_predict_ensemble(
     """Patch.ensemble_spec(ctx)이 선언한 멤버를 harness가 직접 생성·적합·결합한다.
 
     spec 형태: {"members": [{"model": "lgbm", "params": {...}}, ...],
-                "method": "weighted_average" | "majority_vote", "weights": [...]}.
+                "method": "weighted_average" | "majority_vote" | "stack", "weights": [...]}.
     method 생략 시 metric_class에 따라 기본값을 고른다(discrete label 채점이면
-    다수결, 아니면 가중평균). weights 생략 시 균등가중.
+    다수결, 아니면 가중평균). weights 생략 시 균등가중(stack은 weights를 안 씀 —
+    meta 모델이 조합을 학습).
 
     yva가 주어지면(라벨 있는 검증 데이터, CV/holdout)멤버별 early stopping에 쓴다.
     None이면(제출처럼 라벨 없는 예측 대상) 조기종료 없이 전체 학습한다 — 이 분기가
@@ -294,13 +384,16 @@ def _fit_predict_ensemble(
     members = spec.get("members") or []
     if not members:
         raise ValueError("ensemble_spec: 'members' must be a non-empty list")
+    method = spec.get("method") or ("majority_vote" if metric_class == "classification" else "weighted_average")
+
+    if method == "stack":
+        return _fit_predict_stack(spec, Xtr, ytr, Xva, yva, ctx, metric_class)
 
     weights = spec.get("weights") or [1.0] * len(members)
     if len(weights) != len(members):
         raise ValueError(
             f"ensemble_spec: weights length ({len(weights)}) != members length ({len(members)})"
         )
-    method = spec.get("method") or ("majority_vote" if metric_class == "classification" else "weighted_average")
 
     member_preds: list[np.ndarray] = []
     for member in members:
@@ -310,14 +403,7 @@ def _fit_predict_ensemble(
             lambda p, _name=model_name: build_registry_model(_name, p, ctx),
             params, Xtr, ytr, Xva, yva,
         )
-        if metric_class == "binary_proba":
-            member_preds.append(built.predict_proba(Xva)[:, 1])
-        else:
-            # CatBoost의 multiclass predict()는 (n, 1) shape을 반환한다(다른
-            # 라이브러리와 다른 관례) — reshape(-1)로 정규화하지 않으면
-            # _weighted_majority_vote가 행별 스칼라 대신 1-원소 배열을 카운트해
-            # "unhashable type: numpy.ndarray"로 죽는다(실측 확인).
-            member_preds.append(np.asarray(built.predict(Xva)).reshape(-1))
+        member_preds.append(_member_predict(built, Xva, metric_class))
 
     return _combine_predictions(member_preds, method, weights, metric_class)
 
@@ -717,12 +803,10 @@ def evaluate_pipeline(
     fold_pi_means: list[np.ndarray] = []
     feature_names: list[str] = []
     # metric_class="classification"(accuracy/f1/qwk/balanced_accuracy)는 discrete label
-    # 예측이라(멀티클래스는 문자열 라벨) float OOF 배열에 못 담는다(ValueError) — Ridge
-    # 블렌딩(bin/blend.py) 대상도 아니므로 애초에 수집하지 않는다. blend.py는 이미
-    # oof_preds IS NULL인 pipeline을 자동 제외해 이 경로와 정합적이다.
-    # is_original 행은 어떤 fold의 validation에도 안 들어가므로(#228) 그 위치는
-    # NaN으로 영구히 남는다 — bin/blend.py는 실패해도 승격을 안 막는 best-effort
-    # 호출이라(spec.md §1.13) 감수. blend.py 자체가 #231에서 폐기 예정.
+    # 예측이라(멀티클래스는 문자열 라벨) float OOF 배열에 못 담는다(ValueError) — 애초에
+    # 수집하지 않는다. is_original 행은 어떤 fold의 validation에도 안 들어가므로(#228)
+    # 그 위치는 NaN으로 영구히 남는다 — oof_preds 자체는 현재 소비처가 없다(#231, 원
+    # 소비처였던 bin/blend.py 폐기).
     oof = (
         np.full(len(train), np.nan)
         if (collect_oof and metric_class != "classification")

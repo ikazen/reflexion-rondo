@@ -95,17 +95,18 @@ class Patch:
                 {"model": "lgbm", "params": {"n_estimators": 300, "learning_rate": 0.05}},
                 {"model": "xgboost", "params": {"max_depth": 6}},
             ],
-            "method": "weighted_average",   # or "majority_vote" for discrete-label metrics
-            "weights": [0.6, 0.4],          # optional — omit for equal weights
+            "method": "weighted_average",   # or "majority_vote" for discrete-label metrics, or "stack"
+            "weights": [0.6, 0.4],          # optional — omit for equal weights (ignored by "stack")
         }
 ```
 - Allowed model names: lgbm, xgboost, catboost, hgb, random_forest, extra_trees, ridge,
   elastic_net — the harness picks the classifier or regressor variant automatically from
   ctx.is_classification. Do NOT write "LGBMClassifier" etc, just the short name.
 - params are passed straight to that model's constructor (same values you'd put in build_model).
-- method: "weighted_average" for regression or probability-based metrics (auc/logloss), or
-  "majority_vote" for discrete-label metrics (accuracy/f1/qwk/balanced_accuracy). If omitted,
-  the harness picks a sensible default from the metric.
+- method: "weighted_average" for regression or probability-based metrics (auc/logloss), "majority_vote"
+  for discrete-label metrics (accuracy/f1/qwk/balanced_accuracy), or "stack" for regression/
+  probability-based metrics only (see below). If omitted, the harness picks weighted_average or
+  majority_vote from the metric.
 - If you implement ensemble_spec, do NOT also implement build_model — ensemble_spec replaces it.
   You may still implement preprocess/feature_transform/postprocess_predictions alongside it.
 - This is strongly preferred over a hand-written ensemble wrapper class. Wrapper classes have
@@ -114,8 +115,31 @@ class Patch:
   reconstructed incorrectly inside the wrapper's own fit(). ensemble_spec avoids all of these
   because the harness — not generated code — constructs and fits every member.
 - Only fall back to a hand-written build_model/wrapper class if ensemble_spec genuinely cannot
-  express what you need (e.g. a stacking meta-model on out-of-fold predictions) — expect that
-  path to be less reliable.
+  express what you need — expect that path to be less reliable.
+
+### `method: "stack"` — meta-model blending instead of fixed weights
+Add a `"meta"` key naming the model that learns how to combine member predictions, instead of
+hand-picking `weights`:
+
+```python
+def ensemble_spec(self, ctx) -> dict:
+    return {
+        "members": [
+            {"model": "lgbm", "params": {"n_estimators": 300}},
+            {"model": "xgboost", "params": {"max_depth": 6}},
+        ],
+        "method": "stack",
+        "meta": {"model": "ridge", "params": {"alpha": 1.0}},   # required for "stack"
+    }
+```
+- The harness fits each member on out-of-fold splits of the training data, trains `meta` on those
+  out-of-fold predictions (no leakage — meta never sees a member's prediction on data that member
+  was trained on), then refits members on the full training data for the actual prediction.
+- `meta` model names come from the same registry as `members`, but the harness always builds it in
+  regression mode regardless of ctx.is_classification (member outputs are continuous probabilities/
+  values, so the meta-model does regression on them even for a classification target).
+- `"stack"` only works for regression or probability-based metrics (rmse/mae/rmsle/auc/logloss) —
+  NOT for discrete-label metrics (accuracy/f1/qwk/balanced_accuracy). Use `"majority_vote"` there.
 
 ## model_swap action_type — use model_spec, not build_model
 For model_swap, implement `model_spec(self, ctx) -> dict` instead of writing build_model by hand.

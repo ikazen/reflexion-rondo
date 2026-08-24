@@ -378,13 +378,6 @@ quarantine_df = _query_df(
     ["pipeline_id", "cv_score", "invalid_reason"],
     [comp_id],
 )
-blend_df = _query_df(
-    conn,
-    "select pipeline_ids, blend_cv_score, generated_at from raw.blend_weights where competition_id = %s",
-    ["pipeline_ids", "blend_cv_score", "generated_at"],
-    [comp_id],
-)
-
 sq_left, sq_right = st.columns(2)
 with sq_left:
     st.caption("CV ↔ LB 정합 (제출 이력)")
@@ -395,22 +388,6 @@ with sq_left:
         if n_diverged:
             st.warning(f"CV는 개선인데 LB는 악화된 제출 {n_diverged}건 — cv_lb_calibration 발산")
         st.dataframe(calib_df, use_container_width=True)
-
-    st.caption("Blend")
-    if blend_df.is_empty():
-        st.info("No blend computed yet (confirmed pipeline이 2개 이상 쌓이면 자동 계산).")
-    else:
-        best_confirmed_cv = _query_df(
-            conn,
-            "select max(cv_score) from raw.pipelines where competition_id = %s and invalid_reason is null",
-            ["max_cv"],
-            [comp_id],
-        )
-        b = blend_df.row(0, named=True)
-        best_cv_val = best_confirmed_cv.item(0, 0) if not best_confirmed_cv.is_empty() else None
-        bc1, bc2 = st.columns(2)
-        bc1.metric("Blend CV", f"{b['blend_cv_score']:.5f}" if b["blend_cv_score"] is not None else "-")
-        bc2.metric("Best single pipeline CV", f"{best_cv_val:.5f}" if best_cv_val is not None else "-")
 
 with sq_right:
     st.caption(f"격리된 파이프라인 ({len(quarantine_df)}건)")

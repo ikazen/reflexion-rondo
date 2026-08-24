@@ -776,10 +776,10 @@ def run_attempt_core(
 
             # OOF 확보 — bin/run_promote_task.py의 merge-verify와 동일 패턴
             # (materialized를 1회 재평가하는 김에 collect_oof=True로 얹는다,
-            # 추가 eval 아님). 여기 없으면 이 경로로 승격된 pipeline은 영구히
-            # blend 후보가 될 수 없다(#145). 이 경로는 기존에 merge-verify
-            # 게이트가 없었으므로 실패해도 승격 자체는 막지 않고 oof_preds만
-            # 비운다 — best-effort.
+            # 추가 eval 아님). 소비처였던 bin/blend.py는 #231로 폐기됐지만
+            # raw.pipelines.oof_preds 자체는 유지한다(향후 분석 재료). 이 경로는
+            # 기존에 merge-verify 게이트가 없었으므로 실패해도 승격 자체는 막지
+            # 않고 oof_preds만 비운다 — best-effort.
             merge_oof_preds = None
             try:
                 merge_eval = eval_isolated(
@@ -815,16 +815,6 @@ def run_attempt_core(
                 )
             _best_pipeline_upload(config.competition_id, materialized)
             _LOG.info("best pipeline materialized (gain=%+.5f)", gain_vs_best)
-
-            # blend 가중치 재계산 — best-effort, 실패해도 승격 자체는 이미
-            # 끝났으니 예외를 흡수만 하고 계속 진행한다.
-            try:
-                from bin.blend import compute_and_store_blend
-                compute_and_store_blend(
-                    conn, config.competition_id, config.train, config.target_col, config.metric,
-                )
-            except Exception as exc:
-                _LOG.warning("blend 재계산 실패(무시하고 계속): %s", exc)
         else:
             reason = "holdout 악화" if confirm.holdout_regressed else "cross-seed 미확인"
             _LOG.info("%s — 승격 스킵 (gain=%+.5f)", reason, gain_vs_best)

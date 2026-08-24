@@ -1,5 +1,28 @@
 # 변경 이력
 
+## v1.5.14 — 진짜 stacking(ensemble_spec method="stack"), bin/blend.py 폐기 (2026-08-25)
+- #231(Milestone v1.6.0, ADR-036): `ensemble_spec`에 `"method": "stack"` + `"meta"` 모델 키 추가
+  (`evaluator/harness.py:_fit_predict_stack`/`_oof_member_predictions`). 멤버는 outer CV fold의
+  train을 inner K-fold(기본 5)로 나눠 만든 out-of-fold(OOF) 예측으로 meta를 학습하고(누수 방지 —
+  meta가 멤버의 train-fit 성능을 절대 못 봄), 실제 검증/제출 예측 시엔 멤버를 outer train 전체로
+  재적합해서 쓴다(표준 stacking 관례). meta는 `ctx.is_classification`과 무관하게 항상 회귀 변형으로
+  생성 — 멤버 출력이 연속값(확률/예측값) 공간이라 RidgeClassifier 등 분류 변형이 predict_proba
+  자체가 없거나 불필요한 이산화 손실을 낳는 함정(#229/#239와 동일 클래스)을 피한다. discrete label
+  채점(`metric_class == "classification"`)은 지원 안 함 — `majority_vote`를 쓸 것.
+- `bin/blend.py`(파이프라인 밖 사후 Ridge blend) + `raw.blend_weights` 테이블 + dashboard 패널 +
+  `bin/backfill_oof_preds.py` 전부 삭제 — `bin/submit.py`가 그 값을 전혀 소비하지 않던 죽은 코드였음을
+  코드로 재확인(`docs/spec.md` §1.13 기존 인지 사항). `oof_preds` 컬럼 자체(수집 로직)는 향후 분석
+  재료로 유지, 현재 소비처는 없음.
+- `agents/coder.py` 컨트랙트 프롬프트에 `method="stack"` 섹션 추가(ensemble_spec 기존 섹션과 동일 구조).
+- **merge 전 백테스트(완료 기준)**: deep tier confirmed pipeline 2개(s4e10/s6e8)에 실제 원본
+  preprocess/feature_transform을 보존한 채 동일 멤버 조합(lgbm+random_forest)을
+  weighted_average vs stack으로 비교 — 둘 다 stack이 실측 개선(s4e10 auc 0.955991→0.960543,
+  s6e8 auc 0.946023→0.949325, 80k 다운샘플).
+- 회귀 테스트 9개 추가(빈 members/meta 누락/discrete metric_class 거부, 회귀·binary_proba
+  end-to-end, yva=None 제출 경로, OOF 누수 검증, evaluate_pipeline 전체 경로).
+- 부수 발견: s5e4 confirmed pipeline이 weighted_average 백테스트 중 "Input y contains NaN"으로
+  크래시(#245로 이슈화, 이 PR과 무관 — 프로덕션에서도 이미 반복 관측되던 별개 문제).
+
 ## v1.5.13 — Optuna 튜닝 레인, 900s attempt 예산 밖 별도 DAG (2026-08-24)
 - #230(Milestone v1.6.0, ADR-035): 신규 `evaluator/tuner.py` + `evaluator/search_spaces.py` —
   confirmed pipeline(raw.pipelines)의 `model_spec`/`ensemble_spec`(#229) 멤버 params를 Optuna로

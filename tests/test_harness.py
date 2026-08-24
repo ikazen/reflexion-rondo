@@ -20,6 +20,8 @@ from evaluator.harness import (
     _combine_predictions,
     _weighted_majority_vote,
     _fit_predict_ensemble,
+    _fit_predict_stack,
+    _oof_member_predictions,
     fit_predict,
     _make_folds,
     _extract_is_original,
@@ -1225,6 +1227,106 @@ def test_fit_predict_ensemble_no_early_stopping_when_yva_none():
     assert np.all(np.isfinite(preds))
 
 
+# method="stack" — 선언형 stacking (decisions.md ADR-036, #231). weighted_average/
+# majority_vote와 달리 고정 가중치 대신 meta 모델이 멤버 예측을 학습해서 조합한다.
+
+def test_fit_predict_ensemble_stack_empty_members_raises():
+    with pytest.raises(ValueError, match="non-empty"):
+        _fit_predict_ensemble(
+            {"members": [], "method": "stack", "meta": {"model": "ridge"}},
+            np.zeros((10, 2)), np.zeros(10), np.zeros((4, 2)), np.zeros(4),
+            _reg_ctx(), "regression_error",
+        )
+
+
+def test_fit_predict_stack_no_meta_raises():
+    spec = {"members": [{"model": "ridge"}], "method": "stack"}
+    with pytest.raises(ValueError, match="'meta'"):
+        _fit_predict_stack(
+            spec, np.zeros((10, 2)), np.zeros(10), np.zeros((4, 2)), np.zeros(4),
+            _reg_ctx(), "regression_error",
+        )
+
+
+def test_fit_predict_stack_classification_metric_class_raises():
+    """멤버 출력이 discrete label(문자열 포함 가능)이면 회귀 meta로 조합할 연속
+    공간이 없다 — majority_vote를 쓰라고 명확히 안내해야 한다."""
+    spec = {"members": [{"model": "ridge"}], "meta": {"model": "ridge"}}
+    with pytest.raises(ValueError, match="majority_vote"):
+        _fit_predict_stack(
+            spec, np.zeros((10, 2)), np.zeros(10), np.zeros((4, 2)), np.zeros(4),
+            _ctx(is_classification=True), "classification",
+        )
+
+
+def test_fit_predict_stack_regression_end_to_end():
+    rng = np.random.default_rng(0)
+    Xtr = rng.standard_normal((120, 3))
+    ytr = Xtr[:, 0] * 2 + rng.standard_normal(120) * 0.1
+    Xva = rng.standard_normal((30, 3))
+    yva_true = Xva[:, 0] * 2
+
+    spec = {
+        "members": [{"model": "ridge"}, {"model": "random_forest", "params": {"n_estimators": 20}}],
+        "method": "stack",
+        "meta": {"model": "ridge", "params": {"alpha": 1.0}},
+    }
+    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xva, yva_true, _reg_ctx(), "regression_error")
+    assert preds.shape == (30,)
+    assert np.all(np.isfinite(preds))
+    assert np.corrcoef(preds, yva_true)[0, 1] > 0.8
+
+
+def test_fit_predict_stack_binary_proba_end_to_end():
+    rng = np.random.default_rng(0)
+    Xtr = rng.standard_normal((150, 3))
+    ytr = (Xtr[:, 0] + Xtr[:, 1] > 0).astype(float)
+    Xva = rng.standard_normal((40, 3))
+
+    spec = {
+        "members": [{"model": "hgb"}, {"model": "random_forest", "params": {"n_estimators": 20}}],
+        "method": "stack",
+        "meta": {"model": "ridge"},
+    }
+    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xva, None, _ctx(is_classification=True), "binary_proba")
+    assert preds.shape == (40,)
+    assert np.all(np.isfinite(preds))
+
+
+def test_fit_predict_stack_no_early_stopping_when_yva_none():
+    """제출 경로(yva=None)에서도 stack이 죽지 않고 끝까지 도는지 — #226과 동일 클래스의
+    회귀 가드(weighted_average/majority_vote에 이미 있는 검증을 stack에도 대칭 적용)."""
+    rng = np.random.default_rng(0)
+    Xtr = rng.standard_normal((80, 3))
+    ytr = Xtr[:, 0] * 2 + rng.standard_normal(80) * 0.1
+    Xtest = rng.standard_normal((20, 3))
+
+    spec = {
+        "members": [{"model": "ridge"}, {"model": "ridge", "params": {"alpha": 5.0}}],
+        "method": "stack",
+        "meta": {"model": "ridge"},
+    }
+    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xtest, None, _reg_ctx(), "regression_error")
+    assert preds.shape == (20,)
+    assert np.all(np.isfinite(preds))
+
+
+def test_oof_member_predictions_are_out_of_fold():
+    """각 행의 OOF 예측이 그 행을 포함한 inner fold에서 학습한 모델이 아니라
+    다른 fold에서 학습한 모델의 예측이어야 한다 — 전부 finite/no-NaN인지,
+    그리고 fold별로 실제 다른 모델이 쓰였는지(전부 동일하지 않음)로 간접 검증."""
+    rng = np.random.default_rng(1)
+    Xtr = rng.standard_normal((50, 2))
+    ytr = Xtr[:, 0] * 3 + rng.standard_normal(50) * 0.5
+    oof = _oof_member_predictions("ridge", {}, Xtr, ytr, _reg_ctx(), "regression_error", n_inner_splits=5)
+    assert oof.shape == (50,)
+    assert np.all(np.isfinite(oof))
+    # naive full-fit 예측과 완전히 동일하지 않아야 함(다르게 fit된 모델의 예측이므로) —
+    # 최소한 우연히 bit-identical은 아님을 확인.
+    from sklearn.linear_model import Ridge
+    full_fit_preds = Ridge().fit(Xtr, ytr).predict(Xtr)
+    assert not np.allclose(oof, full_fit_preds)
+
 
 class _EnsembleSpecPatch:
     action_type = "ensemble"
@@ -1276,6 +1378,28 @@ def test_evaluate_pipeline_routes_ensemble_spec_to_declarative_path():
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y})
     ctx = _reg_ctx()
     pipeline = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
+    result = evaluate_pipeline(pipeline, df, ctx)
+    assert np.isfinite(result.cv_score)
+
+
+def test_evaluate_pipeline_routes_stack_to_declarative_path():
+    class _StackPatch:
+        action_type = "ensemble"
+
+        def ensemble_spec(self, ctx):
+            return {
+                "members": [{"model": "ridge"}, {"model": "random_forest", "params": {"n_estimators": 20}}],
+                "method": "stack",
+                "meta": {"model": "ridge"},
+            }
+
+    rng = np.random.default_rng(3)
+    n = 150
+    x = rng.standard_normal((n, 3))
+    y = x[:, 0] * 2.0 + rng.standard_normal(n) * 3.0
+    df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y})
+    ctx = _reg_ctx()
+    pipeline = PatchedPipeline(BasePipeline(), _StackPatch())
     result = evaluate_pipeline(pipeline, df, ctx)
     assert np.isfinite(result.cv_score)
 
