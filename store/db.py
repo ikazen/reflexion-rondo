@@ -183,3 +183,35 @@ def insert_pipeline(
             materialized_code,
         ],
     )
+
+
+def insert_tuned_params(
+    conn: PgConn,
+    id_: str,
+    tuning_run_id: str,
+    competition_id: str,
+    model_type: str,
+    member_index: int | None,
+    params: dict,
+    cv_score: float,
+    baseline_cv_score: float,
+    n_trials: int,
+    improved: bool,
+) -> None:
+    """evaluator/tuner.py(#230)의 TunerResult 1건을 raw.tuned_params에 영속화한다.
+    tuning_run_id는 한 번의 bin/tune_pipeline.py 실행(ensemble이면 멤버 여러 건)을
+    묶는 키 — cycle/run.py:_latest_tuned_params가 "가장 최근 실행 전체"를 한 번에
+    조회할 때 쓴다."""
+    import json
+    conn.execute(
+        """
+        INSERT INTO raw.tuned_params
+            (id, tuning_run_id, competition_id, model_type, member_index, params,
+             cv_score, baseline_cv_score, n_trials, improved)
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+        """,
+        [
+            id_, tuning_run_id, competition_id, model_type, member_index,
+            json.dumps(params), cv_score, baseline_cv_score, n_trials, improved,
+        ],
+    )

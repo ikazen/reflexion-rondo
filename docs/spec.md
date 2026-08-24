@@ -241,6 +241,27 @@ metric          text,
 generated_at    timestamp
 ```
 
+### 1.14 `raw.tuned_params` (#230, ADR-035)
+
+`evaluator/tuner.py`가 confirmed pipeline의 `model_spec`/`ensemble_spec` 멤버를 Optuna로 튜닝한 결과.
+`bin/tune_pipeline.py`(별도 Airflow DAG, 900s attempt 예산 밖)가 한 번 실행할 때마다 같은 `tuning_run_id`로
+여러 행(ensemble이면 멤버 수만큼)을 남긴다. `cycle/run.py:_latest_tuned_params`가 경쟁 대회별 가장 최근
+`tuning_run_id`의 전체 행을 `ctx.tuned_params` advisory로 흘려보낸다(§5 model_spec 참고).
+
+```sql
+id                 text primary key,
+tuning_run_id      text not null,   -- 한 번의 튜닝 실행을 묶는 키
+competition_id     text not null,
+model_type         text not null,   -- evaluator/models.py:MODEL_REGISTRY 키
+member_index       int,             -- NULL=model_spec(단일모델), 정수=ensemble_spec 멤버 인덱스
+params             jsonb not null,  -- Optuna가 찾은 best params
+cv_score           double precision not null,
+baseline_cv_score  double precision not null,
+n_trials           int not null,
+improved           boolean not null,  -- baseline 대비 개선 여부
+created_at         timestamp default now()
+```
+
 ## 2. enum 정의
 
 `action_type` (Strategist 출력 강제, `config/settings.py:ACTION_TYPES`):
@@ -395,6 +416,18 @@ def model_spec(self, ctx) -> dict | None:
 - `PatchedPipeline.ensemble_spec`/`model_spec`은 서로의 존재(및 `build_model`)를 상속 억제 조건으로 삼는다 —
   base가 한쪽을 정의해도 patch가 다른 쪽을 선택하면 그 의도가 상속에 가려지지 않는다(#239가 고친 상호 억제를
   대칭 확장).
+
+### `ctx.tuned_params` — Optuna 튜닝 결과 (#230, ADR-035, advisory)
+
+`raw.tuned_params`(§1.14)의 가장 최근 튜닝 실행 결과를 `PipelineContext`에 추가 필드로 흘려보낸다 — `ctx.best_params`와
+동일하게 강제 소비 아님, 훅이 참고 안 해도 무해. 개선(`improved=True`)된 항목이 하나도 없으면 `None`.
+
+```python
+ctx.tuned_params  # {"entries": [{"model": "lgbm", "member_index": None, "params": {...}, "cv_score": 0.912, "improved": True}, ...]}
+```
+
+`model_spec`/`build_model` 훅이 이 값을 그대로 채택하거나 무시할 수 있다 — Coder 프롬프트(`agents/coder.py`)에
+advisory로 명시.
 
 action_type별 허용 훅 (`evaluator/contract.py:_ALLOWED_HOOKS`):
 

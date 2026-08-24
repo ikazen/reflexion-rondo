@@ -1,5 +1,30 @@
 # 변경 이력
 
+## v1.5.13 — Optuna 튜닝 레인, 900s attempt 예산 밖 별도 DAG (2026-08-24)
+- #230(Milestone v1.6.0, ADR-035): 신규 `evaluator/tuner.py` + `evaluator/search_spaces.py` —
+  confirmed pipeline(raw.pipelines)의 `model_spec`/`ensemble_spec`(#229) 멤버 params를 Optuna로
+  수십~수백 trial 탐색한다. trial마다 model_spec/ensemble_spec 멤버 하나만 오버라이드하는 얇은
+  어댑터(`_SingleModelTrialPipeline`/`_EnsembleMemberTrialPipeline`)로 confirmed pipeline을 감싸고
+  `evaluate_pipeline`을 그대로 재사용 — attempt 평가와 동일한 CV 방법론(is_original 인지 분할,
+  leak 가드) 보장. `PipelineContext`에 X/y/scoring은 추가하지 않는다(#230 배경이 명시한 실패
+  패턴 재발 방지).
+- `MODEL_REGISTRY`(evaluator/models.py, #229) 8개 모델 전부에 대응하는 검색공간 정의, 각 공간을
+  실제 생성자로 검증하는 회귀 테스트(파라미터 키 어긋남을 build 시점이 아니라 여기서 잡음).
+- 신규 테이블 `raw.tuned_params`(tuning_run_id로 한 번의 튜닝 실행 묶음), `PipelineContext.tuned_params`
+  추가 필드(advisory, `ctx.best_params`와 동일 계약) — `cycle/run.py:_latest_tuned_params`가 가장
+  최근 튜닝 실행의 개선된(improved=True) 항목만 다음 attempt의 model_spec/build_model 훅에
+  advisory로 흘려보낸다. `agents/coder.py` 컨트랙트 프롬프트에 사용법 명시.
+- 신규 `bin/tune_pipeline.py` CLI — 별도 Airflow DAG(`reflexion_rondo_tune`, airflow-stack repo)
+  전용 진입점. attempt와 달리 `runtime/isolate.py`의 subprocess+RSS 워치독 격리를 거치지 않고
+  in-process로 돈다(trial마다 subprocess를 새로 띄우면 튜닝의 효율 이점이 사라짐) — 컨테이너
+  mem_limit이 유일한 메모리 백스톱(ADR-035 트레이드오프로 명시).
+- **merge 전 백테스트(완료 기준)**: deep tier confirmed pipeline 2개(s4e10/s4e11)에 실제 원본
+  preprocess/feature_transform을 보존한 채 lgbm model_spec을 얹어 25-trial 튜닝 — 둘 다 실측
+  개선 확인(s4e10 auc +0.0020, s4e11 accuracy +0.0257, 둘 다 `improved=True`).
+- 부수 발견: 완전히 빈(최초 부트스트랩) Postgres에 `apply_schema`를 1회만 돌리면 statement
+  순서 문제로 실패하는 사전 존재 버그 발견(#243로 이슈화, 프로덕션 무영향 — 이미 마이그레이션된
+  DB는 재현 안 됨).
+
 ## v1.5.12 — 선언형 단일 모델(model_spec, ADR-034), 모델 레지스트리 harness에서 분리 (2026-08-24)
 - #229(Milestone v1.6.0, keystone): `model_swap`에 7번째 훅 `model_spec(self, ctx) -> dict | None`
   추가 — `ensemble_spec`(ADR-023)의 단일 모델 버전. `{"model": <registry key>, "params": {...}}`만

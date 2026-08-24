@@ -510,6 +510,34 @@ kwarg, 하드코딩된 오래된 클래스명)가 단일 모델 교체에도 동
 `EvalResult.model_type`(model_spec이 선언한 레지스트리 이름, 자유형/ensemble은 None)을 attempt 테이블에
 영속화해 모델 다양성을 추적할 수 있게 했으나 아직 분석 대시보드는 없다.
 
+## ADR-035 — Optuna 튜닝은 confirmed pipeline의 model_spec/ensemble_spec만 대상, harness 로직은 그대로 재사용
+
+- 결정: `evaluator/tuner.py`(#230)는 raw.pipelines의 확정 pipeline이 `model_spec` 또는 `ensemble_spec`을
+정의한 경우에만 튜닝 가능하다 — 자유형 `build_model` pipeline은 튜닝 대상에서 제외한다. 튜닝은 `PipelineContext`에
+X/y/scoring을 추가하는 대신, trial마다 `model_spec`(또는 `ensemble_spec`의 특정 멤버)만 오버라이드하는 얇은
+어댑터 객체(`_SingleModelTrialPipeline`/`_EnsembleMemberTrialPipeline`)로 confirmed pipeline을 감싸고
+`evaluator/harness.py:evaluate_pipeline`을 그대로 호출한다 — CV 방법론(is_original 인지 분할, leak 가드,
+스케일 누수 가드)이 attempt 평가와 완전히 동일하게 유지된다. 결과는 `raw.tuned_params`에 영속화하고,
+`PipelineContext.tuned_params`(추가 필드, `best_params`와 동일한 advisory 계약)로 다음 attempt에 흘려보낸다.
+- 대안: (a) 자유형 `build_model` pipeline도 params만 치환해 튜닝 — LLM이 wrapper 클래스 안에서 params를
+어떻게 소비하는지(생성자 kwarg인지, 내부에서 무시하는지) harness가 정적으로 알 수 없어 안전하게 오버라이드할
+방법이 없다(ADR-023/ADR-034가 이미 해소한 문제의 재발). (b) `PipelineContext`에 X/y/scoring을 노출해 Coder가
+직접 Optuna를 호출하는 훅을 만든다 — 이슈 배경이 명시한 대로 "탐색 책임을 LLM에 되돌리면 지금 없애려는 실패
+패턴(90s 예산 안에서 대충 만든 3~12개 후보 argmax)이 그대로 재발"하므로 기각. (c) 튜닝 전용 별도 CV 로직을
+harness와 독립적으로 구현 — attempt 평가와 다른 방법론으로 측정한 "개선"이 실제 attempt에서 재현 안 될 위험이
+있어 기각, harness 재사용이 유일하게 안전한 선택.
+- 근거: model_spec/ensemble_spec(ADR-023/034)이 이미 "harness가 신뢰 코드로 모델을 직접 생성"하는 경계를
+만들어뒀다 — 이 경계 덕분에 trial마다 params만 바꿔 끼우는 얇은 어댑터가 안전하게 가능해졌다. #230이 #229를
+전제조건("keystone")으로 삼은 이유가 바로 이것 — model_spec 없이는 trial마다 안전하게 오버라이드할 지점
+자체가 없었다.
+- 한계: 자유형 build_model 확정 pipeline은 model_swap action으로 model_spec 기반 대안이 먼저 confirmed돼야
+튜닝 가능해진다 — 즉시 전체 fleet에 적용되지 않고, model_spec 채택이 선행돼야 하는 순차적 의존성이 있다.
+튜닝 프로세스 자체는 확정 pipeline의 preprocess/feature_transform/postprocess_predictions을 그대로 신뢰하고
+in-process(runtime/isolate.py의 네트워크 네임스페이스 격리 없이) 실행한다 — 이미 contract 검증+cross-seed
+확정을 통과한 코드를 다회 재실행하는 것이므로 신규 LLM 코드 최초 실행보다 위험이 낮다고 판단했으나,
+attempt 평가와 동일한 격리 수준은 아니다(트레이드오프: 수백 trial을 subprocess당 감싸면 매 trial마다
+parquet 왕복+프로세스 기동 비용이 튜닝의 효율성 이점을 상쇄한다).
+
 ---
 
 ## 미정 항목 (TBD)

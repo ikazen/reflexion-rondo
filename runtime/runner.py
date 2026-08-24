@@ -149,6 +149,7 @@ def main() -> None:
         prev_best=inp.get("prev_best"),
         action_type=inp.get("action_type", ""),
         best_params=inp.get("best_params"),
+        tuned_params=inp.get("tuned_params"),
     )
 
     try:
