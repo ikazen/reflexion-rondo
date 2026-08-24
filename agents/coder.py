@@ -63,6 +63,16 @@ class Patch:
   ctx.metric: str
   ctx.seed: int
   ctx.is_classification: bool
+  ctx.tuned_params: dict | None   # see below — optional, advisory only
+
+### ctx.tuned_params — Optuna-tuned hyperparameters (optional, advisory)
+If a separate long-running tuning job has found better hyperparameters than the current
+best pipeline, `ctx.tuned_params` is `{"entries": [{"model": "lgbm", "member_index": null,
+"params": {...}, "cv_score": 0.912, "improved": true}, ...]}` — one entry per model (or per
+ensemble member if `member_index` is set). Only entries with `"improved": true` beat the
+current best. This is advisory: use these params directly in `model_spec`/`build_model` if
+they match the model you're proposing, or ignore this field entirely — do not fabricate
+values here, and do not treat a missing/None ctx.tuned_params as an error.
 
 ## Available libraries
 - Available: scikit-learn, lightgbm, xgboost, catboost, imbalanced-learn (imblearn), optuna, polars

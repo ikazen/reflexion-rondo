@@ -418,6 +418,12 @@ class PipelineContext:
     # 확정 best 파이프라인의 params — hyperparam_search 훅이 로컬 서치에
     # 참고할 수 있는 advisory 필드. 훅이 무시해도 무해(강제 소비 아님).
     best_params: dict | None = None
+    # evaluator/tuner.py(#230)가 별도 Airflow DAG에서 오래 탐색해 raw.tuned_params에
+    # 남긴 결과 — model_spec/build_model 훅이 참고할 수 있는 advisory 필드. best_params와
+    # 동일하게 무시해도 무해(강제 소비 아님). ADR-014(훅 컨트랙트 안정)를 지키려고
+    # X/y는 절대 안 넣는다 — 탐색 책임을 LLM에 되돌리면 #230이 없애려는 실패 패턴이
+    # 재발한다.
+    tuned_params: dict | None = None
 
 
 class BasePipeline:

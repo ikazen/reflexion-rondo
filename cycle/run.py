@@ -138,6 +138,39 @@ def _prev_best_params(conn: PgConn, competition_id: str) -> dict | None:
     return val if isinstance(val, dict) else json.loads(val)
 
 
+def _latest_tuned_params(conn: PgConn, competition_id: str) -> dict | None:
+    """가장 최근 튜닝 실행(evaluator/tuner.py, #230, raw.tuned_params)의 결과를
+    ctx.tuned_params advisory로 제공한다. model_spec/build_model 훅이 참고할 수 있는
+    후보 목록 — best_params와 동일하게 강제 소비 아님. 개선(improved=True)된 항목이
+    하나도 없으면 advisory로 넘길 가치가 없어 None(원본보다 나쁜 params를 권하지 않음).
+    """
+    run_row = conn.execute(
+        "select tuning_run_id from raw.tuned_params where competition_id = %s"
+        " order by created_at desc limit 1",
+        [competition_id],
+    ).fetchone()
+    if not run_row:
+        return None
+    rows = conn.execute(
+        "select model_type, member_index, params, cv_score, improved from raw.tuned_params"
+        " where tuning_run_id = %s order by member_index nulls first",
+        [run_row[0]],
+    ).fetchall()
+    entries = [
+        {
+            "model": model_type,
+            "member_index": member_index,
+            "params": params if isinstance(params, dict) else json.loads(params),
+            "cv_score": cv_score,
+            "improved": improved,
+        }
+        for model_type, member_index, params, cv_score, improved in rows
+    ]
+    if not any(e["improved"] for e in entries):
+        return None
+    return {"entries": entries}
+
+
 def _prev_best_fold_scores(conn: PgConn, competition_id: str) -> list[float] | None:
     """확정 파이프라인(raw.pipelines)에 연결된 attempt의 fold_scores.
 
@@ -561,6 +594,7 @@ def run_attempt_core(
                 action_type=action_type,
                 best_source=prev_code,
                 best_params=_prev_best_params(conn, config.competition_id),
+                tuned_params=_latest_tuned_params(conn, config.competition_id),
                 cpu_budget_sec=cpu_remaining,
             )
             peak_rss_bytes = iso.peak_rss_bytes

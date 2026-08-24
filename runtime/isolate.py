@@ -140,6 +140,7 @@ def eval_isolated(
     action_type: str = "",
     best_source: str | None = None,
     best_params: dict | None = None,
+    tuned_params: dict | None = None,
     collect_oof: bool = False,
     timeout_sec: int = DEFAULT_TIMEOUT,
     holdout_data: pl.DataFrame | None = None,
@@ -158,6 +159,7 @@ def eval_isolated(
             "is_classification": is_classification,
             "action_type": action_type,
             "best_params": best_params,
+            "tuned_params": tuned_params,
             "collect_oof": collect_oof,
         }))
         if best_source:

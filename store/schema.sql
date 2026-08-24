@@ -573,6 +573,25 @@ CREATE TABLE IF NOT EXISTS raw.baseline_eval_cache (
     created_at      timestamptz DEFAULT now()
 );
 
+-- evaluator/tuner.py(#230) 튜닝 실행 1건당 여러 행(ensemble이면 멤버 수만큼) — 같은
+-- tuning_run_id로 묶여 cycle/run.py:_latest_tuned_params가 "가장 최근 실행 전체"를
+-- 한 번에 조회한다. member_index NULL = model_spec(단일모델), 정수 = ensemble_spec
+-- 멤버 인덱스. improved=False인 행도 남긴다 — "이미 params가 최선이었다"도 유용한 기록.
+CREATE TABLE IF NOT EXISTS raw.tuned_params (
+    id                 text PRIMARY KEY,
+    tuning_run_id      text NOT NULL,
+    competition_id     text NOT NULL,
+    model_type         text NOT NULL,
+    member_index       int,
+    params             jsonb NOT NULL,
+    cv_score           double precision NOT NULL,
+    baseline_cv_score  double precision NOT NULL,
+    n_trials           int NOT NULL,
+    improved           boolean NOT NULL,
+    created_at         timestamp DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_tuned_params_comp_ts ON raw.tuned_params (competition_id, created_at DESC);
+
 -- hot-path indexes
 CREATE INDEX IF NOT EXISTS idx_attempts_comp_ts     ON raw.attempts (competition_id, run_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_attempts_comp_action ON raw.attempts (competition_id, action_type);
