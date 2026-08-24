@@ -307,19 +307,6 @@ def main() -> None:
                     upload_best_pipeline(competition_id, materialized)
                     print(f"[run_promote_task] best pipeline materialized for {competition_id}")
 
-                    # blend 가중치 재계산 — train90은 merge_oof_preds와 같은
-                    # provenance(길이 일치)라 정확한 재현이 된다. train90이 없으면
-                    # (train 로드 실패) comp도 안 묶여 있으므로 시도 자체를 건너뜀.
-                    # best-effort — 실패해도 이미 끝난 승격을 되돌리지 않는다.
-                    if train90 is not None:
-                        try:
-                            from bin.blend import compute_and_store_blend
-                            compute_and_store_blend(
-                                conn, competition_id, train90, comp.TARGET, comp.METRIC,
-                            )
-                        except Exception as exc:
-                            print(f"[run_promote_task] blend 재계산 실패(무시하고 계속): {exc}")
-
     # auto-submit(매일 06:00)이 제출하는 건 이번 super-cycle의 확정 승격 winner가 아니라
     # 대회 전역 best attempt(bin/api.py:_best_attempt와 동일 기준)다 — 확정 승격 여부와
     # 무관하게 매 promote task 종료 시점마다 그 attempt의 제출 CSV를 미리 캐싱해두면

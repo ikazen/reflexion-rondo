@@ -125,7 +125,7 @@ code                 text,        -- Patch class 소스 (§5)
 cv_score             double,
 gain_vs_best         double,
 pipeline_sha256      text,        -- BON-255: MinIO best_pipeline.py 무결성 검증용 신뢰 해시
-oof_preds            jsonb,       -- BON-248: out-of-fold 예측값. bin/blend.py의 Ridge blend 입력
+oof_preds            jsonb,       -- BON-248: out-of-fold 예측값. 원 소비처(bin/blend.py)는 #231로 폐기, 현재 미소비
 materialized_code    text,        -- 승격 시점 병합본 스냅샷. bin/submit.py는 replay 대신 이걸 로드
 invalid_reason       text         -- non-null이면 격리(삭제 아님). 모든 baseline 조회가 IS NULL로 제외 (decisions.md ADR-025)
 ```
@@ -226,22 +226,13 @@ adopted_attempt_ids    text[]          -- 채택 attempt 역추적 (디버깅·�
 - Archive 정책: 자동 idea 단위(`trials ≥ 10 AND posterior_mean < 0.1`) + 수동 source 단위(BON-87).
 - 노출: `reflexion` 단계 Strategist 프롬프트에만, `applies_when` fingerprint 매치 + 톰슨 샘플링 top-3 (BON-89).
 
-### 1.13 `raw.blend_weights`
+`raw.blend_weights`(파이프라인 밖 Ridge blend, 여러 confirmed pipeline의 OOF를 사후 조합)는
+`bin/submit.py`가 전혀 소비하지 않는 죽은 코드였음이 확인돼 #231로 테이블·`bin/blend.py`·
+dashboard 패널을 전부 폐기했다 — 선언형 `ensemble_spec` `method="stack"`(§5, ADR-036)이 같은
+목적(예측 조합을 고정 가중치가 아니라 학습된 meta 모델로)을 파이프라인 **안에서**, 실제 제출
+경로가 실제로 쓰는 형태로 대체한다.
 
-승격 시점마다 재계산되는 blend 가중치. `bin/blend.py:compute_and_store_blend`가 양쪽 승격 경로(`cycle/run.py`, `bin/run_promote_task.py`)에서
-best-effort로 호출한다 — 실패해도 예외를 던지지 않고 조용히 스킵, 승격을 막지 않는다. **`bin/submit.py`는 이 값을 소비하지 않는다**(계산·저장까지만, 실제 제출 배선은 범위 밖).
-
-```sql
-competition_id  text primary key,
-pipeline_ids    jsonb,           -- blend에 포함된 raw.pipelines.pipeline_id 배열
-weights         jsonb,           -- pipeline_ids와 같은 순서의 가중치
-intercept       double precision,
-blend_cv_score  double precision,
-metric          text,
-generated_at    timestamp
-```
-
-### 1.14 `raw.tuned_params` (#230, ADR-035)
+### 1.13 `raw.tuned_params` (#230, ADR-035)
 
 `evaluator/tuner.py`가 confirmed pipeline의 `model_spec`/`ensemble_spec` 멤버를 Optuna로 튜닝한 결과.
 `bin/tune_pipeline.py`(별도 Airflow DAG, 900s attempt 예산 밖)가 한 번 실행할 때마다 같은 `tuning_run_id`로
@@ -387,8 +378,8 @@ harness가 멤버 생성·적합·결합을 전담한다 — `preselect_params`�
 def ensemble_spec(self, ctx) -> dict | None:
     return {
         "members": [{"model": "lgbm", "params": {...}}, {"model": "catboost", "params": {...}}, ...],
-        "method": "weighted_average",   # 또는 "majority_vote"
-        "weights": [0.6, 0.4],          # 생략 시 균등 가중치
+        "method": "weighted_average",   # 또는 "majority_vote" / "stack"
+        "weights": [0.6, 0.4],          # 생략 시 균등 가중치("stack"은 안 씀)
     }
 ```
 
@@ -397,6 +388,29 @@ def ensemble_spec(self, ctx) -> dict | None:
 - `method` 기본값: 이산 라벨 분류(`metric_class == "classification"`)는 `majority_vote`, 그 외는 `weighted_average`.
 - 각 멤버는 `random_state=ctx.seed`가 기본으로 들어간다.
 - 기존 자유형 `build_model` 기반 ensemble 훅도 병행 허용 — 강제 마이그레이션 아님.
+
+#### `method="stack"` — 학습된 meta 모델로 조합 (#231, decisions.md ADR-036)
+
+`"weights"` 대신 `"meta"`로 조합을 학습시킨다:
+
+```python
+def ensemble_spec(self, ctx) -> dict | None:
+    return {
+        "members": [{"model": "lgbm", "params": {...}}, {"model": "xgboost", "params": {...}}],
+        "method": "stack",
+        "meta": {"model": "ridge", "params": {"alpha": 1.0}},   # 필수
+    }
+```
+
+- 멤버는 outer CV fold의 train을 inner K-fold(기본 5)로 나눠 out-of-fold(OOF) 예측을 만들고, meta는
+  그 OOF로 학습한다(멤버가 자신을 학습한 데이터에 대한 예측을 meta가 절대 못 보게 함 — 누수 방지).
+  실제 검증/제출 예측 시 멤버는 outer fold의 train 전체로 재적합해서 쓴다.
+- `meta`도 `model` 레지스트리를 쓰지만 `ctx.is_classification`과 무관하게 항상 회귀 변형으로 생성된다
+  — 멤버 출력이 연속값(확률/예측값) 공간이라 meta는 그 공간에서의 회귀 문제를 푼다.
+- `metric_class`가 `binary_proba`/`regression_error`일 때만 지원 — discrete label 채점
+  (`metric_class == "classification"`)은 회귀 meta로 조합할 연속 공간이 없어 `majority_vote`를 써야 한다.
+- 기존 `bin/blend.py`(파이프라인 밖 사후 Ridge blend, `bin/submit.py`가 전혀 소비 안 하던 죽은 코드)를
+  대체한다 — #231로 `bin/blend.py`/`raw.blend_weights`/dashboard 패널 전부 삭제.
 
 ### `model_spec` — 선언형 단일 모델 프리미티브 (`model_swap`/`ensemble`/`bootstrap`만 허용, decisions.md ADR-034)
 
@@ -419,7 +433,7 @@ def model_spec(self, ctx) -> dict | None:
 
 ### `ctx.tuned_params` — Optuna 튜닝 결과 (#230, ADR-035, advisory)
 
-`raw.tuned_params`(§1.14)의 가장 최근 튜닝 실행 결과를 `PipelineContext`에 추가 필드로 흘려보낸다 — `ctx.best_params`와
+`raw.tuned_params`(§1.13)의 가장 최근 튜닝 실행 결과를 `PipelineContext`에 추가 필드로 흘려보낸다 — `ctx.best_params`와
 동일하게 강제 소비 아님, 훅이 참고 안 해도 무해. 개선(`improved=True`)된 항목이 하나도 없으면 `None`.
 
 ```python

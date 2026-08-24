@@ -119,11 +119,9 @@ def _promote(conn, comp: object, attempt_id: str, cv_score: float, source: str, 
     materialized = materialize_best_pipeline(None, source)
     pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
 
-    # OOF 확보 — bin/run_promote_task.py의 merge-verify와 동일 패턴, 이 스크립트
-    # 자체 승격 시점엔 아직 확정 pipeline이 1개뿐이라 blend는 못 돌지만(#75는
-    # 확정 2개 필요), 이 대회에 나중에 두 번째 확정이 생겼을 때 blend 후보가
-    # 되려면 여기서부터 oof_preds가 있어야 한다(#145). best-effort — 실패해도
-    # baseline 확립 자체는 막지 않는다.
+    # OOF 확보 — bin/run_promote_task.py의 merge-verify와 동일 패턴(추가 eval 아님).
+    # 소비처였던 bin/blend.py는 #231로 폐기됐지만 oof_preds 자체는 계속 채운다(향후
+    # 분석 재료). best-effort — 실패해도 baseline 확립 자체는 막지 않는다.
     merge_oof_preds = None
     try:
         merge_eval = eval_isolated(

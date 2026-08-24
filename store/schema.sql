@@ -78,8 +78,10 @@ ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS peak_cpu_sec double precision;
 -- 실제 exec되는 materialized best_pipeline.py 내용의 해시.
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS pipeline_sha256 text;
 
--- merge-verify eval(승격 시 1회) 시점에 함께 뽑은 out-of-fold
--- 예측 — bin/blend.py가 파이프라인 밖에서 결정적 blend(Ridge)를 학습할 때 사용.
+-- merge-verify eval(승격 시 1회) 시점에 함께 뽑은 out-of-fold 예측. 원래 소비자였던
+-- bin/blend.py는 #231로 폐기(선언형 stacking으로 대체) — 현재 이 컬럼을 읽는 코드는
+-- 없다. 계속 채워지긴 하지만(cycle/run.py/bin/run_promote_task.py의 collect_oof=True)
+-- 삭제하지 않음 — 컬럼 자체는 무해하고, 향후 다른 cross-pipeline 분석의 재료가 될 수 있음.
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS oof_preds jsonb;
 
 -- 승격 시점의 병합본(materialized best_pipeline.py) 전문 스냅샷 — Postgres 신뢰 사본.
@@ -89,7 +91,7 @@ ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS oof_preds jsonb;
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS materialized_code text;
 
 -- 승격 후 사후 발견된 결함(preprocess valid-target 누수 등) 표기 — NULL이면 유효.
--- 삭제하지 않고 조회 경로(_prev_best, blend 후보, replay 등)에서만 제외해 이력을
+-- 삭제하지 않고 조회 경로(_prev_best, replay 등)에서만 제외해 이력을
 -- 보존한다. bin/quarantine_leaks.py가 스캔해서 채운다(docs/decisions.md ADR-025).
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS invalid_reason text;
 
@@ -524,19 +526,11 @@ SELECT
         AND metric_sign * (lb_score - prev_lb) < -0.001 * abs(prev_lb)) AS diverged
 FROM ordered;
 
--- bin/blend.py 가중치 — 대회당 최신 1건만 유지(competition_id PK, upsert).
--- 승격 시점마다 cycle/run.py·bin/run_promote_task.py가 자동 재계산해 채운다.
--- 로컬 파일(runs/blend/*.json)은 Airflow task 컨테이너 간 안 보이므로 DB가
--- 유일한 신뢰 사본 — submit.py는 이 값을 소비하지 않는다(계산·저장까지만).
-CREATE TABLE IF NOT EXISTS raw.blend_weights (
-    competition_id  text PRIMARY KEY,
-    pipeline_ids    jsonb,
-    weights         jsonb,
-    intercept       double precision,
-    blend_cv_score  double precision,
-    metric          text,
-    generated_at    timestamp
-);
+-- bin/blend.py(파이프라인 밖 Ridge blend, 몇 달째 제출에 미소비 확인)가 #231로 폐기되며
+-- 함께 삭제 — 선언형 ensemble_spec method="stack"(evaluator/harness.py, ADR-036)이
+-- 대체한다. 라이브 DB에 이미 있던 테이블은 여기서 명시적으로 drop해야 사라진다
+-- (schema.sql은 누적 적용이라 CREATE TABLE을 지우는 것만으로는 기존 테이블이 안 없어짐).
+DROP TABLE IF EXISTS raw.blend_weights;
 
 -- cycle/promotion.py 캐시 — confirm 게이트가 매번 최대 8회 순차 full-CV eval을
 -- 돌면서 (1) 이미 확정된 거부 판정을 재계산하고 (2) 변하지 않은 baseline pipeline을

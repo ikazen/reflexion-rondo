@@ -538,6 +538,35 @@ in-process(runtime/isolate.py의 네트워크 네임스페이스 격리 없이) 
 attempt 평가와 동일한 격리 수준은 아니다(트레이드오프: 수백 trial을 subprocess당 감싸면 매 trial마다
 parquet 왕복+프로세스 기동 비용이 튜닝의 효율성 이점을 상쇄한다).
 
+## ADR-036 — ensemble_spec `method="stack"`은 inner-fold OOF + 강제 회귀 meta, `bin/blend.py` 폐기
+
+- 결정: `ensemble_spec`에 `"method": "stack"` + `"meta": {"model": ..., "params": {...}}`를 추가한다
+(`evaluator/harness.py:_fit_predict_stack`, #231). 멤버는 outer CV fold의 train을 inner K-fold(기본 5)로 나눠
+만든 out-of-fold(OOF) 예측으로 meta를 학습하고, 실제 검증/제출 예측 시엔 outer train 전체로 재적합한 멤버를
+쓴다(표준 stacking 관례 — meta가 멤버의 train-fit 성능이 아니라 일반화 성능을 학습, 누수 방지). meta는
+`resolve_model_class(name, is_classification=False)`로 **항상 회귀 변형**을 강제 생성한다 —
+`metric_class`가 `binary_proba`/`regression_error`일 때만 지원(연속값 출력 필요). 대체된 파이프라인 밖
+사후 blend(`bin/blend.py`, Ridge, `raw.blend_weights`)와 그 dashboard 패널을 함께 삭제한다 —
+`bin/submit.py`가 그 값을 전혀 소비하지 않는 죽은 코드였음을 코드로 재확인.
+- 대안: (a) meta도 `ctx.is_classification`을 따라 분류 변형으로 생성 — `ridge` 같은 일부 레지스트리
+분류 변형(`RidgeClassifier`)은 `predict_proba` 자체가 없어 즉시 깨지고(#229/#239에서 이미 겪은 함정과
+동일 클래스), 있는 모델이어도 "연속 확률을 이산화해 다시 분류"하는 손실 없는 정보를 버리는 셈이라 기각.
+(b) discrete label(`metric_class == "classification"`)도 stacking 지원 — 멤버 출력이 문자열/카테고리
+라벨이라 회귀 meta로 조합할 연속 공간 자체가 없고, 분류 meta를 쓰려면 라벨 인코딩·멀티클래스 처리가
+추가로 필요해 범위가 커져 기각 — `majority_vote`가 이미 그 케이스를 커버. (c) `bin/blend.py`를 남겨두고
+stacking과 병행 — 두 메커니즘이 같은 문제(예측 조합)를 다른 층위(파이프라인 밖 vs 안)에서 풀면서 하나는
+실제 제출에 배선조차 안 돼 있어 유지 비용만 있고 이득이 없어 기각.
+- 근거: `bin/blend.py`는 여러 **확정 pipeline**의 OOF를 사후에 Ridge로 섞는 방식이었는데, 그 가중치를
+저장(`raw.blend_weights`)만 하고 `bin/submit.py`가 읽지 않아 프로덕션 제출에 전혀 영향을 주지 못했다
+(`docs/spec.md` §1.13 기존 인지 사항, 이번에 코드로 재확인). `ensemble_spec`은 이미 harness가 신뢰
+코드로 모델을 생성·적합하는 경계를 갖고 있어(ADR-023), 같은 경계 안에 OOF 기반 meta 학습을 추가하는
+것이 파이프라인 밖에서 별도 스크립트로 사후 조합하는 것보다 구조적으로 더 안전하고, 실제 제출
+경로(`_fit_predict_ensemble` → `fit_predict`, #226/#239)가 이미 그대로 재사용된다.
+- 한계: inner K-fold OOF 계산 때문에 멤버 수 × inner_splits(5)만큼 추가 fit이 필요해 `weighted_average`/
+`majority_vote`보다 확실히 느리다 — attempt의 900s 예산 안에서 멤버 수가 많거나 데이터가 크면 시간 초과
+위험이 있다(deep tier 백테스트로 실측 확인, PR 코멘트 참고). meta 모델 자체의 하이퍼파라미터 탐색은
+없다(#230 Optuna 튜닝 레인이 `model_spec` 기반이라 `ensemble_spec`의 `meta`는 아직 튜닝 대상 밖).
+
 ---
 
 ## 미정 항목 (TBD)
