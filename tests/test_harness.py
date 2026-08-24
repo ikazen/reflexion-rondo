@@ -1141,6 +1141,17 @@ def test_build_registry_model_strips_stale_kwarg_and_retries():
     assert not hasattr(model, "multi_class")
 
 
+def test_build_registry_model_catboost_random_seed_no_random_state_collision():
+    """catboost는 random_state/random_seed를 동의어로 취급해 둘 다 세팅되면
+    "only one of the parameters random_seed, random_state should be initialized"로
+    fit() 시점에 죽는다(construct_with_kwarg_retry가 잡는 __init__ TypeError가 아닌
+    별개의 CatBoostError라 재시도로도 못 잡음, 프로덕션 실측). params가 random_seed를
+    이미 명시했으면 random_state를 추가로 채우면 안 된다."""
+    model = build_registry_model("catboost", {"random_seed": 7, "verbose": False}, _reg_ctx())
+    import numpy as _np
+    model.fit(_np.random.randn(30, 2), _np.random.randn(30))
+
+
 def test_combine_predictions_weighted_average():
     preds = [np.array([1.0, 2.0, 3.0]), np.array([3.0, 4.0, 5.0])]
     combined = _combine_predictions(preds, "weighted_average", [1.0, 1.0], "regression_error")

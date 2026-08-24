@@ -1,5 +1,14 @@
 # 변경 이력
 
+## v1.5.15 — catboost random_seed/random_state 충돌 수정 (2026-08-25)
+- #247: v1.5.14 배포 직후 프로덕션에서 재현(s4e11) — `evaluator/models.py:build_registry_model`이
+  params에 이미 `random_seed`(catboost 고유 관례명)가 있어도 무조건 `random_state`를 setdefault해서
+  catboost의 동의어 충돌 검사("only one of the parameters random_seed, random_state should be
+  initialized")에 걸려 `.fit()` 시점에 크래시(`construct_with_kwarg_retry`가 잡는 `__init__`
+  `TypeError`가 아니라 별개의 `CatBoostError`라 재시도도 못 함). `random_state`/`random_seed`
+  둘 중 하나라도 이미 있으면 setdefault 안 하도록 수정. ensemble_spec 멤버·model_spec 단일모델
+  양쪽에 공통 적용(둘 다 이 함수를 공유). 회귀 테스트 추가.
+
 ## v1.5.14 — 진짜 stacking(ensemble_spec method="stack"), bin/blend.py 폐기 (2026-08-25)
 - #231(Milestone v1.6.0, ADR-036): `ensemble_spec`에 `"method": "stack"` + `"meta"` 모델 키 추가
   (`evaluator/harness.py:_fit_predict_stack`/`_oof_member_predictions`). 멤버는 outer CV fold의

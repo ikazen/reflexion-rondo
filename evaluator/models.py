@@ -71,8 +71,15 @@ def build_registry_model(model_name: str, params: dict, ctx: "PipelineContext") 
     """레지스트리 기반으로 모델을 직접 생성한다 — LLM이 작성한 코드가 아니라
     harness 자신이 생성자를 호출하므로 super() 오용·stale kwarg 문제가 구조적으로
     발생하지 않는다. random_state는 params가 명시하지 않으면 ctx.seed로 채운다.
-    ensemble_spec 멤버와 model_spec 단일 모델 양쪽이 이 함수를 공유한다."""
+    ensemble_spec 멤버와 model_spec 단일 모델 양쪽이 이 함수를 공유한다.
+
+    catboost는 random_state/random_seed를 동의어로 취급해 둘 다 세팅되면
+    "only one of the parameters random_seed, random_state should be initialized"로
+    fit() 시점에 죽는다(construct_with_kwarg_retry가 잡는 __init__ TypeError가 아니라
+    별개의 CatBoostError라 재시도 대상도 아님, 실측 확인) — params가 random_seed를
+    이미 명시했으면 random_state를 추가로 채우지 않는다."""
     cls = resolve_model_class(model_name, ctx.is_classification)
     base_params = dict(params or {})
-    base_params.setdefault("random_state", ctx.seed)
+    if "random_state" not in base_params and "random_seed" not in base_params:
+        base_params["random_state"] = ctx.seed
     return construct_with_kwarg_retry(lambda p: cls(**p), base_params)
