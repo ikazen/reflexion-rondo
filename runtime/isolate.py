@@ -46,6 +46,8 @@ _RSS_POLL_INTERVAL_SEC = 2.0
 # 폴링 루프가 CPU 시간도 감시해서 명시적 원인을 남기고 선제 kill한다.
 # RLIMIT_CPU는 폴링이 놓쳤을 때만 발동하는 soft<hard 백스톱으로 강등한다 —
 # 정상적으로는 안 걸리고, 걸리면 SIGXCPU(rc=-24)라 OOM과 영구히 구분된다.
+# 3600은 900s 상한이 풀린 s6e8의 실측 분포(성공 attempt peak_cpu_sec p50=1349/p99=2269/
+# max=3244)에서 나온 값이다 — 900s는 중앙값보다 작아 분포가 통째로 검열돼 있었다(ADR-028 amend, #182).
 DEFAULT_CPU_BUDGET_SECS = 3600
 _CPU_BACKSTOP_SOFT_MARGIN_SECS = 60
 _CPU_BACKSTOP_HARD_MARGIN_SECS = 120

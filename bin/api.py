@@ -543,6 +543,7 @@ def _lb_percentile(conn: PgConn, competition_id: str, lb_score: float) -> float 
     ).fetchone()
     if not row or not row[0]:
         return None
+    # psycopg2는 jsonb를 파싱해 list로 주고 psycopg3는 설정에 따라 str로 준다.
     scores = row[0] if isinstance(row[0], list) else json.loads(row[0])
     if not scores:
         return None
@@ -648,6 +649,8 @@ def _unsubmitted_confirmed(
     rows = conn.execute(
         """
         select a.attempt_id, a.cv_score,
+               -- 직전 승격분이 아예 없으면(대회 첫 승격) base가 BasePipeline()이라
+               -- replay 자체가 필요 없다 — 그래서 null은 false가 아니라 true로 접는다.
                coalesce((
                    select p2.materialized_code is not null
                    from raw.pipelines p2 join raw.attempts a2 using (attempt_id)
@@ -1878,7 +1881,8 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
 
         예전 로직은 "대회 전역 best가 바뀌었나"만 봐서 deep tier가 하루 0~1건에 머물렀고
         (#233), cv-LB 쌍이 몇 달 누적 78건뿐이었다. 이제 예산이 남으면 아직 한 번도
-        제출 안 한 confirmed pipeline을 cv 상위순으로 내보낸다 — 각각이 새 cv-LB 쌍이다.
+        제출 안 한 confirmed pipeline을 내보낸다(선정 순서는 _unsubmitted_confirmed 참조) —
+        각각이 새 cv-LB 쌍이다.
         미제출 백로그가 없을 때만 예전 "best 갱신 + 유의성" 경로로 떨어진다(같은 attempt
         재제출은 LB 점수가 같아 정보량 0이므로 그 경로에서 계속 막는다).
         """
