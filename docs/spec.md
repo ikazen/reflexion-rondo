@@ -443,16 +443,44 @@ ctx.tuned_params  # {"entries": [{"model": "lgbm", "member_index": None, "params
 `model_spec`/`build_model` 훅이 이 값을 그대로 채택하거나 무시할 수 있다 — Coder 프롬프트(`agents/coder.py`)에
 advisory로 명시.
 
-action_type별 허용 훅 (`evaluator/contract.py:_ALLOWED_HOOKS`):
+action_type별 주 초점 훅(`evaluator/contract.py:_ALLOWED_HOOKS`) — ADR-006 뒤집기(ADR-037, #232)로
+하드 리젝트가 아니라 Coder 프롬프트 가이드로만 쓰인다. 정적 검증(`validate_patch`)은 어떤
+action_type이든 어떤 훅이든 구현을 허용한다:
 
-| action_type | 허용 훅 |
+| action_type | 주 초점 훅 |
 |---|---|
 | `feature_engineering` | `feature_transform` |
 | `preprocessing` | `preprocess` |
 | `model_swap` | `build_model`, `model_spec` |
 | `hyperparam_search` | `param_candidates` |
-| `ensemble` | (제한 없음 — 모든 훅 허용, `ensemble_spec`/`model_spec` 포함) |
-| `bootstrap` | (제한 없음 — 모든 훅 허용) |
+| `ensemble` | `ensemble_spec`/`model_spec` 권장, 그 외 훅도 자유 |
+| `bootstrap` | 제한 없음 |
+
+### 훅 축적(합성) — ADR-037, #232
+
+`preprocess`/`feature_transform`/`postprocess_predictions`/`param_candidates`는 patch가 정의하고
+확정 best pipeline도 이미 정의하고 있으면 완전 교체가 아니라 **합성**된다(`evaluator/harness.py:
+PatchedPipeline`이 attempt 평가 시점에, `cycle/materialize.py`가 승격 후 다음 라운드 base 생성
+시점에 — 반드시 같은 규칙, 측정=배포 불일치 방지):
+
+| 훅 | 합성 방식 |
+|---|---|
+| `preprocess` | 순차 체이닝 — base 실행 후 patch가 그 결과를 이어받음 |
+| `postprocess_predictions` | 순차 체이닝 — 위와 동일 |
+| `param_candidates` | 리스트 합집합(중복 dict 제거) — patch 후보가 추가됨, 대체 아님 |
+| `feature_transform` | 컬럼 단위 합집합 — base/patch가 각자 같은 원본에서 독립적으로 파생한 컬럼을 합침(동명 컬럼은 patch가 이김). 타깃 드롭 계약 때문에 순차 체이닝 불가 |
+| `build_model`/`ensemble_spec`/`model_spec` | 합성 대상 아님 — 항상 patch가 완전 교체(단일 값이라 조합 불가) |
+
+patch가 `override = ["<hook_name>", ...]` 클래스 속성을 선언하면 그 훅은 합성 대신 완전 교체된다
+(예: feature engineering을 처음부터 다시 짜서 이전 컬럼을 의도적으로 버리는 경우).
+`materialize.py`는 실제로 합성될 때 base/patch 원본을 `_<hook>_prev`/`_<hook>_new`(이름 충돌 시
+`_2`, `_3`... 접미사로 유일화)로 rename해 helper로 보존하고, 새 `<hook>` wrapper가 이 둘을
+호출하도록 합성 코드를 생성한다 — 여러 라운드에 걸쳐 반복 합성돼도 이전 라운드의 축적분이
+사라지지 않는다.
+
+top-level helper 이름 충돌(base/patch가 같은 이름을 다른 정의로 선언)은 경고가 아니라 에러 —
+어느 쪽이 실제로 쓰이는지 불명확해지는 걸 막는다. 완전히 동일한 재정의는 모호함이 없어 에러
+대상이 아니다.
 
 Evaluator 실행 골격(개념):
 

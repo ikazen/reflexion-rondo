@@ -49,7 +49,7 @@ Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
 결과를 `raw.super_cycle_context`에 upsert.
 2. **Attempt × 3** (병렬, `bin/run_attempt_task.py`): 각 attempt는 배정받은 `action_type`으로 강제 실행.
    - **Strategize**: EDA 카드 + 검색 교훈 + forced_action_type → 가설 1개. 실제 채택 교훈 id 출력.
-   - **Generate**: 가설 → `class Patch` (action_type별 허용 훅만 구현). **bootstrap 외 단계는 best 코드를 `prev_code`로 받아 한 군데만 수정** (1변경 규율, §4).
+   - **Generate**: 가설 → `class Patch` (action_type별 주 초점 훅 권장, 하드 제한 아님 — §4). **bootstrap 외 단계는 best 코드를 `prev_code`로 받는다** (1변경 규율, §4, ADR-037로 권장 수준 완화).
    - **Evaluate**: k-fold CV + 지표 (inner holdout으로 param 사전 선정). 결정적 코드. `label`·`gain_vs_best` 계산.
    - **Persist**: `raw.attempts`에 기록 (`super_cycle_id`, `was_promoted=NULL`).
 3. **Promote** (`bin/run_promote_task.py`): 3개 attempt 중 `gain_vs_best` 최대값 → winner. winner는 곧바로 `raw.pipelines`에 승격되지
@@ -78,11 +78,16 @@ LB가 악화된 제출이 나오면 원천 pipeline을 격리하고 해당 대�
 | stage | 의미 | 1변경 규율 |
 |---|---|---|
 | `bootstrap` | 새 대회 진입 직후 N=3~5회. warm-start 시드 + 안전 베이스라인 정렬 | 예외 (큰 변경 허용) |
-| `reflexion` | 정상 루프. 시도당 1변경 | 강제 |
+| `reflexion` | 정상 루프. 시도당 주 초점 훅 1개 권장 | 권장(하드 제한 아님) |
 | `exploitation` | best 후보 안정화 (시드 변경, 앙상블 결정 등) | 예외 |
 
-1변경 규율은 문서 규약이 아니라 코드로 강제된다: `reflexion`/`exploitation` 단계는 best(에러 없는) attempt의 저장 코드(`code_path`)를 `prev_code`로 Coder에
-주입하고 "한 군데만 수정"을 지시한다. bootstrap만 면제(prev_code 없음 → from-scratch).
+**[ADR-037/#232로 완화]** 예전엔 `evaluator/contract.py:validate_patch`가 action_type별 허용 훅
+개수를 하드 리젝트했다(ADR-006). 지금은 `_ALLOWED_HOOKS`가 `agents/coder.py` 프롬프트의 "주 초점
+훅" 가이드로만 쓰이고, 정적 검증은 어떤 action_type이든 여러 훅을 구현해도 막지 않는다 — 대신
+`preprocess`/`feature_transform`/`postprocess_predictions`/`param_candidates`는 patch와 확정
+best pipeline이 같은 훅을 둘 다 정의하면 완전 교체가 아니라 합성(base 실행 후 patch 적용, 또는
+컬럼/리스트 합집합)된다(`spec.md` §5 "훅 축적"). 여러 훅을 건드려도 이전 개입이 사라지지
+않으므로, 훅 개수를 강제로 제한할 실익이 줄었다.
 
 `reflection_impact`는 `reflexion` 단계 attempt만 집계한다 (`stg_attempts`에서 필터). 인과 귀속을 깨끗하게 유지.
 

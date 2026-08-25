@@ -550,39 +550,101 @@ class BasePipeline:
         return None
 
 
+def _union_feature_columns(base_df: pl.DataFrame, patch_df: pl.DataFrame) -> pl.DataFrame:
+    """feature_transform 합성(#232, ADR-037) — 컬럼 단위 합집합, 동명 컬럼은 patch가 이긴다.
+    base_df/patch_df는 같은 train/valid에서 각자 독립적으로 파생됐으므로 행 수·순서가
+    같다는 전제(다른 훅과 동일 계약 — 행을 추가/제거/재정렬하지 않음)."""
+    overlap = set(base_df.columns) & set(patch_df.columns)
+    base_kept = base_df.drop(overlap) if overlap else base_df
+    return pl.concat([base_kept, patch_df], how="horizontal")
+
+
+def _union_param_candidates(base_candidates: list[dict], patch_candidates: list[dict]) -> list[dict]:
+    """param_candidates 합성 — 리스트 합집합(patch 후보를 추가), 동일 dict는 중복 제거."""
+    combined = base_candidates + patch_candidates
+    result: list[dict] = []
+    for c in combined:
+        if c not in result:
+            result.append(c)
+    return result
+
+
 class PatchedPipeline:
     def __init__(self, base: BasePipeline, patch: object) -> None:
         self.base = base
         self.patch = patch
 
+    def _override_hooks(self) -> frozenset[str]:
+        return frozenset(getattr(self.patch, "override", None) or [])
+
+    def _chain_defines(self, hook_name: str) -> bool:
+        """이 PatchedPipeline의 base 체인 어딘가에 hook_name을 실제로 정의하는 patch가
+        있는지 — 없으면 결국 BasePipeline 트리비얼 기본값으로 귀결되므로 합성해봐야
+        이득이 없다(param_candidates면 빈 {} 후보만 늘고, feature_transform이면 미인코딩
+        원본 컬럼이 섞이는 위험만 있다 — #232 회귀 테스트로 실측)."""
+        if hasattr(self.patch, hook_name):
+            return True
+        return isinstance(self.base, PatchedPipeline) and self.base._chain_defines(hook_name)
+
+    def _composes(self, hook_name: str) -> bool:
+        """base 체인에 이 훅의 실제 정의가 있을 때만 합성한다(위 _chain_defines) —
+        patch가 override에 이 훅을 명시했으면 합성 대신 완전 교체(기존 동작)."""
+        if hook_name in self._override_hooks():
+            return False
+        return isinstance(self.base, PatchedPipeline) and self.base._chain_defines(hook_name)
+
     def preprocess(self, train, valid, target, ctx):
         fn = getattr(self.patch, "preprocess", None)
-        return fn(train, valid, target, ctx) if fn else self.base.preprocess(train, valid, target, ctx)
+        if fn is None:
+            return self.base.preprocess(train, valid, target, ctx)
+        if not self._composes("preprocess"):
+            return fn(train, valid, target, ctx)
+        train, valid = self.base.preprocess(train, valid, target, ctx)
+        return fn(train, valid, target, ctx)
 
     def feature_transform(self, train, valid, target, ctx):
         fn = getattr(self.patch, "feature_transform", None)
-        return fn(train, valid, target, ctx) if fn else self.base.feature_transform(train, valid, target, ctx)
+        if fn is None:
+            return self.base.feature_transform(train, valid, target, ctx)
+        if not self._composes("feature_transform"):
+            return fn(train, valid, target, ctx)
+        # 순차 체이닝이 아니라 base/patch 둘 다 같은 원본(train, valid)에서 독립적으로
+        # 피처를 파생시킨 뒤 컬럼을 합친다 — feature_transform은 타깃 드롭이 계약이라
+        # 순차 체이닝하면 두 번째 호출이 이미 없는 타깃을 또 drop하려다 죽는다.
+        Xtr_base, Xva_base = self.base.feature_transform(train, valid, target, ctx)
+        Xtr_patch, Xva_patch = fn(train, valid, target, ctx)
+        return _union_feature_columns(Xtr_base, Xtr_patch), _union_feature_columns(Xva_base, Xva_patch)
 
     def param_candidates(self, ctx):
         fn = getattr(self.patch, "param_candidates", None)
-        return fn(ctx) if fn else self.base.param_candidates(ctx)
+        if fn is None:
+            return self.base.param_candidates(ctx)
+        if not self._composes("param_candidates"):
+            return fn(ctx)
+        return _union_param_candidates(self.base.param_candidates(ctx), fn(ctx))
 
     def build_model(self, params, ctx):
+        # build_model은 합성 대상이 아니다 — "이 모델을 어떻게 만들지"는 단일 값이라
+        # 두 구현을 조합할 방법이 없다(ensemble_spec/model_spec처럼 항상 완전 교체).
         fn = getattr(self.patch, "build_model", None)
         return fn(params, ctx) if fn else self.base.build_model(params, ctx)
 
     def postprocess_predictions(self, preds, ctx):
         fn = getattr(self.patch, "postprocess_predictions", None)
-        return fn(preds, ctx) if fn else self.base.postprocess_predictions(preds, ctx)
+        if fn is None:
+            return self.base.postprocess_predictions(preds, ctx)
+        if not self._composes("postprocess_predictions"):
+            return fn(preds, ctx)
+        preds = self.base.postprocess_predictions(preds, ctx)
+        return fn(preds, ctx)
 
     def ensemble_spec(self, ctx):
         fn = getattr(self.patch, "ensemble_spec", None)
         if fn:
             return fn(ctx)
         # build_model/param_candidates/model_spec을 직접 정의하는 patch(model_swap/
-        # hyperparam_search, evaluator/contract.py:_ALLOWED_HOOKS가 이들엔 ensemble_spec을
-        # 아예 허용 안 함)는 단일모델 의도가 명확하다 — base의 ensemble_spec을 그대로
-        # 상속하면 evaluate_pipeline/holdout/제출이 전부 ensemble 분기로 빠져 patch의
+        # hyperparam_search가 주로 이런 훅을 씀)는 단일모델 의도가 명확하다 — base의
+        # ensemble_spec을 그대로 상속하면 evaluate_pipeline/holdout/제출이 전부 ensemble 분기로 빠져 patch의
         # 실제 변경이 한 번도 호출되지 않고 base와 완전히 동일한 cv_score만 재현한다.
         # 확정 best가 ensemble인 대회는 이 action_type들이 영구 무력화되는 셈이었다
         # (#239, #226이 base ensemble_spec 복원을 고치면서 새로 노출됨 — 그 전엔 base가

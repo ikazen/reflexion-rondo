@@ -48,8 +48,6 @@ _ALL_HOOKS = frozenset({
     "build_model", "postprocess_predictions",
     # ensemble_spec — 선언형 앙상블. build_model 대신 "무엇을 조합할지"만
     # 반환하면 harness가 생성·적합·결합을 전담한다(evaluator/harness.py 참고).
-    # ensemble/bootstrap에 자동 포함(둘 다 _ALL_HOOKS를 그대로 씀); 단일 변경
-    # 원칙(ADR-006)이 적용되는 4개 제한 action_type에는 포함 안 됨.
     "ensemble_spec",
     # model_spec(ADR-034, #229) — ensemble_spec의 단일 모델 버전. 레지스트리
     # 이름+params만 선언하면 evaluator.models.build_registry_model이 생성자를
@@ -58,6 +56,12 @@ _ALL_HOOKS = frozenset({
     "model_spec",
 })
 
+# action_type별 "주 초점" 훅 — ADR-006(뒤집힘, ADR-037/#232)이 적용되던 시절엔 이 목록이
+# validate_patch()의 하드 리젝트 기준이었다. 지금은 강제 아님(어떤 action_type이든 어떤
+# 훅이든 구현 가능) — agents/coder.py가 프롬프트에서 "이 action_type이면 보통 이 훅"이라는
+# 추천으로만 노출한다. cycle/materialize.py가 합성 가능한 훅(_COMPOSABLE_HOOKS)은 base
+# 실행 후 patch를 적용해 축적하므로, 여러 훅을 동시에 건드려도 이전 patch의 작업이
+# 통째로 사라지지 않는다.
 _ALLOWED_HOOKS: dict[str, frozenset[str]] = {
     "feature_engineering": frozenset({"feature_transform"}),
     "model_swap":          frozenset({"build_model", "model_spec"}),
@@ -334,11 +338,11 @@ def validate_patch(source: str, action_type: str) -> list[str]:
     if actual_at != action_type:
         errors.append(f"Patch.action_type={actual_at!r}, expected {action_type!r}")
 
-    allowed = _ALLOWED_HOOKS.get(action_type, _ALL_HOOKS)
-    disallowed = hook_methods - allowed
-    if disallowed:
-        errors.append(
-            f"action_type={action_type!r} may not implement hooks: {sorted(disallowed)}"
-        )
+    # 훅 개수 제한은 여기서 강제하지 않는다(ADR-006 뒤집기, ADR-037, #232) — action_type은
+    # 여전히 "주 초점 훅"을 나타내지만(agents/coder.py:_PRIMARY_HOOK 프롬프트 가이드),
+    # 하나 이상의 훅을 함께 건드리는 게 하드 리젝트되진 않는다. cycle/materialize.py가
+    # 이제 같은 훅을 여러 attempt가 반복해서 정의해도(합성 가능한 훅이면) base 실행 후
+    # patch를 적용하는 방식으로 축적하므로, 예전처럼 "1훅만 허용"으로 전체 치환 위험을
+    # 막을 필요가 없다.
 
     return errors

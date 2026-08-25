@@ -1,7 +1,10 @@
 """승격 winner의 Patch를 현재 best pipeline 소스에 병합(materialize_best_pipeline).
 
-action_type이 허용한 hook만 교체하고 나머지는 base에서 보존 — 병합 결과는
-undefined-name/optional-dependency 가드로 검증한다.
+patch가 새로 정의한 hook은 보존하고, base에만 있는 hook도 보존한다. 양쪽이 같은 합성
+가능 훅(_COMPOSABLE_HOOKS)을 다르게 정의하면 완전 교체 대신 base 실행 후 patch를
+적용하는 wrapper를 합성한다(ADR-037, #232, patch가 override로 명시하면 완전 교체).
+그 외 훅(build_model 등)은 여전히 patch가 이긴다. 병합 결과는 undefined-name/
+optional-dependency 가드로 검증한다.
 """
 from __future__ import annotations
 
@@ -17,7 +20,43 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_META_ATTRS = frozenset({"action_type", "changed_stages", "rationale"})
+_META_ATTRS = frozenset({"action_type", "changed_stages", "rationale", "override"})
+
+# base 실행 후 patch를 적용해 합성 가능한 훅(ADR-037, #232) — build_model/ensemble_spec/
+# model_spec은 "이 모델을 어떻게 만들지"가 단일 값이라 두 구현을 조합할 방법이 없어
+# 제외(evaluator/harness.py:PatchedPipeline과 동일 목록, 반드시 동기화 유지).
+_COMPOSABLE_HOOKS = frozenset({"preprocess", "feature_transform", "postprocess_predictions", "param_candidates"})
+
+# 합성된 wrapper가 호출하는 harness 헬퍼 — evaluator/harness.py:_union_feature_columns/
+# _union_param_candidates와 정확히 같은 조합 규칙을 써야 attempt 평가 시점(PatchedPipeline)과
+# 승격 후 materialize 결과가 같은 동작을 재현한다(측정=배포 불일치 방지).
+_COMPOSE_HELPER_IMPORTS: dict[str, str] = {
+    "feature_transform": "from evaluator.harness import _union_feature_columns",
+    "param_candidates": "from evaluator.harness import _union_param_candidates",
+}
+
+_COMPOSE_TEMPLATES: dict[str, str] = {
+    "preprocess": (
+        "def preprocess(self, train, valid, target, ctx):\n"
+        "    train, valid = self.{base}(train, valid, target, ctx)\n"
+        "    return self.{patch}(train, valid, target, ctx)\n"
+    ),
+    "feature_transform": (
+        "def feature_transform(self, train, valid, target, ctx):\n"
+        "    Xtr_base, Xva_base = self.{base}(train, valid, target, ctx)\n"
+        "    Xtr_patch, Xva_patch = self.{patch}(train, valid, target, ctx)\n"
+        "    return _union_feature_columns(Xtr_base, Xtr_patch), _union_feature_columns(Xva_base, Xva_patch)\n"
+    ),
+    "postprocess_predictions": (
+        "def postprocess_predictions(self, preds, ctx):\n"
+        "    preds = self.{base}(preds, ctx)\n"
+        "    return self.{patch}(preds, ctx)\n"
+    ),
+    "param_candidates": (
+        "def param_candidates(self, ctx):\n"
+        "    return _union_param_candidates(self.{base}(ctx), self.{patch}(ctx))\n"
+    ),
+}
 
 
 def _extract_imports(source: str) -> list[str]:
@@ -103,28 +142,108 @@ def _extract_class_members(source: str) -> dict[str, ast.stmt]:
     return {}
 
 
+def _extract_override_hooks(source: str) -> frozenset[str]:
+    """Patch.override(선택적 클래스 속성, 문자열 리스트)를 읽는다 — 여기 나열된 훅은
+    합성하지 않고 기존처럼 완전 교체한다(ADR-037, #232). 미선언 시 빈 집합(= 이 patch가
+    정의하는 모든 합성 가능 훅을 합성 대상으로 삼는다는 뜻)."""
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "Patch":
+            for item in node.body:
+                if not isinstance(item, ast.Assign):
+                    continue
+                if not any(isinstance(t, ast.Name) and t.id == "override" for t in item.targets):
+                    continue
+                if isinstance(item.value, (ast.List, ast.Tuple, ast.Set)):
+                    return frozenset(
+                        elt.value for elt in item.value.elts
+                        if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                    )
+            return frozenset()
+    return frozenset()
+
+
+def _real_collisions(base_map: dict[str, ast.stmt], patch_map: dict[str, ast.stmt]) -> set[str]:
+    """이름은 같지만 실제 정의(unparse 텍스트)가 다른 이름만 진짜 충돌로 본다 — 완전히
+    동일한 우연한 재정의는 어느 쪽을 써도 결과가 같아 모호함이 없다."""
+    shared = base_map.keys() & patch_map.keys()
+    return {name for name in shared if ast.unparse(base_map[name]) != ast.unparse(patch_map[name])}
+
+
+def _unique_name(base_name: str, existing: set[str]) -> str:
+    if base_name not in existing:
+        return base_name
+    i = 2
+    while f"{base_name}_{i}" in existing:
+        i += 1
+    return f"{base_name}_{i}"
+
+
+def _synthesize_composed_member(
+    hook_name: str, base_node: ast.stmt, patch_node: ast.stmt, existing_names: set[str],
+) -> tuple[ast.stmt, ast.stmt, ast.stmt]:
+    """같은 이름의 합성 가능 훅(_COMPOSABLE_HOOKS)이 base/patch 양쪽에 있을 때, base
+    쪽을 통째로 버리는 대신 base를 실행한 뒤 patch를 적용하는 새 wrapper를 만든다
+    (ADR-037, #232) — base/patch 원본은 유일한 이름으로 rename해 helper로 보존한다.
+    base_node가 이미 이전 라운드의 합성 wrapper여도(반복 합성) _unique_name이 매번
+    새 이름을 골라주므로 그 축적분이 사라지지 않는다."""
+    base_name = _unique_name(f"_{hook_name}_prev", existing_names)
+    existing_names.add(base_name)
+    patch_name = _unique_name(f"_{hook_name}_new", existing_names)
+    existing_names.add(patch_name)
+
+    base_node.name = base_name
+    patch_node.name = patch_name
+
+    wrapper_src = _COMPOSE_TEMPLATES[hook_name].format(base=base_name, patch=patch_name)
+    wrapper_node = ast.parse(wrapper_src).body[0]
+    return base_node, patch_node, wrapper_node
+
+
 def materialize_best_pipeline(base_source: str | None, patch_source: str) -> str:
     base_helpers = _extract_toplevel_helpers(base_source) if base_source else {}
     patch_helpers = _extract_toplevel_helpers(patch_source)
-    # base와 patch가 동명 helper/member를 정의하면 patch가 base를 조용히 덮어쓴다.
-    # base의 다른 helper가 그 이름에 의존하면 merge 후 의미가 바뀌어 CV 퇴행으로만
-    # 드러나고 엉뚱한 교훈으로 귀속될 수 있다. 에러로 막지 않고 경고만 남긴다
-    # — override 자체는 의도적일 수 있어 가시화가 목적.
-    helper_collisions = base_helpers.keys() & patch_helpers.keys()
+    # base와 patch가 동명 helper를 서로 다른 정의로 선언하면(우연히 완전히 동일한
+    # 재정의는 모호함이 없어 제외, _real_collisions) 어느 쪽이 실제로 쓰이는지가
+    # 조용히 결정돼 CV 퇴행이 엉뚱한 교훈으로 귀속될 수 있다 — 경고가 아니라 에러로
+    # 막는다(ADR-037, #232, 이전엔 warning뿐이라 아무도 안 봄).
+    helper_collisions = _real_collisions(base_helpers, patch_helpers)
     if helper_collisions:
-        logger.warning("helper name collision (patch overrides base): %s", sorted(helper_collisions))
+        raise ValueError(
+            f"materialize: top-level helper name collision with different definitions — "
+            f"{sorted(helper_collisions)}"
+        )
     merged_helpers: dict[str, ast.stmt] = {**base_helpers, **patch_helpers}
 
     base_members = _extract_class_members(base_source) if base_source else {}
     patch_members = _extract_class_members(patch_source)
-    member_collisions = base_members.keys() & patch_members.keys()
-    if member_collisions:
-        logger.warning("Patch member collision (patch overrides base): %s", sorted(member_collisions))
+    override_hooks = _extract_override_hooks(patch_source)
+    member_collisions = _real_collisions(base_members, patch_members)
+    composed_names = {n for n in member_collisions if n in _COMPOSABLE_HOOKS and n not in override_hooks}
+    replaced_names = member_collisions - composed_names
+    if replaced_names:
+        logger.warning("Patch member collision (patch overrides base): %s", sorted(replaced_names))
+
+    existing_names = set(base_helpers) | set(patch_helpers) | set(base_members) | set(patch_members)
+    extra_compose_imports: set[str] = set()
     merged_members: dict[str, ast.stmt] = {**base_members, **patch_members}
+    for name in sorted(composed_names):
+        base_renamed, patch_renamed, wrapper = _synthesize_composed_member(
+            name, base_members[name], patch_members[name], existing_names,
+        )
+        merged_members[base_renamed.name] = base_renamed
+        merged_members[patch_renamed.name] = patch_renamed
+        merged_members[name] = wrapper
+        if name in _COMPOSE_HELPER_IMPORTS:
+            extra_compose_imports.add(_COMPOSE_HELPER_IMPORTS[name])
 
     seen_imports: set[str] = set()
     imports: list[str] = []
-    for line in (_extract_imports(base_source) if base_source else []) + _extract_imports(patch_source):
+    for line in (
+        (_extract_imports(base_source) if base_source else [])
+        + _extract_imports(patch_source)
+        + sorted(extra_compose_imports)
+    ):
         if line not in seen_imports:
             seen_imports.add(line)
             imports.append(line)

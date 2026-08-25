@@ -1751,6 +1751,156 @@ def test_patched_pipeline_forwards_all_contract_hooks():
     )
 
 
+# PatchedPipeline 훅 합성 (ADR-037, #232) — base가 이미 축적된 이력(다른 PatchedPipeline)일
+# 때 preprocess/feature_transform/postprocess_predictions/param_candidates는 완전 교체가
+# 아니라 base 실행 후 patch를 적용(또는 컬럼/리스트 합집합)한다. build_model은 합성 불가.
+
+class _PreprocessBasePatch:
+    action_type = "preprocessing"
+
+    def preprocess(self, train, valid, target, ctx):
+        return train.with_columns(a_filled=train["a"].fill_null(0)), valid.with_columns(a_filled=valid["a"].fill_null(0))
+
+
+class _PreprocessPatchPatch:
+    action_type = "preprocessing"
+
+    def preprocess(self, train, valid, target, ctx):
+        return train.with_columns(b_filled=train["b"].fill_null(0)), valid.with_columns(b_filled=valid["b"].fill_null(0))
+
+
+def test_preprocess_composes_when_base_is_accumulated_history():
+    inner = PatchedPipeline(BasePipeline(), _PreprocessBasePatch())
+    outer = PatchedPipeline(inner, _PreprocessPatchPatch())
+    train = pl.DataFrame({"a": [1, None], "b": [None, 2]})
+    valid = pl.DataFrame({"a": [3, None], "b": [None, 4]})
+    train2, _ = outer.preprocess(train, valid, "y", None)
+    assert "a_filled" in train2.columns
+    assert "b_filled" in train2.columns
+
+
+def test_preprocess_does_not_compose_when_base_is_bare_base_pipeline():
+    """base가 순수 BasePipeline()(bootstrap 등 최초 patch)이면 합성하지 않고 patch
+    단독 실행 — 트리비얼 기본값과 합성해봐야 이득이 없다."""
+    pipeline = PatchedPipeline(BasePipeline(), _PreprocessPatchPatch())
+    train = pl.DataFrame({"a": [1, None], "b": [None, 2]})
+    valid = pl.DataFrame({"a": [3, None], "b": [None, 4]})
+    train2, _ = pipeline.preprocess(train, valid, "y", None)
+    assert "b_filled" in train2.columns
+    assert "a_filled" not in train2.columns  # base의 기본 preprocess(identity)와 합성 안 함
+
+
+class _FeatureTransformBasePatch:
+    action_type = "feature_engineering"
+
+    def feature_transform(self, train, valid, target, ctx):
+        return (
+            train.select(["a"]).with_columns(feat_a=train["a"] * 2),
+            valid.select(["a"]).with_columns(feat_a=valid["a"] * 2),
+        )
+
+
+class _FeatureTransformPatchPatch:
+    action_type = "feature_engineering"
+
+    def feature_transform(self, train, valid, target, ctx):
+        return (
+            train.select(["b"]).with_columns(feat_b=train["b"] * 3),
+            valid.select(["b"]).with_columns(feat_b=valid["b"] * 3),
+        )
+
+
+def test_feature_transform_composes_columns_when_base_is_accumulated_history():
+    inner = PatchedPipeline(BasePipeline(), _FeatureTransformBasePatch())
+    outer = PatchedPipeline(inner, _FeatureTransformPatchPatch())
+    train = pl.DataFrame({"a": [1, 2], "b": [3, 4], "y": [0, 1]})
+    valid = pl.DataFrame({"a": [5, 6], "b": [7, 8], "y": [0, 1]})
+    Xtr, _ = outer.feature_transform(train, valid, "y", None)
+    assert set(Xtr.columns) >= {"a", "feat_a", "b", "feat_b"}
+    assert Xtr["feat_a"].to_list() == [2, 4]
+    assert Xtr["feat_b"].to_list() == [9, 12]
+
+
+class _FeatureTransformOverridePatch:
+    action_type = "feature_engineering"
+    override = ["feature_transform"]
+
+    def feature_transform(self, train, valid, target, ctx):
+        return (
+            train.select(["b"]).with_columns(feat_b=train["b"] * 3),
+            valid.select(["b"]).with_columns(feat_b=valid["b"] * 3),
+        )
+
+
+def test_feature_transform_override_skips_composition():
+    inner = PatchedPipeline(BasePipeline(), _FeatureTransformBasePatch())
+    outer = PatchedPipeline(inner, _FeatureTransformOverridePatch())
+    train = pl.DataFrame({"a": [1, 2], "b": [3, 4], "y": [0, 1]})
+    valid = pl.DataFrame({"a": [5, 6], "b": [7, 8], "y": [0, 1]})
+    Xtr, _ = outer.feature_transform(train, valid, "y", None)
+    assert "feat_a" not in Xtr.columns
+    assert "feat_b" in Xtr.columns
+
+
+class _ParamCandidatesBasePatch:
+    action_type = "hyperparam_search"
+
+    def param_candidates(self, ctx):
+        return [{"n_estimators": 100}]
+
+
+class _ParamCandidatesPatchPatch:
+    action_type = "hyperparam_search"
+
+    def param_candidates(self, ctx):
+        return [{"n_estimators": 200}]
+
+
+def test_param_candidates_composes_as_list_union():
+    inner = PatchedPipeline(BasePipeline(), _ParamCandidatesBasePatch())
+    outer = PatchedPipeline(inner, _ParamCandidatesPatchPatch())
+    candidates = outer.param_candidates(None)
+    assert {"n_estimators": 100} in candidates
+    assert {"n_estimators": 200} in candidates
+
+
+class _PostprocessBasePatch:
+    action_type = "preprocessing"
+
+    def postprocess_predictions(self, preds, ctx):
+        return [max(0, p) for p in preds]
+
+
+class _PostprocessPatchPatch:
+    action_type = "feature_engineering"
+
+    def postprocess_predictions(self, preds, ctx):
+        return [p * 2 for p in preds]
+
+
+def test_postprocess_predictions_composes_sequentially():
+    inner = PatchedPipeline(BasePipeline(), _PostprocessBasePatch())
+    outer = PatchedPipeline(inner, _PostprocessPatchPatch())
+    assert outer.postprocess_predictions([-1, 2, -3], None) == [0, 4, 0]
+
+
+def test_build_model_never_composes_always_full_replace():
+    """build_model은 합성 대상이 아니다 — patch가 정의하면 base 관계없이 patch 단독 실행."""
+    class _BaseBuild:
+        action_type = "model_swap"
+        def build_model(self, params, ctx):
+            return "base_model"
+
+    class _PatchBuild:
+        action_type = "model_swap"
+        def build_model(self, params, ctx):
+            return "patch_model"
+
+    inner = PatchedPipeline(BasePipeline(), _BaseBuild())
+    outer = PatchedPipeline(inner, _PatchBuild())
+    assert outer.build_model({}, None) == "patch_model"
+
+
 def test_fit_predict_precomputed_spec_skips_recomputation():
     """ensemble_spec_dict를 미리 넘기면 pipeline.ensemble_spec()을 다시 안 부른다 —
     fold/bag_seed 루프에서 매번 재조회하는 낭비를 피하는 게 이 파라미터의 목적."""

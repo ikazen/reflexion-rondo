@@ -349,11 +349,12 @@ def test_ensemble_spec_allowed_for_bootstrap_action_type():
     assert validate_patch(source, "bootstrap") == []
 
 
-def test_ensemble_spec_disallowed_for_model_swap():
-    """단일 변경 원칙(ADR-006)이 적용되는 제한 action_type에는 ensemble_spec도 허용 안 됨."""
+def test_ensemble_spec_allowed_for_model_swap_after_hook_restriction_removed():
+    """ADR-006 뒤집기(ADR-037, #232) — action_type별 훅 1개 제한이 하드 리젝트가 아니라
+    프롬프트 가이드로만 남아, model_swap도 정적 검증 레벨에서는 ensemble_spec을 구현할 수
+    있다(PatchedPipeline.ensemble_spec의 런타임 상속 억제 로직은 그대로 유지됨, #239)."""
     source = _VALID_ENSEMBLE_SPEC.replace('action_type = "ensemble"', 'action_type = "model_swap"')
-    errs = validate_patch(source, "model_swap")
-    assert any("may not implement hooks" in e and "ensemble_spec" in e for e in errs)
+    assert validate_patch(source, "model_swap") == []
 
 
 def test_ensemble_spec_wrong_arity_caught():
@@ -392,11 +393,10 @@ def test_model_spec_allowed_for_ensemble_action_type():
     assert validate_patch(source, "ensemble") == []
 
 
-def test_model_spec_disallowed_for_hyperparam_search():
-    """단일 변경 원칙(ADR-006)이 적용되는 제한 action_type에는 model_spec도 허용 안 됨."""
+def test_model_spec_allowed_for_hyperparam_search_after_hook_restriction_removed():
+    """ADR-006 뒤집기(ADR-037, #232) — 위 ensemble_spec 케이스와 대칭."""
     source = _VALID_MODEL_SPEC.replace('action_type = "model_swap"', 'action_type = "hyperparam_search"')
-    errs = validate_patch(source, "hyperparam_search")
-    assert any("may not implement hooks" in e and "model_spec" in e for e in errs)
+    assert validate_patch(source, "hyperparam_search") == []
 
 
 def test_model_spec_wrong_arity_caught():
