@@ -23,6 +23,10 @@ from pathlib import Path
 import polars as pl
 
 _RUNNER = Path(__file__).parent / "runner.py"
+
+# 벽시계 상한은 CPU 예산보다 낮으면 예산을 선점해 무력화하므로(#207) 호출자가
+# 명시하지 않으면 이 값과 실효 CPU 예산 중 큰 쪽을 쓴다. 이 상한의 역할은
+# 계산량 제한이 아니라 CPU를 안 쓰는 행(hang) 감지다 — 계산량은 CPU 예산이 집행한다.
 DEFAULT_TIMEOUT = 1200
 
 # RLIMIT_AS(가상 주소공간, VSZ)는 numpy/BLAS/부스팅 라이브러리가 실사용보다
@@ -42,7 +46,7 @@ _RSS_POLL_INTERVAL_SEC = 2.0
 # 폴링 루프가 CPU 시간도 감시해서 명시적 원인을 남기고 선제 kill한다.
 # RLIMIT_CPU는 폴링이 놓쳤을 때만 발동하는 soft<hard 백스톱으로 강등한다 —
 # 정상적으로는 안 걸리고, 걸리면 SIGXCPU(rc=-24)라 OOM과 영구히 구분된다.
-DEFAULT_CPU_BUDGET_SECS = 900
+DEFAULT_CPU_BUDGET_SECS = 3600
 _CPU_BACKSTOP_SOFT_MARGIN_SECS = 60
 _CPU_BACKSTOP_HARD_MARGIN_SECS = 120
 
@@ -142,7 +146,7 @@ def eval_isolated(
     best_params: dict | None = None,
     tuned_params: dict | None = None,
     collect_oof: bool = False,
-    timeout_sec: int = DEFAULT_TIMEOUT,
+    timeout_sec: int | None = None,
     holdout_data: pl.DataFrame | None = None,
     cpu_budget_sec: float | None = None,
 ) -> IsolatedResult:
@@ -180,6 +184,7 @@ def eval_isolated(
             cpu_budget_sec if cpu_budget_sec is not None
             else float(os.environ.get("EVAL_CPU_BUDGET_SECS", str(DEFAULT_CPU_BUDGET_SECS)))
         )
+        wall_timeout = timeout_sec if timeout_sec is not None else max(DEFAULT_TIMEOUT, cpu_budget)
         stdout_path = ws / "_stdout.log"
         stderr_path = ws / "_stderr.log"
         peak_rss = 0
@@ -220,11 +225,11 @@ def eval_isolated(
                         proc.kill()
                         proc.wait()
                         break
-                remaining = timeout_sec - (time.monotonic() - start)
+                remaining = wall_timeout - (time.monotonic() - start)
                 if remaining <= 0:
                     proc.kill()
                     proc.wait()
-                    killed_reason = f"timeout after {timeout_sec}s"
+                    killed_reason = f"timeout after {wall_timeout:.0f}s"
                     break
                 try:
                     proc.wait(timeout=min(_RSS_POLL_INTERVAL_SEC, remaining))

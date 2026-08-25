@@ -16,7 +16,7 @@ import polars as pl
 from agents.strategist import StrategyDecision
 from cycle.run import CycleConfig, run_attempt_core
 from cycle.stagnation import StagnationSignal
-from runtime.isolate import IsolatedResult
+from runtime.isolate import DEFAULT_CPU_BUDGET_SECS, IsolatedResult
 
 
 def _config(cpu_budget_secs: float | None = None) -> CycleConfig:
@@ -31,7 +31,7 @@ def _config(cpu_budget_secs: float | None = None) -> CycleConfig:
     )
 
 
-def _cpu_kill(peak_cpu_sec: float, budget: float = 900) -> IsolatedResult:
+def _cpu_kill(peak_cpu_sec: float, budget: float = DEFAULT_CPU_BUDGET_SECS) -> IsolatedResult:
     return IsolatedResult(
         cv_score=None, cv_fold_var=None, fold_scores=None, label=None,
         gain_vs_best=None,
@@ -70,17 +70,17 @@ def _run(eval_side_effect, generate_code_mock=None, cpu_budget_secs=None):
 
 
 def test_retry_skipped_when_first_eval_exhausts_cpu_budget():
-    """1회차가 예산(900s) 전부를 태우고 죽으면 2회차 eval_isolated를 호출하지
+    """1회차가 예산 전부를 태우고 죽으면 2회차 eval_isolated를 호출하지
     않는다 — attempt당 최대 소모를 절반으로 자르는 핵심 동작."""
     data, mock_insert, mock_eval, generate_code_mock = _run(
-        eval_side_effect=[_cpu_kill(peak_cpu_sec=900.0)],
+        eval_side_effect=[_cpu_kill(peak_cpu_sec=DEFAULT_CPU_BUDGET_SECS)],
     )
 
     assert mock_eval.call_count == 1
     assert data.label == "error"
     row = mock_insert.call_args[0][1]
     assert "cpu budget exceeded" in row["error_trace"]
-    assert row["peak_cpu_sec"] == 900.0
+    assert row["peak_cpu_sec"] == DEFAULT_CPU_BUDGET_SECS
     # 재시도가 스킵됐으니 재생성도 일어나지 않는다(codegen 단계의 최초 1회만 호출됨).
     assert generate_code_mock.call_count == 1
 
@@ -106,7 +106,7 @@ def test_retry_uses_remaining_budget_when_first_eval_partially_spends():
 
     assert mock_eval.call_count == 2
     kwargs = mock_eval.call_args_list[1].kwargs
-    assert kwargs["cpu_budget_sec"] == 800.0  # 900 - 100
+    assert kwargs["cpu_budget_sec"] == DEFAULT_CPU_BUDGET_SECS - 100.0
     assert data.label == "neutral"
 
 

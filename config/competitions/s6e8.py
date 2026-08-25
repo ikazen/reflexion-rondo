@@ -20,11 +20,6 @@ EXTRA_TRAIN_PATHS: list[str] = ["original.csv"]  # zahranusratt/smartphone-usage
 # 제외됨(addiction_level은 타깃 addicted_label과 다른 파생 라벨이라 누수 없이 정확히
 # 배제돼야 함 — 의도된 동작). MinIO kaggle/s6e8/data/original.csv.
 ACTIVE            = True  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
-CPU_BUDGET_SECS   = 3600  # 기본 900s 대비 4배(#176) — 9일 실측 kill률 35%, 성공 attempt
-# p99=841s로 벽에 붙어 있었고 900s 위 분포는 완전히 검열돼 있었다. kill은 산출물 0에
-# CPU만 소모하므로 기다려서 측정값을 받는 쪽이 항상 낫다 — 넉넉히 열어 실제 분포를
-# 먼저 확보한 뒤 영구값을 정한다.
-
 EDA_CARD = """competition: playground-series-s6e8 (Predicting Smartphone Addiction)
 task: binary classification  metric: auc  target: addicted_label
 rows: 691369  features: 12

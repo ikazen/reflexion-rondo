@@ -20,6 +20,7 @@ os.unshare(CLONE_NEWNET)는 CAP_SYS_ADMIN을 요구하고 테스트 프로세스
 """
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -229,6 +230,73 @@ def test_eval_isolated_cpu_budget_sec_overrides_env_default() -> None:
     assert result.error_trace is not None
     assert "cpu budget exceeded" in result.error_trace
     assert "limit 30s" in result.error_trace
+
+
+def _exits_after(n_polls: int):
+    """n_polls번 폴링된 뒤 스스로 종료하는 가짜 subprocess."""
+    class _Proc:
+        pid = 4321
+        returncode = 0
+
+        def __init__(self, *a, **kw) -> None:
+            self.calls = 0
+            self.killed = False
+
+        def wait(self, timeout=None):
+            self.calls += 1
+            if timeout is not None and self.calls <= n_polls:
+                raise subprocess.TimeoutExpired(cmd="x", timeout=timeout)
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    return _Proc
+
+
+def test_wall_timeout_defaults_to_at_least_cpu_budget() -> None:
+    """벽시계 상한이 CPU 예산보다 낮으면 예산을 선점해 무력화한다(#207) — 호출자가
+    timeout_sec을 안 주면 CPU 예산이 항상 먼저 걸리도록 벽시계를 그만큼 늘린다."""
+    import polars as pl
+
+    from runtime.isolate import DEFAULT_TIMEOUT, eval_isolated
+
+    assert DEFAULT_TIMEOUT < 3000  # 예산이 기본 벽시계보다 커야 의미 있는 케이스
+
+    train = pl.DataFrame({"x": [1, 2, 3], "y": [0, 1, 0]})
+    clock = iter([0.0] + [float(DEFAULT_TIMEOUT) + 1.0] * 50)
+    with patch("runtime.isolate.subprocess.Popen", side_effect=_exits_after(2)), \
+         patch("runtime.isolate._read_cpu_seconds", return_value=10.0), \
+         patch("runtime.isolate._read_rss_bytes", return_value=1000), \
+         patch("runtime.isolate.time.monotonic", side_effect=lambda: next(clock)):
+        result = eval_isolated(
+            source="class Patch:\n    pass\n", train=train, target_col="y", metric="auc",
+            prev_best=0.85, n_splits=3, seed=42, is_classification=True,
+            cpu_budget_sec=3000,
+        )
+    assert result.error_trace is not None
+    assert "timeout" not in result.error_trace
+
+
+def test_explicit_timeout_sec_is_respected() -> None:
+    """호출자가 timeout_sec을 명시하면 CPU 예산과 무관하게 그 값이 벽시계 상한이다."""
+    import polars as pl
+
+    from runtime.isolate import eval_isolated
+
+    train = pl.DataFrame({"x": [1, 2, 3], "y": [0, 1, 0]})
+    clock = iter([0.0] + [60.0] * 50)
+    with patch("runtime.isolate.subprocess.Popen", side_effect=_exits_after(50)), \
+         patch("runtime.isolate._read_cpu_seconds", return_value=10.0), \
+         patch("runtime.isolate._read_rss_bytes", return_value=1000), \
+         patch("runtime.isolate.time.monotonic", side_effect=lambda: next(clock)):
+        result = eval_isolated(
+            source="class Patch:\n    pass\n", train=train, target_col="y", metric="auc",
+            prev_best=0.85, n_splits=3, seed=42, is_classification=True,
+            cpu_budget_sec=3000, timeout_sec=30,
+        )
+    assert result.error_trace is not None
+    assert "timeout after 30s" in result.error_trace
 
 
 def test_err_result_defaults_gain_relative_to_none() -> None:
