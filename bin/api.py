@@ -35,6 +35,7 @@ import polars as pl
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from config.competitions import active_competition_ids, competition_id_to_slug
 from config.settings import ACTION_TYPES, SUBMISSIONS_PER_DAY
 from cycle.stagnation import detect_stagnation
 from evaluator.harness import is_significant_gain
@@ -563,22 +564,10 @@ def _backfill_lb_percentiles(conn: PgConn, competition_id: str) -> int:
 
 
 def _competition_id_to_slug() -> dict[str, str]:
-    """config/competitions/*.py 스캔 → {competition_id: module_slug} 맵."""
     cached, hit = _cache.get("_comp_slug_map", ttl=3600)
     if hit:
         return cached  # type: ignore[return-value]
-    result: dict[str, str] = {}
-    comp_dir = ROOT / "config" / "competitions"
-    for path in comp_dir.glob("*.py"):
-        if path.stem.startswith("_"):
-            continue
-        try:
-            mod = importlib.import_module(f"config.competitions.{path.stem}")
-            cid = getattr(mod, "COMPETITION_ID", None)
-            if cid:
-                result[cid] = path.stem
-        except Exception:
-            continue
+    result = competition_id_to_slug()
     _cache.set("_comp_slug_map", result)
     return result
 
@@ -605,22 +594,12 @@ def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None
 
 
 def _active_competition_ids() -> set[str]:
-    """comp.ACTIVE=True인 대회 id 집합 — ADR-032의 deep tier.
-
-    auto-submit은 예전엔 "최근 24h 내 attempt가 있는 대회"로 대상을 간접 판정했는데,
-    그러면 attempt가 안 도는 날에는 제출할 백로그가 있어도 대회가 통째로 빠진다(#233).
-    """
+    """auto-submit은 예전엔 "최근 24h 내 attempt가 있는 대회"로 대상을 간접 판정했는데,
+    그러면 attempt가 안 도는 날에는 제출할 백로그가 있어도 대회가 통째로 빠진다(#233)."""
     cached, hit = _cache.get("_active_comp_ids", ttl=3600)
     if hit:
         return cached  # type: ignore[return-value]
-    result: set[str] = set()
-    for cid, slug in _competition_id_to_slug().items():
-        try:
-            mod = importlib.import_module(f"config.competitions.{slug}")
-        except Exception:
-            continue
-        if getattr(mod, "ACTIVE", True):
-            result.add(cid)
+    result = active_competition_ids()
     _cache.set("_active_comp_ids", result)
     return result
 
