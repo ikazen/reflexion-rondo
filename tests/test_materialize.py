@@ -93,10 +93,15 @@ def test_output_is_valid_python():
     ast.parse(result)
 
 
-def test_patch_overrides_base_hook():
+def test_colliding_composable_hook_is_composed_not_replaced():
+    """feature_transform은 합성 가능 훅이라(ADR-037, #232) base 로직이 사라지지 않고
+    _feature_transform_prev/_new로 rename돼 둘 다 살아남아야 한다 — 완전 교체(이전 동작)가
+    아니다."""
     result = materialize_best_pipeline(_BASE, _PATCH)
     assert "_patch_helper" in result
-    assert "cols = [c for c in" not in result
+    assert "cols = [c for c in" in result  # base 로직 보존(rename된 helper 안에)
+    assert "_feature_transform_prev" in result
+    assert "_feature_transform_new" in result
 
 
 def test_base_only_hook_preserved():
@@ -407,18 +412,17 @@ _PATCH_WITH_ENCODE = textwrap.dedent("""
 """).strip()
 
 
-def test_helper_collision_logs_warning(caplog):
-    with caplog.at_level("WARNING", logger="cycle.materialize"):
-        result = materialize_best_pipeline(_BASE_WITH_ENCODE, _PATCH_WITH_ENCODE)
-    assert any("_encode" in rec.message for rec in caplog.records)
+def test_helper_collision_with_different_definitions_raises():
+    """서로 다른 정의의 동명 top-level helper는 어느 쪽이 실제로 쓰이는지 모호해져
+    CV 퇴행이 엉뚱한 교훈으로 귀속될 수 있다 — 경고가 아니라 에러(ADR-037, #232)."""
+    with pytest.raises(ValueError, match="_encode"):
+        materialize_best_pipeline(_BASE_WITH_ENCODE, _PATCH_WITH_ENCODE)
+
+
+def test_helper_collision_with_identical_definitions_does_not_raise():
+    """완전히 동일한 재정의(우연한 중복)는 어느 쪽을 써도 결과가 같아 모호함이 없다."""
+    result = materialize_best_pipeline(_PATCH_WITH_ENCODE, _PATCH_WITH_ENCODE)
     ast.parse(result)
-
-
-def test_helper_collision_patch_wins_silently_in_output():
-    """merge 결과 자체는 여전히 patch 정의로 override된다 — 경고는 가시화용, 동작은 불변."""
-    result = materialize_best_pipeline(_BASE_WITH_ENCODE, _PATCH_WITH_ENCODE)
-    assert "x * 2" in result
-    assert "x + 1" not in result
 
 
 def test_no_collision_no_warning(caplog):
@@ -530,6 +534,203 @@ def test_nested_class_collision_patch_wins_with_warning(caplog):
     exec(compile(result, "<test>", "exec"), ns)  # noqa: S102
     model = ns["Patch"]().build_model(params={}, ctx=None)
     assert model.weights == [0.5, 0.5]  # patch 정의가 이겨야 함(base의 tag=only 버전 아님)
+
+
+# 합성 기능 테스트(ADR-037, #232) — 위 텍스트 레벨 검증과 달리 실제로 exec해서 합성된
+# wrapper가 base/patch 양쪽 로직을 정확히 실행하는지 확인한다.
+
+_BASE_PREPROCESS = textwrap.dedent("""
+    class Patch:
+        action_type = "preprocessing"
+        changed_stages = ["preprocess"]
+        rationale = "base fills column a"
+
+        def preprocess(self, train, valid, target, ctx):
+            train = train.with_columns(a_filled=train["a"].fill_null(0))
+            valid = valid.with_columns(a_filled=valid["a"].fill_null(0))
+            return train, valid
+""").strip()
+
+_PATCH_PREPROCESS = textwrap.dedent("""
+    class Patch:
+        action_type = "preprocessing"
+        changed_stages = ["preprocess"]
+        rationale = "patch fills column b"
+
+        def preprocess(self, train, valid, target, ctx):
+            train = train.with_columns(b_filled=train["b"].fill_null(0))
+            valid = valid.with_columns(b_filled=valid["b"].fill_null(0))
+            return train, valid
+""").strip()
+
+
+def test_preprocess_composition_runs_both_base_and_patch():
+    import polars as pl
+    result = materialize_best_pipeline(_BASE_PREPROCESS, _PATCH_PREPROCESS)
+    ns: dict = {}
+    exec(compile(result, "<test>", "exec"), ns)  # noqa: S102
+    patch = ns["Patch"]()
+    train = pl.DataFrame({"a": [1, None], "b": [None, 2]})
+    valid = pl.DataFrame({"a": [3, None], "b": [None, 4]})
+    train2, _ = patch.preprocess(train, valid, "target", None)
+    assert "a_filled" in train2.columns
+    assert "b_filled" in train2.columns
+
+
+_BASE_FT = textwrap.dedent("""
+    class Patch:
+        action_type = "feature_engineering"
+        changed_stages = ["feature_transform"]
+        rationale = "base derives feat_a"
+
+        def feature_transform(self, train, valid, target, ctx):
+            Xtr = train.select(["a"]).with_columns(feat_a=train["a"] * 2)
+            Xva = valid.select(["a"]).with_columns(feat_a=valid["a"] * 2)
+            return Xtr, Xva
+""").strip()
+
+_PATCH_FT = textwrap.dedent("""
+    class Patch:
+        action_type = "feature_engineering"
+        changed_stages = ["feature_transform"]
+        rationale = "patch derives feat_b"
+
+        def feature_transform(self, train, valid, target, ctx):
+            Xtr = train.select(["b"]).with_columns(feat_b=train["b"] * 3)
+            Xva = valid.select(["b"]).with_columns(feat_b=valid["b"] * 3)
+            return Xtr, Xva
+""").strip()
+
+
+def test_feature_transform_composition_unions_columns():
+    import polars as pl
+    result = materialize_best_pipeline(_BASE_FT, _PATCH_FT)
+    ns: dict = {}
+    exec(compile(result, "<test>", "exec"), ns)  # noqa: S102
+    patch = ns["Patch"]()
+    train = pl.DataFrame({"a": [1, 2], "b": [3, 4], "y": [0, 1]})
+    valid = pl.DataFrame({"a": [5, 6], "b": [7, 8], "y": [0, 1]})
+    Xtr, _ = patch.feature_transform(train, valid, "y", None)
+    assert set(Xtr.columns) >= {"a", "feat_a", "b", "feat_b"}
+    assert Xtr["feat_a"].to_list() == [2, 4]
+    assert Xtr["feat_b"].to_list() == [9, 12]
+
+
+_PATCH_FT_OVERRIDE = textwrap.dedent("""
+    class Patch:
+        action_type = "feature_engineering"
+        changed_stages = ["feature_transform"]
+        rationale = "full rewrite, discard old features"
+        override = ["feature_transform"]
+
+        def feature_transform(self, train, valid, target, ctx):
+            Xtr = train.select(["b"]).with_columns(feat_b=train["b"] * 3)
+            Xva = valid.select(["b"]).with_columns(feat_b=valid["b"] * 3)
+            return Xtr, Xva
+""").strip()
+
+
+def test_override_opts_out_of_composition():
+    import polars as pl
+    result = materialize_best_pipeline(_BASE_FT, _PATCH_FT_OVERRIDE)
+    assert "_feature_transform_prev" not in result
+    ns: dict = {}
+    exec(compile(result, "<test>", "exec"), ns)  # noqa: S102
+    patch = ns["Patch"]()
+    train = pl.DataFrame({"a": [1, 2], "b": [3, 4], "y": [0, 1]})
+    valid = pl.DataFrame({"a": [5, 6], "b": [7, 8], "y": [0, 1]})
+    Xtr, _ = patch.feature_transform(train, valid, "y", None)
+    assert "feat_a" not in Xtr.columns
+    assert "feat_b" in Xtr.columns
+
+
+_BASE_PC = textwrap.dedent("""
+    class Patch:
+        action_type = "hyperparam_search"
+        changed_stages = ["param_candidates"]
+        rationale = "base candidates"
+
+        def param_candidates(self, ctx):
+            return [{"n_estimators": 100}]
+""").strip()
+
+_PATCH_PC = textwrap.dedent("""
+    class Patch:
+        action_type = "hyperparam_search"
+        changed_stages = ["param_candidates"]
+        rationale = "patch candidates"
+
+        def param_candidates(self, ctx):
+            return [{"n_estimators": 200}]
+""").strip()
+
+
+def test_param_candidates_composition_unions_lists():
+    result = materialize_best_pipeline(_BASE_PC, _PATCH_PC)
+    ns: dict = {}
+    exec(compile(result, "<test>", "exec"), ns)  # noqa: S102
+    candidates = ns["Patch"]().param_candidates(None)
+    assert {"n_estimators": 100} in candidates
+    assert {"n_estimators": 200} in candidates
+
+
+_BASE_PP = textwrap.dedent("""
+    class Patch:
+        action_type = "preprocessing"
+        changed_stages = ["postprocess_predictions"]
+        rationale = "base clips"
+
+        def postprocess_predictions(self, preds, ctx):
+            return [max(0, p) for p in preds]
+""").strip()
+
+_PATCH_PP = textwrap.dedent("""
+    class Patch:
+        action_type = "feature_engineering"
+        changed_stages = ["postprocess_predictions"]
+        rationale = "patch scales"
+
+        def postprocess_predictions(self, preds, ctx):
+            return [p * 2 for p in preds]
+""").strip()
+
+
+def test_postprocess_predictions_composition_chains_sequentially():
+    result = materialize_best_pipeline(_BASE_PP, _PATCH_PP)
+    ns: dict = {}
+    exec(compile(result, "<test>", "exec"), ns)  # noqa: S102
+    out = ns["Patch"]().postprocess_predictions([-1, 2, -3], None)
+    assert out == [0, 4, 0]  # base clips ([-1,2,-3]->[0,2,0]) then patch scales(*2)->[0,4,0]
+
+
+def test_repeated_composition_across_multiple_rounds_preserves_all():
+    """3라운드에 걸쳐 같은 훅(feature_transform)을 반복 합성해도 매 라운드의 기여가
+    전부 살아남아야 한다 — _unique_name이 매번 새 이름을 골라 이전 합성 결과와
+    충돌하지 않는다."""
+    import polars as pl
+    round1 = materialize_best_pipeline(None, _BASE_FT)
+    round2 = materialize_best_pipeline(round1, _PATCH_FT)
+    patch3 = textwrap.dedent("""
+        class Patch:
+            action_type = "feature_engineering"
+            changed_stages = ["feature_transform"]
+            rationale = "patch3 derives feat_c"
+
+            def feature_transform(self, train, valid, target, ctx):
+                Xtr = train.select(["a"]).with_columns(feat_c=train["a"] * 10)
+                Xva = valid.select(["a"]).with_columns(feat_c=valid["a"] * 10)
+                return Xtr, Xva
+    """).strip()
+    round3 = materialize_best_pipeline(round2, patch3)
+    ns: dict = {}
+    exec(compile(round3, "<test>", "exec"), ns)  # noqa: S102
+    patch = ns["Patch"]()
+    train = pl.DataFrame({"a": [1, 2], "b": [3, 4], "y": [0, 1]})
+    valid = pl.DataFrame({"a": [5, 6], "b": [7, 8], "y": [0, 1]})
+    Xtr, _ = patch.feature_transform(train, valid, "y", None)
+    assert "feat_a" in Xtr.columns
+    assert "feat_b" in Xtr.columns
+    assert "feat_c" in Xtr.columns
 
 
 def test_multi_target_assign_emitted_once():

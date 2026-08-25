@@ -1,5 +1,33 @@
 # 변경 이력
 
+## v1.5.16 — 축적 시맨틱 수정: 훅 1개 제한 폐지, materialize 합성으로 변경 (2026-08-25)
+- #232(Milestone v1.6.0, ADR-037): `evaluator/contract.py:validate_patch`가 action_type별 훅
+  개수를 더 이상 하드 리젝트하지 않는다(ADR-006 뒤집기) — `_ALLOWED_HOOKS`는 `agents/coder.py`
+  프롬프트의 "주 초점 훅" 가이드로만 남는다.
+- `preprocess`/`feature_transform`/`postprocess_predictions`/`param_candidates`(합성 가능
+  훅)는 patch가 정의하고 확정 best pipeline도 이미 정의하고 있으면 완전 교체가 아니라
+  **합성**된다: preprocess/postprocess_predictions는 순차 체이닝, param_candidates는 리스트
+  합집합(중복 제거), feature_transform은 컬럼 단위 합집합(타깃 드롭 계약 때문에 체이닝 불가,
+  동명 컬럼은 patch가 이김). `build_model`/`ensemble_spec`/`model_spec`은 합성 대상 아님(단일
+  값이라 조합 불가). patch가 `override = ["<hook>", ...]`를 선언하면 그 훅은 완전 교체.
+- **측정=배포 일치 보장**이 이 작업의 핵심 리스크였다 — attempt 평가 시점(`evaluator/harness.py:
+  PatchedPipeline`, base 체인에 그 훅의 실제 정의가 있을 때만 합성, `_chain_defines`)과 승격 후
+  다음 라운드 base 생성 시점(`cycle/materialize.py`, AST 레벨 rename+wrapper 합성)이 반드시
+  같은 규칙을 써야 측정된 cv_score와 실제 배포 동작이 어긋나지 않는다(#226/#83/#239와 동일
+  버그 클래스 재발 방지). base가 순수 `BasePipeline()`(bootstrap 등 최초 patch)이면 합성하지
+  않음 — 트리비얼 기본값과 합성해봐야 이득이 없고 feature_transform은 미인코딩 원본 컬럼이
+  새는 위험만 있다(`tests/test_submit.py` 실측 회귀로 발견·수정).
+- top-level helper 이름 충돌(실제로 다른 정의)을 warning에서 error로 승격 — 완전히 동일한
+  재정의는 모호함이 없어 에러 대상 아님(`_real_collisions`).
+- **merge 전 백테스트(완료 기준)**: 실제 confirmed pipeline(s4e10) 위에 feature_engineering
+  patch 2라운드를 연속으로 얹어, 2라운드 materialize 결과가 실행 시점에 1라운드·2라운드
+  엔지니어링 컬럼을 둘 다 포함함을 확인(이전 로직이면 1라운드 컬럼은 사라졌을 것) — 3라운드
+  반복 합성도 회귀 테스트로 검증(이름 충돌 없이 축적).
+- `agents/coder.py` 컨트랙트 프롬프트를 "허용 훅만 구현" 하드 규칙에서 "주 초점 훅 권장 +
+  합성 규칙 설명 + override 사용법"으로 전면 개정.
+- 회귀 테스트 20여 개 추가/수정(materialize.py 합성 함수 단위 테스트, PatchedPipeline 합성
+  단위 테스트, contract.py 훅 제한 해제 확인).
+
 ## v1.5.15 — catboost random_seed/random_state 충돌 수정 (2026-08-25)
 - #247: v1.5.14 배포 직후 프로덕션에서 재현(s4e11) — `evaluator/models.py:build_registry_model`이
   params에 이미 `random_seed`(catboost 고유 관례명)가 있어도 무조건 `random_state`를 setdefault해서

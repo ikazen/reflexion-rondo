@@ -148,7 +148,8 @@ def test_generate_code_bootstrap_contract_declares_available_libs() -> None:
 
 
 def test_generate_code_injects_action_type_specific_hook_directive() -> None:
-    """user 메시지에 이번 호출의 action_type이 허용하는 hook만 명시돼야 한다.
+    """user 메시지에 이번 호출의 action_type이 주로 쓰는 hook이 명시돼야 한다(하드 제한은
+    ADR-006 뒤집기로 사라졌지만, 프롬프트 가이드는 여전히 남는다 — ADR-037, #232).
 
     s6e7 실측: model_swap이 feature_transform까지 구현하려는 컨트랙트 위반이 47건 —
     정적 검증(evaluator/contract.py)은 생성 *이후*에만 잡아 재시도해도 반복됐다.
@@ -164,10 +165,10 @@ def test_generate_code_injects_action_type_specific_hook_directive() -> None:
     user_msg = next(m["content"] for m in messages if m["role"] == "user")
     assert "model_swap" in user_msg
     assert "build_model" in user_msg
-    # 다른 action_type의 hook(feature_transform)이 "허용" 문구에 나타나면 안 된다 —
+    # 다른 action_type의 hook(feature_transform)이 "주 초점" 문구에 나타나면 안 된다 —
     # 정확히 evaluator/contract.py._ALLOWED_HOOKS['model_swap']과 일치해야 함.
-    allowed_line = next(line for line in user_msg.splitlines() if "You may implement ONLY" in line)
-    assert "feature_transform" not in allowed_line
+    primary_line = next(line for line in user_msg.splitlines() if "usual focus is" in line)
+    assert "feature_transform" not in primary_line
 
 
 def test_generate_code_hook_directive_matches_contract_source_of_truth() -> None:

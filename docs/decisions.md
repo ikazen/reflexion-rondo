@@ -31,6 +31,10 @@
 ## ADR-006 — `reflexion` 단계에 한해 시도당 변경 1개
 - 결정: `reflexion` stage의 attempt만 단일 변경 강제. `bootstrap`/`exploitation`은 예외.
 - 근거: 인과 귀속은 유지하되, cold-start 비효율을 피한다.
+- **[뒤집힘, ADR-037/#232]** `evaluator/contract.py`의 하드 리젝트 강제는 폐지 — 프롬프트 가이드
+("주 초점 훅")로만 남는다. 훅 합성(base 실행 후 patch 적용)이 도입되면서 여러 훅을 건드려도
+이전 개입이 사라지지 않아, 제한의 실익(causal attribution) 대비 비용(강제 자체가 "1변경=축적"을
+보장하지 못했다는 #232의 발견)이 역전됐다고 판단.
 
 ## ADR-007 — DuckDB 단일 스토어 (검색·분석 통합)
 - 결정: 별도 벡터DB(Chroma) 없이 DuckDB 하나에 모두 둔다. 임베딩은 `reflections.embedding`을 `FLOAT[768]` 컬럼으로 저장하고, 검색은
@@ -566,6 +570,48 @@ stacking과 병행 — 두 메커니즘이 같은 문제(예측 조합)를 다�
 `majority_vote`보다 확실히 느리다 — attempt의 900s 예산 안에서 멤버 수가 많거나 데이터가 크면 시간 초과
 위험이 있다(deep tier 백테스트로 실측 확인, PR 코멘트 참고). meta 모델 자체의 하이퍼파라미터 탐색은
 없다(#230 Optuna 튜닝 레인이 `model_spec` 기반이라 `ensemble_spec`의 `meta`는 아직 튜닝 대상 밖).
+
+## ADR-037 — 훅 1개 제한(ADR-006) 폐지, 합성 가능 훅은 완전 교체 대신 base 실행 후 patch 적용
+
+- 결정: `evaluator/contract.py:validate_patch`가 action_type별 훅 개수를 더 이상 하드 리젝트하지
+않는다(ADR-006 뒤집기) — `_ALLOWED_HOOKS`는 `agents/coder.py` 프롬프트의 "주 초점 훅" 가이드로만
+남는다. 그 대신 `preprocess`/`feature_transform`/`postprocess_predictions`/`param_candidates`
+4개 훅("합성 가능 훅")은, patch가 정의하고 확정 best pipeline도 이미 정의하고 있으면 완전 교체가
+아니라 **합성**된다: preprocess/postprocess_predictions는 순차 체이닝(base 실행 후 그 결과에
+patch 적용), param_candidates는 리스트 합집합(중복 dict 제거), feature_transform은 컬럼 단위
+합집합(base/patch가 각자 같은 원본에서 독립 파생, 동명 컬럼은 patch가 이김 — 타깃 드롭 계약 때문에
+순차 체이닝 불가). `build_model`/`ensemble_spec`/`model_spec`은 합성 대상 아님(단일 값이라 조합
+불가, 항상 patch가 완전 교체). patch가 `override = ["<hook>", ...]`를 선언하면 그 훅은 합성 대신
+완전 교체된다. **이 규칙은 두 곳에서 동일하게 적용된다** — attempt 평가 시점(`evaluator/harness.py:
+PatchedPipeline`, base가 순수 `BasePipeline()`이 아니라 이미 축적된 `PatchedPipeline`이고 그 체인
+어딘가에 해당 훅의 실제 정의가 있을 때만 합성)과 승격 후 다음 라운드 base 생성 시점
+(`cycle/materialize.py`, base/patch 소스를 AST 레벨에서 rename+wrapper 합성). 두 곳이 다르면
+측정된 cv_score와 실제 배포 동작이 어긋나는, 이번 세션에 반복 수정한 버그 클래스(#226/#83/#239)가
+그대로 재발한다. 부수로 top-level helper 이름 충돌(실제로 다른 정의)도 warning에서 error로
+승격했다 — 완전히 동일한 재정의는 모호함이 없어 에러 대상이 아니다(`_real_collisions`).
+- 대안: (a) `materialize.py`만 고치고 `PatchedPipeline`은 그대로(측정=배포 일치 안 됨) — attempt가
+실제로 측정한 cv_score가 승격 후 실제 동작과 달라지는 심각한 정합성 문제라 기각, 이번 세션에 겪은
+버그 클래스와 정확히 같음. (b) 모든 합성 가능 훅을 전부 순차 체이닝 — `feature_transform`은 계약상
+타깃을 drop해야 하는데 체이닝하면 두 번째 호출이 이미 없는 타깃을 또 drop하려다 죽어 기각, 컬럼
+합집합으로 우회. (c) `_ALLOWED_HOOKS` 완전 삭제(프롬프트 가이드도 없앰) — causal attribution
+신호(어떤 action_type이 보통 어떤 훅을 건드리는지)가 Reflector/bandit 쪽에 여전히 유용해 프롬프트
+가이드로는 유지, 강제만 풂. (d) base가 `BasePipeline()`이어도 무조건 합성 — feature_transform의
+BasePipeline 기본값(타깃 제외 전체 컬럼 그대로 통과)과 합성하면 미인코딩 원본 컬럼이 새고,
+param_candidates는 의미 없는 빈 `{}` 후보가 매번 끼어들어(`tests/test_submit.py` 실측 회귀) 기각 —
+`_chain_defines`로 base 체인에 그 훅의 실제 정의가 있을 때만 합성.
+- 근거: "1변경 규율로 점진 축적"이 의도였지만 실제로는 `materialize.py`의 `{**base, **patch}`가
+동명 훅을 통째로 치환해, 같은 훅을 나중 attempt가 다시 건드리면 이전 개선이 LLM이 우연히
+복붙했을 때만 살아남았다(#232 배경) — 합성으로 바꾸면 harness 자체가 축적을 보장한다.
+훅 개수 제한은 causal attribution(ADR-006 원래 근거)을 위한 것이었는데, 합성이 있으면 여러 훅을
+건드려도 이전 개입이 사라지지 않아 제한의 실익이 줄어든다.
+- 근거(실측, merge 전 백테스트): 실제 confirmed pipeline(s4e10) 위에 feature_engineering patch
+2라운드를 연속으로 얹었을 때, 2라운드 materialize 결과의 `feature_transform`이 실제 실행 시점에
+1라운드·2라운드 엔지니어링 컬럼을 **둘 다** 포함함을 확인(이전 로직이면 1라운드 컬럼은 사라졌을 것).
+- 한계: `param_candidates` 합성이 base 체인에 이미 여러 라운드 누적되면 탐색 후보 수가 계속
+늘어난다 — `_MAX_PARAM_CANDIDATES`(harness.py)가 여전히 캡을 걸지만, 상한 근처에서 새 patch의
+후보가 밀려날 수 있다. `feature_transform` 컬럼 합집합은 동명 충돌 시 patch가 무조건 이겨 base의
+같은 이름 컬럼이 조용히 사라질 수 있다(의도된 override 시맨틱과 동일 원리이나, 이름을 안 바꾸고
+다른 의미로 재사용하면 혼란 여지).
 
 ---
 

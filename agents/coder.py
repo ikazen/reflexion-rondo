@@ -26,15 +26,49 @@ The system runs the following hooks in order on each CV fold:
   build_model(self, params, ctx)                     -> sklearn estimator
   postprocess_predictions(self, preds, ctx)          -> preds
 
-Your Patch overrides only the hook(s) assigned. All other hooks fall back to the current best pipeline.
+Any hook you don't implement falls back to the current best pipeline. For preprocess/
+feature_transform/postprocess_predictions/param_candidates specifically, if you DO implement a
+hook the current best pipeline already defines, your version is COMPOSED with it (not a full
+replacement) — see "## Accumulation" below for exactly what that means per hook and how to opt out.
 
-## Allowed hooks per action_type
-  feature_engineering  -> feature_transform only
+## Primary hook per action_type (not a hard limit — see the per-call directive for this attempt)
+  feature_engineering  -> feature_transform
   model_swap           -> model_spec (STRONGLY PREFERRED, see below) or build_model
-  preprocessing        -> preprocess only
-  hyperparam_search    -> param_candidates only
+  preprocessing        -> preprocess
+  hyperparam_search    -> param_candidates
   ensemble             -> ensemble_spec (STRONGLY PREFERRED, see below) or any hooks needed for a
                           hand-written combination (build_model + postprocess_predictions typical)
+Touching hooks outside your action_type's primary one is allowed when your hypothesis genuinely
+needs it, but stick to the primary hook whenever possible — it keeps this attempt's CV delta
+clearly attributable to one change.
+
+## Accumulation — how your hook combines with the current best pipeline (composable hooks only)
+`build_model`/`ensemble_spec`/`model_spec` always fully replace the current best pipeline's
+version when you implement them (there's no way to "combine" two different models). But
+`preprocess`, `feature_transform`, `postprocess_predictions`, and `param_candidates` are
+different: if you implement one of these and the current best pipeline already has one, the
+system runs BOTH by default —
+  preprocess:               best pipeline's runs first, then yours runs on its output
+  postprocess_predictions:  same — sequential, best pipeline's first
+  param_candidates:         both lists are concatenated (duplicates removed) — your candidates
+                             are ADDED to the search, not a replacement
+  feature_transform:        both are called independently on the same input and the resulting
+                             columns are unioned — your columns win on a name collision
+This means a normal `feature_transform` patch should ADD new engineered columns, not try to
+rebuild the whole feature set from scratch — the existing columns are already coming from the
+composed base version. Same idea for `preprocess`: assume upstream cleaning already happened,
+and layer your own additional step on top.
+If you genuinely need to throw away the current best pipeline's version of a hook instead of
+composing with it (e.g. a full feature-engineering rewrite that must NOT see the old columns),
+declare it explicitly:
+```python
+class Patch:
+    action_type = "feature_engineering"
+    override = ["feature_transform"]   # this hook fully replaces the base version
+    ...
+```
+`override` is a plain list of hook names (only meaningful for the four composable hooks above) —
+omit it entirely if you're not opting out of composition for anything.
 
 ## Required Patch structure
 ```python
@@ -166,7 +200,8 @@ class Patch:
   outside the registry, or constructor logic ensemble_spec/model_spec cannot express).
 
 ## Rules
-- Only implement the hook(s) allowed for your action_type
+- Prefer implementing only your action_type's primary hook (see above) unless the hypothesis
+  genuinely needs more
 - Patch.action_type MUST exactly match the assigned action_type
 - feature_transform must drop the target column before returning
 - Fit all transformations on train only, apply to valid (no leakage)
@@ -346,13 +381,18 @@ def generate_code(
     is_bootstrap = action_type == "bootstrap"
     contract = _BOOTSTRAP_CONTRACT if is_bootstrap else _REFLEXION_CONTRACT
 
-    # 정적 검증은 생성 이후에만 컨트랙트 위반을 잡아 반복된다 — 허용 hook을
-    # 생성 이전 user 메시지에 action_type별로 명시.
-    allowed_hooks = sorted(_ALLOWED_HOOKS.get(action_type, _ALL_HOOKS))
+    # 훅 개수 제한은 하드 리젝트가 아니다(ADR-006 뒤집기, ADR-037, #232) — 그래도
+    # action_type별 "주 초점" 훅을 먼저 제시해 최소 개입을 유도한다. 이걸 벗어나
+    # 여러 훅을 건드리면(cycle/materialize.py가 합성 가능한 훅은 base 실행 후 patch를
+    # 적용해 축적하므로) 이전 patch의 작업이 통째로 사라지진 않지만, 여전히 causal
+    # attribution은 개입 범위가 좁을수록 명확하다.
+    primary_hooks = sorted(_ALLOWED_HOOKS.get(action_type, _ALL_HOOKS))
     hook_directive = (
-        f"## Allowed hooks for THIS action_type={action_type!r} (STRICT)\n"
-        f"You may implement ONLY: {allowed_hooks}. Any other hook will be rejected — "
-        f"do not implement it even if it seems like it would help."
+        f"## Primary hook for THIS action_type={action_type!r}\n"
+        f"This action_type's usual focus is: {primary_hooks}. Prefer touching only these — "
+        f"it keeps the causal attribution of this attempt's CV delta clear. You MAY implement "
+        f"additional hooks if your hypothesis genuinely needs them (this is not a hard limit), "
+        f"but each extra hook you touch dilutes that attribution."
     )
 
     user_parts = [
