@@ -1,5 +1,52 @@
 # 변경 이력
 
+## v1.6.0 — LB 피드백 루프: 제출 예산을 정보 획득으로 배분, LB 백분위를 북극성 지표로 (2026-08-26)
+- #233(Milestone v1.6.0, ADR-038). 문제는 게이트가 너무 빡센 게 아니라 **예산이 남는데도 안 쓴다**는
+  것이었다. 실측(2026-08-26): deep tier 5개의 일일 Kaggle 제출이 0~1건(가용 25건/일의 3%), 스킵 사유는
+  전부 `best unchanged` / `gain not significant`. 동시에 **한 번도 제출 안 한 confirmed pipeline이
+  deep tier에만 37건**(s4e10 14 / s4e11 7 / s5e4 6 / s6e8 6 / s4e12 4) 쌓여 있었고, 역대 누적
+  cv-LB 쌍은 78건뿐이었다.
+
+### 제출 선정 로직
+- `bin/api.py:auto_submit`이 "대회 전역 best가 바뀌었나"에서 "오늘 남은 예산으로 무엇을 배우나"로 바뀐다.
+  대회별 일일 예산(`SUBMISSIONS_PER_DAY`, 기본 2) 안에서 아직 제출 안 한 confirmed pipeline을 cv
+  상위순으로 내보낸다. 미제출 백로그가 없을 때만 기존 "best 갱신 + 유의성 검정" 경로로 떨어진다 —
+  같은 attempt 재제출은 LB 점수가 같아 정보량이 0이므로 그 경로에서 계속 막힌다.
+- 대상 대회를 `comp.ACTIVE`(ADR-032 deep tier)로 직접 판정한다. 기존의 "최근 24h 내 attempt가 있는
+  대회" 간접 판정은 attempt가 안 도는 날엔 백로그가 있어도 대회를 통째로 빠뜨렸다 — 2026-08-25 실행에서
+  실제로 s5e4가 대상 목록에서 빠졌다.
+- 예산은 `raw.kaggle_submissions`의 당일(UTC, `status <> 'error'`) 건수를 직접 센다. 죽어 있던
+  `raw.submission_budget` 카운터 테이블(읽기/쓰기 코드 0건)은 삭제 — 카운터는 드리프트하지만 제출
+  이력은 안 한다.
+- ADR-031(confirmed pipeline만 제출)은 유지 — 바뀌는 건 "몇 건"이지 "무엇을"이 아니다.
+
+### LB 백분위 (북극성 지표)
+- `raw.leaderboard_snapshot` 신설 + `bin/api.py:_fetch_leaderboard_scores`가 kaggle CLI
+  `competitions leaderboard --download`로 대회 전체 순위표를 받아 rank 순 점수 배열로 저장한다
+  (`--show`는 50행씩 페이지네이션이라 못 쓴다). `POST /api/leaderboard/refresh`가 진입점 —
+  종료된 대회는 최종 LB가 고정이라 `max_age_hours`(기본 7일) 안이면 스킵한다.
+- `raw.kaggle_submissions.lb_percentile` 신설. `refresh_submission_row`가 complete 확정 시 함께
+  기록하고, 스냅샷을 새로 받으면 그 대회의 과거 완료 제출도 한꺼번에 백필한다. lb_score 원값은 대회마다
+  metric도 스케일도 달라 fleet 횡단 비교가 불가능했다 — 백분위가 대회 간 비교가 가능한 유일한 지표다.
+- `cv_lb_gap_trend` 뷰 신설(`holdout_cv_gap_trend`와 같은 형태, holdout 대신 실제 LB) +
+  `GET /api/cv-lb-gap`. `GET /api/lb-northstar`는 ACTIVE 대회별 최신 백분위 / LB 갱신 경과일 /
+  오늘 쓴 예산 / 미제출 백로그를 한 번에 준다.
+- 기존 `cv_lb_calibration`(delta 기반 발산 판정, ADR-026 트립와이어 전용)은 건드리지 않고 병존한다.
+
+### 대시보드
+- Fleet Overview에 `is_active` / `lb_percentile` / `days_since_lb` 컬럼 추가. `_fleet_attention`에
+  "deep tier인데 7일 넘게 LB 갱신 없음 → 🟡" 규칙 추가 — #233 완료 기준("주 1회 이상 LB 갱신")이
+  대시보드에서 바로 읽힌다.
+- Submissions 섹션에 cv-LB 갭 패널 추가(양수 = CV가 LB보다 낙관적).
+
+### 부수 정리
+- 대회 config 스캔(slug 매핑 + ACTIVE 필터)이 daemon/api/대시보드 3곳에 흩어질 참이라
+  `config/competitions/__init__.py` 공용 헬퍼로 추출했다.
+- airflow-stack `reflexion_rondo_autosubmit` DAG에 `refresh_leaderboards` task 추가(제출 앞단,
+  실패해도 제출을 막지 않음). `window_hours` 페이로드 제거 — 대상 선정이 `ACTIVE` 기준으로 바뀌었다.
+- 회귀 테스트 13개 추가(백로그 우선순위, 일일 예산 소진, 동결 대회 제외, 백분위 계산 3종,
+  스냅샷 없음 방어, 백필, 신선 스냅샷 스킵).
+
 ## v1.5.17 — deep tier 낭비 정리: 타깃 결측 유입 차단 + CPU 예산 영구값 확정 (2026-08-26)
 
 ### #245 — 원본 데이터 병합 시 타깃 결측 행 유입 차단
