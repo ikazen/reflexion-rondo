@@ -165,12 +165,13 @@ dagrun(=사이클) 하나가 실패해도 배치를 중단하지 않는다 — �
 
 ## 4. 제출·LB score 추적
 
-- `POST /api/submissions` — attempt 지정 제출. `POST /api/submissions/auto` — 최근 window 내 대회별 best attempt 자동 선별 제출(이미 제출한 best는 skip).
+- `POST /api/submissions` — attempt 지정 제출. `POST /api/submissions/auto` — `ACTIVE=True` 대회별로 일일 예산(`SUBMISSIONS_PER_DAY`, 기본 2)
+안에서 아직 제출 안 한 confirmed pipeline을 cv 상위순 자동 제출(ADR-038). 미제출 백로그가 없으면 예전 "best 갱신 + 유의성" 경로로 떨어진다.
 - `POST /api/submissions/{id}/refresh` — Kaggle 상태 1회 수동 폴링. `complete`면 `raw.kaggle_submissions.lb_score` 갱신 + 해당
 `attempt_id`의 `raw.attempts.lb_score`까지 backfill.
 - daemon도 유휴 틱마다 `status IN ('submitted','pending')` 제출을 지수 백오프로 자동 재폴링한다(`refresh_submission_row` 공유 헬퍼) — 수동 `refresh` 호출은 즉시 반영이 필요할 때만.
-- `submission_budget` 테이블은 스키마에 존재하나, 일일 제출 상한 자동 enforcement는 아직 미구현 — 현재는 `auto_submit`의 "best unchanged면 skip" 로직 +
-cv-LB 발산 트립와이어(아래 §4-2)가 과다 제출을 억제한다.
+- 일일 제출 상한은 `raw.kaggle_submissions`의 당일(UTC, status<>'error') 건수를 직접 세서 집행한다 — 카운터 테이블(`submission_budget`)은
+드리프트 위험만 있고 쓰이지 않아 삭제했다. 과다 제출 억제는 이 예산 + cv-LB 발산 트립와이어(아래 §4-2)가 담당한다.
 
 ### 4-1. 누수 파이프라인 격리
 

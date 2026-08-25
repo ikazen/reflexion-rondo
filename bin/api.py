@@ -34,7 +34,7 @@ import polars as pl
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from config.settings import ACTION_TYPES
+from config.settings import ACTION_TYPES, SUBMISSIONS_PER_DAY
 from cycle.stagnation import detect_stagnation
 from evaluator.harness import is_significant_gain
 from memory.transfer import _fp_distance
@@ -185,7 +185,7 @@ class SubmitRequest(BaseModel):
 
 
 class AutoSubmitRequest(BaseModel):
-    window_hours: int = 24
+    window_hours: int = 24  # 미사용 — 대상 대회는 comp.ACTIVE로 정한다(#233). 호출자 호환용으로만 남김.
 
 
 _TERMINAL = frozenset({"complete", "error", "invalid"})
@@ -487,6 +487,74 @@ def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None
         [competition_id],
     ).fetchone()
     return (row[0], row[1]) if row else None
+
+
+def _active_competition_ids() -> set[str]:
+    """comp.ACTIVE=True인 대회 id 집합 — ADR-032의 deep tier.
+
+    auto-submit은 예전엔 "최근 24h 내 attempt가 있는 대회"로 대상을 간접 판정했는데,
+    그러면 attempt가 안 도는 날에는 제출할 백로그가 있어도 대회가 통째로 빠진다(#233).
+    """
+    cached, hit = _cache.get("_active_comp_ids", ttl=3600)
+    if hit:
+        return cached  # type: ignore[return-value]
+    result: set[str] = set()
+    for cid, slug in _competition_id_to_slug().items():
+        try:
+            mod = importlib.import_module(f"config.competitions.{slug}")
+        except Exception:
+            continue
+        if getattr(mod, "ACTIVE", True):
+            result.add(cid)
+    _cache.set("_active_comp_ids", result)
+    return result
+
+
+def _submissions_today(conn: PgConn, competition_id: str) -> int:
+    """Kaggle 일일 한도는 UTC 자정 기준으로 리셋된다. 별도 카운터 테이블을 두지 않고
+    kaggle_submissions를 직접 센다 — 카운터는 드리프트하지만 제출 이력은 안 한다.
+    실제로 Kaggle에 닿지 않은 error 행은 한도를 소모하지 않으므로 제외."""
+    row = conn.execute(
+        """
+        select count(*) from raw.kaggle_submissions
+        where competition_id = %s
+          and submitted_at >= date_trunc('day', now() at time zone 'utc')
+          and status <> 'error'
+        """,
+        [competition_id],
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def _unsubmitted_confirmed(
+    conn: PgConn, competition_id: str, limit: int
+) -> list[tuple[str, float]]:
+    """아직 한 번도 제출된 적 없는 confirmed pipeline을 cv 상위순으로.
+
+    _best_attempt와 같은 confirmed-only 제약(ADR-031)을 쓰되 "대회 전역 1등" 대신
+    "미제출 상위 N"을 고른다 — 같은 attempt를 다시 내면 LB 점수가 같아 정보량이 0이고,
+    미제출 confirmed는 각각 새 cv-LB 쌍을 준다.
+    """
+    rows = conn.execute(
+        """
+        select a.attempt_id, a.cv_score
+        from raw.attempts a
+        join raw.pipelines p on p.attempt_id = a.attempt_id
+        join raw.competitions c on c.competition_id = a.competition_id
+        where a.competition_id = %s
+          and a.cv_score is not null
+          and a.error_trace is null
+          and p.invalid_reason is null
+          and not exists (
+              select 1 from raw.kaggle_submissions s
+              where s.attempt_id = a.attempt_id
+          )
+        order by c.metric_sign * a.cv_score desc, a.run_ts asc, a.attempt_id asc
+        limit %s
+        """,
+        [competition_id, limit],
+    ).fetchall()
+    return [(r[0], r[1]) for r in rows]
 
 
 def _last_submitted_attempt(conn: PgConn, competition_id: str) -> str | None:
@@ -1686,22 +1754,22 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
 
     @app.post("/api/submissions/auto", status_code=200)
     def auto_submit(body: AutoSubmitRequest):
-        slug_map = _competition_id_to_slug()
+        """ACTIVE 대회별로 일일 제출 예산 안에서 미제출 confirmed pipeline을 내보낸다.
 
-        active_rows = conn.execute(
-            """
-            select distinct competition_id from raw.attempts
-            where run_ts >= now() - make_interval(hours => %s)
-              and cv_score is not null
-              and error_trace is null
-            """,
-            [body.window_hours],
-        ).fetchall()
+        예전 로직은 "대회 전역 best가 바뀌었나"만 봐서 deep tier가 하루 0~1건에 머물렀고
+        (#233), cv-LB 쌍이 몇 달 누적 78건뿐이었다. 이제 예산이 남으면 아직 한 번도
+        제출 안 한 confirmed pipeline을 cv 상위순으로 내보낸다 — 각각이 새 cv-LB 쌍이다.
+        미제출 백로그가 없을 때만 예전 "best 갱신 + 유의성" 경로로 떨어진다(같은 attempt
+        재제출은 LB 점수가 같아 정보량 0이므로 그 경로에서 계속 막는다).
+        """
+        del body  # window_hours는 더 이상 대상 선정에 쓰지 않는다 — comp.ACTIVE가 대상이다.
+        slug_map = _competition_id_to_slug()
+        active_ids = _active_competition_ids()
 
         submitted = []
         skipped = []
 
-        for (competition_id,) in active_rows:
+        for competition_id in sorted(active_ids):
             slug = slug_map.get(competition_id)
             if not slug:
                 skipped.append({"competition": competition_id, "reason": "no config"})
@@ -1718,31 +1786,41 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
                 skipped.append({"competition": competition_id, "reason": f"auto-submit paused: {paused_row[0]}"})
                 continue
 
-            best = _best_attempt(conn, competition_id)
-            if not best:
-                skipped.append({"competition": competition_id, "reason": "no confirmed pipeline"})
-                continue
-            best_attempt_id, best_cv = best
-
-            last = _last_submitted_attempt(conn, competition_id)
-            if last == best_attempt_id:
-                skipped.append({"competition": competition_id, "reason": "best unchanged"})
+            budget_left = SUBMISSIONS_PER_DAY - _submissions_today(conn, competition_id)
+            if budget_left <= 0:
+                skipped.append({"competition": competition_id, "reason": "daily budget spent"})
                 continue
 
-            if last is not None and not _submission_gain_significant(
-                conn, competition_id, best_attempt_id, last
-            ):
-                skipped.append({"competition": competition_id, "reason": "gain not significant"})
-                continue
+            candidates = _unsubmitted_confirmed(conn, competition_id, budget_left)
+            if not candidates:
+                best = _best_attempt(conn, competition_id)
+                if not best:
+                    skipped.append({"competition": competition_id, "reason": "no confirmed pipeline"})
+                    continue
+                best_attempt_id, best_cv = best
 
-            msg = f"auto cv={best_cv:.5f} attempt={best_attempt_id[:8]}"
-            sid = _start_submission(conn, slug, competition_id, best_attempt_id, msg)
-            submitted.append({
-                "competition": competition_id,
-                "slug": slug,
-                "attempt_id": best_attempt_id,
-                "submission_id": sid,
-            })
+                last = _last_submitted_attempt(conn, competition_id)
+                if last == best_attempt_id:
+                    skipped.append({"competition": competition_id, "reason": "best unchanged"})
+                    continue
+
+                if last is not None and not _submission_gain_significant(
+                    conn, competition_id, best_attempt_id, last
+                ):
+                    skipped.append({"competition": competition_id, "reason": "gain not significant"})
+                    continue
+
+                candidates = [(best_attempt_id, best_cv)]
+
+            for attempt_id, cv_score in candidates:
+                msg = f"auto cv={cv_score:.5f} attempt={attempt_id[:8]}"
+                sid = _start_submission(conn, slug, competition_id, attempt_id, msg)
+                submitted.append({
+                    "competition": competition_id,
+                    "slug": slug,
+                    "attempt_id": attempt_id,
+                    "submission_id": sid,
+                })
 
         return {"submitted": submitted, "skipped": skipped}
 

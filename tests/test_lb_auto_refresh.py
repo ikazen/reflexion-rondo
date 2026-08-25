@@ -349,6 +349,7 @@ def test_auto_submit_skips_paused_competition(monkeypatch):
     from fastapi.testclient import TestClient
 
     monkeypatch.setattr(api_mod, "_competition_id_to_slug", lambda: {"s5e10": "s5e10"})
+    monkeypatch.setattr(api_mod, "_active_competition_ids", lambda: {"s5e10"})
     monkeypatch.setattr(api_mod, "_best_attempt", lambda conn, cid: ("cand", 0.9))
     monkeypatch.setattr(api_mod, "_start_submission", lambda *a, **k: "sub-1")
 

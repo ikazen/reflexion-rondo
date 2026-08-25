@@ -95,12 +95,11 @@ ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS materialized_code text;
 -- 보존한다. bin/quarantine_leaks.py가 스캔해서 채운다(docs/decisions.md ADR-025).
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS invalid_reason text;
 
-CREATE TABLE IF NOT EXISTS raw.submission_budget (
-    competition_id  text,
-    day             date,
-    count           int,
-    PRIMARY KEY (competition_id, day)
-);
+-- 일일 제출 한도 카운터로 만들었으나 읽기/쓰기 코드가 한 번도 붙지 않은 채 빈 테이블로
+-- 남아 있었다. #233의 예산 집행은 raw.kaggle_submissions를 직접 세는 쪽을 택했다 —
+-- 별도 카운터는 드리프트하지만 제출 이력은 안 한다. 라이브 DB에 이미 있는 테이블은
+-- 여기서 명시적으로 drop해야 사라진다(schema.sql은 누적 적용).
+DROP TABLE IF EXISTS raw.submission_budget;
 
 CREATE TABLE IF NOT EXISTS raw.reflections (
     reflection_id   text PRIMARY KEY,
