@@ -9,6 +9,7 @@ import streamlit as st
 import polars as pl
 
 from config.settings import ACTION_TYPES
+from config.competitions import active_competition_ids
 from cycle.stagnation import detect_stagnation
 from store.db import PgConn, connect
 
@@ -47,6 +48,9 @@ def _fetch_stagnation(_conn: PgConn, competition_id: str):
     return detect_stagnation(_conn, competition_id)
 
 
+_LB_STALE_DAYS = 7  # #233 완료 기준: deep tier 전 대회가 주 1회 이상 LB 갱신
+
+
 def _fleet_attention(row: dict) -> str:
     """대회 하나의 "지금 봐야 하나" 판정 — _traffic_light와 신호 조합이 달라
     별도 함수. 천장 진단(2026-08-03)에서 대회 26개를 하나씩 SQL로 찔러 찾았던
@@ -60,6 +64,10 @@ def _fleet_attention(row: dict) -> str:
         return "🔴"  # baseline이 전부 격리돼 지금 하나도 없음
     if (row["confirmed"] or 0) == 0:
         return "🟡"  # 아직 baseline 자체가 없음
+    if row["is_active"] and (
+        row["days_since_lb"] is None or row["days_since_lb"] > _LB_STALE_DAYS
+    ):
+        return "🟡"  # deep tier인데 외부 검증(LB)을 주 1회도 못 받고 있다(#233 완료 기준)
     if row["queue_status"] == "pending":
         return "🟡"  # 예약만 되고 daemon이 아직 안 돎
     if (row["jumps_14d"] or 0) == 0:
@@ -77,7 +85,10 @@ except Exception as exc:
     st.stop()
 
 st.subheader("Fleet Overview")
-st.caption("전 대회 한눈에 — 어디부터 볼지 여기서 고른다. attention: 🔴 즉시 확인 / 🟡 관찰 필요 / 🟢 정상")
+st.caption(
+    "전 대회 한눈에 — 어디부터 볼지 여기서 고른다. attention: 🔴 즉시 확인 / 🟡 관찰 필요 / 🟢 정상. "
+    "lb_percentile은 대회 리더보드 분포 기준 백분위(높을수록 좋음) — 대회 간 비교가 가능한 유일한 지표다."
+)
 
 # raw.cycle_queue.competition은 슬러그(s4e7), 나머지 테이블은 풀 competition_id
 # (playground-series-s4e7) — split_part로 조인 키를 맞춘다.
@@ -122,6 +133,18 @@ all_comps = _query_df(
     "select competition_id, name from raw.competitions order by competition_id",
     ["competition_id", "name"],
 )
+lb_status = _query_df(
+    conn,
+    """
+    select distinct on (competition_id)
+           competition_id, lb_percentile,
+           extract(epoch from (now() - submitted_at)) / 86400.0 as days_since_lb
+    from raw.kaggle_submissions
+    where status = 'complete' and lb_score is not null
+    order by competition_id, submitted_at desc
+    """,
+    ["competition_id", "lb_percentile", "days_since_lb"],
+)
 
 # 조인 소스가 비어 있으면(예: 지금은 paused=[]) _rows_df가 컬럼 dtype을 Null로 만들어
 # join key 타입이 안 맞아 죽는다 — join key만 명시 캐스팅해 방어.
@@ -129,6 +152,7 @@ queue_latest = queue_latest.with_columns(pl.col("competition").cast(pl.Utf8))
 pipeline_counts = pipeline_counts.with_columns(pl.col("competition_id").cast(pl.Utf8))
 recent_activity = recent_activity.with_columns(pl.col("competition_id").cast(pl.Utf8))
 paused = paused.with_columns(pl.col("competition_id").cast(pl.Utf8))
+lb_status = lb_status.with_columns(pl.col("competition_id").cast(pl.Utf8))
 
 fleet = (
     all_comps
@@ -137,9 +161,14 @@ fleet = (
     .join(pipeline_counts, on="competition_id", how="left")
     .join(recent_activity, on="competition_id", how="left")
     .join(paused, on="competition_id", how="left")
+    .join(lb_status, on="competition_id", how="left")
     .drop("_slug")
 )
 
+active_ids = active_competition_ids()
+fleet = fleet.with_columns(
+    pl.col("competition_id").is_in(list(active_ids)).alias("is_active")
+)
 fleet_rows = [_fleet_attention(r) for r in fleet.iter_rows(named=True)]
 fleet = fleet.with_columns(pl.Series("attention", fleet_rows)).sort(
     pl.col("attention").replace_strict({"🔴": 0, "🟡": 1, "🟢": 2}, return_dtype=pl.Int32)
@@ -147,9 +176,9 @@ fleet = fleet.with_columns(pl.Series("attention", fleet_rows)).sort(
 
 st.dataframe(
     fleet.select([
-        "attention", "competition_id", "name", "queue_status", "cycles_done", "n_cycles",
-        "confirmed", "quarantined", "attempts_14d", "jumps_14d", "errors_14d", "oom_14d",
-        "auto_submit_paused_reason", "last_attempt",
+        "attention", "competition_id", "name", "is_active", "queue_status", "cycles_done",
+        "n_cycles", "confirmed", "quarantined", "attempts_14d", "jumps_14d", "errors_14d",
+        "oom_14d", "lb_percentile", "days_since_lb", "auto_submit_paused_reason", "last_attempt",
     ]),
     use_container_width=True,
     height=min(35 * (len(fleet) + 1), 500),
@@ -389,12 +418,30 @@ with sq_left:
             st.warning(f"CV는 개선인데 LB는 악화된 제출 {n_diverged}건 — cv_lb_calibration 발산")
         st.dataframe(calib_df, use_container_width=True)
 
+gap_df = _query_df(
+    conn,
+    """
+    select submitted_at, cv_score, lb_score, lb_percentile, cv_lb_gap
+    from cv_lb_gap_trend where competition_id = %s
+    order by submitted_at desc
+    limit 20
+    """,
+    ["submitted_at", "cv_score", "lb_score", "lb_percentile", "cv_lb_gap"],
+    [comp_id],
+)
+
 with sq_right:
-    st.caption(f"격리된 파이프라인 ({len(quarantine_df)}건)")
-    if quarantine_df.is_empty():
-        st.info("No quarantined pipelines.")
+    st.caption("cv-LB 갭 (양수 = CV가 LB보다 낙관적) · lb_percentile은 높을수록 좋음")
+    if gap_df.is_empty():
+        st.info("No LB-scored submissions yet.")
     else:
-        st.dataframe(quarantine_df, use_container_width=True)
+        st.dataframe(gap_df, use_container_width=True)
+
+st.caption(f"격리된 파이프라인 ({len(quarantine_df)}건)")
+if quarantine_df.is_empty():
+    st.info("No quarantined pipelines.")
+else:
+    st.dataframe(quarantine_df, use_container_width=True)
 
 st.divider()
 
