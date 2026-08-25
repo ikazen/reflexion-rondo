@@ -166,3 +166,51 @@ def test_last_submitted_attempt_query_excludes_null_attempt_id() -> None:
     _last_submitted_attempt(conn, "playground-series-s6e8")
     sql = conn.execute.call_args[0][0]
     assert "attempt_id is not null" in sql
+
+
+def test_cache_miss_fit_is_serialized_by_gate() -> None:
+    """일일 예산이 대회당 2건이 되면서(ADR-038) 같은 대회 후보 2개가 동시에 전체 train을
+    fit해 서로를 굶겨 둘 다 타임아웃난 실측(2026-08-26 s6e8) — fit 경로는 한 번에 하나만."""
+    import threading
+
+    import bin.api as api_mod
+
+    seen: list[list[str]] = []
+
+    def _record(cmd, **kw):
+        seen.append(cmd)
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    conn_mock = MagicMock()
+    with patch("store.db.connect", return_value=conn_mock), \
+         patch("bin.api._kaggle_home_env", _fake_kaggle_home_env), \
+         patch("store.s3_code.download_submission_csv", return_value=None), \
+         patch("store.s3_code.upload_submission_csv"), \
+         patch("bin.api._run_in_pgroup", side_effect=_record):
+        assert api_mod._submit_fit_gate.acquire(blocking=False)
+        t = threading.Thread(target=_kaggle_submit, args=(
+            "sub-1", "playground-series-s4e1", "s4e1", "attempt-abc", "msg",
+        ), daemon=True)
+        t.start()
+        t.join(timeout=1.0)
+        # 게이트를 다른 쪽이 잡고 있는 동안엔 fit 서브프로세스가 시작되지 않는다.
+        assert seen == []
+        assert t.is_alive()
+
+        api_mod._submit_fit_gate.release()
+        t.join(timeout=5.0)
+
+    assert not t.is_alive()
+    assert any("bin.submit" in c for c in seen)
+
+
+def test_cache_hit_does_not_take_fit_gate() -> None:
+    """캐시 히트는 fit이 없어 직렬화 대상이 아니다 — 게이트가 잠겨 있어도 바로 업로드한다."""
+    import bin.api as api_mod
+
+    assert api_mod._submit_fit_gate.acquire(blocking=False)
+    try:
+        run_mock, _, _ = _run(attempt_id="attempt-abc", cached_csv=b"id,target\n1,0.5\n")
+        run_mock.assert_called_once()
+    finally:
+        api_mod._submit_fit_gate.release()

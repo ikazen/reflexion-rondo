@@ -40,6 +40,7 @@ from config.settings import ACTION_TYPES, SUBMISSIONS_PER_DAY
 from cycle.stagnation import detect_stagnation
 from evaluator.harness import is_significant_gain
 from memory.transfer import _fp_distance
+from runtime.isolate import DEFAULT_CPU_BUDGET_SECS
 from store.db import PgConn
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -197,9 +198,16 @@ class AutoSubmitRequest(BaseModel):
 
 
 _TERMINAL = frozenset({"complete", "error", "invalid"})
-# eval 타임아웃은 600->1200s로 올렸으나 submit은 누락 — s5e5(75만 행) 5-seed
-# bagging이 600s를 넘겨 매번 타임아웃으로 실패했다. eval과 동일하게 상향.
-_SUBMIT_TIMEOUT_SEC = 1200
+# 제출 CSV 생성은 CV 분할 없이 전체 train에 5-seed bagging fit이라 attempt 1회
+# eval보다 무겁다 — eval CPU 예산(runtime.isolate.DEFAULT_CPU_BUDGET_SECS, #182)과
+# 같은 값으로 맞춘다. 600->1200s 상향(s5e5 75만 행) 때와 같은 이유로 또 부족했다:
+# s6e8(69만 행 + 원본 4.7만) 2건이 1200s를 넘겨 전부 타임아웃(2026-08-26 실측).
+_SUBMIT_TIMEOUT_SEC = DEFAULT_CPU_BUDGET_SECS
+
+# 캐시 미스 제출은 전체 train fit이라 CPU를 통째로 쓴다. 일일 예산이 대회당 2건이 되면서
+# (ADR-038) 같은 대회 후보 2개가 동시에 fit해 서로를 굶겨 둘 다 타임아웃나는 일이 생겼다
+# — 한 번에 하나씩만 돌린다. 캐시 히트 경로는 fit이 없어 이 게이트를 타지 않는다.
+_submit_fit_gate = threading.Semaphore(1)
 
 
 def _run_in_pgroup(
@@ -286,9 +294,10 @@ def _kaggle_submit(
                 ]
                 if attempt_id:
                     cmd += ["--attempt-id", attempt_id]
-                result = _run_in_pgroup(
-                    cmd, timeout=_SUBMIT_TIMEOUT_SEC, cwd=str(ROOT), env=env,
-                )
+                with _submit_fit_gate:
+                    result = _run_in_pgroup(
+                        cmd, timeout=_SUBMIT_TIMEOUT_SEC, cwd=str(ROOT), env=env,
+                    )
                 csv_path = None
                 for line in result.stdout.splitlines():
                     if "submission saved:" in line:

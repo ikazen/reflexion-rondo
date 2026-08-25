@@ -1,6 +1,19 @@
 # 변경 이력
 
-## v1.6.1 — 제출 후보를 cv가 아니라 제출 가능성 우선으로 정렬 (2026-08-26)
+## v1.6.1 — 제출 경로 실측 후속: 후보 정렬, 타임아웃, fit 직렬화 (2026-08-26)
+
+### #256 — 제출 CSV 생성 타임아웃 상향 + fit 직렬화
+- v1.6.0 첫 배치에서 s6e8 2건이 `submit timed out (1200s)`로 실패했다. 제출 CSV 생성은 CV 분할
+  없이 전체 train(69만 행 + 원본 4.7만)에 5-seed bagging fit이라 attempt 1회 eval보다 무거운데,
+  #182에서 eval CPU 예산만 3600s로 올리고 submit은 1200s로 남아 있었다 — 600→1200s 상향(s5e5
+  75만 행) 때와 정확히 같은 누락이다. `_SUBMIT_TIMEOUT_SEC`을 `DEFAULT_CPU_BUDGET_SECS`에
+  묶어 다시 갈라지지 않게 했다.
+- 일일 예산이 대회당 2건이 되면서(ADR-038) 같은 대회 후보 2개가 **동시에** 전체 train을 fit해
+  2 OCPU ops-vm에서 서로를 굶겼다 — 둘 다 타임아웃난 직접 원인이다. 캐시 미스 fit 경로에
+  세마포어(`_submit_fit_gate`)를 걸어 한 번에 하나만 돌린다. 캐시 히트(promote 시점 CSV)는
+  fit이 없어 이 게이트를 타지 않는다.
+
+### #254 — 제출 후보를 cv가 아니라 제출 가능성 우선으로 정렬
 - #254: v1.6.0 배포 직후 첫 auto-submit 배치(10건) 중 4건이 Kaggle에 닿기도 전에
   `replay_best_pipeline: 재생 결과 sha256이 마지막 승격분의 신뢰 해시와 다르다`로 실패했다.
   `bin/submit.py`는 attempt patch를 **직전 승격분 base** 위에서 실행하는데(#80), 그 base를
