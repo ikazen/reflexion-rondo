@@ -1,5 +1,41 @@
 # 변경 이력
 
+## v1.5.17 — deep tier 낭비 정리: 타깃 결측 유입 차단 + CPU 예산 영구값 확정 (2026-08-26)
+
+### #245 — 원본 데이터 병합 시 타깃 결측 행 유입 차단
+- `store/train_data.py:load_train`이 `EXTRA_TRAIN_PATHS` 원본을 `pl.concat(how="diagonal_relaxed")`로
+  그대로 병합해, 원본에 타깃이 비어 있는 행이 있으면 그 null이 `y`에 섞여 들어가
+  `evaluator/harness.py:_fit_with_early_stopping`의 `model.fit`이 `ValueError: Input y contains NaN`으로
+  크래시했다. s5e4 `original.csv`가 52,500행 중 5,395행(10.3%)의 `Listening_Time_minutes`가 빈칸이라
+  정확히 이 경로에 걸렸다 — 프로덕션 실측으로 s5e4는 최근 2일 attempt 195건 전량 실패(그중 59건이 이
+  시그니처), deep tier 5개 중 1개가 통째로 산출물 0이었다.
+- 원본 프레임에서 타깃이 null이거나 NaN인(문자열 "NaN" 파싱분) 행을 병합 전에 버리고, 버린 건수를
+  warning으로 남긴다. NaN은 null이 아니라 별도 필터가 필요하다(`_target_present`).
+- 원본에 `comp.TARGET` 컬럼 자체가 없으면 조용히 넘기지 않고 `ValueError`로 즉시 실패한다 — 기존
+  docstring은 그 경우 "해당 원본 행의 target은 null이 되어 사실상 버려진다"고 적고 있었지만 실제로는
+  버려지지 않고 전 행이 fit까지 흘러가 같은 크래시를 냈다. 타깃 컬럼명 매핑은 여전히 미지원이므로,
+  배선 실수는 배포 시점에 드러나는 편이 낫다.
+- 나머지 deep tier 원본은 확인 결과 정상(s4e10 `loan_status` / s4e11 `Depression` / s6e8
+  `addicted_label` 전부 타깃 결측 0건, s4e12는 `EXTRA_TRAIN_PATHS` 미설정).
+- 실데이터 검증: `load_train(s5e4)` 실행 시 5,395행 drop 후 797,105행, 타깃 null/NaN 0건.
+
+### #182 — CPU 예산 영구값 3600s 확정 (ADR-028 추가 결정)
+- `runtime/isolate.py:DEFAULT_CPU_BUDGET_SECS` 900 → 3600, `config/competitions/s6e8.py`의
+  대회별 override(#176 임시 조치) 제거 — 기본값과 같아져 중복.
+- 근거(2026-08-19~26 성공 attempt `peak_cpu_sec` 실측): s6e8(예산 3600s) p50=1349 / p90=1909 /
+  p99=2269 / max=3244, kill률 11.5%. 900s 대회들은 max가 전부 850~900에 붙어 있고 kill률이
+  s4e12 67% / s4e10 29% / s5e4 25% / s4e11 20%, fleet 일별 22~32%. max가 상한에 붙어 있는 건
+  분포가 검열됐다는 뜻이고, 검열이 풀린 s6e8의 p50이 900s의 1.5배라는 건 900s가 애초에 중앙값보다
+  작았다는 뜻이다. #176이 대회별 override를 택했던 근거("전역 상향은 모든 대회의 최악 벽시계를
+  늘린다")는 fleet 동결(ADR-032)로 대상이 deep tier 5개뿐이라 사라졌다.
+- **벽시계 상한 결합(#207)**: `eval_isolated`의 벽시계 상한 1200s가 CPU 예산과 무관하게 별도로 걸려
+  있어서, CPU 예산만 올리면 1200s 벽에서 잘려 효과가 없다(성공 attempt의 CPU/벽시계 비 p50 1.8~2.5,
+  p90 약 4 — 병렬성이 낮을수록 벽시계가 먼저 닿는다). 호출자가 `timeout_sec`을 명시하지 않으면
+  `max(DEFAULT_TIMEOUT, cpu_budget)`을 쓰도록 바꿔 CPU 예산이 벽시계에 선점당하지 않게 했다.
+  `DEFAULT_TIMEOUT` 상수는 1200s 유지 — 예산이 더 작은 대회에서 hang 감지 하한으로 계속 동작한다.
+- 회귀 테스트: 벽시계 기본값이 CPU 예산 이상인지, 명시 `timeout_sec`은 그대로 존중되는지.
+  기존 CPU 예산 테스트의 하드코딩 900을 `DEFAULT_CPU_BUDGET_SECS` 참조로 교체.
+
 ## v1.5.16 — 축적 시맨틱 수정: 훅 1개 제한 폐지, materialize 합성으로 변경 (2026-08-25)
 - #232(Milestone v1.6.0, ADR-037): `evaluator/contract.py:validate_patch`가 action_type별 훅
   개수를 더 이상 하드 리젝트하지 않는다(ADR-006 뒤집기) — `_ALLOWED_HOOKS`는 `agents/coder.py`
