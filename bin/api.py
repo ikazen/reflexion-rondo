@@ -623,15 +623,28 @@ def _submissions_today(conn: PgConn, competition_id: str) -> int:
 def _unsubmitted_confirmed(
     conn: PgConn, competition_id: str, limit: int
 ) -> list[tuple[str, float]]:
-    """아직 한 번도 제출된 적 없는 confirmed pipeline을 cv 상위순으로.
+    """아직 한 번도 제출된 적 없는 confirmed pipeline을 제출 가능성·cv 순으로.
 
     _best_attempt와 같은 confirmed-only 제약(ADR-031)을 쓰되 "대회 전역 1등" 대신
     "미제출 상위 N"을 고른다 — 같은 attempt를 다시 내면 LB 점수가 같아 정보량이 0이고,
     미제출 confirmed는 각각 새 cv-LB 쌍을 준다.
+
+    1차 정렬 키가 cv가 아니라 `prior_snapshot`인 이유: bin/submit.py는 그 attempt
+    **직전** 승격분의 materialized_code 스냅샷 위에서 patch를 실행하는데(#80/#89),
+    스냅샷이 없는 과거 이력은 replay 폴백으로 가고 그 replay는 materialize 합성 규칙이
+    바뀐 뒤(ADR-037/#232) sha 검증에 걸려 대부분 실패한다. 실측(2026-08-26 첫 배치
+    10건): 직전 스냅샷 없는 후보 5건 중 4건 실패, 있는 5건은 전건 성공. 제외가 아니라
+    후순위로 두는 건 스냅샷 없이도 replay가 재현되는 경우가 실제로 있기 때문이다.
     """
     rows = conn.execute(
         """
-        select a.attempt_id, a.cv_score
+        select a.attempt_id, a.cv_score,
+               coalesce((
+                   select p2.materialized_code is not null
+                   from raw.pipelines p2 join raw.attempts a2 using (attempt_id)
+                   where p2.competition_id = a.competition_id and a2.run_ts < a.run_ts
+                   order by a2.run_ts desc limit 1
+               ), true) as prior_snapshot
         from raw.attempts a
         join raw.pipelines p on p.attempt_id = a.attempt_id
         join raw.competitions c on c.competition_id = a.competition_id
@@ -643,7 +656,8 @@ def _unsubmitted_confirmed(
               select 1 from raw.kaggle_submissions s
               where s.attempt_id = a.attempt_id
           )
-        order by c.metric_sign * a.cv_score desc, a.run_ts asc, a.attempt_id asc
+        order by prior_snapshot desc,
+                 c.metric_sign * a.cv_score desc, a.run_ts asc, a.attempt_id asc
         limit %s
         """,
         [competition_id, limit],

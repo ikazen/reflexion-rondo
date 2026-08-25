@@ -208,6 +208,22 @@ def test_auto_submit_prefers_unsubmitted_backlog_over_best(monkeypatch):
     assert [s["attempt_id"] for s in body["submitted"]] == ["cand-a", "cand-b"]
 
 
+def test_unsubmitted_confirmed_orders_by_prior_snapshot_then_cv():
+    """bin/submit.py는 그 attempt 직전 승격분의 materialized_code 스냅샷 위에서 patch를
+    실행한다(#80/#89). 스냅샷이 없으면 replay 폴백인데, materialize 합성 규칙이 바뀐 뒤
+    (ADR-037/#232) 그 replay는 sha 검증에 대부분 걸린다 — 실측 첫 배치 10건 중 직전
+    스냅샷 없는 5건 가운데 4건이 실패했다. 그래서 cv보다 제출 가능성을 먼저 본다."""
+    import bin.api as api_mod
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = [("a", 0.95, True), ("b", 0.96, False)]
+    result = api_mod._unsubmitted_confirmed(conn, "playground-series-s4e10", 2)
+
+    sql = conn.execute.call_args.args[0]
+    assert "order by prior_snapshot desc" in sql
+    assert result == [("a", 0.95), ("b", 0.96)]
+
+
 def test_auto_submit_respects_daily_budget(monkeypatch):
     """오늘 이미 쓴 만큼 예산에서 뺀다 — Kaggle 일일 한도를 넘기지 않기 위함."""
     client = _client_for_auto_submit(
