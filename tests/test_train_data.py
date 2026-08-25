@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import polars as pl
+import pytest
 
 from store.train_data import load_train
 
@@ -19,6 +20,7 @@ def _fake_comp(**overrides) -> SimpleNamespace:
         S3_DATA_PATH=None,
         DATA_DIR=Path("/data/s4e1"),
         DROP_COLS=["id"],
+        TARGET="y",
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -105,6 +107,71 @@ def test_extra_paths_selects_only_common_columns():
 
     assert "unrelated_extra_col" not in result.columns
     assert result["engineered"].to_list() == [9, 9, None]
+
+
+def test_extra_paths_drops_rows_with_null_target():
+    """원본에 타깃 결측 행이 섞여 있으면 병합 전에 버린다 — 그대로 두면 harness의
+    model.fit이 "Input y contains NaN"으로 크래시한다(#245, s5e4)."""
+    comp = _fake_comp(DROP_COLS=[], EXTRA_TRAIN_PATHS=["original.csv"], TARGET="y")
+    base_df = pl.DataFrame({"x": [1, 2], "y": [0.0, 1.0]})
+    extra_df = pl.DataFrame({"x": [3, 4, 5], "y": [1.0, None, 0.0]})
+
+    def fake_read_csv(path):
+        return extra_df if "original.csv" in str(path) else base_df
+
+    with patch("store.train_data.pl.read_csv", side_effect=fake_read_csv):
+        result = load_train(comp)
+
+    assert result.height == 4
+    assert result["y"].null_count() == 0
+    assert result["is_original"].to_list() == [False, False, True, True]
+
+
+def test_extra_paths_drops_rows_with_nan_target():
+    """CSV가 결측을 빈칸이 아니라 문자열 NaN으로 적으면 polars가 float NaN으로 파싱하는데,
+    NaN은 null이 아니라 drop_nulls류 필터에 안 걸린다 — 별도로 걸러야 한다."""
+    comp = _fake_comp(DROP_COLS=[], EXTRA_TRAIN_PATHS=["original.csv"], TARGET="y")
+    base_df = pl.DataFrame({"x": [1], "y": [0.0]})
+    extra_df = pl.DataFrame({"x": [2, 3], "y": [float("nan"), 1.0]})
+
+    def fake_read_csv(path):
+        return extra_df if "original.csv" in str(path) else base_df
+
+    with patch("store.train_data.pl.read_csv", side_effect=fake_read_csv):
+        result = load_train(comp)
+
+    assert result.height == 2
+    assert result["y"].to_list() == [0.0, 1.0]
+
+
+def test_extra_paths_missing_target_column_raises():
+    """타깃 컬럼명 매핑은 지원하지 않는다 — 원본에 타깃이 없으면 전 행이 null 타깃으로
+    병합되므로 조용히 넘기지 않고 배선 실수로 즉시 실패시킨다."""
+    comp = _fake_comp(DROP_COLS=[], EXTRA_TRAIN_PATHS=["original.csv"], TARGET="y")
+    base_df = pl.DataFrame({"x": [1, 2], "y": [0, 1]})
+    extra_df = pl.DataFrame({"x": [3], "target_renamed": [1]})
+
+    def fake_read_csv(path):
+        return extra_df if "original.csv" in str(path) else base_df
+
+    with patch("store.train_data.pl.read_csv", side_effect=fake_read_csv):
+        with pytest.raises(ValueError, match="target column 'y' missing"):
+            load_train(comp)
+
+
+def test_extra_paths_all_targets_present_keeps_every_row():
+    """결측이 없으면 한 행도 버리지 않는다 — 기존 대회 동작 불변."""
+    comp = _fake_comp(DROP_COLS=[], EXTRA_TRAIN_PATHS=["original.csv"], TARGET="y")
+    base_df = pl.DataFrame({"x": [1, 2], "y": [0, 1]})
+    extra_df = pl.DataFrame({"x": [3, 4], "y": [1, 0]})
+
+    def fake_read_csv(path):
+        return extra_df if "original.csv" in str(path) else base_df
+
+    with patch("store.train_data.pl.read_csv", side_effect=fake_read_csv):
+        result = load_train(comp)
+
+    assert result.height == 4
 
 
 # MAX_TRAIN_ROWS (#84 — s4e7 11.5M행 OOM 대응)

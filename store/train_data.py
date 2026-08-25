@@ -9,9 +9,12 @@ comp.EXTRA_TRAIN_PATHS(기본 빈 리스트)가 설정된 대회는 Playground S
 """
 from __future__ import annotations
 
+import logging
 import os
 
 import polars as pl
+
+_LOG = logging.getLogger(__name__)
 
 _MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 
@@ -39,6 +42,13 @@ def _stratified_sample(df: pl.DataFrame, target_col: str, n: int, seed: int) -> 
     return pl.concat(parts)
 
 
+def _target_present(df: pl.DataFrame, target: str) -> pl.Expr:
+    expr = pl.col(target).is_not_null()
+    if df.schema[target].is_float():
+        expr = expr & pl.col(target).is_not_nan()
+    return expr
+
+
 def load_train(comp: object) -> pl.DataFrame:
     """comp(config.competitions.<slug> 모듈)의 train.csv를 로드하고 DROP_COLS를 적용한다.
 
@@ -48,9 +58,10 @@ def load_train(comp: object) -> pl.DataFrame:
     comp.EXTRA_TRAIN_PATHS(기본 없음/빈 리스트)가 있으면 각 경로를 같은 S3-or-local
     규칙으로 추가 로드해 concat한다 — 원본이 합성 대회 train과 완전히 같은 스키마가
     아닐 수 있어 base와 공통되는 컬럼만 취하고(교집합), 없는 컬럼은 null로 채운다
-    (`is_original` 플래그로 구분). target 컬럼명이 base와 동일하다고 가정한다 —
-    다르면 해당 원본 행의 target은 null이 되어 사실상 버려진다(현재는 이름 매핑을
-    지원하지 않음).
+    (`is_original` 플래그로 구분). target 컬럼명 매핑은 지원하지 않으므로 원본에
+    comp.TARGET이 없으면 예외로 실패하고, 있어도 값이 비어 있는 행은 버린다 —
+    타깃 결측 행은 그대로 두면 harness의 model.fit에서 "Input y contains NaN"으로
+    크래시한다(#245, s5e4 original.csv 52500행 중 5395행).
 
     comp.MAX_TRAIN_ROWS(opt-in, 기본 없음)가 설정돼 있고 로드된 행 수가 그보다 크면
     고정 seed로 축소한다. 분류(IS_CLASSIFICATION=True)면 클래스 비율을 보존하는
@@ -66,7 +77,20 @@ def load_train(comp: object) -> pl.DataFrame:
         for path in extra_paths:
             extra = _load_csv(comp, path)
             common_cols = [c for c in extra.columns if c in base_cols]
-            extra = extra.select(common_cols).with_columns(pl.lit(True).alias("is_original"))
+            if comp.TARGET not in common_cols:
+                raise ValueError(
+                    f"EXTRA_TRAIN_PATHS {path!r}: target column {comp.TARGET!r} missing "
+                    f"(columns: {sorted(extra.columns)})"
+                )
+            extra = extra.select(common_cols)
+            before = extra.height
+            extra = extra.filter(_target_present(extra, comp.TARGET))
+            if extra.height < before:
+                _LOG.warning(
+                    "load_train: %s dropped %d/%d rows with missing target %r",
+                    path, before - extra.height, before, comp.TARGET,
+                )
+            extra = extra.with_columns(pl.lit(True).alias("is_original"))
             frames.append(extra)
         train = pl.concat(frames, how="diagonal_relaxed")
 
