@@ -185,8 +185,8 @@ def test_refresh_submission_row_pending_updates_checked_at_only():
 def test_refresh_submission_row_complete_updates_lb_score_and_attempts():
     row = ("sub-1", "s4e1", "attempt-1", _now(), "msg", None, "submitted", None, None, None)
     conn = MagicMock()
-    # 1) submission row  2) 발산검사 cv_score 조회  3) 직전 완료 제출 조회(없음 → 발산 스킵)
-    conn.execute.return_value.fetchone.side_effect = [row, (0.9,), None]
+    # 1) submission row  2) LB 백분위 스냅샷(없음)  3) 발산검사 cv_score  4) 직전 완료 제출(없음)
+    conn.execute.return_value.fetchone.side_effect = [row, None, (0.9,), None]
     with patch("bin.api._poll_kaggle_once", return_value=("complete", 0.987)):
         rec = refresh_submission_row(conn, "sub-1")
     assert rec["status"] == "complete"
@@ -307,6 +307,7 @@ def test_refresh_submission_row_complete_with_divergence_applies_tripwire():
     conn = MagicMock()
     conn.execute.side_effect = [
         MagicMock(fetchone=MagicMock(return_value=row)),  # submission row
+        MagicMock(fetchone=MagicMock(return_value=None)),  # LB 백분위 스냅샷 조회(없음)
         MagicMock(),  # update raw.kaggle_submissions (미사용)
         MagicMock(),  # update raw.attempts.lb_score (미사용)
         MagicMock(fetchall=MagicMock(return_value=[(1.5, 1.5, -1), (2.0, 1.0, -1)])),  # 발산검사: 직전 2건
@@ -330,6 +331,7 @@ def test_refresh_submission_row_complete_without_divergence_does_not_pause():
     conn = MagicMock()
     conn.execute.side_effect = [
         MagicMock(fetchone=MagicMock(return_value=row)),  # submission row
+        MagicMock(fetchone=MagicMock(return_value=None)),  # LB 백분위 스냅샷 조회(없음)
         MagicMock(),  # update raw.kaggle_submissions (미사용)
         MagicMock(),  # update raw.attempts.lb_score (미사용)
         MagicMock(fetchall=MagicMock(return_value=[])),  # 발산검사: 직전 제출 없음
@@ -349,6 +351,7 @@ def test_auto_submit_skips_paused_competition(monkeypatch):
     from fastapi.testclient import TestClient
 
     monkeypatch.setattr(api_mod, "_competition_id_to_slug", lambda: {"s5e10": "s5e10"})
+    monkeypatch.setattr(api_mod, "_active_competition_ids", lambda: {"s5e10"})
     monkeypatch.setattr(api_mod, "_best_attempt", lambda conn, cid: ("cand", 0.9))
     monkeypatch.setattr(api_mod, "_start_submission", lambda *a, **k: "sub-1")
 

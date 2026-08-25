@@ -95,12 +95,11 @@ ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS materialized_code text;
 -- 보존한다. bin/quarantine_leaks.py가 스캔해서 채운다(docs/decisions.md ADR-025).
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS invalid_reason text;
 
-CREATE TABLE IF NOT EXISTS raw.submission_budget (
-    competition_id  text,
-    day             date,
-    count           int,
-    PRIMARY KEY (competition_id, day)
-);
+-- 일일 제출 한도 카운터로 만들었으나 읽기/쓰기 코드가 한 번도 붙지 않은 채 빈 테이블로
+-- 남아 있었다. #233의 예산 집행은 raw.kaggle_submissions를 직접 세는 쪽을 택했다 —
+-- 별도 카운터는 드리프트하지만 제출 이력은 안 한다. 라이브 DB에 이미 있는 테이블은
+-- 여기서 명시적으로 drop해야 사라진다(schema.sql은 누적 적용).
+DROP TABLE IF EXISTS raw.submission_budget;
 
 CREATE TABLE IF NOT EXISTS raw.reflections (
     reflection_id   text PRIMARY KEY,
@@ -485,6 +484,42 @@ CREATE TABLE IF NOT EXISTS raw.kaggle_submissions (
     error          text,
     checked_at     timestamp
 );
+
+-- LB 원점수는 대회마다 metric도 스케일도 달라 fleet 횡단 비교가 불가능하다. 같은 대회
+-- 리더보드 분포 안에서의 백분위(높을수록 좋음)로 정규화해 북극성 지표로 쓴다(#233, ADR-038).
+-- 스냅샷이 없는 대회는 null로 남는다.
+ALTER TABLE raw.kaggle_submissions ADD COLUMN IF NOT EXISTS lb_percentile double precision;
+
+-- 대회별 public leaderboard 점수 분포 스냅샷. scores는 rank 순(1등이 첫 원소)
+-- 실수 배열이고, 백분위는 이 배열 안에서 우리 점수보다 나쁜 팀 비율로 계산한다.
+-- 종료된 대회는 최종 LB가 고정이라 1회면 충분하고, 진행 중 대회만 주기 갱신이 필요하다.
+CREATE TABLE IF NOT EXISTS raw.leaderboard_snapshot (
+    competition_id  text PRIMARY KEY,
+    fetched_at      timestamp NOT NULL,
+    n_teams         int NOT NULL,
+    scores          jsonb NOT NULL
+);
+
+-- cv-LB 갭 추세 — holdout_cv_gap_trend(overfit_gap)와 같은 형태로, holdout 대신
+-- 실제 LB를 쓴다. metric_sign을 곱해 "양수 = CV가 LB보다 낙관적"으로 방향을 통일했다.
+-- 원점수 차이라 대회 간 비교는 무의미하고, 한 대회 안에서 갭이 벌어지는지를 본다 —
+-- 갭이 시간에 따라 커지면 CV가 우리 폴드에 과적합되고 있다는 뜻이다.
+-- lb_percentile은 대회 리더보드 분포 기준 백분위(높을수록 좋음, 스냅샷 없으면 null)로
+-- 이쪽은 대회 간 비교가 가능한 유일한 지표다(#233, ADR-038).
+CREATE OR REPLACE VIEW cv_lb_gap_trend AS
+SELECT
+    s.submission_id,
+    s.competition_id,
+    s.submitted_at,
+    s.attempt_id,
+    a.cv_score,
+    s.lb_score,
+    s.lb_percentile,
+    c.metric_sign * (a.cv_score - s.lb_score) AS cv_lb_gap
+FROM raw.kaggle_submissions s
+JOIN raw.competitions c USING (competition_id)
+JOIN raw.attempts a ON a.attempt_id = s.attempt_id
+WHERE s.status = 'complete' AND s.lb_score IS NOT NULL AND a.cv_score IS NOT NULL;
 
 -- cv↔LB 정합성 — 완료된 제출을 시간순으로 이어 delta_cv/delta_lb를 계산한다.
 -- 둘 다 metric_sign을 곱해 "개선이면 양수"로 방향을 통일했다. diverged=true는

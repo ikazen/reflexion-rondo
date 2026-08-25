@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -34,7 +35,8 @@ import polars as pl
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from config.settings import ACTION_TYPES
+from config.competitions import active_competition_ids, competition_id_to_slug
+from config.settings import ACTION_TYPES, SUBMISSIONS_PER_DAY
 from cycle.stagnation import detect_stagnation
 from evaluator.harness import is_significant_gain
 from memory.transfer import _fp_distance
@@ -184,8 +186,14 @@ class SubmitRequest(BaseModel):
     message: str | None = None
 
 
+class LeaderboardRefreshRequest(BaseModel):
+    competition: str | None = None
+    max_age_hours: int = 24 * 7
+    force: bool = False
+
+
 class AutoSubmitRequest(BaseModel):
-    window_hours: int = 24
+    window_hours: int = 24  # 미사용 — 대상 대회는 comp.ACTIVE로 정한다(#233). 호출자 호환용으로만 남김.
 
 
 _TERMINAL = frozenset({"complete", "error", "invalid"})
@@ -447,23 +455,119 @@ def _start_submission(
     return sid
 
 
+def _age_hours(ts: datetime) -> float:
+    """DB의 timestamp 컬럼은 tz 없는 naive라 aware now와 그냥 빼면 TypeError다."""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
+
+
+_LEADERBOARD_TIMEOUT_SEC = 300
+
+
+def _fetch_leaderboard_scores(competition_id: str) -> list[float] | None:
+    """kaggle CLI로 public leaderboard 전체를 받아 rank 순 점수 배열로 돌려준다.
+
+    `--show`는 50행씩 페이지네이션이라 못 쓴다 — `--download`가 주는 zip 안 CSV가
+    전체 순위표다(컬럼: Rank/TeamId/TeamName/LastSubmissionDate/Score/...).
+    """
+    with _kaggle_home_env() as env:
+        if env is None:
+            return None
+        with tempfile.TemporaryDirectory(prefix="rondo_lb_") as tmpdir:
+            result = _run_in_pgroup(
+                ["uv", "run", "kaggle", "competitions", "leaderboard",
+                 "-c", competition_id, "--download", "-p", tmpdir],
+                timeout=_LEADERBOARD_TIMEOUT_SEC, cwd=str(ROOT), env=env,
+            )
+            if result.returncode != 0:
+                print(f"  [leaderboard] {competition_id} download failed: {result.stderr[:300]}")
+                return None
+            zips = list(Path(tmpdir).glob("*.zip"))
+            if not zips:
+                print(f"  [leaderboard] {competition_id}: no zip produced")
+                return None
+            with zipfile.ZipFile(zips[0]) as zf:
+                names = [n for n in zf.namelist() if n.endswith(".csv")]
+                if not names:
+                    return None
+                raw = zf.read(names[0]).decode("utf-8-sig")
+
+    scores: list[float] = []
+    for row in csv_module.DictReader(io.StringIO(raw)):
+        try:
+            scores.append(float(row["Score"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return scores or None
+
+
+def _store_leaderboard_snapshot(conn: PgConn, competition_id: str, scores: list[float]) -> None:
+    conn.execute(
+        """
+        insert into raw.leaderboard_snapshot (competition_id, fetched_at, n_teams, scores)
+        values (%s, %s, %s, %s)
+        on conflict (competition_id) do update
+          set fetched_at = excluded.fetched_at,
+              n_teams = excluded.n_teams,
+              scores = excluded.scores
+        """,
+        [competition_id, datetime.now(timezone.utc), len(scores), json.dumps(scores)],
+    )
+
+
+def _percentile_in(scores: list[float], lb_score: float, metric_sign: int) -> float:
+    """우리 점수보다 나쁜 팀의 비율(%). 높을수록 좋다."""
+    worse = sum(1 for s in scores if metric_sign * (lb_score - s) > 0)
+    return 100.0 * worse / len(scores)
+
+
+def _lb_percentile(conn: PgConn, competition_id: str, lb_score: float) -> float | None:
+    row = conn.execute(
+        """
+        select l.scores, c.metric_sign
+        from raw.leaderboard_snapshot l
+        join raw.competitions c on c.competition_id = l.competition_id
+        where l.competition_id = %s
+        """,
+        [competition_id],
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    scores = row[0] if isinstance(row[0], list) else json.loads(row[0])
+    if not scores:
+        return None
+    return _percentile_in(scores, lb_score, row[1])
+
+
+def _backfill_lb_percentiles(conn: PgConn, competition_id: str) -> int:
+    """스냅샷을 새로 받으면 그 대회의 기존 완료 제출 백분위를 한꺼번에 채운다 —
+    스냅샷 없이 완료된 과거 제출이 영영 null로 남지 않게."""
+    rows = conn.execute(
+        """
+        select submission_id, lb_score from raw.kaggle_submissions
+        where competition_id = %s and status = 'complete' and lb_score is not null
+        """,
+        [competition_id],
+    ).fetchall()
+    filled = 0
+    for submission_id, lb_score in rows:
+        pct = _lb_percentile(conn, competition_id, lb_score)
+        if pct is None:
+            continue
+        conn.execute(
+            "update raw.kaggle_submissions set lb_percentile = %s where submission_id = %s",
+            [pct, submission_id],
+        )
+        filled += 1
+    return filled
+
+
 def _competition_id_to_slug() -> dict[str, str]:
-    """config/competitions/*.py 스캔 → {competition_id: module_slug} 맵."""
     cached, hit = _cache.get("_comp_slug_map", ttl=3600)
     if hit:
         return cached  # type: ignore[return-value]
-    result: dict[str, str] = {}
-    comp_dir = ROOT / "config" / "competitions"
-    for path in comp_dir.glob("*.py"):
-        if path.stem.startswith("_"):
-            continue
-        try:
-            mod = importlib.import_module(f"config.competitions.{path.stem}")
-            cid = getattr(mod, "COMPETITION_ID", None)
-            if cid:
-                result[cid] = path.stem
-        except Exception:
-            continue
+    result = competition_id_to_slug()
     _cache.set("_comp_slug_map", result)
     return result
 
@@ -487,6 +591,64 @@ def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None
         [competition_id],
     ).fetchone()
     return (row[0], row[1]) if row else None
+
+
+def _active_competition_ids() -> set[str]:
+    """auto-submit은 예전엔 "최근 24h 내 attempt가 있는 대회"로 대상을 간접 판정했는데,
+    그러면 attempt가 안 도는 날에는 제출할 백로그가 있어도 대회가 통째로 빠진다(#233)."""
+    cached, hit = _cache.get("_active_comp_ids", ttl=3600)
+    if hit:
+        return cached  # type: ignore[return-value]
+    result = active_competition_ids()
+    _cache.set("_active_comp_ids", result)
+    return result
+
+
+def _submissions_today(conn: PgConn, competition_id: str) -> int:
+    """Kaggle 일일 한도는 UTC 자정 기준으로 리셋된다. 별도 카운터 테이블을 두지 않고
+    kaggle_submissions를 직접 센다 — 카운터는 드리프트하지만 제출 이력은 안 한다.
+    실제로 Kaggle에 닿지 않은 error 행은 한도를 소모하지 않으므로 제외."""
+    row = conn.execute(
+        """
+        select count(*) from raw.kaggle_submissions
+        where competition_id = %s
+          and submitted_at >= date_trunc('day', now() at time zone 'utc')
+          and status <> 'error'
+        """,
+        [competition_id],
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def _unsubmitted_confirmed(
+    conn: PgConn, competition_id: str, limit: int
+) -> list[tuple[str, float]]:
+    """아직 한 번도 제출된 적 없는 confirmed pipeline을 cv 상위순으로.
+
+    _best_attempt와 같은 confirmed-only 제약(ADR-031)을 쓰되 "대회 전역 1등" 대신
+    "미제출 상위 N"을 고른다 — 같은 attempt를 다시 내면 LB 점수가 같아 정보량이 0이고,
+    미제출 confirmed는 각각 새 cv-LB 쌍을 준다.
+    """
+    rows = conn.execute(
+        """
+        select a.attempt_id, a.cv_score
+        from raw.attempts a
+        join raw.pipelines p on p.attempt_id = a.attempt_id
+        join raw.competitions c on c.competition_id = a.competition_id
+        where a.competition_id = %s
+          and a.cv_score is not null
+          and a.error_trace is null
+          and p.invalid_reason is null
+          and not exists (
+              select 1 from raw.kaggle_submissions s
+              where s.attempt_id = a.attempt_id
+          )
+        order by c.metric_sign * a.cv_score desc, a.run_ts asc, a.attempt_id asc
+        limit %s
+        """,
+        [competition_id, limit],
+    ).fetchall()
+    return [(r[0], r[1]) for r in rows]
 
 
 def _last_submitted_attempt(conn: PgConn, competition_id: str) -> str | None:
@@ -687,6 +849,9 @@ def refresh_submission_row(conn: PgConn, submission_id: str) -> dict | None:
     fields: dict = {"status": kaggle_status, "checked_at": datetime.now(timezone.utc)}
     if kaggle_status == "complete" and lb_score is not None:
         fields["lb_score"] = lb_score
+        pct = _lb_percentile(conn, rec["competition_id"], lb_score)
+        if pct is not None:
+            fields["lb_percentile"] = pct
     elif kaggle_status in ("error", "invalid"):
         fields["error"] = f"kaggle: {kaggle_status}"
 
@@ -1686,22 +1851,22 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
 
     @app.post("/api/submissions/auto", status_code=200)
     def auto_submit(body: AutoSubmitRequest):
-        slug_map = _competition_id_to_slug()
+        """ACTIVE 대회별로 일일 제출 예산 안에서 미제출 confirmed pipeline을 내보낸다.
 
-        active_rows = conn.execute(
-            """
-            select distinct competition_id from raw.attempts
-            where run_ts >= now() - make_interval(hours => %s)
-              and cv_score is not null
-              and error_trace is null
-            """,
-            [body.window_hours],
-        ).fetchall()
+        예전 로직은 "대회 전역 best가 바뀌었나"만 봐서 deep tier가 하루 0~1건에 머물렀고
+        (#233), cv-LB 쌍이 몇 달 누적 78건뿐이었다. 이제 예산이 남으면 아직 한 번도
+        제출 안 한 confirmed pipeline을 cv 상위순으로 내보낸다 — 각각이 새 cv-LB 쌍이다.
+        미제출 백로그가 없을 때만 예전 "best 갱신 + 유의성" 경로로 떨어진다(같은 attempt
+        재제출은 LB 점수가 같아 정보량 0이므로 그 경로에서 계속 막는다).
+        """
+        del body  # window_hours는 더 이상 대상 선정에 쓰지 않는다 — comp.ACTIVE가 대상이다.
+        slug_map = _competition_id_to_slug()
+        active_ids = _active_competition_ids()
 
         submitted = []
         skipped = []
 
-        for (competition_id,) in active_rows:
+        for competition_id in sorted(active_ids):
             slug = slug_map.get(competition_id)
             if not slug:
                 skipped.append({"competition": competition_id, "reason": "no config"})
@@ -1718,33 +1883,145 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
                 skipped.append({"competition": competition_id, "reason": f"auto-submit paused: {paused_row[0]}"})
                 continue
 
-            best = _best_attempt(conn, competition_id)
-            if not best:
-                skipped.append({"competition": competition_id, "reason": "no confirmed pipeline"})
-                continue
-            best_attempt_id, best_cv = best
-
-            last = _last_submitted_attempt(conn, competition_id)
-            if last == best_attempt_id:
-                skipped.append({"competition": competition_id, "reason": "best unchanged"})
+            budget_left = SUBMISSIONS_PER_DAY - _submissions_today(conn, competition_id)
+            if budget_left <= 0:
+                skipped.append({"competition": competition_id, "reason": "daily budget spent"})
                 continue
 
-            if last is not None and not _submission_gain_significant(
-                conn, competition_id, best_attempt_id, last
-            ):
-                skipped.append({"competition": competition_id, "reason": "gain not significant"})
-                continue
+            candidates = _unsubmitted_confirmed(conn, competition_id, budget_left)
+            if not candidates:
+                best = _best_attempt(conn, competition_id)
+                if not best:
+                    skipped.append({"competition": competition_id, "reason": "no confirmed pipeline"})
+                    continue
+                best_attempt_id, best_cv = best
 
-            msg = f"auto cv={best_cv:.5f} attempt={best_attempt_id[:8]}"
-            sid = _start_submission(conn, slug, competition_id, best_attempt_id, msg)
-            submitted.append({
-                "competition": competition_id,
-                "slug": slug,
-                "attempt_id": best_attempt_id,
-                "submission_id": sid,
-            })
+                last = _last_submitted_attempt(conn, competition_id)
+                if last == best_attempt_id:
+                    skipped.append({"competition": competition_id, "reason": "best unchanged"})
+                    continue
+
+                if last is not None and not _submission_gain_significant(
+                    conn, competition_id, best_attempt_id, last
+                ):
+                    skipped.append({"competition": competition_id, "reason": "gain not significant"})
+                    continue
+
+                candidates = [(best_attempt_id, best_cv)]
+
+            for attempt_id, cv_score in candidates:
+                msg = f"auto cv={cv_score:.5f} attempt={attempt_id[:8]}"
+                sid = _start_submission(conn, slug, competition_id, attempt_id, msg)
+                submitted.append({
+                    "competition": competition_id,
+                    "slug": slug,
+                    "attempt_id": attempt_id,
+                    "submission_id": sid,
+                })
 
         return {"submitted": submitted, "skipped": skipped}
+
+    @app.post("/api/leaderboard/refresh", status_code=200)
+    def refresh_leaderboards(body: LeaderboardRefreshRequest):
+        """대회별 public leaderboard 점수 분포를 다시 받아 스냅샷을 갱신한다.
+
+        종료된 대회는 최종 LB가 고정이라 한 번이면 충분하다 — `max_age_hours`보다
+        최근에 받은 스냅샷은 건너뛴다. 갱신 성공 시 그 대회의 기존 완료 제출
+        `lb_percentile`도 함께 백필한다.
+        """
+        targets = [body.competition] if body.competition else sorted(_active_competition_ids())
+        refreshed, skipped = [], []
+        for competition_id in targets:
+            if not body.force:
+                row = conn.execute(
+                    "select fetched_at from raw.leaderboard_snapshot where competition_id = %s",
+                    [competition_id],
+                ).fetchone()
+                if row and row[0] and _age_hours(row[0]) < body.max_age_hours:
+                    skipped.append({"competition": competition_id, "reason": "snapshot fresh"})
+                    continue
+
+            scores = _fetch_leaderboard_scores(competition_id)
+            if not scores:
+                skipped.append({"competition": competition_id, "reason": "leaderboard unavailable"})
+                continue
+            _store_leaderboard_snapshot(conn, competition_id, scores)
+            refreshed.append({
+                "competition": competition_id,
+                "n_teams": len(scores),
+                "backfilled": _backfill_lb_percentiles(conn, competition_id),
+            })
+        return {"refreshed": refreshed, "skipped": skipped}
+
+    @app.get("/api/lb-northstar")
+    def lb_northstar():
+        """ACTIVE 대회별 LB 북극성 지표 — 최신 백분위, 마지막 LB 갱신 이후 경과일,
+        오늘 쓴 제출 예산, 미제출 confirmed 백로그."""
+        out = []
+        for competition_id in sorted(_active_competition_ids()):
+            row = conn.execute(
+                """
+                select lb_score, lb_percentile, submitted_at
+                from raw.kaggle_submissions
+                where competition_id = %s and status = 'complete' and lb_score is not null
+                order by submitted_at desc
+                limit 1
+                """,
+                [competition_id],
+            ).fetchone()
+            best = conn.execute(
+                """
+                select max(lb_percentile) from raw.kaggle_submissions
+                where competition_id = %s and lb_percentile is not null
+                """,
+                [competition_id],
+            ).fetchone()
+            used = _submissions_today(conn, competition_id)
+            backlog = conn.execute(
+                """
+                select count(*) from raw.pipelines p
+                join raw.attempts a on a.attempt_id = p.attempt_id
+                where p.competition_id = %s
+                  and p.invalid_reason is null
+                  and a.cv_score is not null
+                  and not exists (
+                      select 1 from raw.kaggle_submissions s where s.attempt_id = p.attempt_id
+                  )
+                """,
+                [competition_id],
+            ).fetchone()
+            out.append({
+                "competition_id": competition_id,
+                "last_lb_score": row[0] if row else None,
+                "last_lb_percentile": row[1] if row else None,
+                "last_lb_at": row[2] if row else None,
+                "days_since_lb_update": _age_hours(row[2]) / 24.0 if row and row[2] else None,
+                "best_lb_percentile": best[0] if best else None,
+                "submissions_today": used,
+                "daily_budget": SUBMISSIONS_PER_DAY,
+                "unsubmitted_confirmed": backlog[0] if backlog else 0,
+            })
+        return out
+
+    @app.get("/api/cv-lb-gap")
+    def cv_lb_gap(competition: str | None = None, limit: int = 100):
+        limit = min(limit, 500)
+        where = "where competition_id = %s" if competition else ""
+        params: list = [competition] if competition else []
+        rows = conn.execute(
+            f"""
+            select submission_id, competition_id, submitted_at, attempt_id,
+                   cv_score, lb_score, lb_percentile, cv_lb_gap
+            from cv_lb_gap_trend
+            {where}
+            order by submitted_at desc
+            limit %s
+            """,
+            params + [limit],
+        ).fetchall()
+        cols = ["submission_id", "competition_id", "submitted_at", "attempt_id",
+                "cv_score", "lb_score", "lb_percentile", "cv_lb_gap"]
+        return [dict(zip(cols, r)) for r in rows]
 
     @app.get("/api/submissions")
     def get_submissions(competition: str | None = None, limit: int = 50):

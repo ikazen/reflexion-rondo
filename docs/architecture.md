@@ -59,8 +59,8 @@ Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
    - **loser**: neutral 포함 전부 reflect ("이 시도는 효과 없었다"도 학습 신호).
 4. **Submit?**: (별도 스크립트) best 후보 → submission CSV/Kaggle. `raw.kaggle_submissions` + daemon
 API(`POST /api/submissions`, `/auto`, `/{id}/refresh`)가 제출·상태 폴링·`lb_score` 기록(attempts 테이블 backfill 포함)까지 수행한다. daemon
-유휴 틱마다 `status IN ('submitted','pending')` 제출을 지수 백오프로 자동 재폴링한다 — 수동 `/refresh` 호출 없이도 동작. `submission_budget` 스키마는 있으나
-일일 상한 자동 enforcement는 아직 미구현이다.
+유휴 틱마다 `status IN ('submitted','pending')` 제출을 지수 백오프로 자동 재폴링한다 — 수동 `/refresh` 호출 없이도 동작. `/auto`는 `ACTIVE=True` 대회별로
+`SUBMISSIONS_PER_DAY`(기본 2) 예산 안에서 아직 제출 안 한 confirmed pipeline을 cv 상위순으로 내보낸다(ADR-038).
 
 `action_bandit`(BON-109): `reflexion` 단계 attempt 완료 시 action_type별 α/β 업데이트. jump/gain>0 → α++, regression/error → β++,
 neutral → 소량 양방향. attempt 생성 시점의 잠정 label(confirm 이전)로 1차 업데이트되고, 승자가 confirm(cross-seed+holdout)에서 jump가 거부되면
@@ -70,8 +70,8 @@ neutral → 소량 양방향. attempt 생성 시점의 잠정 label(confirm 이�
 regret 보장 없음 — ADR-005/014).
 
 피드백 신호 정책: **CV = 주 신호**(무제한·결정적), **LB = 확인용 희소 신호**. `cv_lb_calibration` 뷰가 대회별 제출 시계열의 cv↔LB 부호 일치를 추적하고, CV는 개선인데
-LB가 악화된 제출이 나오면 원천 pipeline을 격리하고 해당 대회 auto-submit을 중단하는 발산 트립와이어가 이미 동작한다(자동 해제 없음 — `runbook.md`). 일일 제출 예산
-게이트(`submission_budget` 상한 enforcement)는 아직 미구현이다.
+LB가 악화된 제출이 나오면 원천 pipeline을 격리하고 해당 대회 auto-submit을 중단하는 발산 트립와이어가 이미 동작한다(자동 해제 없음 — `runbook.md`). 일일 제출 예산은
+`raw.kaggle_submissions`의 당일(UTC) 건수를 직접 세서 집행한다 — 별도 카운터 테이블은 두지 않는다(ADR-038).
 
 ## 4. Stage 라벨과 1변경 규율
 

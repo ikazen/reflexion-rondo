@@ -17,12 +17,16 @@ def _long_ago() -> float:
     return time.monotonic() - _QUEUE_REFILL_SWEEP_INTERVAL_SEC - 1
 
 
-def _all_active_import(name: str):
-    """importlib.import_module 스텁 — 어떤 슬러그든 ACTIVE=True인 모듈처럼 동작.
-    idle-detection 로직 자체를 검증하는 테스트는 ACTIVE 필터(#227)와 무관하게
-    독립적으로 통과해야 하므로, 실제 config/competitions/*.py의 ACTIVE 값에
-    기대는 대신 이 스텁으로 격리한다."""
-    return type("StubComp", (), {"ACTIVE": True})
+def _patch_scan(comp_slugs: dict[str, str], active: set[str] | None = None):
+    """idle-detection 로직 자체를 검증하는 테스트는 ACTIVE 필터(#227)와 무관하게
+    통과해야 하므로, 실제 config/competitions/*.py 값에 기대는 대신 스캔을 스텁한다."""
+    return (
+        patch("bin.run_daemon.competition_id_to_slug", return_value=comp_slugs),
+        patch(
+            "bin.run_daemon.active_competition_ids",
+            return_value=set(comp_slugs) if active is None else active,
+        ),
+    )
 
 
 def test_sweep_respects_rate_gate(monkeypatch):
@@ -38,7 +42,7 @@ def test_sweep_skips_when_queue_not_empty(monkeypatch):
     monkeypatch.setattr(run_daemon, "_last_queue_refill_sweep", _long_ago())
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = (1,)
-    with patch("bin.run_daemon._competition_id_to_slug") as mock_scan:
+    with patch("bin.run_daemon.competition_id_to_slug") as mock_scan:
         _sweep_queue_refill(conn)
     mock_scan.assert_not_called()
 
@@ -68,8 +72,8 @@ def test_sweep_reenqueues_idle_and_never_run_competitions(monkeypatch):
         "playground-series-s6e1": "s6e1",
         "playground-series-s6e2": "s6e2",
     }
-    with patch("bin.run_daemon._competition_id_to_slug", return_value=comp_slugs), \
-         patch("bin.run_daemon.importlib.import_module", side_effect=_all_active_import):
+    scan, active = _patch_scan(comp_slugs)
+    with scan, active:
         _sweep_queue_refill(conn)
 
     insert_calls = [
@@ -95,12 +99,8 @@ def test_sweep_skips_inactive_competitions(monkeypatch):
         "playground-series-s4e1": "s4e1",   # ACTIVE=False
     }
 
-    def _import(name: str):
-        slug = name.rsplit(".", 1)[-1]
-        return type("StubComp", (), {"ACTIVE": slug == "s6e8"})
-
-    with patch("bin.run_daemon._competition_id_to_slug", return_value=comp_slugs), \
-         patch("bin.run_daemon.importlib.import_module", side_effect=_import):
+    scan, active = _patch_scan(comp_slugs, active={"playground-series-s6e8"})
+    with scan, active:
         _sweep_queue_refill(conn)
 
     insert_calls = [
@@ -111,37 +111,26 @@ def test_sweep_skips_inactive_competitions(monkeypatch):
     assert inserted_slugs == {"s6e8"}
 
 
-def test_sweep_skips_slug_when_import_fails(monkeypatch):
-    """#239(adversarial review): ACTIVE 필터의 import_module이 한 슬러그에서
-    실패해도(예: config 파일 삭제·오탈자) 그 슬러그만 건너뛰고 daemon 메인 루프
-    전체가 죽지 않아야 한다 — #223과 같은 클래스의 크래시를 새 필터가 재도입하면
-    안 된다."""
-    monkeypatch.setattr(run_daemon, "_last_queue_refill_sweep", _long_ago())
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.return_value = None  # 큐 비어있음
-    conn.execute.return_value.fetchall.return_value = []  # 둘 다 신규 취급
-
-    comp_slugs = {
-        "playground-series-s6e8": "s6e8",   # import 성공, ACTIVE=True
-        "playground-series-s4e1": "s4e1",   # import 실패
-    }
+def test_active_scan_skips_slug_when_import_fails(monkeypatch, tmp_path):
+    """#239(adversarial review): 대회 config 하나의 import가 실패해도(파일 삭제·오탈자)
+    그 슬러그만 건너뛰고 나머지는 정상 반환해야 한다 — daemon 메인 루프 전체가 죽는
+    #223과 같은 클래스의 크래시를 이 스캔이 재도입하면 안 된다."""
+    import config.competitions as comps
 
     def _import(name: str):
         slug = name.rsplit(".", 1)[-1]
         if slug == "s4e1":
             raise ModuleNotFoundError(f"no module named {name!r}")
-        return type("StubComp", (), {"ACTIVE": True})
+        return type("StubComp", (), {"COMPETITION_ID": f"playground-series-{slug}", "ACTIVE": True})
 
-    with patch("bin.run_daemon._competition_id_to_slug", return_value=comp_slugs), \
-         patch("bin.run_daemon.importlib.import_module", side_effect=_import):
-        _sweep_queue_refill(conn)  # 예외 없이 끝나야 함
+    monkeypatch.setattr(comps, "importlib", MagicMock(import_module=_import))
+    monkeypatch.setattr(comps, "_COMP_DIR", tmp_path)
+    (tmp_path / "s6e8.py").touch()
+    (tmp_path / "s4e1.py").touch()
+    (tmp_path / "__init__.py").touch()
 
-    insert_calls = [
-        c for c in conn.execute.call_args_list
-        if "insert into raw.cycle_queue" in c.args[0]
-    ]
-    inserted_slugs = {c.args[1][1] for c in insert_calls}
-    assert inserted_slugs == {"s6e8"}
+    assert comps.competition_id_to_slug() == {"playground-series-s6e8": "s6e8"}
+    assert comps.active_competition_ids() == {"playground-series-s6e8"}
 
 
 def test_sweep_noop_when_nothing_idle(monkeypatch):
@@ -158,10 +147,8 @@ def test_sweep_noop_when_nothing_idle(monkeypatch):
     now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     conn.execute.return_value.fetchall.return_value = [("playground-series-s6e8", now)]
 
-    with patch(
-        "bin.run_daemon._competition_id_to_slug",
-        return_value={"playground-series-s6e8": "s6e8"},  # {competition_id: slug}
-    ), patch("bin.run_daemon.importlib.import_module", side_effect=_all_active_import):
+    scan, active = _patch_scan({"playground-series-s6e8": "s6e8"})
+    with scan, active:
         _sweep_queue_refill(conn)
 
     insert_calls = [

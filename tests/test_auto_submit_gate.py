@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 from fastapi.testclient import TestClient  # noqa: E402
 
 from bin.api import DaemonState, _best_attempt, _submission_gain_significant, create_app  # noqa: E402
+from config.settings import SUBMISSIONS_PER_DAY  # noqa: E402
 
 
 def _conn_for(metric_sign, candidate_row, baseline_row):
@@ -91,16 +92,32 @@ def test_missing_attempt_data_fails_open():
 
 
 
-def _client_for_auto_submit(monkeypatch, *, active_competitions, best, last, significant):
+def _client_for_auto_submit(
+    monkeypatch, *, active_competitions, best, last, significant,
+    unsubmitted=None, submitted_today=0,
+):
+    """unsubmitted 기본값 []은 "미제출 백로그 없음" — 예전 best/유의성 경로로 떨어지는 케이스."""
     import bin.api as api_mod
 
     monkeypatch.setattr(api_mod, "_competition_id_to_slug", lambda: {c: c for c in active_competitions})
+    monkeypatch.setattr(api_mod, "_active_competition_ids", lambda: set(active_competitions))
     monkeypatch.setattr(api_mod, "_best_attempt", lambda conn, cid: best)
     monkeypatch.setattr(api_mod, "_last_submitted_attempt", lambda conn, cid: last)
+    monkeypatch.setattr(api_mod, "_submissions_today", lambda conn, cid: submitted_today)
+    monkeypatch.setattr(
+        api_mod, "_unsubmitted_confirmed",
+        lambda conn, cid, limit: list(unsubmitted or [])[:limit],
+    )
     monkeypatch.setattr(
         api_mod, "_submission_gain_significant", lambda conn, cid, cand, base: significant
     )
-    monkeypatch.setattr(api_mod, "_start_submission", lambda *a, **k: "sub-1")
+    submissions: list[str] = []
+
+    def _fake_start(conn, slug, cid, attempt_id, msg):
+        submissions.append(attempt_id)
+        return f"sub-{len(submissions)}"
+
+    monkeypatch.setattr(api_mod, "_start_submission", _fake_start)
 
     conn = MagicMock()
     conn.execute.return_value.fetchall.return_value = [(c,) for c in active_competitions]
@@ -172,6 +189,80 @@ def test_auto_submit_first_submission_skips_gain_check(monkeypatch):
     body = resp.json()
     assert body["skipped"] == []
     assert len(body["submitted"]) == 1
+
+
+def test_auto_submit_prefers_unsubmitted_backlog_over_best(monkeypatch):
+    """미제출 confirmed 백로그가 있으면 유의성 게이트와 무관하게 예산만큼 내보낸다 —
+    #233의 핵심 동작. 각 미제출 pipeline이 새 cv-LB 쌍을 만든다."""
+    client = _client_for_auto_submit(
+        monkeypatch,
+        active_competitions=["playground-series-s4e10"],
+        best=("already-submitted", 0.96),
+        last="already-submitted",
+        significant=False,  # 백로그 경로는 유의성 게이트를 타지 않는다
+        unsubmitted=[("cand-a", 0.9598), ("cand-b", 0.9591), ("cand-c", 0.9585)],
+    )
+    resp = client.post("/api/submissions/auto", json={})
+    body = resp.json()
+    assert body["skipped"] == []
+    assert [s["attempt_id"] for s in body["submitted"]] == ["cand-a", "cand-b"]
+
+
+def test_auto_submit_respects_daily_budget(monkeypatch):
+    """오늘 이미 쓴 만큼 예산에서 뺀다 — Kaggle 일일 한도를 넘기지 않기 위함."""
+    client = _client_for_auto_submit(
+        monkeypatch,
+        active_competitions=["playground-series-s4e10"],
+        best=("already-submitted", 0.96),
+        last="already-submitted",
+        significant=False,
+        unsubmitted=[("cand-a", 0.9598), ("cand-b", 0.9591)],
+        submitted_today=1,
+    )
+    resp = client.post("/api/submissions/auto", json={})
+    body = resp.json()
+    assert [s["attempt_id"] for s in body["submitted"]] == ["cand-a"]
+
+
+def test_auto_submit_skips_when_daily_budget_spent(monkeypatch):
+    """예산을 다 썼으면 백로그가 남아 있어도 오늘은 더 안 낸다."""
+    client = _client_for_auto_submit(
+        monkeypatch,
+        active_competitions=["playground-series-s4e10"],
+        best=("cand-a", 0.9598),
+        last=None,
+        significant=True,
+        unsubmitted=[("cand-a", 0.9598)],
+        submitted_today=SUBMISSIONS_PER_DAY,
+    )
+    resp = client.post("/api/submissions/auto", json={})
+    body = resp.json()
+    assert body["submitted"] == []
+    assert body["skipped"] == [
+        {"competition": "playground-series-s4e10", "reason": "daily budget spent"}
+    ]
+
+
+def test_auto_submit_ignores_inactive_competitions(monkeypatch):
+    """동결 대회(ACTIVE=False)는 attempt 이력이 있어도 대상이 아니다 — ADR-032 deep tier."""
+    import bin.api as api_mod
+
+    monkeypatch.setattr(
+        api_mod, "_competition_id_to_slug",
+        lambda: {"playground-series-s4e10": "s4e10", "playground-series-s5e3": "s5e3"},
+    )
+    monkeypatch.setattr(api_mod, "_active_competition_ids", lambda: {"playground-series-s4e10"})
+    monkeypatch.setattr(api_mod, "_submissions_today", lambda conn, cid: 0)
+    monkeypatch.setattr(api_mod, "_unsubmitted_confirmed", lambda conn, cid, limit: [("cand-a", 0.9)])
+    monkeypatch.setattr(api_mod, "_start_submission", lambda *a, **k: "sub-1")
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = (None,)
+    client = TestClient(create_app(conn, DaemonState()))
+
+    body = client.post("/api/submissions/auto", json={}).json()
+    assert [s["competition"] for s in body["submitted"]] == ["playground-series-s4e10"]
+    assert body["skipped"] == []
 
 
 @pytest.mark.skipif(

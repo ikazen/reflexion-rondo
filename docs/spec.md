@@ -155,14 +155,6 @@ limit $k;
 검색 결과의 `full_lesson`/`embedded_text`를 사람이 그대로 읽어 디버깅한다(`runbook.md §6`).
 규모가 커져 브루트포스가 느려지면 pgvector HNSW 인덱스만 추가 (ADR-007 승격 트리거).
 
-### 1.9 `submission_budget`
-
-```sql
-competition_id  text,
-day             date,
-count           int          -- 일별 제출 수. 현재 submit.py enforcement는 미구현
-```
-
 ### 1.10 `raw.cycle_queue`
 
 daemon API가 사용하는 큐 테이블.
