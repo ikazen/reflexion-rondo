@@ -1,5 +1,24 @@
 # 변경 이력
 
+## v1.6.2 — s4e12/s5e4 학습 행 상한 + 확정 pipeline 재측정 (2026-08-26)
+
+### #135 — s4e12/s5e4 `MAX_TRAIN_ROWS = 500_000`
+- 최초 근거는 rc=-9(OS OOM SIGKILL) 비율이었으나 2026-08-26 재실측에서 증상이 바뀌었다. RSS
+  워치독(#154, v1.4.21) 배포 후 OS OOM 킬은 사라졌지만 같은 런어웨이 프로세스가 이제
+  `cpu budget exceeded`로 끝난다 — 부드러운 착지만 줬을 뿐 소모된 컴퓨트는 그대로다.
+- 최근 7일 CPU 킬 비율 s4e12 77%(214건), s5e4 75%(85건). 최근 24h 기준 이 둘의 CPU 킬이
+  fleet 전체 컴퓨트의 36%(26.2 CPU-h/72)를 태운다. 반면 성공 attempt의 CPU p95는 s4e12
+  1,824s / s5e4 2,685s로 3,600s 예산 안에 들어온다 — 킬은 예산이 빡빡해서가 아니라 입력
+  크기로 인한 별개 런어웨이 집단이라 예산을 더 올려도 손해만 커진다. 두 대회 모두 회귀라
+  `store/train_data.py:load_train`의 단순 랜덤 샘플 경로(고정 seed 42)를 탄다.
+- 행 상한이 걸리면 학습 데이터가 바뀌어 기존 `raw.pipelines.cv_score`(전량 기준)와 신규
+  attempt(샘플 기준)가 비교 불가능해진다. `bin/establish_baseline.py`에 `--remeasure
+  --competition <id> [--dry-run]` 추가 — 확정 pipeline의 `materialized_code`를 새
+  `load_train()`으로 **재평가만** 해 `raw.pipelines.cv_score`를 갱신(재학습 없음). 배포 직후
+  두 대회에 실행해 baseline을 샘플 기준으로 맞춘다.
+- `--remeasure --dry-run` 실측(500k): s5e4 RMSE 12.73125 → 12.82876(+0.77%), s4e12 RMSLE
+  1.04481 → 1.04659(+0.17%). 33~40% 적은 데이터에서 나온 소폭 열화.
+
 ## v1.6.1 — 제출 경로 실측 후속: 후보 정렬, 타임아웃, fit 직렬화 (2026-08-26)
 
 ### #256 — 제출 CSV 생성 타임아웃 상향 + fit 직렬화
