@@ -88,6 +88,9 @@ def _drift_probe(comp: object, chain: list[ChainRow], train90, cpu_budget) -> bo
     probe = next((r for r in reversed(chain) if r.materialized_code and r.cv_score is not None), None)
     if probe is None:
         return None
+    # probe 실패(None/False)는 안전한 방향이다 — cv tier가 꺼지면 chain/unverifiable로
+    # 내려갈 뿐, 잘못된 스냅샷을 쓰지 않는다. 크로스머신 float 재현성이 1e-6에 못 미쳐
+    # 오탐이 나도 손해는 "chain tier로 강등" 정도.
     res = _eval_base(comp, probe.materialized_code, train90, cpu_budget)
     if res.error_trace or res.cv_score is None:
         print(f"  drift probe: eval 실패 ({res.error_trace}) — cv tier 비활성")
@@ -159,7 +162,9 @@ def _verdict_for_row(
                        f"재평가 실패: {res.error_trace}"), None
     this_eval = (res.cv_score, res.fold_scores)
 
-    # tier cv — 데이터 비교 가능 + 기록 cv 재현
+    # tier cv — 데이터 비교 가능 + 기록 cv 재현. tolerance가 1e-6로 극도로 빡빡한 건
+    # 의도적이다: ADR-037 합성 변경이 이 행 훅에 무영향이면(예: build_model만 정의) 재생이
+    # 사실상 동일해 이 안에 들고, 영향이 있었으면 벗어나 chain tier/격리로 내려간다.
     if comparable and row.cv_score is not None and abs(res.cv_score - row.cv_score) <= MERGE_VERIFY_TOLERANCE:
         return Verdict("backfill:cv", candidate, res.cv_score, None,
                        f"재평가 cv {res.cv_score} ≈ 기록 {row.cv_score}"), this_eval

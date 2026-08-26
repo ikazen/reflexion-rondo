@@ -416,8 +416,7 @@ def replay_best_pipeline(
         if stop_at_pipeline_id is not None and pipeline_id == stop_at_pipeline_id:
             break
 
-    if best is None:
-        return None, None, 0
+    assert best is not None  # rows non-empty, loop always assigns
     actual_sha256 = hashlib.sha256(best.encode()).hexdigest()
     if last_sha256 and actual_sha256 != last_sha256:
         # 재현 실패의 주원인은 blob 손상이 아니라 materialize 로직 자체의 변경 —
