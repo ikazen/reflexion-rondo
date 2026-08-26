@@ -686,6 +686,10 @@ def _unsubmitted_confirmed(
           and a.cv_score is not null
           and a.error_trace is null
           and p.invalid_reason is null
+          -- 후보 자신의 승격 행이 #254 백필에서 재현 실패 verdict를 받았으면
+          -- (materialized_code IS NULL AND materialized_origin IS NOT NULL) 제외 —
+          -- 직전 행 체크와 대칭. 최초 승격분(직전 행 없음)이 train_drift면 여기서만 걸린다.
+          and (p.materialized_code is not null or p.materialized_origin is null)
           and not exists (
               select 1 from raw.kaggle_submissions s
               where s.attempt_id = a.attempt_id
