@@ -17,10 +17,17 @@ S3_DATA_PATH      = "s4e12/data/"
 EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
 ACTIVE            = True  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
 
+# 2026-08 처리량 진단(#135): 최근 7일 rc=-9(OOM SIGKILL) 108/187건(58%, 대회 중 최다),
+# 평균 803초를 태우고 죽음 — 계산의 4분의 1을 이 대회와 s5e4 둘이 태웠다. 회귀라
+# store/train_data.py:load_train의 단순 랜덤 샘플 경로(고정 seed 42)를 탄다.
+# 적용 전 baseline(raw.pipelines.cv_score)은 전량 데이터 기준이라 이 데이터로 더 이상
+# 비교 불가 — bin/establish_baseline.py --remeasure로 재측정 필요(#135).
+MAX_TRAIN_ROWS = 500_000
+
 EDA_CARD = """competition: playground-series-s4e12 (Insurance Premium Prediction)
 task: regression  metric: RMSLE  target: Premium Amount (컬럼명에 공백 포함 —
   pl.col("Premium Amount")로 접근)
-rows: 1200000  features: 19
+rows: ~500000 (MAX_TRAIN_ROWS로 랜덤 샘플링 — 원본 1200000행에서 OOM 방지)  features: 19
 target range: 20.0 - 4999.0  mean: 1102.54  nunique: 4794 (right-skew 가능성 — RMSLE 채택과 정합)
 결측: Age 1.6%, Annual Income 3.7%, Marital Status 1.5%, Number of Dependents 9.1%,
   Occupation 29.8%, Health Score 6.2%, Previous Claims 30.3%, Vehicle Age <0.1%,

@@ -12,9 +12,11 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 
 from bin.establish_baseline import (
+    _current_confirmed_pipeline,
     _top_k_attempts,
     competitions_without_baseline,
     establish_for_competition,
+    remeasure_competition,
 )
 from cycle.promotion import ConfirmResult
 
@@ -159,3 +161,81 @@ def test_empty_source_after_header_strip_skips_candidate():
 
     assert result == "attempt-2"
     assert mock_confirm.call_count == 1  # attempt-1은 코드가 없어 confirm 자체를 안 부름
+
+
+# --- remeasure_competition: MAX_TRAIN_ROWS 등 데이터 변경 후 cv_score 재측정 (#135) ---
+
+def test_current_confirmed_pipeline_orders_by_metric_sign_cv_desc():
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = ("pipe-1", "code", 0.9)
+    result = _current_confirmed_pipeline(conn, "s4e12")
+    assert result == ("pipe-1", "code", 0.9)
+    sql = conn.execute.call_args.args[0]
+    assert "invalid_reason IS NULL" in sql
+    assert "metric_sign * p.cv_score DESC" in sql
+
+
+def test_current_confirmed_pipeline_none_when_no_row():
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None
+    assert _current_confirmed_pipeline(conn, "s4e12") is None
+
+
+def test_remeasure_no_confirmed_pipeline_returns_false():
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None
+    result = remeasure_competition(conn, _Comp(), dry_run=False)
+    assert result is False
+
+
+def test_remeasure_updates_cv_score_with_new_measurement():
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = ("pipe-1", "materialized code", 0.7)
+
+    with (
+        patch("bin.establish_baseline.load_train", return_value=_TRAIN),
+        patch("bin.establish_baseline.split_audit_holdout", return_value=(_TRAIN, _TRAIN)),
+        patch("bin.establish_baseline.eval_isolated",
+              return_value=MagicMock(error_trace=None, cv_score=0.55)) as mock_eval,
+    ):
+        result = remeasure_competition(conn, _Comp(), dry_run=False)
+
+    assert result is True
+    assert mock_eval.call_args.kwargs["source"] == "materialized code"
+    update_calls = [c for c in conn.execute.call_args_list if "UPDATE raw.pipelines" in c.args[0]]
+    assert len(update_calls) == 1
+    assert update_calls[0].args[1] == [0.55, "pipe-1"]
+
+
+def test_remeasure_dry_run_does_not_write():
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = ("pipe-1", "materialized code", 0.7)
+
+    with (
+        patch("bin.establish_baseline.load_train", return_value=_TRAIN),
+        patch("bin.establish_baseline.split_audit_holdout", return_value=(_TRAIN, _TRAIN)),
+        patch("bin.establish_baseline.eval_isolated",
+              return_value=MagicMock(error_trace=None, cv_score=0.55)),
+    ):
+        result = remeasure_competition(conn, _Comp(), dry_run=True)
+
+    assert result is True
+    update_calls = [c for c in conn.execute.call_args_list if "UPDATE raw.pipelines" in c.args[0]]
+    assert update_calls == []
+
+
+def test_remeasure_eval_failure_returns_false_and_no_write():
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = ("pipe-1", "materialized code", 0.7)
+
+    with (
+        patch("bin.establish_baseline.load_train", return_value=_TRAIN),
+        patch("bin.establish_baseline.split_audit_holdout", return_value=(_TRAIN, _TRAIN)),
+        patch("bin.establish_baseline.eval_isolated",
+              return_value=MagicMock(error_trace="boom", cv_score=None)),
+    ):
+        result = remeasure_competition(conn, _Comp(), dry_run=False)
+
+    assert result is False
+    update_calls = [c for c in conn.execute.call_args_list if "UPDATE raw.pipelines" in c.args[0]]
+    assert update_calls == []

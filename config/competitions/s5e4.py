@@ -18,9 +18,16 @@ EXTRA_TRAIN_PATHS: list[str] = ["original.csv"]  # sangampaudel530/original-podc
 # 컬럼 완전 일치. MinIO kaggle/s5e4/data/original.csv.
 ACTIVE            = True  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
 
+# 2026-08 처리량 진단(#135): 최근 7일 rc=-9(OOM SIGKILL) 140/450건(31%), 평균 775초를
+# 태우고 죽음 — 계산의 4분의 1을 이 대회와 s4e12 둘이 태웠다. 회귀라
+# store/train_data.py:load_train의 단순 랜덤 샘플 경로(고정 seed 42)를 탄다.
+# 적용 전 baseline(raw.pipelines.cv_score)은 전량 데이터 기준이라 이 데이터로 더 이상
+# 비교 불가 — bin/establish_baseline.py --remeasure로 재측정 필요(#135).
+MAX_TRAIN_ROWS = 500_000
+
 EDA_CARD = """competition: playground-series-s5e4 (Podcast Listening Time Prediction)
 task: regression  metric: RMSE  target: Listening_Time_minutes
-rows: 750000  features: 10
+rows: ~500000 (MAX_TRAIN_ROWS로 랜덤 샘플링 — 원본 750000행에서 OOM 방지)  features: 10
 target range: 0.0 - 119.97  mean: 45.44  nunique: 42807 (범위 좁고 skew 약함 — raw scale RMSE
   학습이 기본)
 결측: Episode_Length_minutes 11.6%, Guest_Popularity_percentage 19.5%, Number_of_Ads <0.1%
