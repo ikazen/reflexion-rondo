@@ -239,7 +239,11 @@ uv run python -m bin.backfill_materialized_code --competition <id> --apply --all
 ```
 
 `--remeasure`는 수용된 행의 `cv_score`를 재평가값으로 갱신한다 — 데이터가 이동한 대회에서
-stale `_prev_best`가 신규 attempt를 잘못 게이트하는 문제도 함께 고친다.
+stale `_prev_best`가 신규 attempt를 잘못 게이트하는 문제도 함께 고친다. 단 백필의 `--remeasure`는
+스냅샷 없이 새로 수용한 행만 건드린다. 이미 스냅샷이 있는 현 best는 별도로
+`establish_baseline --remeasure --competition <id>`로 맞춘다 — **이 순서 필수**: 백필 먼저,
+그다음 establish_baseline. 반대로 하면 다음 백필 실행 시 drift probe가 오작동한다(현 best cv가
+현재 데이터에 맞춰져 probe가 "비교 가능"으로 오판 → 남은 행을 잘못 격리).
 
 ### 4-3. auto-submit 일시중단 복구
 

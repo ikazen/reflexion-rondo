@@ -1,5 +1,21 @@
 # 변경 이력
 
+## v1.6.4 — _unsubmitted_confirmed 자기행 verdict 필터 (2026-08-27)
+
+### #254 후속 — 후보 자신의 unverifiable verdict도 제외
+- v1.6.3 배포 후 s4e10/s4e12/s5e4 백필을 실행했다(각각 `--apply`, chain/remeasure 없이).
+  drift probe가 세 대회 모두 "데이터 이동됨"으로 정상 판정 → cv tier 꺼짐 → 스냅샷 없는 옛
+  승격분은 대부분 `unverifiable:eval_error`(재생이 helper 충돌 hard error로 실패, s4e10은
+  `502a8c0b`에서 체인 전체가 끊김) 또는 `unverifiable:train_drift`. **격리(`invalid_reason`)
+  0건** — 이력 보존. 백로그: s4e10 12→0, s4e12 2→0, s5e4 4→1(유효 스냅샷 보유분 1개).
+- v1.6.3의 `_unsubmitted_confirmed`가 **직전** 승격 행의 verdict만 봐서, 최초 승격분(직전 행
+  없음)이 `train_drift`면 후보로 계속 나왔다(s4e10 `05365dfa` 실측). 후보 자신의 행에도
+  `(materialized_code IS NOT NULL OR materialized_origin IS NULL)` 추가 — 직전 행 체크와 대칭.
+- **주의**: 특정 대회에 `establish_baseline --remeasure`를 돌린 뒤 그 대회 백필 DAG를 다시
+  실행하면 drift probe가 오작동한다 — remeasure가 최신 스냅샷 행의 cv를 현재 데이터 기준으로
+  맞춰놔서 probe가 "비교 가능"으로 오판하고, 남은 스냅샷 없는 행을 `cv_mismatch`로 잘못
+  격리할 수 있다. 백필은 대회당 1회 반복(재실행)만, remeasure는 그 뒤에.
+
 ## v1.6.3 — s4e12/s5e4 행 상한 + 승격 이력 스냅샷 행동 검증 백필 (2026-08-26)
 
 (v1.6.2로 태그를 나눠 잡았으나 deploy DAG가 main HEAD를 빌드해 별도 이미지가 없어 v1.6.3
