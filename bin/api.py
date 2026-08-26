@@ -1427,11 +1427,13 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
 
     # 관측: 상위 레이어(대회 요약/점수/최고전략)
     # best_cv 계산은 cycle/run.py:_prev_best와 동일 로직: 확정 pipelines 우선,
-    # 없으면(cold-start) attempts max로 폴백.
+    # 없으면(cold-start) attempts max로 폴백. #254 백필이 재현 불가로 판정한 행은 제외
+    # (cv_score가 옛 기준이라 대시보드 best_cv가 실제보다 좋게 보임).
     _BEST_CV_SQL = """
         coalesce(
             (select max(p.cv_score * cc.metric_sign) * cc.metric_sign
-             from raw.pipelines p where p.competition_id = cc.competition_id and p.cv_score is not null),
+             from raw.pipelines p where p.competition_id = cc.competition_id and p.cv_score is not null
+               and coalesce(p.materialized_origin, '') not like 'unverifiable:%'),
             (select max(a.cv_score * cc.metric_sign) * cc.metric_sign
              from raw.attempts a where a.competition_id = cc.competition_id and a.cv_score is not null)
         )

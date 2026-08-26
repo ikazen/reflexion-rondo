@@ -97,6 +97,11 @@ def _prev_best(conn: PgConn, competition_id: str) -> float | None:
     확정 파이프라인이 없으면 None — 재측정 없는 attempt 최고값으로 폴백하지 않는다
     (decisions.md ADR-025). 콜드스타트 대응은 establish_bootstrap_baseline과
     bin/establish_baseline.py가 실제 재검증으로 처리한다.
+
+    #254 백필이 재현 불가로 판정한 행(materialized_origin='unverifiable:*')은 제외한다 —
+    그 cv_score는 승격 당시(옛 데이터/로직) 기준이라 baseline으로 못 쓰는데 invalid_reason은
+    안 세우므로(이력 보존, ADR-039) 여기서 명시적으로 거른다. _prev_best_params/
+    _prev_best_fold_scores/establish_bootstrap_baseline도 동일.
     """
     row = conn.execute(
         """
@@ -106,6 +111,7 @@ def _prev_best(conn: PgConn, competition_id: str) -> float | None:
         where p.competition_id = %s
           and p.cv_score is not null
           and p.invalid_reason is null
+          and coalesce(p.materialized_origin, '') not like 'unverifiable:%%'
         """,
         [competition_id],
     ).fetchone()
@@ -127,6 +133,7 @@ def _prev_best_params(conn: PgConn, competition_id: str) -> dict | None:
         where p.competition_id = %s
           and p.cv_score is not null
           and p.invalid_reason is null
+          and coalesce(p.materialized_origin, '') not like 'unverifiable:%%'
         order by c.metric_sign * p.cv_score desc
         limit 1
         """,
@@ -190,6 +197,7 @@ def _prev_best_fold_scores(conn: PgConn, competition_id: str) -> list[float] | N
         where p.competition_id = %s
           and p.cv_score is not null
           and p.invalid_reason is null
+          and coalesce(p.materialized_origin, '') not like 'unverifiable:%%'
         order by c.metric_sign * p.cv_score desc
         limit 1
         """,
@@ -222,7 +230,8 @@ def establish_bootstrap_baseline(
     반환값은 이번 호출로 새로 baseline이 확립됐는지 여부.
     """
     existing = conn.execute(
-        "select 1 from raw.pipelines where competition_id = %s and invalid_reason is null limit 1",
+        "select 1 from raw.pipelines where competition_id = %s and invalid_reason is null"
+        " and coalesce(materialized_origin, '') not like 'unverifiable:%%' limit 1",
         [competition_id],
     ).fetchone()
     if existing:

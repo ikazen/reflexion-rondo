@@ -42,6 +42,18 @@ def test_pipelines_query_uses_pipelines_table():
     assert "raw.pipelines" in sql
 
 
+def test_prev_best_queries_exclude_unverifiable_backfill_verdict():
+    """#254 백필이 재현 불가로 판정한 행(materialized_origin='unverifiable:*')은
+    cv_score가 옛 데이터/로직 기준이라 _prev_best 계열에서 빠져야 한다 — invalid_reason은
+    안 세우므로(ADR-039) 명시적 필터가 필요하다(s5e4 70a8347b 실측)."""
+    for fn, ret in ((_prev_best, (0.9,)), (_prev_best_params, ({"x": 1},)),
+                    (_prev_best_fold_scores, ([0.8, 0.9],))):
+        conn = _conn_seq(ret)
+        fn(conn, "s4e1")
+        sql = conn.execute.call_args_list[0][0][0]
+        assert "materialized_origin" in sql and "unverifiable:%%" in sql, fn.__name__
+
+
 
 def test_prev_best_params_returns_dict_row():
     conn = _conn_seq(({"max_depth": 4},))
