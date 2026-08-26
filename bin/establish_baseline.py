@@ -72,6 +72,7 @@ def competitions_without_baseline(conn) -> list[str]:
         WHERE NOT EXISTS (
             SELECT 1 FROM raw.pipelines p
             WHERE p.competition_id = c.competition_id AND p.invalid_reason IS NULL
+              AND COALESCE(p.materialized_origin, '') NOT LIKE 'unverifiable:%'
         )
         ORDER BY c.competition_id
         """

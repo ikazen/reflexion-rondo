@@ -1,5 +1,20 @@
 # 변경 이력
 
+## v1.6.5 — _prev_best가 백필 unverifiable verdict 행을 제외 (2026-08-27)
+
+### #254/#262 후속 — stale baseline 차단
+- v1.6.3/v1.6.4 백필+remeasure 후 실측: s5e4 `_prev_best`가 `unverifiable:eval_error` 행
+  (`70a8347b`, 옛 데이터 기준 cv 12.745)을 최고로 골라 실제 현 best(`f1ceff21`, remeasure 후
+  12.829)를 못 봤다. `unverifiable:*` verdict는 이력 보존을 위해 `invalid_reason`을 안 세우므로
+  (ADR-039) `_prev_best`의 `invalid_reason IS NULL` 필터를 통과한다 — 그 cv는 승격 당시(옛
+  데이터/로직) 기준이라 baseline으로 못 쓴다.
+- `cycle/run.py`의 `_prev_best` / `_prev_best_params` / `_prev_best_fold_scores` /
+  `establish_bootstrap_baseline` 존재 체크, `bin/establish_baseline.py:competitions_without_baseline`,
+  `bin/api.py`의 대시보드 `_BEST_CV_SQL`에 `coalesce(materialized_origin,'') NOT LIKE
+  'unverifiable:%'` 추가. NULL(레거시)·`promote`·`backfill:*`는 통과.
+- `establish_baseline --remeasure`(#135)를 s4e10/s4e12/s5e4에 실행: `9ab74bf8` 0.95989→0.96192,
+  `9cf9c3e6` 1.04481→1.04659, `f1ceff21` 12.73125→12.82876.
+
 ## v1.6.4 — _unsubmitted_confirmed 자기행 verdict 필터 (2026-08-27)
 
 ### #254 후속 — 후보 자신의 unverifiable verdict도 제외
