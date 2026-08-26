@@ -241,6 +241,28 @@ def _run_in_pgroup(
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
+def _submit_failure_detail(result: subprocess.CompletedProcess) -> str:
+    """실패한 bin.submit 서브프로세스에서 진단에 쓸 정보를 추린다.
+
+    stderr는 머리가 아니라 꼬리를 남긴다 — bin/submit.py가 logging을 설정하지 않아
+    cycle.materialize의 collision warning이 logging.lastResort로 stderr 앞을 채우고,
+    승격 이력이 긴 대회(s4e10 등)에선 그 warning만으로 2000자를 넘겨 진짜 예외가
+    잘려나간다(2026-08-26에 하루 동안 "Patch member collision"으로 오진). 같은 절단
+    함정 주석이 bin/run_promote_task.py에도 있다.
+
+    stdout에서 base 로드 결과 한 줄도 복구해 앞에 붙인다 — 어느 base 경로를 탔는지가
+    replay sha 불일치 계열 실패의 1차 진단 정보다. load_base_snapshot 자체가 raise하면
+    이 줄이 안 찍히고, 그 부재가 곧 "base 로드 전에 죽었다"는 신호다.
+    """
+    origin = next(
+        (ln for ln in result.stdout.splitlines()
+         if "base pipeline loaded:" in ln or "no prior promoted pipeline" in ln),
+        "",
+    )
+    tail = result.stderr[-2000:]
+    return f"{origin}\n---\n{tail}" if origin else tail
+
+
 def _kaggle_submit(
     submission_id: str,
     competition_id: str,
@@ -315,7 +337,7 @@ def _kaggle_submit(
             tmp_path.unlink(missing_ok=True)
 
     if result.returncode != 0:
-        _update({"status": "error", "error": result.stderr[:2000], "checked_at": datetime.now(timezone.utc)})
+        _update({"status": "error", "error": _submit_failure_detail(result), "checked_at": datetime.now(timezone.utc)})
         return
 
     # 캐시 미스로 여기서 직접 fit한 경우 — 결과를 캐시에 올려두면 같은 attempt의
@@ -668,6 +690,15 @@ def _unsubmitted_confirmed(
               select 1 from raw.kaggle_submissions s
               where s.attempt_id = a.attempt_id
           )
+          -- 직전 승격분에 스냅샷이 없고 #254 백필이 이미 재현 실패 verdict를 남겼으면
+          -- (materialized_origin not null) 영영 제출 불가 — 후순위가 아니라 하드 제외.
+          -- 스냅샷 있음 or 아직 백필 미시도(둘 다 null)면 통과. 승격분 자체가 없으면 통과.
+          and coalesce((
+              select p2.materialized_code is not null or p2.materialized_origin is null
+              from raw.pipelines p2 join raw.attempts a2 using (attempt_id)
+              where p2.competition_id = a.competition_id and a2.run_ts < a.run_ts
+              order by a2.run_ts desc limit 1
+          ), true)
         order by prior_snapshot desc,
                  c.metric_sign * a.cv_score desc, a.run_ts asc, a.attempt_id asc
         limit %s

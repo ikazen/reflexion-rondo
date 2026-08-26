@@ -304,8 +304,11 @@ def load_base_snapshot(
 
     반환: (base_source | None, 출처 설명). 승격 이력이 없으면 (None, ...).
     """
+    # 신뢰 해시는 coalesce(materialized_sha256, pipeline_sha256) — 둘은 forward 행에선
+    # 같고 #254 백필 행에서만 갈라진다. 백필 행은 재생 결과가 텍스트로는 승격 당시와
+    # 달라도(materialized_sha256) 행동 재현이 검증된 것이므로 그 sha로 손상만 잡는다.
     query = """
-        SELECT p.materialized_code, p.pipeline_sha256
+        SELECT p.materialized_code, coalesce(p.materialized_sha256, p.pipeline_sha256)
         FROM raw.pipelines p
         JOIN raw.attempts a USING (attempt_id)
         WHERE p.competition_id = %s
@@ -337,8 +340,31 @@ def load_base_snapshot(
     return best, f"replay fallback ({count} promoted pipeline(s), sha verified)"
 
 
+def promotion_chain(conn: "PgConn", competition_id: str) -> list[tuple]:
+    """대회의 승격 이력을 run_ts 오름차순으로 반환 — #254 백필이 소비한다.
+
+    각 원소: (pipeline_id, attempt_id, run_ts, code, cv_score, pipeline_sha256,
+    materialized_code, materialized_sha256, materialized_origin, invalid_reason).
+    replay_best_pipeline과 달리 invalid_reason 필터를 걸지 않는다 — 백필은 격리된
+    행도 봐야 verdict를 갱신한다.
+    """
+    return conn.execute(
+        """
+        SELECT p.pipeline_id, p.attempt_id, a.run_ts, p.code, p.cv_score,
+               p.pipeline_sha256, p.materialized_code, p.materialized_sha256,
+               p.materialized_origin, p.invalid_reason
+        FROM raw.pipelines p
+        JOIN raw.attempts a USING (attempt_id)
+        WHERE p.competition_id = %s
+        ORDER BY a.run_ts ASC
+        """,
+        [competition_id],
+    ).fetchall()
+
+
 def replay_best_pipeline(
-    conn: "PgConn", competition_id: str, before_run_ts=None, strict_sha: bool = False
+    conn: "PgConn", competition_id: str, before_run_ts=None, strict_sha: bool = False,
+    stop_at_pipeline_id: str | None = None,
 ) -> tuple[str | None, str | None, int]:
     """raw.pipelines 히스토리를 시간순 재생해 materialized base pipeline을 재구성한다.
 
@@ -346,7 +372,9 @@ def replay_best_pipeline(
     거기서는 MinIO best_pipeline.py 손상 복구용, 여기서는 attempt 제출 시 평가
     시점의 base를 정확히 재현하는 용도. before_run_ts를 주면 그 시각 이전에
     승격된 pipeline만 재생한다 — attempt의 cv_score는 그 시점까지의 base 위에서
-    측정됐으므로 이후 승격분을 섞으면 안 된다.
+    측정됐으므로 이후 승격분을 섞으면 안 된다. stop_at_pipeline_id를 주면 그 행까지
+    (포함) 재생하고 멈춘다 — before_run_ts는 strict `<`라 특정 행 자신의 병합본은
+    못 만드는데, #254 백필은 그게 필요하다. 둘은 동시에 쓰지 않는다.
 
     반환: (materialized_source, 마지막 행의 pipeline_sha256, 재생한 pipeline 수).
     승격 이력이 없으면 (None, None, 0).
@@ -374,6 +402,7 @@ def replay_best_pipeline(
 
     best: str | None = None
     last_sha256: str | None = None
+    replayed = 0
     for pipeline_id, run_ts, code, pipeline_sha256 in rows:
         try:
             best = materialize_best_pipeline(best, code)
@@ -383,8 +412,12 @@ def replay_best_pipeline(
                 f"(competition_id={competition_id}): {exc}"
             ) from exc
         last_sha256 = pipeline_sha256
+        replayed += 1
+        if stop_at_pipeline_id is not None and pipeline_id == stop_at_pipeline_id:
+            break
 
-    assert best is not None  # rows non-empty, loop always assigns
+    if best is None:
+        return None, None, 0
     actual_sha256 = hashlib.sha256(best.encode()).hexdigest()
     if last_sha256 and actual_sha256 != last_sha256:
         # 재현 실패의 주원인은 blob 손상이 아니라 materialize 로직 자체의 변경 —
@@ -400,7 +433,7 @@ def replay_best_pipeline(
             "(competition_id=%s) — 복구 용도로만 사용할 것.",
             competition_id,
         )
-    return best, last_sha256, len(rows)
+    return best, last_sha256, replayed
 
 
 _SAFE_NAMES = frozenset(dir(builtins)) | {"self", "cls", "__class__"}

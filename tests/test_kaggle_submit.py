@@ -22,7 +22,7 @@ ROOT = Path(__file__).parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bin.api import _kaggle_submit, _last_submitted_attempt, _run_in_pgroup
+from bin.api import _kaggle_submit, _last_submitted_attempt, _run_in_pgroup, _submit_failure_detail
 
 
 @contextlib.contextmanager
@@ -214,3 +214,57 @@ def test_cache_hit_does_not_take_fit_gate() -> None:
         run_mock.assert_called_once()
     finally:
         api_mod._submit_fit_gate.release()
+
+
+def test_submit_failure_detail_keeps_stderr_tail_not_head() -> None:
+    """chatty warning이 stderr 앞을 채워도 뒤쪽 진짜 예외가 살아남아야 한다 —
+    2026-08-26에 "Patch member collision"으로 하루 오진한 절단 함정."""
+    warnings = "Patch member collision (patch overrides base): ['build_model']\n" * 60
+    real_exc = "RuntimeError: replay_best_pipeline: 재생 결과 sha256이 마지막 승격분의 신뢰 해시와 다르다"
+    result = MagicMock(stdout="", stderr=warnings + real_exc)
+    detail = _submit_failure_detail(result)
+    assert real_exc in detail
+    assert len(detail) <= 2000
+
+
+def test_submit_failure_detail_prepends_base_origin_line() -> None:
+    """stdout의 base 로드 결과 줄을 복구해 앞에 붙인다 — 어느 base 경로를 탔는지가 1차 진단."""
+    result = MagicMock(
+        stdout="best attempt: 1034d895  cv=0.95986\nbase pipeline loaded: replay fallback (3 promoted pipeline(s), sha verified)\n",
+        stderr="RuntimeError: boom",
+    )
+    detail = _submit_failure_detail(result)
+    assert detail.startswith("base pipeline loaded: replay fallback")
+    assert "RuntimeError: boom" in detail
+
+
+def test_submit_failure_detail_no_origin_line_when_base_load_raised() -> None:
+    """load_base_snapshot이 raise하면 origin 줄이 안 찍히고, 그 부재가 곧 신호다."""
+    result = MagicMock(stdout="best attempt: abc  cv=0.5\n", stderr="RuntimeError: snapshot corrupt")
+    detail = _submit_failure_detail(result)
+    assert detail == "RuntimeError: snapshot corrupt"
+
+
+def test_submit_failure_writes_detail_to_error_column() -> None:
+    """returncode != 0이면 _submit_failure_detail 결과가 raw.kaggle_submissions.error로 들어간다."""
+    conn_mock = MagicMock()
+    fail = MagicMock(
+        returncode=1,
+        stdout="base pipeline loaded: materialized_code snapshot\n",
+        stderr="W\n" * 2000 + "RuntimeError: real cause here",
+    )
+    with patch("store.db.connect", return_value=conn_mock), \
+         patch("bin.api._kaggle_home_env", _fake_kaggle_home_env), \
+         patch("store.s3_code.download_submission_csv", return_value=None), \
+         patch("store.s3_code.upload_submission_csv"), \
+         patch("bin.api._run_in_pgroup", return_value=fail):
+        _kaggle_submit("sub-1", "playground-series-s4e1", "s4e1", "attempt-abc", "msg")
+
+    error_updates = [
+        c.args[1] for c in conn_mock.execute.call_args_list
+        if "set status = %s, error = %s" in c.args[0]
+    ]
+    assert error_updates, "error 업데이트가 실행돼야 한다"
+    _status, err, *_ = error_updates[-1]
+    assert "RuntimeError: real cause here" in err
+    assert err.startswith("base pipeline loaded: materialized_code snapshot")

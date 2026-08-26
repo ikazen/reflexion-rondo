@@ -90,6 +90,19 @@ ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS oof_preds jsonb;
 -- 경로는 이 스냅샷을 base로 쓴다.
 ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS materialized_code text;
 
+-- materialized_code로 저장된 내용의 sha256. forward 경로(insert_pipeline)에선
+-- pipeline_sha256과 동일하지만, #254 행동 백필로 채운 행에선 다르다(재생 결과가
+-- 텍스트로는 승격 당시와 달라도 행동이 재현되면 신뢰). load_base_snapshot의 손상
+-- 가드는 이 값과 대조하고, pipeline_sha256은 submit.py의 MinIO anti-tamper 해시로
+-- 그대로 둔다 — 두 해시를 분리해야 둘 다 유지된다.
+ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS materialized_sha256 text;
+
+-- materialized_code의 출처. 'promote'(forward), 'backfill:{minio,sha,cv,chain}'(#254
+-- 백필 각 tier), 'unverifiable:{train_drift,eval_error,upstream_blocked}'(백필이
+-- 재현 실패로 스냅샷을 못 만든 경우). materialized_code IS NULL AND materialized_origin
+-- IS NOT NULL = "백필 시도했고 실패" — _unsubmitted_confirmed가 이걸로 직전 행을 판단한다.
+ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS materialized_origin text;
+
 -- 승격 후 사후 발견된 결함(preprocess valid-target 누수 등) 표기 — NULL이면 유효.
 -- 삭제하지 않고 조회 경로(_prev_best, replay 등)에서만 제외해 이력을
 -- 보존한다. bin/quarantine_leaks.py가 스캔해서 채운다(docs/decisions.md ADR-025).

@@ -26,6 +26,12 @@ _LOG = logging.getLogger(__name__)
 # best_source가 없을 때 베이스라인 평가에 쓰는 기본 패치 (= BasePipeline 그대로)
 _NOOP_PATCH = "class Patch:\n    pass\n"
 
+# 병합본(materialize_best_pipeline 산출물) cv_score가 winner 자신의 기록된
+# cv_score와 크게 다르면 병합 손상 신호 — 같은 seed·fold라 결정적 재현이면 거의
+# bit-identical해야 한다. 부동소수 연산차만 허용하는 엄격한 허용오차. bin/run_promote_task.py
+# (merge-verify)와 bin/backfill_materialized_code.py(#254 cv tier)가 공유한다.
+MERGE_VERIFY_TOLERANCE = 1e-6
+
 
 @dataclass(frozen=True, slots=True)
 class ConfirmResult:
