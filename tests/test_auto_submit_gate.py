@@ -239,6 +239,19 @@ def test_unsubmitted_confirmed_hard_excludes_known_unreproducible_prior():
     assert "order by prior_snapshot desc" in sql
 
 
+def test_unsubmitted_confirmed_excludes_candidate_with_own_unverifiable_verdict():
+    """후보 자신의 승격 행이 train_drift/eval_error verdict면(materialized_code IS NULL AND
+    materialized_origin IS NOT NULL) 제외 — 최초 승격분처럼 직전 행이 없어 대칭 체크에
+    안 걸리는 경우를 잡는다(s4e10 05365dfa 실측)."""
+    import bin.api as api_mod
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    api_mod._unsubmitted_confirmed(conn, "playground-series-s4e10", 2)
+    sql = conn.execute.call_args.args[0]
+    assert "p.materialized_code is not null or p.materialized_origin is null" in sql
+
+
 def test_auto_submit_respects_daily_budget(monkeypatch):
     """오늘 이미 쓴 만큼 예산에서 뺀다 — Kaggle 일일 한도를 넘기지 않기 위함."""
     client = _client_for_auto_submit(
