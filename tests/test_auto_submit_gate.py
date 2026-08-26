@@ -224,6 +224,21 @@ def test_unsubmitted_confirmed_orders_by_prior_snapshot_then_cv():
     assert result == [("a", 0.95), ("b", 0.96)]
 
 
+def test_unsubmitted_confirmed_hard_excludes_known_unreproducible_prior():
+    """#254 백필이 직전 승격분을 재현 불가로 판정하면(materialized_code IS NULL AND
+    materialized_origin IS NOT NULL) 그 attempt는 영영 제출 불가 — 후순위가 아니라
+    하드 제외. 아직 백필 안 한 경우(둘 다 NULL)는 후순위로만 남는다."""
+    import bin.api as api_mod
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    api_mod._unsubmitted_confirmed(conn, "playground-series-s4e10", 2)
+    sql = conn.execute.call_args.args[0]
+    assert "materialized_origin is null" in sql
+    # 후순위 정렬 키(prior_snapshot)는 그대로 유지 — 미시도 후보를 배제하지 않는다.
+    assert "order by prior_snapshot desc" in sql
+
+
 def test_auto_submit_respects_daily_budget(monkeypatch):
     """오늘 이미 쓴 만큼 예산에서 뺀다 — Kaggle 일일 한도를 넘기지 않기 위함."""
     client = _client_for_auto_submit(

@@ -1,5 +1,29 @@
 # 변경 이력
 
+## v1.6.3 — 승격 이력 스냅샷 행동 검증 백필 (2026-08-26)
+
+### #254 — 재생된 base 검증을 소스 해시에서 행동 재현으로 (ADR-039)
+- v1.6.0 첫 auto-submit 배치(10건) 중 5건 실패: s4e10/s5e4 4건이 `replay_best_pipeline` sha
+  불일치, s6e8 2건이 타임아웃(v1.6.1에서 별도 수정). sha 불일치의 원인은 2026-08 이전 승격분에
+  `materialized_code` 스냅샷이 없어(#89 이전) replay 폴백을 타는데, ADR-037이 합성 규칙을 바꾼 뒤
+  replay가 승격 당시와 다른 코드를 만들어 `strict_sha` 가드에 걸리는 것. 가드는 옳다.
+- `bin/backfill_materialized_code.py` 재작성 — 스냅샷 없는 행마다 체인을 재생·재평가해 verdict:
+  `backfill:{minio,sha,cv,chain}`(스냅샷 기록) / `unverifiable:*`(verdict만) /
+  `unverifiable:cv_mismatch`(`invalid_reason` 격리). drift probe로 "기록 cv 재현 가능한가"를
+  가정이 아니라 **측정**한다 — s4e10처럼 전 이력이 2026-08-24 데이터 병합 이전이면 probe가 실패,
+  `--allow-chain` 없이는 대부분 `unverifiable`로 남는 게 정답(June attempt는 평가 컨텍스트 소멸).
+- 스키마: `raw.pipelines.materialized_sha256`(스냅샷 자신의 sha, 백필 행에서만 pipeline_sha256과
+  갈라짐) + `materialized_origin`(verdict) 추가. `load_base_snapshot` 손상 가드는
+  `coalesce(materialized_sha256, pipeline_sha256)`으로.
+- `bin/api.py:_kaggle_submit` 실패 시 `error` 컬럼: `stderr[:2000]`(머리) → 꼬리 보존 + stdout의
+  `base pipeline loaded:` 줄. `bin/submit.py`가 logging 미설정이라 `cycle.materialize` warning이
+  `logging.lastResort`로 stderr 앞을 채워 진짜 예외를 밀어냈다 — 2026-08-26에 하루 동안
+  "Patch member collision"으로 오진한 직접 원인.
+- `_unsubmitted_confirmed`: 직전 승격분이 `unverifiable`로 판정되면(materialized_code IS NULL AND
+  materialized_origin IS NOT NULL) 하드 제외. 미백필(둘 다 NULL)은 기존대로 후순위.
+- `MERGE_VERIFY_TOLERANCE`를 `cycle/promotion.py`로 이동(merge-verify와 백필이 공유).
+- Airflow: `reflexion_rondo_backfill_materialized` DAG 신설(수동, big 큐, cap-add SYS_ADMIN).
+
 ## v1.6.2 — s4e12/s5e4 학습 행 상한 + 확정 pipeline 재측정 (2026-08-26)
 
 ### #135 — s4e12/s5e4 `MAX_TRAIN_ROWS = 500_000`

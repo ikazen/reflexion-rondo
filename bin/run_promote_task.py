@@ -21,10 +21,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
-# 병합본(materialize_best_pipeline 산출물) cv_score가 winner 자신의 기록된
-# cv_score와 크게 다르면 병합 손상 신호 — 같은 seed·fold라 결정적
-# 재현이면 거의 bit-identical해야 한다. 부동소수 연산차만 허용하는 엄격한 허용오차.
-_MERGE_VERIFY_TOLERANCE = 1e-6
 
 
 def main() -> None:
@@ -49,7 +45,7 @@ def main() -> None:
     from config.settings import PROMOTE_CONFIRM_SEEDS
     from cycle.action_optimizer import update_bandit
     from cycle.materialize import materialize_best_pipeline
-    from cycle.promotion import PromotionCache, confirm_and_measure, effective_label
+    from cycle.promotion import MERGE_VERIFY_TOLERANCE, PromotionCache, confirm_and_measure, effective_label
     from evaluator.harness import is_significant_gain, split_audit_holdout
     from memory.retriever import EmbeddingUnavailableError
     from runtime.isolate import eval_isolated
@@ -279,12 +275,12 @@ def main() -> None:
                         )
                     else:
                         merge_delta = abs(merge_eval.cv_score - winner_row[2])
-                        if merge_delta > _MERGE_VERIFY_TOLERANCE:
+                        if merge_delta > MERGE_VERIFY_TOLERANCE:
                             merge_ok = False
                             print(
                                 f"[run_promote_task] merge-verify 실패 — 승격 스킵: "
                                 f"merged_cv={merge_eval.cv_score:.6f} winner_cv={winner_row[2]:.6f} "
-                                f"delta={merge_delta:.6f} (tolerance={_MERGE_VERIFY_TOLERANCE})"
+                                f"delta={merge_delta:.6f} (tolerance={MERGE_VERIFY_TOLERANCE})"
                             )
                         else:
                             merge_oof_preds = merge_eval.oof_preds

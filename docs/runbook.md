@@ -178,8 +178,9 @@ dagrun(=사이클) 하나가 실패해도 배치를 중단하지 않는다 — �
 `raw.pipelines`가 확정 승격한 뒤에야 target 누수(예: preprocess에서 valid 타깃 직접 참조)가 드러나는 경우가 있다. 순서를 지켜야 한다:
 
 ```bash
-# 0. (선택, 정확도 향상) materialized_code가 없는 오래된 승격 행에 스냅샷 소급
-uv run python -m bin.backfill_materialized_code
+# 0. (선택, 정확도 향상) materialized_code가 없는 오래된 승격 행에 스냅샷 소급 — §4-4 참조
+uv run python -m bin.backfill_materialized_code --competition <id>          # dry-run
+uv run python -m bin.backfill_materialized_code --competition <id> --apply  # 반영
 
 # 1. 스캔 — 반드시 --dry-run 먼저. 로컬에 train.csv 캐시/MINIO_ENDPOINT가 없으면
 #    "판정 불가"로 스킵되고(격리 안 함) 콘솔에 남는다 — 격리 대상 목록에서 이런 스킵과
@@ -208,6 +209,37 @@ top-k(기본 5) attempt를 cv 순으로 순회하며 cross-seed+holdout을 통�
 **메모리 주의**: 이 스크립트는 실제 모델 학습을 여러 번 반복한다. 검증된 프로덕션 환경(mac-server/worker-vm/ops-vm task 컨테이너) 밖에서 돌리면
 `runtime/isolate.py`의 `RLIMIT_AS`(VSZ 기준, decisions.md ADR-027)에 걸려 물리 메모리가 남아도 전량 실패할 수 있다 — WSL 등 미검증 환경에서 실패가 반복되면
 ops-vm의 task 이미지로 `docker run --network host --cap-add SYS_ADMIN`으로 직접 실행할 것.
+
+### 4-4. 승격 이력 스냅샷 백필 (#254)
+
+2026-08 이전 승격 행은 `materialized_code` 스냅샷이 없어(#89 이전) 제출 시 replay 폴백을 타는데,
+`materialize` 합성 규칙이 바뀐 뒤(ADR-037) replay는 승격 당시와 다른 코드를 만들어 sha 검증에
+걸린다. `bin/backfill_materialized_code.py`가 행마다 verdict를 매긴다:
+
+| verdict (`materialized_origin`) | 의미 | 부작용 |
+|---|---|---|
+| `backfill:minio` / `backfill:sha` | 재생/현 MinIO blob의 sha가 `pipeline_sha256`과 일치 | 스냅샷 기록 |
+| `backfill:cv` | drift probe 통과(데이터 비교 가능) + 재평가 cv가 기록값과 tolerance 안 | 스냅샷 기록 |
+| `backfill:chain` | 데이터 이동됨(`--allow-chain`) + 재평가가 직전 검증층 대비 유의한 회귀 아님 | 스냅샷 기록 (약한 보장) |
+| `unverifiable:train_drift` 등 | 재현 불가 | verdict만 기록, 제출 백로그에서 제외 |
+| `unverifiable:cv_mismatch` | 데이터 비교 가능한데 cv 어긋남 | `invalid_reason` 격리 |
+
+drift probe: 대회의 최신 스냅샷 행을 오늘 데이터로 재평가해 기록 cv 재현 여부를 **측정**한다.
+s4e10처럼 전 이력이 데이터 스키마 변경(EXTRA_TRAIN_PATHS 등) 이전이면 probe가 실패하고 cv tier가
+꺼진다 — 그 대회는 `--allow-chain` 없이는 대부분 `unverifiable`로 남는 게 정상이다.
+
+```bash
+# 로컬(주의: RLIMIT_AS — §4-2와 동일, 검증 환경 밖에서 실패 반복 시 아래 DAG 사용)
+uv run python -m bin.backfill_materialized_code --competition <id>            # dry-run
+uv run python -m bin.backfill_materialized_code --competition <id> --apply --allow-chain --remeasure
+
+# Airflow (권장 — big 큐, cap-add SYS_ADMIN):
+#   reflexion_rondo_backfill_materialized DAG, conf {"competition": "...", "apply": true, ...}
+#   먼저 reflexion_rondo_deploy로 이미지 태그를 bump해 새 스크립트가 이미지에 들어가야 한다
+```
+
+`--remeasure`는 수용된 행의 `cv_score`를 재평가값으로 갱신한다 — 데이터가 이동한 대회에서
+stale `_prev_best`가 신규 attempt를 잘못 게이트하는 문제도 함께 고친다.
 
 ### 4-3. auto-submit 일시중단 복구
 

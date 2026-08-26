@@ -168,19 +168,27 @@ def insert_pipeline(
     oof_preds: list | None = None,
     materialized_code: str | None = None,
 ) -> None:
+    import hashlib
     import json
+    # forward 경로에서 두 해시는 같다(둘 다 방금 만든 병합본의 sha) — 다른 건 #254
+    # 백필 행뿐이다. materialized_origin='promote'로 백필 행과 구분한다.
+    materialized_sha256 = (
+        hashlib.sha256(materialized_code.encode()).hexdigest()
+        if materialized_code is not None else None
+    )
     conn.execute(
         """
         INSERT INTO raw.pipelines
-            (pipeline_id, attempt_id, competition_id, fingerprint_snapshot, code, cv_score, gain_vs_best, pipeline_sha256, oof_preds, materialized_code)
-        VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb, %s)
+            (pipeline_id, attempt_id, competition_id, fingerprint_snapshot, code, cv_score, gain_vs_best,
+             pipeline_sha256, oof_preds, materialized_code, materialized_sha256, materialized_origin)
+        VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb, %s, %s, 'promote')
         ON CONFLICT (pipeline_id) DO NOTHING
         """,
         [
             pipeline_id, attempt_id, competition_id, json.dumps(fingerprint_snapshot),
             code, cv_score, gain_vs_best, pipeline_sha256,
             json.dumps(oof_preds) if oof_preds is not None else None,
-            materialized_code,
+            materialized_code, materialized_sha256,
         ],
     )
 

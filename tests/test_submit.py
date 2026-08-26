@@ -353,6 +353,35 @@ def test_replay_best_pipeline_strict_sha_raises_on_mismatch() -> None:
         replay_best_pipeline(conn, "s4e1", strict_sha=True)
 
 
+def test_replay_best_pipeline_stops_at_pipeline_id() -> None:
+    """stop_at_pipeline_id를 주면 그 행까지(포함) 재생하고 멈춘다 — #254 백필이
+    특정 승격 행 자신의 병합본을 재현하려면 필요하다(before_run_ts는 strict `<`라 불가)."""
+    from cycle.materialize import replay_best_pipeline
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = [
+        ("pid-1", "2026-07-26T00:00:00", "class Patch:\n    def build_model(self, p, c):\n        return 1\n", None),
+        ("pid-2", "2026-07-27T00:00:00", "class Patch:\n    def preprocess(self, tr, va, t, c):\n        return tr, va\n", None),
+        ("pid-3", "2026-07-28T00:00:00", "class Patch:\n    def postprocess_predictions(self, p, c):\n        return p\n", None),
+    ]
+    best, _, count = replay_best_pipeline(conn, "s4e1", stop_at_pipeline_id="pid-2")
+    assert count == 2
+    assert "def build_model" in best and "def preprocess" in best
+    assert "def postprocess_predictions" not in best
+
+
+def test_promotion_chain_does_not_filter_invalid_reason() -> None:
+    """백필은 격리된 행도 봐야 하므로 promotion_chain은 invalid_reason 필터를 안 건다."""
+    from cycle.materialize import promotion_chain
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    promotion_chain(conn, "s4e1")
+    sql = conn.execute.call_args.args[0]
+    assert "invalid_reason IS NULL" not in sql  # 필터를 안 건다(컬럼으로는 반환)
+    assert "materialized_origin" in sql
+
+
 # cycle.materialize.load_base_snapshot — #89
 
 def test_load_base_snapshot_prefers_materialized_code() -> None:
@@ -375,6 +404,24 @@ def test_load_base_snapshot_raises_on_corrupt_snapshot() -> None:
     conn.execute.return_value.fetchone.return_value = ("class Patch:\n    pass\n", "0" * 64)
     with pytest.raises(RuntimeError, match="sha256"):
         load_base_snapshot(conn, "s4e1")
+
+
+def test_load_base_snapshot_trusts_backfilled_snapshot_via_materialized_sha256() -> None:
+    """#254 백필 행은 materialized_code가 텍스트로는 승격 당시와 달라도(합성 규칙 변경)
+    행동 재현이 검증됐다 — coalesce(materialized_sha256, pipeline_sha256)을 신뢰 해시로
+    써서 그 스냅샷 자신의 sha와 대조(손상만 잡음)."""
+    import hashlib
+    from cycle.materialize import load_base_snapshot
+
+    snapshot = "class Patch:\n    def build_model(self, p, c):\n        return 2\n"
+    backfilled_sha = hashlib.sha256(snapshot.encode()).hexdigest()
+    conn = MagicMock()
+    # 쿼리가 coalesce(materialized_sha256, pipeline_sha256)을 두 번째 컬럼으로 반환
+    conn.execute.return_value.fetchone.return_value = (snapshot, backfilled_sha)
+    src, _ = load_base_snapshot(conn, "s4e1")
+    assert src == snapshot
+    sql = conn.execute.call_args.args[0]
+    assert "coalesce(p.materialized_sha256, p.pipeline_sha256)" in sql
 
 
 def test_load_base_snapshot_no_history_returns_none() -> None:
