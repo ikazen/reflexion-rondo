@@ -651,6 +651,32 @@ param_candidates는 의미 없는 빈 `{}` 후보가 매번 끼어들어(`tests/
 
 ---
 
+## ADR-039 — 재생된 base의 검증은 소스 해시가 아니라 행동 재현으로 한다 (#254)
+
+- 결정: `bin/backfill_materialized_code.py`가 스냅샷 없는 승격 행에 `materialized_code`를 소급할
+때, 재생 결과가 `pipeline_sha256`과 bit-identical하지 않아도 **행동이 재현되면** 신뢰 스냅샷으로
+기록한다. 소스 해시(`materialized_sha256`, 신규 컬럼)와 anti-tamper 해시(`pipeline_sha256`,
+submit.py의 MinIO 대조용)를 분리해 `load_base_snapshot`의 손상 가드는
+`coalesce(materialized_sha256, pipeline_sha256)`으로 유지한다. verdict는 `materialized_origin`
+컬럼에 기록: `backfill:{minio,sha,cv,chain}` / `unverifiable:{train_drift,eval_error,...}`.
+- 행동 재현 판정: (a) `backfill:cv` — 대회의 최신 스냅샷 행을 오늘 데이터로 재평가해 기록 cv를
+재현하면(drift probe 통과) cv tier 활성, 재생 결과 cv가 `MERGE_VERIFY_TOLERANCE`(promote
+merge-verify와 공유) 안. (b) `backfill:chain`(`--allow-chain`) — 데이터가 이동해 기록 cv 비교
+자체가 불가한 대회에서, 재생본이 직전 검증층 대비 `is_significant_gain`로 유의한 회귀가 아니면
+수용. bit-identical보다 약한 보장("동작하고 아래층 대비 회귀 없음")이나 `materialized_origin`에
+남아 감사 가능하다.
+- 근거: #166-168에서 이미 확립한 원칙 — promote confirm 게이트의 소스해시 dedupe가 로직 변경을
+못 넘겨 행동지문(cv+fold)만 유효하다는 결론. #254는 같은 문제다: ADR-037이 합성 규칙을 바꿔
+2026-08 이전 승격 체인의 replay sha가 안 맞고, `strict_sha` fail-hard 가드가 그 승격분을 영구
+제출 불가로 만든다. 가드는 옳다(평가와 다른 base로 제출하면 조용히 열화) — 대신 오프라인에서
+한 번 행동을 재검증해 신뢰 스냅샷을 만든다.
+- 한계: `train_drift`로 판정된 행(예: s4e10 — 전 이력이 2026-06 승격인데 EXTRA_TRAIN_PATHS
+배선은 2026-08-24)은 `--allow-chain` 없이는 재현 불가로 남고 제출 백로그에서 빠진다 — 이건
+정상이다. June attempt는 평가 컨텍스트가 소멸해 정직하게 제출할 방법이 없다. `chain` tier는
+회귀 여부만 보므로 승격 당시와 정확히 같은 예측을 보장하지 않는다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |
