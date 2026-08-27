@@ -27,7 +27,13 @@ from cycle.action_optimizer import get_action_prior, update_bandit
 from cycle.error_pitfalls import normalize_error, top_error_pitfalls
 from cycle.stagnation import detect_stagnation
 from cycle.materialize import materialize_best_pipeline
-from cycle.promotion import ConfirmResult, PromotionCache, confirm_and_measure, effective_label
+from cycle.promotion import (
+    ConfirmResult,
+    PromotionCache,
+    confirm_and_measure,
+    effective_label,
+    train_data_fingerprint,
+)
 from evaluator.contract import validate_patch
 from evaluator.harness import is_significant_gain, split_audit_holdout
 from evaluator.metrics import get as get_metric
@@ -89,6 +95,53 @@ class _AttemptData:
     feature_importance: dict | None
     reward_label: str
     is_noop_tie: bool = False
+
+
+class TrainFingerprintMismatchError(RuntimeError):
+    """현재 load_train() 결과가 확정 baseline을 측정한 학습 데이터와 다르다.
+
+    EXTRA_TRAIN_PATHS/MAX_TRAIN_ROWS/DROP_COLS 등 대회 데이터 설정이 바뀌면
+    raw.pipelines.cv_score(옛 데이터 기준)와 새 attempt의 cv_score가 비교
+    불가능해진다(#258, ADR-040). `bin.establish_baseline --remeasure`로 baseline을
+    새 데이터에 재측정하고 raw.competitions.train_fingerprint를 갱신해야 재개된다.
+    """
+
+
+def _train_fingerprint_guard(conn: PgConn, competition_id: str, train90: pl.DataFrame) -> None:
+    """train90의 지문이 raw.competitions.train_fingerprint와 어긋나면 승격 게이트를
+    멈춘다. 최초 관측(저장값 NULL)이면 현재 지문을 심고 통과한다.
+
+    호출부는 train90(split_audit_holdout 결과)을 넘겨야 한다 — remeasure도 같은
+    분할을 거치므로 그때만 지문 비교가 성립한다. holdout이 분리되지 않은
+    smoke/direct 경로는 호출하지 않는다.
+    """
+    fp = train_data_fingerprint(train90)
+    row = conn.execute(
+        "select train_fingerprint from raw.competitions where competition_id = %s",
+        [competition_id],
+    ).fetchone()
+    stored = row[0] if row else None
+    if stored is None:
+        conn.execute(
+            "update raw.competitions set train_fingerprint = %s where competition_id = %s",
+            [fp, competition_id],
+        )
+        return
+    if stored == fp:
+        return
+    cmd = f"uv run python -m bin.establish_baseline --remeasure --competition {competition_id}"
+    reason = (
+        f"train_fingerprint 불일치 (#258): 저장 {stored[:12]} != 현재 {fp[:12]}. "
+        f"load_train 설정이 바뀌었으면 `{cmd}` 실행 후 재개."
+    )
+    conn.execute(
+        "update raw.competitions"
+        " set auto_submit_paused_reason = coalesce(auto_submit_paused_reason, %s)"
+        " where competition_id = %s",
+        [reason, competition_id],
+    )
+    _LOG.error("%s", reason)
+    raise TrainFingerprintMismatchError(reason)
 
 
 def _prev_best(conn: PgConn, competition_id: str) -> float | None:
@@ -318,6 +371,13 @@ def establish_bootstrap_baseline(
             pipeline_sha256=pipeline_sha256,
             materialized_code=materialized,
         )
+        # 이 baseline이 측정된 train90 지문을 심는다 — 이후 load_train 설정이 바뀌면
+        # cycle 게이트(_train_fingerprint_guard)가 옛 cv_score 재사용을 막는다(ADR-040).
+        conn.execute(
+            "update raw.competitions set train_fingerprint = %s"
+            " where competition_id = %s and train_fingerprint is null",
+            [train_data_fingerprint(train90), competition_id],
+        )
     _best_pipeline_upload(competition_id, materialized)
     _LOG.info(
         "bootstrap baseline 확립 — competition=%s cv=%.6f attempt=%s",
@@ -497,6 +557,8 @@ def run_attempt_core(
     defer_promotion: bool = False,
 ) -> _AttemptData:
     """Strategize → Generate → Evaluate → Persist one attempt. Returns data needed for reflect."""
+    if config.holdout is not None:
+        _train_fingerprint_guard(conn, config.competition_id, config.train)
     attempt_id = str(uuid.uuid4())
     attempt_start = time.monotonic()
 

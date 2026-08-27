@@ -28,7 +28,12 @@ import bin.airflow_client as airflow_client
 from bin.api import _SUBMIT_TIMEOUT_SEC, DaemonState, create_app, refresh_submission_row
 from config.competitions import active_competition_ids, competition_id_to_slug
 from bin.archive_lessons import archive_low_gain_lessons
-from cycle.run import CycleConfig, establish_bootstrap_baseline, run_cycle
+from cycle.run import (
+    CycleConfig,
+    TrainFingerprintMismatchError,
+    establish_bootstrap_baseline,
+    run_cycle,
+)
 from memory.retriever import EmbeddingUnavailableError
 from store.db import connect, ensure_competition
 from store.train_data import load_train
@@ -524,6 +529,16 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                 print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} skipped — embedding unavailable: {exc}")
                 skipped += 1
                 cycle_skipped = True
+            except TrainFingerprintMismatchError as exc:
+                # load_train 설정이 바뀌었는데 remeasure를 안 했다 — 재시도해봐야
+                # 계속 막히므로 리스를 즉시 중단한다. 가드가 이미
+                # auto_submit_paused_reason을 심어 대시보드에 노출된다(#258).
+                print(f"[daemon] queue_id={qid} aborted — {exc}")
+                _set_status(conn, qid, "failed", ended_at=datetime.now(timezone.utc),
+                            cycles_done=cycles_done, latest_score=latest_score,
+                            error=str(exc)[:2000])
+                aborted = True
+                break
             except Exception as exc:
                 cycle_failed = True
                 err_msg = str(exc)
