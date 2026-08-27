@@ -1,5 +1,31 @@
 # 변경 이력
 
+## v1.6.6 — 확정 baseline을 학습 데이터 지문에 묶는 가드 (#258, ADR-040) (2026-08-28)
+
+### #258 근본원인 — load_train 변경 시 baseline 스케일 불일치
+- 기존 진단("s4e11 폴드 과적합")은 틀렸다. 실측: s4e11 CV **분포 전체**가 2026-08-24에
+  불연속 이동(일평균 0.9376→0.9454→0.9613). 원인은 `db82fed`(#228)의 EXTRA_TRAIN_PATHS
+  배선 후 remeasure 누락 — `raw.pipelines.cv_score`(옛 스케일)와 신규 attempt cv(새
+  스케일)가 비교되며 하루에 승격 8건이 래칫됐다. 같은 날 EXTRA를 안 받은 s4e12/s6e8은
+  이동 없음(대조군), 받은 s4e10은 08-27 우연한 remeasure로 baseline이 +0.20%p 이동해
+  메커니즘 확인. LB는 08-24 전후 무변동, 백분위 68.6→28.9 붕괴.
+- **`raw.competitions.train_fingerprint`** 신규 컬럼 + `cycle/promotion.py:
+  train_data_fingerprint`(train90 컬럼명·dtype·행수의 sha256). `run_attempt_core`
+  최상단 `_train_fingerprint_guard`가 현재 train90 지문과 대조 — 어긋나면
+  `TrainFingerprintMismatchError`로 cycle 중단 + `auto_submit_paused_reason` 기록.
+  최초 관측이면 심고 통과, 콜드스타트로 떨어뜨리지 않는다.
+- daemon direct 모드는 이 예외를 리스 중단으로 처리. airflow 모드는 task가 non-zero
+  종료 → DAG fail(연속 실패 상한까지). smoke/direct(`config.holdout is None`)는 스킵.
+
+### #262 — remeasure를 확정 pipeline 전체로 확장
+- `bin/establish_baseline.py:remeasure_competition`이 최고점 1건만 재측정해 다른 valid
+  행이 min으로 남아 stale baseline이 됐다(직전 세션 s4e12에서 수동 보완). 이제 유효
+  confirmed 전체(`_valid_confirmed_pipelines`)를 순회 재측정하고, 재평가가 에러로 끝나는
+  행은 `invalid_reason='remeasure_failed:train_fingerprint'`로 격리(이력 보존, ADR-039).
+  마지막에 `raw.competitions.train_fingerprint`를 갱신하고 fingerprint 사유의
+  `auto_submit_paused_reason`을 해제한다. `--dry-run`은 델타만 출력.
+- `raw.attempts.fold_scores`는 이번에도 미변경 — #262 잔여로 남긴다.
+
 ## v1.6.5 — _prev_best가 백필 unverifiable verdict 행을 제외 (2026-08-27)
 
 ### #254/#262 후속 — stale baseline 차단
