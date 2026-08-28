@@ -61,6 +61,15 @@ def _train_fingerprint(train90: pl.DataFrame) -> str:
     return "|".join(f"{c}:{train90.schema[c]}" for c in sorted(train90.columns))
 
 
+def train_data_fingerprint(train90: pl.DataFrame) -> str:
+    """raw.competitions.train_fingerprint에 저장하는 값 — 확정 baseline(raw.pipelines.
+    cv_score)이 어느 학습 데이터에서 측정됐는지를 식별한다. 폭·dtype(_train_fingerprint)에
+    행수를 더한 조합의 sha256. load_train 설정(EXTRA_TRAIN_PATHS/MAX_TRAIN_ROWS/
+    DROP_COLS)이 바뀌면 값이 달라져, 옛 스케일 baseline과 새 attempt의 비교를
+    게이트가 거부할 수 있게 한다(#258, ADR-040)."""
+    return hashlib.sha256(f"{_train_fingerprint(train90)}|h={train90.height}".encode()).hexdigest()
+
+
 def _hash_key(*parts: object) -> str:
     h = hashlib.sha256()
     for p in parts:

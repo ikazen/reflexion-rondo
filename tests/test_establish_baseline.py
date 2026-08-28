@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 
 from bin.establish_baseline import (
-    _current_confirmed_pipeline,
     _top_k_attempts,
+    _valid_confirmed_pipelines,
     competitions_without_baseline,
     establish_for_competition,
     remeasure_competition,
@@ -163,34 +163,37 @@ def test_empty_source_after_header_strip_skips_candidate():
     assert mock_confirm.call_count == 1  # attempt-1은 코드가 없어 confirm 자체를 안 부름
 
 
-# --- remeasure_competition: MAX_TRAIN_ROWS 등 데이터 변경 후 cv_score 재측정 (#135) ---
+# --- remeasure_competition: load_train 설정 변경 후 확정 pipeline 전체 재측정 (#135/#258/#262) ---
 
-def test_current_confirmed_pipeline_orders_by_metric_sign_cv_desc():
+def _remeasure_conn(rows):
+    """_valid_confirmed_pipelines(fetchall)만 데이터를 돌려주는 conn mock."""
     conn = MagicMock()
-    conn.execute.return_value.fetchone.return_value = ("pipe-1", "code", 0.9)
-    result = _current_confirmed_pipeline(conn, "s4e12")
-    assert result == ("pipe-1", "code", 0.9)
+    conn.execute.return_value.fetchall.return_value = rows
+    conn.execute.return_value.fetchone.return_value = None
+    return conn
+
+
+def test_valid_confirmed_pipelines_excludes_unverifiable_and_invalid():
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.return_value = []
+    _valid_confirmed_pipelines(conn, "s4e12")
     sql = conn.execute.call_args.args[0]
     assert "invalid_reason IS NULL" in sql
-    assert "metric_sign * p.cv_score DESC" in sql
-
-
-def test_current_confirmed_pipeline_none_when_no_row():
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.return_value = None
-    assert _current_confirmed_pipeline(conn, "s4e12") is None
+    assert "unverifiable:%%" in sql
+    assert "materialized_code IS NOT NULL" in sql
 
 
 def test_remeasure_no_confirmed_pipeline_returns_false():
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.return_value = None
-    result = remeasure_competition(conn, _Comp(), dry_run=False)
-    assert result is False
+    conn = _remeasure_conn([])
+    with (
+        patch("bin.establish_baseline.load_train", return_value=_TRAIN),
+        patch("bin.establish_baseline.split_audit_holdout", return_value=(_TRAIN, _TRAIN)),
+    ):
+        assert remeasure_competition(conn, _Comp(), dry_run=False) is False
 
 
-def test_remeasure_updates_cv_score_with_new_measurement():
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.return_value = ("pipe-1", "materialized code", 0.7)
+def test_remeasure_updates_all_confirmed_and_stamps_fingerprint():
+    conn = _remeasure_conn([("pipe-1", "code A", 0.7), ("pipe-2", "code B", 0.6)])
 
     with (
         patch("bin.establish_baseline.load_train", return_value=_TRAIN),
@@ -201,15 +204,15 @@ def test_remeasure_updates_cv_score_with_new_measurement():
         result = remeasure_competition(conn, _Comp(), dry_run=False)
 
     assert result is True
-    assert mock_eval.call_args.kwargs["source"] == "materialized code"
-    update_calls = [c for c in conn.execute.call_args_list if "UPDATE raw.pipelines" in c.args[0]]
-    assert len(update_calls) == 1
-    assert update_calls[0].args[1] == [0.55, "pipe-1"]
+    assert mock_eval.call_count == 2  # #262: 최고점 1건이 아니라 전체
+    pipe_updates = [c for c in conn.execute.call_args_list if "UPDATE raw.pipelines SET cv_score" in c.args[0]]
+    assert {tuple(c.args[1]) for c in pipe_updates} == {(0.55, "pipe-1"), (0.55, "pipe-2")}
+    fp_updates = [c for c in conn.execute.call_args_list if "SET train_fingerprint" in c.args[0]]
+    assert len(fp_updates) == 1
 
 
 def test_remeasure_dry_run_does_not_write():
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.return_value = ("pipe-1", "materialized code", 0.7)
+    conn = _remeasure_conn([("pipe-1", "code", 0.7)])
 
     with (
         patch("bin.establish_baseline.load_train", return_value=_TRAIN),
@@ -220,13 +223,13 @@ def test_remeasure_dry_run_does_not_write():
         result = remeasure_competition(conn, _Comp(), dry_run=True)
 
     assert result is True
-    update_calls = [c for c in conn.execute.call_args_list if "UPDATE raw.pipelines" in c.args[0]]
-    assert update_calls == []
+    writes = [c for c in conn.execute.call_args_list
+              if c.args[0].strip().upper().startswith("UPDATE")]
+    assert writes == []
 
 
-def test_remeasure_eval_failure_returns_false_and_no_write():
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.return_value = ("pipe-1", "materialized code", 0.7)
+def test_remeasure_eval_failure_quarantines_and_skips_fingerprint():
+    conn = _remeasure_conn([("pipe-1", "code", 0.7)])
 
     with (
         patch("bin.establish_baseline.load_train", return_value=_TRAIN),
@@ -236,6 +239,8 @@ def test_remeasure_eval_failure_returns_false_and_no_write():
     ):
         result = remeasure_competition(conn, _Comp(), dry_run=False)
 
-    assert result is False
-    update_calls = [c for c in conn.execute.call_args_list if "UPDATE raw.pipelines" in c.args[0]]
-    assert update_calls == []
+    assert result is False  # 재측정 성공 0건 → 지문 미갱신
+    quarantine = [c for c in conn.execute.call_args_list if "remeasure_failed:train_fingerprint" in c.args[0]]
+    assert len(quarantine) == 1 and quarantine[0].args[1] == ["pipe-1"]
+    fp_updates = [c for c in conn.execute.call_args_list if "SET train_fingerprint" in c.args[0]]
+    assert fp_updates == []

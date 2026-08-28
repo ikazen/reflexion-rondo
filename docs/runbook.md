@@ -245,11 +245,36 @@ stale `_prev_best`가 신규 attempt를 잘못 게이트하는 문제도 함께 
 그다음 establish_baseline. 반대로 하면 다음 백필 실행 시 drift probe가 오작동한다(현 best cv가
 현재 데이터에 맞춰져 probe가 "비교 가능"으로 오판 → 남은 행을 잘못 격리).
 
+### 4-5. load_train 설정 변경 시 baseline 재측정 (#258, ADR-040)
+
+`config/competitions/<slug>.py`의 **`EXTRA_TRAIN_PATHS` / `MAX_TRAIN_ROWS` / `DROP_COLS`**를
+바꾸면 train90의 스키마·행수가 달라져, 기존 `raw.pipelines.cv_score`(옛 데이터 기준)와 신규
+attempt cv가 비교 불가능해진다. 방치하면 옛 baseline 대비 "개선"으로 오판된 승격이 연쇄로
+래칫된다(s4e11 실측: 하루 8건, LB 무변동 중 CV +2.8%p).
+
+이 config를 바꾸는 커밋은 **배포 직후 반드시** 아래를 실행한다:
+
+```bash
+uv run python -m bin.establish_baseline --remeasure --competition <competition-id> --dry-run   # 델타 확인
+uv run python -m bin.establish_baseline --remeasure --competition <competition-id>             # 반영
+```
+
+확정 pipeline 전체를 새 데이터로 재평가(재학습 아님)하고 `raw.competitions.train_fingerprint`를
+갱신한다. 재평가가 에러로 끝나는 행은 `invalid_reason='remeasure_failed:train_fingerprint'`로
+격리된다. 갱신 전까지는 `cycle/run.py:_train_fingerprint_guard`가 해당 대회의 모든 cycle을
+`TrainFingerprintMismatchError`로 멈추고 `auto_submit_paused_reason`을 채운다 — 즉 remeasure를
+잊으면 대회가 조용히 오염되는 게 아니라 눈에 띄게 멈춘다.
+
+메모리/RLIMIT 주의는 §4-2와 동일 — 미검증 환경에서 반복 실패 시 ops-vm task 이미지로 직접 실행.
+
 ### 4-3. auto-submit 일시중단 복구
 
 cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_paused_reason`이 채워지고 해당 대회의 자동 제출이 멈춘다(decisions.md ADR-026). 발동 조건은
 최근 3개 delta 중 2개 이상이 `|prev_lb|`의 0.1% 데드밴드를 넘는 발산(#175) — 단발 노이즈로는 안 걸린다. **자동 해제 없음** — 원인을 확인(`cv_lb_calibration` 뷰,
 `GET /api/cv-lb-calibration`)한 뒤 사람이 직접 NULL로 되돌려야 재개된다.
+
+사유가 `train_fingerprint 불일치`로 시작하면 트립와이어가 아니라 §4-5(load_train 설정 변경) —
+수동 NULL이 아니라 `establish_baseline --remeasure`가 재측정 후 자동 해제한다.
 
 ```bash
 # 현재 일시중단된 대회 확인

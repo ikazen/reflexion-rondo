@@ -36,7 +36,7 @@ import polars as pl
 
 from config.settings import PROMOTE_CONFIRM_SEEDS
 from cycle.materialize import materialize_best_pipeline
-from cycle.promotion import PromotionCache, confirm_and_measure
+from cycle.promotion import PromotionCache, confirm_and_measure, train_data_fingerprint
 from cycle.run import _CODE_HEADER_SEP
 from evaluator.harness import split_audit_holdout
 from runtime.isolate import eval_isolated
@@ -159,9 +159,12 @@ def _promote(conn, comp: object, attempt_id: str, cv_score: float, source: str, 
     upload_best_pipeline(competition_id, materialized)
 
 
-def _current_confirmed_pipeline(conn, competition_id: str) -> tuple[str, str, float] | None:
-    """확정 pipeline 중 최고점(pipeline_id, materialized_code, cv_score). 없으면 None."""
-    row = conn.execute(
+def _valid_confirmed_pipelines(conn, competition_id: str) -> list[tuple[str, str, float]]:
+    """재측정 대상 확정 pipeline 전체 (pipeline_id, materialized_code, cv_score).
+
+    최고점 1건만 보면 다른 valid 행이 min으로 남아 stale baseline이 된다(#262) —
+    materialized_code가 있는 유효 행을 전부 재측정한다."""
+    return conn.execute(
         """
         SELECT p.pipeline_id, p.materialized_code, p.cv_score
         FROM raw.pipelines p
@@ -170,54 +173,87 @@ def _current_confirmed_pipeline(conn, competition_id: str) -> tuple[str, str, fl
           AND p.cv_score IS NOT NULL
           AND p.invalid_reason IS NULL
           AND p.materialized_code IS NOT NULL
+          AND COALESCE(p.materialized_origin, '') NOT LIKE 'unverifiable:%%'
         ORDER BY c.metric_sign * p.cv_score DESC
-        LIMIT 1
         """,
         [competition_id],
-    ).fetchone()
-    return (row[0], row[1], row[2]) if row else None
+    ).fetchall()
+
+
+_FP_PAUSE_PREFIX = "train_fingerprint 불일치"
 
 
 def remeasure_competition(conn, comp: object, dry_run: bool) -> bool:
-    """MAX_TRAIN_ROWS 등으로 학습 데이터가 바뀌었을 때, 현재 확정 pipeline의
-    cv_score를 새 데이터로 재측정해 raw.pipelines에 반영한다.
+    """load_train 설정(EXTRA_TRAIN_PATHS/MAX_TRAIN_ROWS/DROP_COLS)이 바뀌었을 때,
+    확정 pipeline 전체의 cv_score를 새 데이터로 재측정하고 raw.competitions.
+    train_fingerprint를 갱신한다(#135/#258/#262).
 
     데이터가 바뀌면 기존 cv_score(옛 데이터 기준)와 신규 attempt의 cv_score(새
-    데이터 기준)가 비교 불가능해져 gain_vs_best/승격 게이트가 깨진다(#135) —
-    재학습 없이 확정 pipeline의 materialized_code를 그대로 새 데이터에 재평가만
-    한다. 반드시 새로 측정한 값만 쓴다 — establish_for_competition/_promote처럼
-    과거 attempt 행의 cv_score를 그대로 심으면 옛 데이터 기준 값이 섞여 들어간다.
+    데이터 기준)가 비교 불가능해져 gain_vs_best/승격 게이트가 깨진다 — 재학습 없이
+    materialized_code를 그대로 새 데이터에 재평가만 한다. 반드시 새로 측정한 값만
+    쓴다 — 과거 attempt 행의 cv_score를 그대로 심으면 옛 기준 값이 섞인다.
+
+    재평가가 에러로 끝나는 행은 격리한다(invalid_reason='remeasure_failed:
+    train_fingerprint', 이력 보존 — ADR-039와 같은 방식). 갱신된 지문이 있어야
+    cycle 게이트(cycle/run.py:_train_fingerprint_guard)가 재개된다.
     """
-    found = _current_confirmed_pipeline(conn, comp.COMPETITION_ID)
-    if not found:
+    rows = _valid_confirmed_pipelines(conn, comp.COMPETITION_ID)
+    if not rows:
         print(f"  {comp.COMPETITION_ID}: 확정 pipeline 없음 — 재측정 불가")
         return False
-    pipeline_id, materialized_code, old_cv = found
 
     train = load_train(comp)
     train90, _holdout10 = split_audit_holdout(train, comp.TARGET, comp.IS_CLASSIFICATION)
+    new_fp = train_data_fingerprint(train90)
+    action = "dry-run, 미반영" if dry_run else "반영"
 
-    result = eval_isolated(
-        source=materialized_code,
-        train=train90,
-        target_col=comp.TARGET,
-        metric=comp.METRIC,
-        prev_best=None,
-        n_splits=getattr(comp, "N_SPLITS", 5),
-        seed=42,
-        is_classification=comp.IS_CLASSIFICATION,
-    )
-    if result.error_trace or result.cv_score is None:
-        print(f"  {comp.COMPETITION_ID}: 재측정 실패 — {result.error_trace}")
+    remeasured = 0
+    quarantined = 0
+    for pipeline_id, materialized_code, old_cv in rows:
+        result = eval_isolated(
+            source=materialized_code,
+            train=train90,
+            target_col=comp.TARGET,
+            metric=comp.METRIC,
+            prev_best=None,
+            n_splits=getattr(comp, "N_SPLITS", 5),
+            seed=42,
+            is_classification=comp.IS_CLASSIFICATION,
+        )
+        if result.error_trace or result.cv_score is None:
+            print(f"  {comp.COMPETITION_ID} pipeline={pipeline_id[:8]}: 재측정 실패 → 격리"
+                  f" ({action}) — {(result.error_trace or '')[:120]}")
+            quarantined += 1
+            if not dry_run:
+                conn.execute(
+                    "UPDATE raw.pipelines SET invalid_reason = 'remeasure_failed:train_fingerprint'"
+                    " WHERE pipeline_id = %s",
+                    [pipeline_id],
+                )
+            continue
+        print(f"  {comp.COMPETITION_ID} pipeline={pipeline_id[:8]}: cv {old_cv} -> {result.cv_score} ({action})")
+        remeasured += 1
+        if not dry_run:
+            conn.execute(
+                "UPDATE raw.pipelines SET cv_score = %s WHERE pipeline_id = %s",
+                [result.cv_score, pipeline_id],
+            )
+
+    if remeasured == 0:
+        print(f"  {comp.COMPETITION_ID}: 재측정 성공 0건 — train_fingerprint 미갱신")
         return False
 
-    new_cv = result.cv_score
-    action = "dry-run, 미반영" if dry_run else "반영"
-    print(f"  {comp.COMPETITION_ID} pipeline={pipeline_id[:8]}: cv {old_cv} -> {new_cv} ({action})")
+    print(f"  {comp.COMPETITION_ID}: 재측정 {remeasured}건, 격리 {quarantined}건, "
+          f"train_fingerprint={new_fp[:12]} ({action})")
     if not dry_run:
         conn.execute(
-            "UPDATE raw.pipelines SET cv_score = %s WHERE pipeline_id = %s",
-            [new_cv, pipeline_id],
+            "UPDATE raw.competitions SET train_fingerprint = %s WHERE competition_id = %s",
+            [new_fp, comp.COMPETITION_ID],
+        )
+        conn.execute(
+            "UPDATE raw.competitions SET auto_submit_paused_reason = NULL"
+            " WHERE competition_id = %s AND auto_submit_paused_reason LIKE %s",
+            [comp.COMPETITION_ID, _FP_PAUSE_PREFIX + "%"],
         )
     return True
 

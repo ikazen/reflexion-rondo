@@ -16,6 +16,12 @@ CREATE TABLE IF NOT EXISTS raw.competitions (
 -- (docs/decisions.md ADR-026, docs/runbook.md §4-3).
 ALTER TABLE raw.competitions ADD COLUMN IF NOT EXISTS auto_submit_paused_reason text;
 
+-- 확정 baseline(raw.pipelines.cv_score)이 측정된 학습 데이터 지문
+-- (cycle/promotion.py:train_data_fingerprint). load_train 설정이 바뀌어 이 값과
+-- 현재 train90 지문이 어긋나면 cycle 게이트가 옛/새 cv_score 혼용을 막고 멈춘다
+-- (#258, ADR-040). establish_baseline --remeasure가 재측정 후 이 값을 갱신한다.
+ALTER TABLE raw.competitions ADD COLUMN IF NOT EXISTS train_fingerprint text;
+
 CREATE TABLE IF NOT EXISTS raw.attempts (
     attempt_id       text PRIMARY KEY,
     competition_id   text,

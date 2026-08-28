@@ -677,6 +677,32 @@ merge-verify와 공유) 안. (b) `backfill:chain`(`--allow-chain`) — 데이터
 
 ---
 
+## ADR-040 — 확정 baseline은 측정된 학습 데이터 지문에 묶는다 (#258)
+
+- 결정: `raw.competitions.train_fingerprint`(신규 컬럼)에 확정 baseline이 측정된 train90의
+지문(`cycle/promotion.py:train_data_fingerprint` — 컬럼명·dtype·행수의 sha256)을 저장한다.
+매 cycle 진입 시(`cycle/run.py:_train_fingerprint_guard`, `run_attempt_core` 최상단) 현재
+`load_train()` → train90 지문과 대조해 어긋나면 `TrainFingerprintMismatchError`로 그 cycle을
+중단하고 `auto_submit_paused_reason`을 심는다. 재개는 `bin.establish_baseline --remeasure
+--competition <id>` — 확정 pipeline 전체를 새 데이터로 재평가(재학습 아님)하고 지문을 갱신한다.
+- 불일치 시 콜드스타트로 떨어뜨리지 않는다 — baseline이 없으면 아무 attempt나 승격되므로
+(ADR-025 참조), 사람이 remeasure를 돌릴 때까지 멈추는 게 맞다.
+- 근거: #258 실측. s4e11에 EXTRA_TRAIN_PATHS(#228, 2026-08-24)를 배선하면서 remeasure를 안
+해, `raw.pipelines.cv_score`(원본 병합 전, 0.9399)와 신규 attempt cv(원본 병합 후, 0.96대)가
+비교됐다. 하루에 `hyperparam_search` 승격 8건이 연쇄로 래칫됐고(각자 직전 승격을 baseline
+삼아 "개선"으로 판정), CV +2.8%p 동안 LB는 무변동, 리더보드 백분위 68.6→28.9로 붕괴했다.
+holdout(audit)도 같은 train90에서 나오므로 함께 이동해 게이트를 못 걸렀다.
+`_train_fingerprint`는 이미 confirm memo/baseline **캐시 무효화**용으로 이 조건을 알고
+있었지만, 저장된 baseline 숫자 자체는 옛 스케일에 남는 게 구멍이었다.
+- 범위: `split_audit_holdout`을 거치는 프로덕션 super-cycle 경로(`bin/run_attempt_task.py`)와
+remeasure만 지문을 계산·비교한다. holdout을 분리하지 않는 smoke/direct 경로
+(`config.holdout is None`)는 스킵 — 비교 기준이 없다. `establish_bootstrap_baseline`은 첫
+baseline 확립 시 지문을 심기만 한다(대조할 이전 baseline이 없으므로).
+- 한계: 지문은 스키마(폭·타입)+행수만 본다 — 같은 스키마·행수인데 내용만 바뀌는 변경
+(예: `MAX_TRAIN_ROWS` seed 교체)은 못 잡는다. 그 경우는 수동 remeasure가 필요하다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |
