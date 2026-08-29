@@ -1,6 +1,6 @@
 # 변경 이력
 
-## Unreleased — 튜닝 레인 언블록: 정적 추론으로 자유형 build_model 튜닝 (#252, ADR-035 개정)
+## v1.6.8 — 튜닝 레인 언블록: 정적 추론으로 자유형 build_model 튜닝 (#252, ADR-035 개정) (2026-08-29)
 
 - 배포된 Optuna 튜닝 레인(#230)이 `raw.tuned_params` 0행 — deep tier 5개 confirmed pipeline이
   전부 v1.5.12 이전 승격분이라 `model_spec`/`ensemble_spec` 없이 자유형 `build_model`만 선언해
