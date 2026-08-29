@@ -252,6 +252,19 @@ def test_unsubmitted_confirmed_excludes_candidate_with_own_unverifiable_verdict(
     assert "p.materialized_code is not null or p.materialized_origin is null" in sql
 
 
+def test_best_attempt_excludes_own_and_prior_unverifiable_pipeline():
+    """#270: _best_attempt에 #254 unverifiable:* 하드 제외가 빠져 있어 s5e4 auto-submit이
+    재현 불가 base로 3일 연속 실패했다. _unsubmitted_confirmed와 같은 필터를 공유해야 한다."""
+    import bin.api as api_mod
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None
+    api_mod._best_attempt(conn, "playground-series-s4e10")
+    sql = conn.execute.call_args.args[0]
+    assert "p.materialized_code is not null or p.materialized_origin is null" in sql
+    assert "p2.materialized_code is not null or p2.materialized_origin is null" in sql
+
+
 def test_auto_submit_respects_daily_budget(monkeypatch):
     """오늘 이미 쓴 만큼 예산에서 뺀다 — Kaggle 일일 한도를 넘기지 않기 위함."""
     client = _client_for_auto_submit(

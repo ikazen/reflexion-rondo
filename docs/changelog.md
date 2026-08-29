@@ -1,5 +1,14 @@
 # 변경 이력
 
+## v1.6.7 — _best_attempt에 #254 unverifiable:* 하드 제외 누락 수정 (#270) (2026-08-29)
+
+- `_unsubmitted_confirmed`에만 있던 "직전 승격분 또는 후보 자신이 재현 불가면 제출 후보에서
+  제외" 필터가 `_best_attempt`에는 없었다. s5e4가 백필 verdict로 `_unsubmitted_confirmed`
+  후보가 매번 0건이 되면서 `_best_attempt` 폴백을 타 3일 연속 같은 재현 불가 후보로
+  auto-submit이 실패했다(`replay_best_pipeline` strict sha 불일치).
+- 두 함수의 필터 SQL이 별개로 유지되던 게 이번 드리프트의 원인이므로 `_SUBMITTABLE_FILTER_SQL`
+  상수로 공유하도록 정리.
+
 ## v1.6.6 — 확정 baseline을 학습 데이터 지문에 묶는 가드 (#258, ADR-040) (2026-08-28)
 
 ### #258 근본원인 — load_train 변경 시 baseline 스케일 불일치
