@@ -1,5 +1,20 @@
 # 변경 이력
 
+## Unreleased — 튜닝 레인 언블록: 정적 추론으로 자유형 build_model 튜닝 (#252, ADR-035 개정)
+
+- 배포된 Optuna 튜닝 레인(#230)이 `raw.tuned_params` 0행 — deep tier 5개 confirmed pipeline이
+  전부 v1.5.12 이전 승격분이라 `model_spec`/`ensemble_spec` 없이 자유형 `build_model`만 선언해
+  `tune_confirmed_pipeline`이 매번 "not tunable"로 죽었다.
+- `evaluator/tuner.py:infer_registry_model` — 병합 `materialized_code`의 `build_model`을 AST로 읽어
+  "레지스트리 단일 모델 생성자 + params 전달"의 정적 검증 가능한 형태이면 registry 키를 추론한다.
+  s5e4(`LGBMRegressor(**params)`)·s6e8(`xgb.XGBClassifier(**base_params)`)가 통과, s4e12/s4e11/s4e10
+  (커스텀 wrapper/다중 모델)은 여전히 raise.
+- `bin/tune_pipeline.py:_load_confirmed_pipeline_source` — 단일 `p.code` 패치가 아니라
+  `materialized_code`(자체완결 Patch)를 로드. 단일 패치는 feature_engineering 패치면 build_model이
+  없어 튜닝 대상 자체가 없었다. 신뢰 필터는 `establish_baseline._valid_confirmed_pipelines`와 동일.
+- 결과는 advisory(`ctx.tuned_params`)로만 흐르고 baseline은 원본 pipeline 그대로라 추론이 틀려도
+  blast radius가 제한된다.
+
 ## v1.6.7 — _best_attempt에 #254 unverifiable:* 하드 제외 누락 수정 (#270) (2026-08-29)
 
 - `_unsubmitted_confirmed`에만 있던 "직전 승격분 또는 후보 자신이 재현 불가면 제출 후보에서
