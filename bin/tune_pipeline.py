@@ -18,25 +18,33 @@ ROOT = Path(__file__).parent.parent
 
 
 def _load_confirmed_pipeline_source(conn, competition_id: str) -> tuple[str, float]:
-    """확정(cross-seed 통과) pipeline의 materialized 소스를 반환한다 — bin/submit.py의
-    자동 선택 경로(_load_best_code)와 동일한 신뢰 기준(raw.pipelines, invalid_reason
-    없음). --attempt-id 같은 미확정 escape hatch는 튜닝 대상에서 의도적으로 제외 —
-    아직 검증 안 된 코드에 장시간 컴퓨트를 쓰는 건 낭비."""
+    """확정 pipeline의 materialized 소스를 반환한다 — 병합된 자체완결 `class Patch`
+    (cycle/materialize.py). 단일 promotion patch(p.code)가 아니라 materialized_code를
+    쓴다: p.code는 그 승격의 패치 하나뿐이라(feature_engineering 패치면 build_model이
+    아예 없음) 튜닝 대상을 못 찾는다(#252).
+
+    신뢰 기준은 bin/establish_baseline._valid_confirmed_pipelines와 동일 —
+    invalid_reason 없음 + materialized_code 보유 + unverifiable 아님. --attempt-id 같은
+    미확정 escape hatch는 의도적으로 제외(검증 안 된 코드에 장시간 컴퓨트 낭비)."""
     row = conn.execute(
         """
-        select p.code, p.cv_score
+        select p.materialized_code, p.cv_score
         from raw.pipelines p
         join raw.competitions c using (competition_id)
         where p.competition_id = %s
           and p.cv_score is not null
           and p.invalid_reason is null
+          and p.materialized_code is not null
+          and coalesce(p.materialized_origin, '') not like 'unverifiable:%%'
         order by c.metric_sign * p.cv_score desc
         limit 1
         """,
         [competition_id],
     ).fetchone()
     if not row:
-        raise ValueError(f"No confirmed pipeline for {competition_id} — nothing to tune")
+        raise ValueError(
+            f"No confirmed pipeline with a materialized snapshot for {competition_id} — nothing to tune"
+        )
     return row[0].strip(), row[1]
 
 
@@ -97,6 +105,7 @@ def main() -> None:
     try:
         results = tune_confirmed_pipeline(
             pipeline, train, ctx, n_trials=args.n_trials, timeout_sec=args.timeout_sec,
+            pipeline_source=source,
         )
     except ValueError as exc:
         print(f"[tune_pipeline] {exc}", file=sys.stderr)

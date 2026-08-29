@@ -55,6 +55,19 @@ def construct_with_kwarg_retry(build_fn, params: dict):
     raise last_exc
 
 
+_CLASS_NAME_TO_KEY: dict[str, str] = {
+    cls_name: key
+    for key, entry in MODEL_REGISTRY.items()
+    for cls_name in (entry["classifier"], entry["regressor"])
+}
+
+
+def registry_key_for_class(class_name: str) -> str | None:
+    """생성자 클래스명(예: "LGBMRegressor")을 MODEL_REGISTRY 키("lgbm")로 되돌린다.
+    미등록 클래스명은 None."""
+    return _CLASS_NAME_TO_KEY.get(class_name)
+
+
 def resolve_model_class(model_name: str, is_classification: bool) -> type:
     entry = MODEL_REGISTRY.get(model_name)
     if entry is None:

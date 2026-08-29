@@ -10,6 +10,7 @@ from evaluator.harness import BasePipeline, PatchedPipeline, PipelineContext
 from evaluator.tuner import (
     TunerResult,
     _to_result,
+    infer_registry_model,
     tune_confirmed_pipeline,
     tune_ensemble_member,
     tune_single_model,
@@ -129,6 +130,76 @@ def test_tune_confirmed_pipeline_freeform_build_model_raises():
     df = _make_df()
     with pytest.raises(ValueError, match="not tunable"):
         tune_confirmed_pipeline(pipeline, df, ctx, n_trials=1)
+
+
+_S5E4_LIKE = '''
+class Patch:
+    action_type = "hyperparam_search"
+    def build_model(self, params, ctx):
+        model = LGBMRegressor(random_state=ctx.seed, **params)
+        return model
+'''
+
+_S6E8_LIKE = '''
+import xgboost as xgb
+class Patch:
+    action_type = "model_swap"
+    def build_model(self, params, ctx):
+        base_params = {"objective": "binary:logistic", "n_estimators": 1500}
+        base_params.update(params or {})
+        model = xgb.XGBClassifier(**base_params)
+        return model
+'''
+
+_CUSTOM_WRAPPER = '''
+class Patch:
+    def build_model(self, params, ctx):
+        return _EnsembleRegressor(weight_lgb=params.get("weight_lgb", 0.5))
+'''
+
+_MULTI_MODEL = '''
+class Patch:
+    def build_model(self, params, ctx):
+        m1 = LGBMClassifier(**params)
+        m2 = CatBoostClassifier()
+        return StackingClassifier([("a", m1), ("b", m2)])
+'''
+
+_PARAMS_IGNORED = '''
+class Patch:
+    def build_model(self, params, ctx):
+        return LGBMRegressor(random_state=ctx.seed)
+'''
+
+
+@pytest.mark.parametrize("src,expected", [
+    (_S5E4_LIKE, "lgbm"),
+    (_S6E8_LIKE, "xgboost"),
+    (_CUSTOM_WRAPPER, None),
+    (_MULTI_MODEL, None),
+    (_PARAMS_IGNORED, None),
+    ("def not_a_patch(): pass", None),
+])
+def test_infer_registry_model(src, expected):
+    assert infer_registry_model(src) == expected
+
+
+def test_tune_confirmed_pipeline_infers_freeform_when_source_given():
+    class _FreeformLgbm:
+        action_type = "model_swap"
+
+        def build_model(self, params, ctx):
+            from lightgbm import LGBMClassifier
+            return LGBMClassifier(**params)
+
+    pipeline = PatchedPipeline(BasePipeline(), _FreeformLgbm())
+    ctx = _ctx()
+    df = _make_df()
+    src = 'class Patch:\n    def build_model(self, params, ctx):\n        m = LGBMClassifier(**params)\n        return m\n'
+    results = tune_confirmed_pipeline(pipeline, df, ctx, n_trials=2, pipeline_source=src)
+    assert len(results) == 1
+    assert results[0].model_name == "lgbm"
+    assert results[0].member_index is None
 
 
 def test_tune_single_model_unknown_registry_name_fails_fast():

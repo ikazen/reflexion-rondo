@@ -1,5 +1,6 @@
 """Optuna 기반 하이퍼파라미터 튜닝 — 확정 pipeline(raw.pipelines)의 model_spec/ensemble_spec
-멤버 params를 900s attempt 예산 밖에서 오래(수십~수백 trial) 탐색한다(ADR-035, #230).
+멤버 params를 900s attempt 예산 밖에서 오래(수십~수백 trial) 탐색한다(ADR-035, #230). 자유형
+build_model도 정적으로 "레지스트리 단일 모델 + params 전달"이 검증되면 추론해 튜닝한다(#252).
 
 preprocess/feature_transform/postprocess_predictions은 확정 pipeline 그대로 두고 모델
 생성만 trial마다 바꾼다 — evaluate_pipeline(evaluator/harness.py)을 그대로 재사용해
@@ -7,6 +8,7 @@ attempt와 정확히 같은 CV 방법론(is_original 인지 분할, leak 가드 
 """
 from __future__ import annotations
 
+import ast
 import copy
 import logging
 from dataclasses import dataclass
@@ -15,6 +17,7 @@ import optuna
 
 from evaluator.harness import PipelineContext, evaluate_pipeline
 from evaluator.metrics import get as get_metric
+from evaluator.models import registry_key_for_class
 from evaluator.search_spaces import get_search_space
 
 _LOG = logging.getLogger(__name__)
@@ -176,15 +179,107 @@ def _to_result(
     )
 
 
+# elastic_net은 추론에서 제외한다 — 자유형 build_model이 LogisticRegression을 쓰면 대개
+# 일반 로지스틱회귀지만 elastic_net search space는 penalty="elasticnet"/solver="saga"를
+# 강제하므로 confirmed pipeline과 다른 모델을 튜닝하게 된다. 명시적 model_spec으로만 허용.
+_INFERABLE_KEYS = frozenset({"lgbm", "xgboost", "catboost", "hgb", "random_forest", "extra_trees", "ridge"})
+
+# 레지스트리에 없지만 "모델처럼 보이는" 생성자 — 있으면 자유형 wrapper로 보고 추론을 포기한다
+# (_EnsembleRegressor, EnsembleModel, StackingClassifier, VotingRegressor 등).
+_MODEL_LIKE_SUFFIXES = ("Classifier", "Regressor", "Model")
+
+
+def _call_class_name(node: ast.Call) -> str | None:
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def infer_registry_model(source: str) -> str | None:
+    """자유형 build_model이 "레지스트리 단일 모델 생성자 하나 + params 전달"의 정적으로
+    검증 가능한 형태이면 그 레지스트리 키를 반환한다(ADR-035 개정, #252). 아니면 None.
+
+    보수적 통과 조건 — 하나라도 어긋나면 None:
+      1. class Patch의 build_model 본문에 레지스트리 생성자 호출이 정확히 1종
+      2. "모델처럼 보이는" 미등록 생성자(커스텀 wrapper)가 없음
+      3. build_model 2번째 인자(params)가 본문에서 참조됨 — 무시하는 pipeline은 params 치환 무의미
+      4. 그 생성자 결과가 return 값(직접 호출 or 그 호출을 담은 지역변수)
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    patch = next(
+        (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "Patch"), None
+    )
+    if patch is None:
+        return None
+    build_model = next(
+        (n for n in patch.body if isinstance(n, ast.FunctionDef) and n.name == "build_model"), None
+    )
+    if build_model is None:
+        return None
+
+    pos_args = build_model.args.args
+    params_name = pos_args[1].arg if len(pos_args) >= 2 else None
+    if params_name is None:
+        return None
+
+    registry_keys: set[str] = set()
+    ctor_var_names: set[str] = set()  # 레지스트리 생성자 호출을 담은 지역변수
+    params_referenced = False
+
+    for node in ast.walk(build_model):
+        if isinstance(node, ast.Name) and node.id == params_name and isinstance(node.ctx, ast.Load):
+            params_referenced = True
+        if isinstance(node, ast.Call):
+            cls_name = _call_class_name(node)
+            if cls_name is None:
+                continue
+            key = registry_key_for_class(cls_name)
+            if key is not None:
+                registry_keys.add(key)
+            elif cls_name.endswith(_MODEL_LIKE_SUFFIXES):
+                return None  # 미등록 model-like 생성자 = 커스텀 wrapper
+
+    if len(registry_keys) != 1:
+        return None
+    key = next(iter(registry_keys))
+    if key not in _INFERABLE_KEYS or not params_referenced:
+        return None
+
+    for node in ast.walk(build_model):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            if registry_key_for_class(_call_class_name(node.value) or "") == key:
+                ctor_var_names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+
+    returns = [n for n in ast.walk(build_model) if isinstance(n, ast.Return)]
+    if not returns:
+        return None
+    for ret in returns:
+        val = ret.value
+        if isinstance(val, ast.Name) and val.id in ctor_var_names:
+            continue
+        if isinstance(val, ast.Call) and registry_key_for_class(_call_class_name(val) or "") == key:
+            continue
+        return None
+    return key
+
+
 def tune_confirmed_pipeline(
     pipeline: object,
     train: object,
     ctx: PipelineContext,
     n_trials: int = _DEFAULT_N_TRIALS,
     timeout_sec: int | None = None,
+    pipeline_source: str | None = None,
 ) -> list[TunerResult]:
     """pipeline이 model_spec이면 단일 결과, ensemble_spec이면 멤버별 독립 튜닝 결과
-    목록을 반환한다. 둘 다 없으면(자유형 build_model) 튜닝 대상이 없다는 에러."""
+    목록을 반환한다. 둘 다 없으면 pipeline_source에서 레지스트리 모델을 정적 추론하고
+    (infer_registry_model), 추론도 실패하면 튜닝 대상이 없다는 에러."""
     ensemble_spec = pipeline.ensemble_spec(ctx)
     if ensemble_spec is not None:
         members = ensemble_spec.get("members") or []
@@ -195,7 +290,14 @@ def tune_confirmed_pipeline(
     model_spec = pipeline.model_spec(ctx)
     if model_spec is not None:
         return [tune_single_model(pipeline, train, ctx, model_spec["model"], n_trials=n_trials, timeout_sec=timeout_sec)]
+
+    inferred = infer_registry_model(pipeline_source) if pipeline_source else None
+    if inferred is not None:
+        _LOG.info("tune_confirmed_pipeline: freeform build_model → inferred registry model %r", inferred)
+        return [tune_single_model(pipeline, train, ctx, inferred, n_trials=n_trials, timeout_sec=timeout_sec)]
+
     raise ValueError(
-        "tune_confirmed_pipeline: pipeline declares neither ensemble_spec nor model_spec — "
-        "freeform build_model pipelines are not tunable (registry-only, ADR-034/#229와 동일 범위)"
+        "tune_confirmed_pipeline: pipeline declares neither ensemble_spec nor model_spec, and "
+        "its build_model is not a statically-inferable single registry model — not tunable "
+        "(ADR-034/ADR-035, #229/#252)"
     )

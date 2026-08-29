@@ -578,6 +578,28 @@ in-process(runtime/isolate.py의 네트워크 네임스페이스 격리 없이) 
 attempt 평가와 동일한 격리 수준은 아니다(트레이드오프: 수백 trial을 subprocess당 감싸면 매 trial마다
 parquet 왕복+프로세스 기동 비용이 튜닝의 효율성 이점을 상쇄한다).
 
+### 개정 2026-08-29 (#252) — 정적으로 검증 가능한 자유형 build_model도 튜닝 대상
+
+- 실태: deep tier 5개 confirmed pipeline이 전부 v1.5.12(model_spec 도입) 이전 승격분이라 자유형
+`build_model`만 선언 → 튜닝 레인이 배포 후 `raw.tuned_params` 0행(구조적 no-op). 원 한계 조항의
+"model_spec 채택이 선행돼야 한다"가 실제로는 몇 주째 충족 안 됨. 게이트는 정상 작동 중이고(승격 후보
+gain이 ±0.0015 노이즈), 개선을 찾을 도구가 안 도는 게 병목.
+- 결정: `evaluator/tuner.py:infer_registry_model(source)` — 병합된 `materialized_code`의 `class Patch`
+`build_model`을 AST로 읽어 **정적으로 검증 가능한** "레지스트리 단일 모델 생성자 하나 + params 전달"
+형태이면 그 registry 키로 `tune_single_model`을 돌린다. 보수적 통과 조건: (1) 레지스트리 생성자 1종,
+(2) 미등록 model-like 생성자(커스텀 wrapper) 없음, (3) params 인자 참조됨, (4) 그 생성자 결과가 return 값.
+elastic_net(LogisticRegression 모호)은 추론 제외. `bin/tune_pipeline.py`는 단일 `p.code` 패치가 아니라
+`materialized_code`(자체완결 Patch)를 로드한다 — 단일 패치는 feature_engineering 패치면 build_model이
+아예 없어 튜닝 대상을 못 찾았다.
+- 원 대안 (a) 기각 논거("harness가 정적으로 알 수 없다")와의 관계: 이 개정은 정적으로 **알 수 있는**
+부분집합만 허용한다. `LGBMRegressor(**params)` / `xgb.XGBClassifier(**base_params)` 같은 형태는 params가
+생성자로 흐르는 게 AST로 확인된다. `_EnsembleRegressor(lgb_params=params.get(...))` 처럼 params가
+구조화돼 소비되면 조건 (2)/(4)에서 걸려 기존대로 raise.
+- 한계: 추론이 틀려도 `tune_single_model`의 baseline은 원본 freeform pipeline 그대로라 `improved` 판정이
+정확하고, 결과는 advisory(`ctx.tuned_params`)로만 흘러 자동 적용되지 않는다(blast radius 제한). s4e12
+(`_EnsembleRegressor`)·s4e11(`EnsembleModel`)·s4e10(Stacking 다중)은 여전히 튜닝 불가 — model_swap으로
+model_spec/ensemble_spec 대안이 confirmed돼야 한다.
+
 ## ADR-036 — ensemble_spec `method="stack"`은 inner-fold OOF + 강제 회귀 meta, `bin/blend.py` 폐기
 
 - 결정: `ensemble_spec`에 `"method": "stack"` + `"meta": {"model": ..., "params": {...}}`를 추가한다
