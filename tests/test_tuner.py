@@ -132,8 +132,6 @@ def test_tune_confirmed_pipeline_freeform_build_model_raises():
         tune_confirmed_pipeline(pipeline, df, ctx, n_trials=1)
 
 
-# --- infer_registry_model (ADR-035 개정, #252) ---
-
 _S5E4_LIKE = '''
 class Patch:
     action_type = "hyperparam_search"

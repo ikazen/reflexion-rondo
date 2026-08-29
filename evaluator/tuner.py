@@ -1,5 +1,6 @@
 """Optuna 기반 하이퍼파라미터 튜닝 — 확정 pipeline(raw.pipelines)의 model_spec/ensemble_spec
-멤버 params를 900s attempt 예산 밖에서 오래(수십~수백 trial) 탐색한다(ADR-035, #230).
+멤버 params를 900s attempt 예산 밖에서 오래(수십~수백 trial) 탐색한다(ADR-035, #230). 자유형
+build_model도 정적으로 "레지스트리 단일 모델 + params 전달"이 검증되면 추론해 튜닝한다(#252).
 
 preprocess/feature_transform/postprocess_predictions은 확정 pipeline 그대로 두고 모델
 생성만 trial마다 바꾼다 — evaluate_pipeline(evaluator/harness.py)을 그대로 재사용해
