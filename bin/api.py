@@ -604,11 +604,28 @@ def _competition_id_to_slug() -> dict[str, str]:
     return result
 
 
+# #254 백필이 재현 불가로 판정한 행(materialized_origin='unverifiable:*')과, 그 직전 승격분이
+# 재현 불가인 행은 제출 후보에서 하드 제외한다 — bin/submit.py가 그 직전 승격분의
+# materialized_code 위에서 patch를 실행하는데, 재현 불가면 replay 폴백이 strict sha 검증에
+# 걸려 제출 자체가 실패한다(#270 — _best_attempt에 이 필터가 빠져 있어 s5e4 auto-submit이
+# 3일 연속 같은 후보로 실패를 반복했다). 스냅샷 있음(materialized_code not null) 또는
+# 백필 미시도(origin null)면 통과.
+_SUBMITTABLE_FILTER_SQL = """
+          and (p.materialized_code is not null or p.materialized_origin is null)
+          and coalesce((
+              select p2.materialized_code is not null or p2.materialized_origin is null
+              from raw.pipelines p2 join raw.attempts a2 using (attempt_id)
+              where p2.competition_id = a.competition_id and a2.run_ts < a.run_ts
+              order by a2.run_ts desc limit 1
+          ), true)
+"""
+
+
 def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None:
     """raw.pipelines(cross-seed+holdout 확정, 격리 제외)로 후보를 제한한다 —
     안 그러면 미검증 attempt가 --attempt-id escape hatch로 그대로 제출된다(#178)."""
     row = conn.execute(
-        """
+        f"""
         select a.attempt_id, a.cv_score
         from raw.attempts a
         join raw.pipelines p on p.attempt_id = a.attempt_id
@@ -617,6 +634,7 @@ def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None
           and a.cv_score is not null
           and a.error_trace is null
           and p.invalid_reason is null
+          {_SUBMITTABLE_FILTER_SQL}
         order by c.metric_sign * a.cv_score desc, a.run_ts asc, a.attempt_id asc
         limit 1
         """,
@@ -669,7 +687,7 @@ def _unsubmitted_confirmed(
     후순위로 두는 건 스냅샷 없이도 replay가 재현되는 경우가 실제로 있기 때문이다.
     """
     rows = conn.execute(
-        """
+        f"""
         select a.attempt_id, a.cv_score,
                -- 직전 승격분이 아예 없으면(대회 첫 승격) base가 BasePipeline()이라
                -- replay 자체가 필요 없다 — 그래서 null은 false가 아니라 true로 접는다.
@@ -686,23 +704,11 @@ def _unsubmitted_confirmed(
           and a.cv_score is not null
           and a.error_trace is null
           and p.invalid_reason is null
-          -- 후보 자신의 승격 행이 #254 백필에서 재현 실패 verdict를 받았으면
-          -- (materialized_code IS NULL AND materialized_origin IS NOT NULL) 제외 —
-          -- 직전 행 체크와 대칭. 최초 승격분(직전 행 없음)이 train_drift면 여기서만 걸린다.
-          and (p.materialized_code is not null or p.materialized_origin is null)
           and not exists (
               select 1 from raw.kaggle_submissions s
               where s.attempt_id = a.attempt_id
           )
-          -- 직전 승격분에 스냅샷이 없고 #254 백필이 이미 재현 실패 verdict를 남겼으면
-          -- (materialized_origin not null) 영영 제출 불가 — 후순위가 아니라 하드 제외.
-          -- 스냅샷 있음 or 아직 백필 미시도(둘 다 null)면 통과. 승격분 자체가 없으면 통과.
-          and coalesce((
-              select p2.materialized_code is not null or p2.materialized_origin is null
-              from raw.pipelines p2 join raw.attempts a2 using (attempt_id)
-              where p2.competition_id = a.competition_id and a2.run_ts < a.run_ts
-              order by a2.run_ts desc limit 1
-          ), true)
+          {_SUBMITTABLE_FILTER_SQL}
         order by prior_snapshot desc,
                  c.metric_sign * a.cv_score desc, a.run_ts asc, a.attempt_id asc
         limit %s
