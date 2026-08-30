@@ -725,6 +725,35 @@ baseline 확립 시 지문을 심기만 한다(대조할 이전 baseline이 없�
 
 ---
 
+## ADR-041 — 정적 playbook을 Strategist/Coder 프롬프트에 직접 주입한다 (#235)
+
+- 결정: `agents/playbook.py`의 `STRATEGIST_PLAYBOOK`/`CODER_PLAYBOOK` 상수를 Strategist user
+프롬프트의 `## Playbook` 섹션과 Coder system contract 말미에 무조건 주입한다. 내용은 Playground
+Series 정형 데이터 대회의 baseline 지식 — CV 스킴 선택, OOF target encoding, 상호작용·그룹
+집계 피처, GBDT 다양성 + stacking, 넓은 Optuna 탐색, 원본 데이터 병합, fold-overfit 재제출
+금지. `docs/strategy.md`가 사람용 근거 문서, `playbook.py`가 프롬프트에 들어가는 큐레이션
+서브셋이다.
+- ADR-019(외부 아이디어 채널)와의 관계: ADR-019는 *외부에서 발굴할* 미검증 주장을 톰슨
+샘플링으로 노출하는 설계였고 몇 달째 코드 0줄이다. 지금 deep tier에 부족한 지식(Optuna 폭,
+stacking, 모델 다양성, 원본 병합)은 외부에서 찾을 게 아니라 이미 시스템이 아는 것이라 그냥
+프롬프트에 넣으면 된다. ADR-019는 폐기가 아니라 **연기** — 이 정적 playbook + #228~#232
+적용 후에도 정체되면 재검토.
+- 스테이지 게이팅 없음: ADR-019가 외부 아이디어를 `reflexion` 단계로 제한한 건 미검증 잡음이라
+bootstrap/exploitation 안정성을 해칠 위험 때문이었다. 이 playbook은 큐레이션된 정적 지식이라
+모든 스테이지에 노출해도 위험이 낮다(bootstrap의 안전 baseline 선택에도 유용).
+- Coder에도 노출: ADR-019는 "외부 텍스트(특히 코드 조각)를 Coder에 노출하면 미검증 코드
+카피 위험"으로 Strategist만 대상으로 했다. `CODER_PLAYBOOK`은 코드 스니펫이 아니라 구현
+원칙(OOF 인코딩 정합성, stacking 배선, 탐색 폭)이라 그 위험이 없고, 실제 낭비의 상당수가
+Coder 단(fold-overfit config 반복, 3후보 param grid, 누수 target encoding)이라 여기가 레버리지.
+- 근거: 2026-08-30 상태 점검. confirm 퍼널·train_fingerprint 가드는 정상이고 LB 백분위상
+천장도 아닌데(s4e11 63, s4e12 82, s5e4 66) 7일간 deep tier 신규 confirmed pipeline이 사실상
+0건 — 탐색이 개선을 못 찾는다. 튜닝 레인(#252)도 첫 2개 대회 `improved=False`. Strategist/Coder
+prior를 직접 끌어올리는 게 가장 값싼 수단.
+- 한계: 정적이라 대회별 맞춤이 없고 효과 측정 훅도 없다(주입/미주입 A/B 아님). deep tier가
+이걸로도 정체되면 ADR-019의 동적 채널 또는 대회별 playbook으로 넘어간다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |
