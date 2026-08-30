@@ -1,7 +1,8 @@
 # 정형 데이터 경진대회 일반 전략 노트
 
 > 설계 문서(`architecture.md`)와 분리된 실전 팁 모음. 시스템 설계가 아니라 "어떤 가설을 던지면 좋은가"의 baseline 지식.
-> Strategist 프롬프트의 시스템 컨텍스트 / Reflector의 검토 체크리스트로도 활용.
+> 이 문서는 사람용 근거. 프롬프트에 실제로 주입되는 큐레이션 서브셋은 `agents/playbook.py`
+> (`STRATEGIST_PLAYBOOK`/`CODER_PLAYBOOK`, ADR-041) — 내용 변경 시 둘을 함께 본다.
 
 정형 데이터 대회 상위권(Silver~Gold) 진입 전략의 핵심: *"어떻게 가장 효율적으로, 가장 신뢰할 수 있는 실험을 많이 할 것인가."*
 

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from ollama import Client
 
 from agents.llm_retry import chat_with_retry
+from agents.playbook import STRATEGIST_PLAYBOOK
 from config import settings
 
 _LOG = logging.getLogger(__name__)
@@ -145,6 +146,9 @@ def strategize(
 {exploration_section}{prior_section}{forced_section}
 ## Action Types
 {_ACTION_CATALOG}
+
+## Playbook
+{STRATEGIST_PLAYBOOK}
 
 ## Task
 Propose exactly one change to improve the CV score.

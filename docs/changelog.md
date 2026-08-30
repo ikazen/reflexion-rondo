@@ -1,5 +1,20 @@
 # 변경 이력
 
+## v1.6.9 — 정적 playbook 프롬프트 주입 (#235, ADR-041) (2026-08-30)
+
+- 2026-08-30 상태 점검: confirm 퍼널·train_fingerprint 가드 정상이고 LB 백분위상 천장도 아닌데
+  (s4e11 63 / s4e12 82 / s5e4 66) 7일간 deep tier 신규 confirmed pipeline이 사실상 0건 —
+  탐색이 개선을 못 찾는다. 튜닝 레인(#252)도 첫 2개 대회 `improved=False`.
+- `agents/playbook.py` 신규 — `STRATEGIST_PLAYBOOK`(CV 스킴 선택, OOF target encoding, 상호작용·
+  그룹 집계 피처, GBDT 다양성 + stacking, 넓은 Optuna 탐색, 원본 병합, fold-overfit 재제출 금지)
+  + `CODER_PLAYBOOK`(OOF 인코딩 정합성, stacking `ensemble_spec` 배선, 6~12개 넓은 param
+  후보). Strategist user 프롬프트 `## Playbook` 섹션 + Coder system contract 말미에 무조건 주입.
+- ADR-019(외부 아이디어 채널, 톰슨 샘플링)는 폐기가 아니라 연기 — 지금 부족한 지식은 외부에서
+  발굴할 게 아니라 이미 시스템이 아는 것이라 프롬프트에 직접 넣는다. `docs/strategy.md`가 사람용
+  근거, `playbook.py`가 프롬프트 주입 서브셋.
+- 스테이지 게이팅 없음(큐레이션된 정적 지식이라 위험 낮음), Coder에도 노출(코드 스니펫이 아니라
+  구현 원칙이라 미검증 코드 카피 위험 없음).
+
 ## v1.6.8 — 튜닝 레인 언블록: 정적 추론으로 자유형 build_model 튜닝 (#252, ADR-035 개정) (2026-08-29)
 
 - 배포된 Optuna 튜닝 레인(#230)이 `raw.tuned_params` 0행 — deep tier 5개 confirmed pipeline이

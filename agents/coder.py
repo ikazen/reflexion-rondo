@@ -10,6 +10,7 @@ import re
 from ollama import Client
 
 from agents.llm_retry import chat_with_retry
+from agents.playbook import CODER_PLAYBOOK
 from config import settings
 from evaluator.contract import _ALLOWED_HOOKS, _ALL_HOOKS
 
@@ -380,6 +381,7 @@ def generate_code(
 ) -> str:
     is_bootstrap = action_type == "bootstrap"
     contract = _BOOTSTRAP_CONTRACT if is_bootstrap else _REFLEXION_CONTRACT
+    contract = f"{contract}\n\n{CODER_PLAYBOOK}"
 
     # 훅 개수 제한은 하드 리젝트가 아니다(ADR-006 뒤집기, ADR-037, #232) — 그래도
     # action_type별 "주 초점" 훅을 먼저 제시해 최소 개입을 유도한다. 이걸 벗어나
