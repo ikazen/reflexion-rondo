@@ -25,10 +25,27 @@ Curated Playground Series strategy (static baseline knowledge — not a measured
 
 CODER_PLAYBOOK = """\
 ## Playground Series implementation patterns (curated — apply when they fit the hypothesis)
-- Target encoding must be strictly out-of-fold: compute the encoding on inner KFold splits of the training rows
-  only, smooth toward the global mean, and never fit on full train then transform valid (that leaks).
-- Add interaction features (ratios/products/differences of the most predictive numerics) and group-aggregate
-  features (per-category mean/std/count of key numerics) fit on train only.
+Every frame below is a polars DataFrame — the "Polars rules" and the statically-rejected pandas-only list
+above still apply to all of this code (use group_by / gather / replace_strict / map_elements, never the
+pandas spellings).
+
+- Group-aggregate features (per-category mean/std/count of key numerics), fit on train only:
+    agg = train.group_by(cat).agg(
+        pl.col(num).mean().alias(f"{cat}_{num}_mean"),
+        pl.col(num).std().alias(f"{cat}_{num}_std"),
+        pl.len().alias(f"{cat}_count"),
+    )
+    train = train.join(agg, on=cat, how="left")
+    valid = valid.join(agg, on=cat, how="left")   # same agg computed on train, joined onto valid
+  For a single stat a window is shorter: train.with_columns(pl.col(num).mean().over(cat).alias(...)).
+- Target encoding must be strictly out-of-fold and never fit on full train then transform valid (that leaks).
+  Loop KFold splits of the training rows; on each inner-train split compute per-category target stats with
+  train[inner_tr].group_by(cat).agg(pl.col(target).mean(), pl.len()), build {category: smoothed_mean} dicts
+  where smoothed = (cat_mean * n + global_mean * SMOOTH) / (n + SMOOTH), and write the encoded values back
+  onto the inner-validation rows only. For valid: compute the same stats on the full train fold and map with
+  the smoothed dict, default = global_mean for unseen categories.
+- Add interaction features — ratios/products/differences of the most predictive numerics:
+    train = train.with_columns((pl.col(a) / (pl.col(b) + 1e-6)).alias(f"{a}_over_{b}"))
 - For a stacking ensemble on rmse/mae/rmsle/auc/logloss: ensemble_spec with members lgbm + xgboost + catboost
   (each with distinct params), method "stack", meta {"model": "ridge"}.
 - param_candidates: return 6-12 genuinely different dicts spanning wide ranges — not a grid, not near-duplicates

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import MagicMock, patch
 
 from agents.playbook import CODER_PLAYBOOK, STRATEGIST_PLAYBOOK
+from evaluator.contract import _PANDAS_ONLY_ATTRS
 
 
 def _coder_resp() -> MagicMock:
@@ -25,8 +27,16 @@ def test_playbooks_do_not_advertise_uninstalled_libs() -> None:
     for text in (STRATEGIST_PLAYBOOK, CODER_PLAYBOOK):
         lower = text.lower()
         assert "tabpfn" not in lower
-        assert "pandas" not in lower
-        assert "import " not in lower
+        assert "import " not in text
+    # STRATEGIST 출력은 가설 문장이라 pandas 언급 자체가 불필요 — Coder playbook은
+    # polars 규약을 재확인하느라 부정 맥락으로 "pandas"를 쓴다(아래 별도 테스트가 API를 검사).
+    assert "pandas" not in STRATEGIST_PLAYBOOK.lower()
+
+
+def test_coder_playbook_uses_no_pandas_only_api() -> None:
+    """#136: playbook의 예제 코드가 정적 가드에서 거부되는 pandas 관용구를 유도하면 안 된다."""
+    for attr in _PANDAS_ONLY_ATTRS:
+        assert not re.search(rf"\.{re.escape(attr)}\s*\(", CODER_PLAYBOOK), attr
 
 
 def test_strategist_injects_playbook_into_prompt() -> None:
