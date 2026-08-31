@@ -1,5 +1,20 @@
 # 변경 이력
 
+## v1.6.10 — playbook 예제를 polars 관용구로 재작성 (#136) (2026-08-31)
+
+- v1.6.9 배포 후 12.9시간 실측: playbook 주입은 실동작(hypothesis의 optuna 언급 0.8%->20.5%,
+  target encoding 9.3%->16.7%)했으나 `feature_engineering` attempt의 polars 정적 가드 실패율이
+  19%->59%로 급등했다. 실패 호출 대부분이 `.groupby()`(배포 후 28건).
+- 원인: `CODER_PLAYBOOK`의 group-aggregate/target-encoding 불릿이 API 중립 언어("per-category
+  mean/std/count grouped by") 로 쓰였고, Coder contract의 FORBIDDEN pandas-only 목록 **뒤에**
+  이어붙어서 마지막에 읽는 지시가 pandas 관용구를 유도했다.
+- `agents/playbook.py:CODER_PLAYBOOK` — group-aggregate를 `train.group_by(cat).agg(...)` + `join`
+  (또는 `pl.col(x).mean().over(cat)`), target encoding을 polars group_by 통계 + 스무딩 dict 매핑,
+  interaction을 `pl.col(a)/pl.col(b)` 표현식으로 명시. 서두에 "아래 모든 프레임은 polars이고 위
+  정적 거부 목록이 그대로 적용된다" 한 줄 추가. `STRATEGIST_PLAYBOOK`은 전략 텍스트라 불변.
+- `tests/test_playbook.py:test_coder_playbook_uses_no_pandas_only_api` 신규 — `evaluator.contract.
+  _PANDAS_ONLY_ATTRS`를 import 해 playbook에 `.groupby(`/`.apply(` 등이 재등장하면 실패.
+
 ## v1.6.9 — 정적 playbook 프롬프트 주입 (#235, ADR-041) (2026-08-30)
 
 - 2026-08-30 상태 점검: confirm 퍼널·train_fingerprint 가드 정상이고 LB 백분위상 천장도 아닌데
