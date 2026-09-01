@@ -52,7 +52,7 @@ def main() -> None:
     from store.s3_code import download as _code_download
     from store.s3_code import download_best_pipeline, upload_best_pipeline
     from store.train_data import load_train
-    from cycle.run import _CODE_HEADER_SEP, _prev_best_fold_scores
+    from cycle.run import _CODE_HEADER_SEP, _baseline_source_guard, _prev_best_fold_scores
 
     conn = connect(apply_schema=False)
 
@@ -179,6 +179,10 @@ def main() -> None:
                 print(f"[run_promote_task] train 로드 실패 — holdout/confirm 스킵: {exc}")
                 train90 = None
 
+            # confirm은 이 blob을 baseline으로 재평가한다 — 레지스트리 유효행과
+            # 어긋난 blob(격리 후 미재구성 등, #278)이면 팬텀 baseline에 대고
+            # confirm을 돌려 컴퓨트만 태우므로, 여기서 멈춘다.
+            _baseline_source_guard(conn, competition_id)
             current_best = download_best_pipeline(competition_id)
             if train90 is not None:
                 is_classification = comp.IS_CLASSIFICATION if comp_row else True

@@ -17,6 +17,7 @@ Dry-run (결과만 stdout 출력, 업로드 안 함):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 from pathlib import Path
 
@@ -32,22 +33,41 @@ def rebuild(competition_id: str, dry_run: bool) -> str:
     conn = connect(apply_schema=False)
     try:
         best, _, count = replay_best_pipeline(conn, competition_id)
+
+        if not best:
+            print(f"no raw.pipelines rows for competition_id={competition_id!r} — nothing to rebuild")
+            sys.exit(1)
+
+        print(f"replayed {count} promoted pipeline(s) for {competition_id}")
+
+        if dry_run:
+            print("\n--dry-run: not uploading. Result below:\n")
+            print(best)
+            return best
+
+        upload_best_pipeline(competition_id, best)
+        # 재생 결과를 최신 유효행의 신뢰 스냅샷으로 기록한다(#254/ADR-039와 동일 방식):
+        # materialize 로직이 바뀌었으면 재생본이 승격 당시 병합본과 텍스트로 다를 수
+        # 있는데, 그게 이제 MinIO에 올라간 정본이다. _baseline_source_guard와 submit.py가
+        # coalesce(materialized_sha256, pipeline_sha256)로 이 blob을 검증한다.
+        new_sha = hashlib.sha256(best.encode()).hexdigest()
+        latest_valid = conn.execute(
+            "select p.pipeline_id from raw.pipelines p join raw.attempts a using (attempt_id)"
+            " where p.competition_id = %s and p.invalid_reason is null"
+            " order by a.run_ts desc limit 1",
+            [competition_id],
+        ).fetchone()
+        if latest_valid:
+            conn.execute(
+                "update raw.pipelines set materialized_code = %s, materialized_sha256 = %s"
+                " where pipeline_id = %s",
+                [best, new_sha, latest_valid[0]],
+            )
+            print(f"recorded trusted snapshot on {latest_valid[0][:8]} (sha {new_sha[:12]})")
     finally:
         conn.close()
 
-    if not best:
-        print(f"no raw.pipelines rows for competition_id={competition_id!r} — nothing to rebuild")
-        sys.exit(1)
-
-    print(f"replayed {count} promoted pipeline(s) for {competition_id}")
-
-    if dry_run:
-        print("\n--dry-run: not uploading. Result below:\n")
-        print(best)
-    else:
-        upload_best_pipeline(competition_id, best)
-        print(f"\nuploaded rebuilt best_pipeline.py for {competition_id}")
-
+    print(f"\nuploaded rebuilt best_pipeline.py for {competition_id}")
     return best
 
 

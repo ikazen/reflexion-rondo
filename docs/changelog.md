@@ -1,5 +1,28 @@
 # 변경 이력
 
+## v1.6.11 — registry↔MinIO baseline 정합성 가드 (#278, ADR-042) (2026-09-02)
+
+- v1.6.10 배포 후 38시간 실측: 신규 확정 pipeline 배포 후 0건, 제출 08-29 이후 0건. autosubmit은
+  정상 실행되나 전건 `best unchanged` / `no confirmed pipeline` 스킵. (#136 polars 가드는 FE 실패율
+  25%->9%로 유효, #235 playbook 주입도 유효 — 아웃컴 정체는 별개 원인.)
+- 근본 원인: 2026-08-28 #267 세션이 s4e11 래칫 8행을 `stale_scale:258`로 격리하면서 MinIO
+  `best_pipeline.py`를 재구성하지 않았다. promote 게이트(`_prev_best`, 레지스트리 → 0.9418)와
+  confirm 게이트(`download_best_pipeline`, 팬텀 레이어 잔존 blob → 0.9681)가 다른 baseline을 봐서
+  그 사이 구간 후보가 promote를 통과한 뒤 confirm에서 전량 거부됐다(7일간 jump 라벨 126건).
+- `cycle/run.py:_baseline_source_guard` 신규 — MinIO blob sha256을 최신 유효행의
+  `coalesce(materialized_sha256, pipeline_sha256)`과 대조, 어긋나면 `BaselineSourceMismatchError`로
+  cycle 중단 + `auto_submit_paused_reason`. `run_attempt_core`에서 `_train_fingerprint_guard` 직후
+  호출, `bin/run_promote_task.py`도 confirm 전에 호출. `bin/run_daemon.py`는 새 예외를 재시도 없이
+  리스 중단. 신뢰 해시 없는 레거시 행은 검증 스킵(오탐 방지).
+- `bin/rebuild_best_pipeline.py` — 재생 후 결과를 최신 유효행의 `materialized_code`/`materialized_sha256`에
+  심는다(#254 방식). materialize 로직이 바뀌어 재생본이 승격 당시와 텍스트로 달라도 그게 MinIO 정본이므로,
+  rebuild 직후 가드/submit이 통과한다.
+- `bin/establish_baseline.py:remeasure_competition` — 격리 발생 시 `rebuild_best_pipeline` 안내 출력.
+- 운영 조치: `bin.rebuild_best_pipeline --competition playground-series-s4e11`로 blob 재구성(유효행
+  2건만 재생 → cv ~0.9418). s4e10/s4e12/s5e4/s6e8은 blob이 레지스트리와 일치 — drift 없음.
+- `tests/test_baseline_source_guard.py` / `test_rebuild_best_pipeline.py` 신규,
+  `test_establish_baseline.py` 재구성 안내 테스트 추가.
+
 ## v1.6.10 — playbook 예제를 polars 관용구로 재작성 (#136) (2026-08-31)
 
 - v1.6.9 배포 후 12.9시간 실측: playbook 주입은 실동작(hypothesis의 optuna 언급 0.8%->20.5%,
