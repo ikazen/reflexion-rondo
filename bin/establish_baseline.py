@@ -245,6 +245,12 @@ def remeasure_competition(conn, comp: object, dry_run: bool) -> bool:
 
     print(f"  {comp.COMPETITION_ID}: 재측정 {remeasured}건, 격리 {quarantined}건, "
           f"train_fingerprint={new_fp[:12]} ({action})")
+    if quarantined and not dry_run:
+        # 격리로 레지스트리 유효집합이 바뀌면 MinIO best_pipeline.py도 다시 만들어야
+        # promote/confirm 게이트가 같은 baseline을 본다(#278). 안 하면
+        # _baseline_source_guard가 다음 사이클에서 대회를 멈춘다.
+        print(f"  {comp.COMPETITION_ID}: 유효집합 변경 — MinIO 재구성 필요:")
+        print(f"    uv run python -m bin.rebuild_best_pipeline --competition {comp.COMPETITION_ID}")
     if not dry_run:
         conn.execute(
             "UPDATE raw.competitions SET train_fingerprint = %s WHERE competition_id = %s",

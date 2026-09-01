@@ -244,3 +244,21 @@ def test_remeasure_eval_failure_quarantines_and_skips_fingerprint():
     assert len(quarantine) == 1 and quarantine[0].args[1] == ["pipe-1"]
     fp_updates = [c for c in conn.execute.call_args_list if "SET train_fingerprint" in c.args[0]]
     assert fp_updates == []
+
+
+def test_remeasure_prints_rebuild_hint_when_any_quarantined(capsys):
+    """격리로 유효집합이 바뀌면 MinIO 재구성 안내를 출력한다 (#278)."""
+    conn = _remeasure_conn([("pipe-ok", "code A", 0.7), ("pipe-bad", "code B", 0.6)])
+
+    with (
+        patch("bin.establish_baseline.load_train", return_value=_TRAIN),
+        patch("bin.establish_baseline.split_audit_holdout", return_value=(_TRAIN, _TRAIN)),
+        patch("bin.establish_baseline.eval_isolated", side_effect=[
+            MagicMock(error_trace=None, cv_score=0.55),
+            MagicMock(error_trace="boom", cv_score=None),
+        ]),
+    ):
+        result = remeasure_competition(conn, _Comp(), dry_run=False)
+
+    assert result is True
+    assert "rebuild_best_pipeline --competition" in capsys.readouterr().out

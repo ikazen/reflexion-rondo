@@ -754,6 +754,34 @@ prior를 직접 끌어올리는 게 가장 값싼 수단.
 
 ---
 
+## ADR-042 — 확정 baseline의 단일 진실원천은 raw.pipelines 유효행, MinIO는 파생물 (#278)
+
+- 결정: `raw.pipelines`의 `invalid_reason IS NULL` 행 집합이 확정 baseline의 유일한 진실원천이다.
+MinIO `best_pipeline.py`는 그 행들을 시간순 병합한 파생물이며, 격리(`invalid_reason` 부여)나
+remeasure로 유효집합이 바뀌면 반드시 `bin.rebuild_best_pipeline`로 재구성해야 한다.
+`cycle/run.py:_baseline_source_guard`가 매 cycle 진입 시(`run_attempt_core`, `_train_fingerprint_guard`
+직후) MinIO blob의 sha256을 최신 유효행의 `coalesce(materialized_sha256, pipeline_sha256)`과
+대조해 어긋나면 `BaselineSourceMismatchError`로 그 cycle을 중단하고 `auto_submit_paused_reason`을
+심는다. `bin/run_promote_task.py`도 confirm 전에 같은 체크를 한다(팬텀 baseline에 confirm 컴퓨트
+낭비 방지). 최신 유효행에 신뢰 해시가 없으면(레거시) 검증을 건너뛴다 — 오탐이 미탐지보다 위험.
+- 근거: #278 실측. 2026-08-28 #267 세션이 s4e11 래칫 8행을 `stale_scale:258`로 격리했으나 MinIO를
+재구성하지 않았다. 결과적으로 promote 게이트(`_prev_best`, 레지스트리 유효행 → cv 0.9418)와
+confirm 게이트(`download_best_pipeline`, 8개 팬텀 레이어가 남은 blob → cv 0.9681)가 서로 다른
+baseline을 봤고, 그 사이 구간의 후보가 promote를 "jump"로 통과한 뒤 confirm에서 전량 거부됐다
+(7일간 jump 라벨 126건, 신규 pipeline 0건, confirm 컴퓨트 낭비 + bandit/reflection 보상 오염).
+코드에 registry↔MinIO 분기 감지 장치가 없어 5일간 조용히 돌았다.
+- ADR-039와의 관계: ADR-039는 재생된 base의 검증을 소스 해시가 아니라 행동 재현으로 한다는
+결정이었다. 이 가드는 "재생이 정확한가"가 아니라 "blob이 레지스트리 유효집합과 같은 세대인가"만
+본다 — 승격 당시 기록된 신뢰 해시(`coalesce(materialized_sha256, pipeline_sha256)`)를 기준으로 쓴다.
+`bin.rebuild_best_pipeline`은 재생 후 그 결과를 최신 유효행의 `materialized_code`/`materialized_sha256`에
+심는다(materialize 로직이 바뀌어 재생본이 승격 당시와 텍스트로 달라도, 그게 이제 MinIO의 정본이므로
+#254 방식으로 신뢰 스냅샷을 갱신) — 그래야 rebuild 직후 가드와 submit.py가 통과한다.
+- 범위: `split_audit_holdout`을 거치는 프로덕션 super-cycle 경로만 가드한다(ADR-040과 동일).
+`bin/establish_baseline.py:remeasure_competition`은 격리가 발생하면 재구성 커맨드를 안내 출력한다
+— 자동 rebuild는 하지 않는다(가드가 다음 cycle에서 강제하므로 안내로 충분).
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |

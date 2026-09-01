@@ -267,6 +267,29 @@ uv run python -m bin.establish_baseline --remeasure --competition <competition-i
 
 메모리/RLIMIT 주의는 §4-2와 동일 — 미검증 환경에서 반복 실패 시 ops-vm task 이미지로 직접 실행.
 
+**격리가 발생했으면 MinIO도 재구성한다** — 격리로 `raw.pipelines` 유효집합이 바뀌면
+`bin.rebuild_best_pipeline`로 blob을 다시 만들어야 promote/confirm 게이트가 같은 baseline을 본다
+(§4-6, ADR-042). remeasure가 이 안내를 출력한다.
+
+### 4-6. registry↔MinIO baseline 분기 복구 (#278, ADR-042)
+
+확정 baseline의 단일 진실원천은 `raw.pipelines`의 `invalid_reason IS NULL` 행이고, MinIO
+`best_pipeline.py`는 그 병합 파생물이다. 격리(§4-1, §4-5)나 remeasure로 유효집합을 바꾸고
+MinIO를 재구성하지 않으면 promote 게이트(`_prev_best`, 레지스트리)와 confirm 게이트
+(`download_best_pipeline`, MinIO blob)가 다른 baseline을 본다.
+
+`cycle/run.py:_baseline_source_guard`가 매 cycle에서 blob sha256을 최신 유효행의 신뢰 해시와
+대조해 어긋나면 `BaselineSourceMismatchError`로 대회를 멈추고 `auto_submit_paused_reason`을
+`baseline 소스 불일치 (#278)`로 채운다. 복구:
+
+```bash
+uv run python -m bin.rebuild_best_pipeline --competition <competition-id> --dry-run   # 재생 결과 확인
+uv run python -m bin.rebuild_best_pipeline --competition <competition-id>             # blob 업로드
+```
+
+유효행만 시간순 재생해 blob을 다시 만든다. 이후 다음 cycle에서 가드가 통과하며
+`auto_submit_paused_reason`은 사람이 NULL로 되돌린다(자동 해제 없음).
+
 ### 4-3. auto-submit 일시중단 복구
 
 cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_paused_reason`이 채워지고 해당 대회의 자동 제출이 멈춘다(decisions.md ADR-026). 발동 조건은
@@ -275,6 +298,8 @@ cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_pause
 
 사유가 `train_fingerprint 불일치`로 시작하면 트립와이어가 아니라 §4-5(load_train 설정 변경) —
 수동 NULL이 아니라 `establish_baseline --remeasure`가 재측정 후 자동 해제한다.
+
+사유가 `baseline 소스 불일치`로 시작하면 §4-6 — `rebuild_best_pipeline` 후 수동 NULL.
 
 ```bash
 # 현재 일시중단된 대회 확인

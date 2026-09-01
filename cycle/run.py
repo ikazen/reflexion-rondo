@@ -107,6 +107,16 @@ class TrainFingerprintMismatchError(RuntimeError):
     """
 
 
+class BaselineSourceMismatchError(RuntimeError):
+    """MinIO best_pipeline.py가 raw.pipelines 유효행이 가리키는 병합본과 다르다.
+
+    격리(invalid_reason)나 remeasure로 레지스트리 유효집합이 바뀌었는데 MinIO를
+    재구성하지 않으면 promote 게이트(_prev_best, 레지스트리)와 confirm 게이트
+    (download_best_pipeline, MinIO blob)가 서로 다른 baseline을 보게 된다(#278,
+    ADR-042). `bin.rebuild_best_pipeline`로 blob을 유효행으로 재생성해야 재개된다.
+    """
+
+
 def _train_fingerprint_guard(conn: PgConn, competition_id: str, train90: pl.DataFrame) -> None:
     """train90의 지문이 raw.competitions.train_fingerprint와 어긋나면 승격 게이트를
     멈춘다. 최초 관측(저장값 NULL)이면 현재 지문을 심고 통과한다.
@@ -142,6 +152,45 @@ def _train_fingerprint_guard(conn: PgConn, competition_id: str, train90: pl.Data
     )
     _LOG.error("%s", reason)
     raise TrainFingerprintMismatchError(reason)
+
+
+def _baseline_source_guard(conn: PgConn, competition_id: str) -> None:
+    """MinIO best_pipeline.py의 sha256이 레지스트리 최신 유효행의 신뢰 해시와
+    어긋나면 승격 게이트를 멈춘다(#278).
+
+    blob이 없으면(콜드스타트) 통과. 최신 유효행에 신뢰 해시가 없으면(레거시 행)
+    검증을 건너뛴다 — 미탐지가 오탐(정상 대회를 멈춤)보다 안전하다. submit.py가
+    expected_sha256=None을 검증 스킵으로 처리하는 것과 같은 판단.
+    """
+    blob = _best_pipeline_download(competition_id)
+    if blob is None:
+        return
+    row = conn.execute(
+        "select coalesce(p.materialized_sha256, p.pipeline_sha256)"
+        " from raw.pipelines p join raw.attempts a using (attempt_id)"
+        " where p.competition_id = %s and p.invalid_reason is null"
+        " order by a.run_ts desc limit 1",
+        [competition_id],
+    ).fetchone()
+    trusted = row[0] if row else None
+    if not trusted:
+        return
+    blob_sha = hashlib.sha256(blob.encode()).hexdigest()
+    if blob_sha == trusted:
+        return
+    cmd = f"uv run python -m bin.rebuild_best_pipeline --competition {competition_id}"
+    reason = (
+        f"baseline 소스 불일치 (#278): MinIO blob {blob_sha[:12]} != 레지스트리 "
+        f"유효행 {trusted[:12]}. 격리/remeasure 후 `{cmd}` 실행 후 재개."
+    )
+    conn.execute(
+        "update raw.competitions"
+        " set auto_submit_paused_reason = coalesce(auto_submit_paused_reason, %s)"
+        " where competition_id = %s",
+        [reason, competition_id],
+    )
+    _LOG.error("%s", reason)
+    raise BaselineSourceMismatchError(reason)
 
 
 def _prev_best(conn: PgConn, competition_id: str) -> float | None:
@@ -559,6 +608,7 @@ def run_attempt_core(
     """Strategize → Generate → Evaluate → Persist one attempt. Returns data needed for reflect."""
     if config.holdout is not None:
         _train_fingerprint_guard(conn, config.competition_id, config.train)
+        _baseline_source_guard(conn, config.competition_id)
     attempt_id = str(uuid.uuid4())
     attempt_start = time.monotonic()
 
