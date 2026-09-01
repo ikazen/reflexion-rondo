@@ -17,6 +17,7 @@ Dry-run (결과만 stdout 출력, 업로드 안 함):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 from pathlib import Path
 
@@ -25,8 +26,6 @@ ROOT = Path(__file__).parent.parent
 
 def rebuild(competition_id: str, dry_run: bool) -> str:
     sys.path.insert(0, str(ROOT))
-    import hashlib
-
     from cycle.materialize import replay_best_pipeline
     from store.db import connect
     from store.s3_code import upload_best_pipeline
