@@ -19,8 +19,7 @@ EXTRA_TRAIN_PATHS: list[str] = ["original.csv"]  # hopesb/student-depression-dat
 # store/train_data.py의 컬럼 교집합+null 채움으로 자동 처리). MinIO kaggle/s4e11/data/original.csv.
 ACTIVE            = True  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
 
-# 2026-09 상태 점검(#269): 8일간 CPU 예산 킬 54건, 킬 집단 CPU/wall 비율 2.83 —
-# s5e4와 같은 양상(병렬성 폭주 아님). 관측용 임시값, 48h 실측으로 확정(ADR-044).
+# 관측용 임시값 — 실측 wall 분포로 영구값 확정 예정 (#269, ADR-044).
 CPU_BUDGET_SECS = 10_800
 
 EDA_CARD = """competition: playground-series-s4e11 (Exploring Mental Health — Depression)
