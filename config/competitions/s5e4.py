@@ -25,10 +25,7 @@ ACTIVE            = True  # False면 daemon 큐 리필(_sweep_queue_refill) 대�
 # 비교 불가 — bin/establish_baseline.py --remeasure로 재측정 필요(#135).
 MAX_TRAIN_ROWS = 500_000
 
-# 2026-09 상태 점검(#269): 8일간 CPU 예산 킬 120건 — 킬 집단의 CPU/wall 비율(2.86)이
-# 성공 집단(2.95)과 같아 병렬성 폭주가 아니라 같은 병렬도의 무거운 정상 작업이다.
-# 전역 3600s는 이 대회에서 사실상 wall 20분 상한으로 작동. 관측용 임시값 —
-# 48h 실측 wall 분포(p90/p99)로 영구값 확정(ADR-044).
+# 관측용 임시값 — 실측 wall 분포로 영구값 확정 예정 (#269, ADR-044).
 CPU_BUDGET_SECS = 10_800
 
 EDA_CARD = """competition: playground-series-s5e4 (Podcast Listening Time Prediction)
