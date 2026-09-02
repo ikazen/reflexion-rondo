@@ -15,7 +15,7 @@ DROP_COLS         = ["id"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s4e12/data/"
 EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
-ACTIVE            = True  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
+ACTIVE            = False  # deep tier 동결 (#274, ADR-043) — 30일 확정 pipeline 1건, gain 순수 노이즈
 
 # 2026-08 처리량 진단(#135): 최근 7일 rc=-9(OOM SIGKILL) 108/187건(58%, 대회 중 최다),
 # 평균 803초를 태우고 죽음 — 계산의 4분의 1을 이 대회와 s5e4 둘이 태웠다. 회귀라
