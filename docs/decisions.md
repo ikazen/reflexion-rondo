@@ -782,6 +782,28 @@ baseline을 봤고, 그 사이 구간의 후보가 promote를 "jump"로 통과�
 
 ---
 
+## ADR-044 — CPU 예산은 병렬성 폭주 가드가 아니라 대회별 wall-clock 상한이다 (#269)
+
+- 결정: `runtime/isolate.py:DEFAULT_CPU_BUDGET_SECS`(3600)는 전역 안전망으로 두고, 실측
+분포상 이 값이 정상 작업을 자르는 대회는 config에 `CPU_BUDGET_SECS`를 개별 지정한다. 이
+상수는 이미 모든 진입점에 `getattr(comp, "CPU_BUDGET_SECS", None)`으로 배선돼 있었으나
+(`bin/run_daemon.py`, `bin/run_promote_task.py`, `bin/run_reflexion.py`,
+`bin/establish_baseline.py` 등) 지정한 대회가 없었다. 1차 적용: s5e4·s4e11 = 10800s.
+- 근거: 2026-09 상태 점검. 8일 fleet 679 CPU-h 중 CPU 예산 킬이 215 CPU-h(32%), 그 대가로
+확정 pipeline 0건. s5e4 실측에서 킬 집단(120건)의 CPU/wall 비율 median 2.86은 성공
+집단(156건)의 2.95와 사실상 같다 — 병렬성 폭주(`n_jobs=-1` 등, 관측 시 15x대)가 아니라
+같은 병렬도로 2.7배 무거운 정상 작업이다. 폭주 가드 역할은 `evaluator/contract.py`의
+`_UNBOUNDED_PARALLELISM_PARAMS` 정적 거부(#162)가 이미 담당하므로, CPU 예산은 순수하게
+"한 attempt가 얼마나 오래 돌 수 있나"의 상한으로 재해석한다.
+- [[feedback-cpu-budget-wait-not-reject]]와 정합: kill은 산출물 0인데 자원은 전부 소모한다.
+예산을 넉넉히 올려 검열을 풀고, 실측 분포로 영구값을 정한다.
+- 한계: 10800s는 관측용 임시값이다. 48h 후 s5e4/s4e11 성공 attempt의 wall p90/p99와 킬
+비율 변화, 킬 집단 CPU/wall 비율(2.9 근처 유지 = 폭주 안 풀림)을 보고 영구값을 확정한다.
+비율이 급등하면 상향이 폭주를 풀어준 것이므로 롤백. s6e8·s4e12는 킬 집단 비율이 1.8로
+양상이 달라 이번 범위 밖.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |
