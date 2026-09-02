@@ -782,6 +782,33 @@ baseline을 봤고, 그 사이 구간의 후보가 promote를 "jump"로 통과�
 
 ---
 
+## ADR-043 — deep tier를 5개에서 3개로 좁힌다 (s4e10·s4e12 동결, #274)
+
+- 결정: ADR-032의 deep tier 5개(s6e8·s4e12·s4e10·s5e4·s4e11) 중 s4e10·s4e12를 `ACTIVE=False`로
+동결한다. 유지: s6e8(binary/auc)·s5e4(regression/rmse)·s4e11(binary/accuracy). attempts 이력은
+보존한다(ADR-025·ADR-032와 동일 — 삭제 아님).
+- 근거: 2026-09 상태 점검 실측.
+
+  | 대회 | 30h attempt | 30h CPU-h | jump | max gain | 30일 확정 pipeline |
+  |---|---|---|---|---|---|
+  | s4e10 | 60 | 14.4 | 0 | +0.00041 | 0 |
+  | s4e12 | 56 | 26.8 | 0 | -0.00008 | 1 |
+  | (대조) s6e8 | 33 | 20.2 | 2 | — | 7 |
+
+  confirm 게이트는 정상이다 — 노이즈 후보를 정확히 거부하고 있다(#274). 문제는 두 대회에서
+  2개월째 실제 개선이 안 나온다는 것이고, 41 CPU-h/30h(fleet의 37%)가 순 손실이다.
+  s4e10은 확정 pipeline 대부분이 `unverifiable:eval_error`라 제출 경로도 깨져 있다.
+- 잃는 것: ADR-032가 근거로 든 "task_type/metric 4종 다양성"에서 rmsle(s4e12)가 빠진다.
+  s4e10의 auc는 s6e8이 커버한다. 새 역량이 rmsle에 특화돼 통하는지는 이제 판별할 수 없다 —
+  두 대회 모두 그 역량들(#228 원본병합·#231 stacking·#230 튜닝)을 다 받고도 0 산출이라
+  다양성 유지의 실익이 없다고 본다.
+- 동결로 잃는 제출: 없다. 두 대회의 미제출 유효 pipeline은 전부 `unverifiable:eval_error`/
+  `train_drift`(s4e10 12건, s4e12 2건)라 #254/#270 하드 제외로 이미 auto-submit 대상이 아니다.
+- ADR-032는 삭제하지 않는다(living document) — 이 ADR이 그 갱신 사실이다. deep tier가
+  3개로도 정체되면 대회 교체 또는 fleet 재확장을 재검토한다.
+
+---
+
 ## ADR-044 — CPU 예산은 병렬성 폭주 가드가 아니라 대회별 wall-clock 상한이다 (#269)
 
 - 결정: `runtime/isolate.py:DEFAULT_CPU_BUDGET_SECS`(3600)는 전역 안전망으로 두고, 실측
