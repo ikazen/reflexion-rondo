@@ -1,5 +1,23 @@
 # 변경 이력
 
+## v1.6.13 — s5e4 동결 + ADR-044 CPU 예산 상향 롤백 (#283) (2026-09-04)
+
+- v1.6.12 배포 23h 실측으로 v1.6.12의 "관측(48h)" 항목에 답한다. #274 동결은 의도대로 동작
+  (s4e10/s4e12 24h 신규 attempt 0, 큐 리필 0). #278 가드도 정상(`auto_submit_paused_reason` 0개,
+  s4e11 확정 pipeline 3건 재개).
+- #283: ADR-044의 1차 적용(s5e4·s4e11 `CPU_BUDGET_SECS = 10800`)을 철회. 컷오버 전후 23h 실측 —
+  s5e4 킬 비율 40%→38%로 안 내리고 킬 1건당 소각량만 3배(킬 총 17.0→37.0 CPU-h), s5e4 전체 CPU
+  소비 2배. 상향으로 새로 통과한 성공 attempt 8건 전부 neutral/regression, 확정 pipeline 0.
+  s5e4 median CPU가 예산을 그대로 추종(902s→3599s). s4e11의 10800s는 POST 23h 동안 한 번도 안
+  물림(킬 0, max CPU 2226s). 두 상수를 config에서 제거, 전역 `DEFAULT_CPU_BUDGET_SECS`(3600)
+  안전망으로 복귀. `getattr(comp, "CPU_BUDGET_SECS", None)` 배선은 유지(#176 경로). ADR-044 갱신.
+- #283: s5e4를 `ACTIVE=False`로 동결(deep tier 3→2, 유지 s6e8·s4e11). s5e4는 fleet CPU 32%를
+  태우면서 에러율 51%, 7일 확정 pipeline 0건 — ADR-043이 동결한 s4e10/s4e12보다 나쁘다. 동결로
+  잃는 제출 없음(유효 pipeline 8건 중 제출 가능 1건은 이미 3회 제출, 나머지 `unverifiable:*`).
+  ADR-045 — deep tier에서 regression task_type이 0개가 됨(#39 백로그에 회귀 대회 교체 온보딩 후속).
+- 신규 이슈: #284(s4e11 CV +0.010에 LB 전이 0, audit holdout 41회 재사용 번인 의심 — #258 후속),
+  #285(cv-LB 트립와이어가 누적 레벨 갭 발산을 못 잡음). 구현은 다음 Milestone.
+
 ## v1.6.12 — CPU 예산 대회별 상향 + deep tier 5→3 축소 (#269, #274) (2026-09-03)
 
 - v1.6.11 배포 후 24h 실측: #278 가드가 의도대로 동작 — s4e11 팬텀 baseline(0.9681) 소멸로 jump

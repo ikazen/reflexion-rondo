@@ -16,7 +16,7 @@ DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_I
 S3_DATA_PATH      = "s5e4/data/"
 EXTRA_TRAIN_PATHS: list[str] = ["original.csv"]  # sangampaudel530/original-podcast-dataset —
 # 컬럼 완전 일치. MinIO kaggle/s5e4/data/original.csv.
-ACTIVE            = True  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
+ACTIVE            = False  # deep tier 동결 (#283, ADR-045) — 7일 확정 pipeline 0건, CPU 예산 상향에도 킬 비율 40%->38%
 
 # 2026-08 처리량 진단(#135): 최근 7일 rc=-9(OOM SIGKILL) 140/450건(31%), 평균 775초를
 # 태우고 죽음 — 계산의 4분의 1을 이 대회와 s4e12 둘이 태웠다. 회귀라
@@ -24,9 +24,6 @@ ACTIVE            = True  # False면 daemon 큐 리필(_sweep_queue_refill) 대�
 # 적용 전 baseline(raw.pipelines.cv_score)은 전량 데이터 기준이라 이 데이터로 더 이상
 # 비교 불가 — bin/establish_baseline.py --remeasure로 재측정 필요(#135).
 MAX_TRAIN_ROWS = 500_000
-
-# 관측용 임시값 — 실측 wall 분포로 영구값 확정 예정 (#269, ADR-044).
-CPU_BUDGET_SECS = 10_800
 
 EDA_CARD = """competition: playground-series-s5e4 (Podcast Listening Time Prediction)
 task: regression  metric: RMSE  target: Listening_Time_minutes
