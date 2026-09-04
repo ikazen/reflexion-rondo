@@ -290,6 +290,44 @@ uv run python -m bin.rebuild_best_pipeline --competition <competition-id>       
 유효행만 시간순 재생해 blob을 다시 만든다. 이후 다음 cycle에서 가드가 통과하며
 `auto_submit_paused_reason`은 사람이 NULL로 되돌린다(자동 해제 없음).
 
+### 4-7. EXTRA_TRAIN_PATHS twin 중복 오염 격리 (#228/#287)
+
+Kaggle Playground 합성 대회는 원본(original.csv) 실데이터를 train.csv에 이미 일부/전부
+포함시켜놓는 경우가 있다 — `EXTRA_TRAIN_PATHS`로 그걸 또 병합하면 같은 행이 학습 fold와
+validation 양쪽에 들어가 CV가 암기로 부풀려진다(s4e11 실사고: Student 서브셋 27,901행이
+original.csv와 99.72% twin, cv_score가 이 대회 세계 1위 LB를 넘는 0.968대까지 부풀려짐).
+`store/train_data.py`의 twin dedup 가드(#287)가 재발은 막지만, 이미 오염된 기간의
+확정 pipeline/reflection은 소급 정리해야 한다 — 이건 `bin.quarantine_leaks`의 실측
+검사(§4-1)로는 못 잡는다(재실행하면 이미 고쳐진 코드라 깨끗하게 나온다), 시점 기준으로
+격리해야 한다:
+
+```bash
+# 1. 오염 시작 시점(EXTRA_TRAIN_PATHS를 붙인 배포 시각) 기준 격리 — dry-run 먼저
+uv run python -m bin.quarantine_leaks --twin-extra-train <competition-id> --since <ISO-date> --dry-run
+uv run python -m bin.quarantine_leaks --twin-extra-train <competition-id> --since <ISO-date>
+
+# 2. 격리 후 남은 pre-오염 확정 pipeline을 새 load_train(twin 제거됨) 기준으로 재측정
+uv run python -m bin.establish_baseline --competition <competition-id> --remeasure
+
+# 3. MinIO best_pipeline.py 재구성 (§4-6과 동일 이유)
+uv run python -m bin.rebuild_best_pipeline --competition <competition-id>
+
+# 4. auto_submit_paused_reason이 (contamination 부작용으로) cv_lb_divergence 등으로
+#    이미 채워져 있었다면 원인 확인 후 수동 NULL — remeasure의 자동 해제는
+#    "train_fingerprint 불일치" 사유만 인식한다(§4-3 참조).
+```
+
+**로컬(WSL 등 미검증 환경) 재측정 시 메모리 함정**: `runtime/isolate.py`의
+`RLIMIT_AS`(VSZ, 기본 6GB)는 프로덕션 컨테이너의 `OMP_NUM_THREADS=2` 등(`deploy/Dockerfile*`)
+전제로 잡힌 값이다. 로컬 쉘은 이 스레드 제한이 없어 BLAS/OpenMP가 코어 수만큼 스레드를
+띄우면서 실제 물리 메모리는 남아도 스레드 arena 오버헤드만으로 VSZ 6GB를 넘겨 매번
+"Out of memory attempting to allocate exception"으로 실패한다(§4-2가 말하는 RLIMIT_AS
+실패와 같은 계열이지만 원인은 스레드 수, 데이터 크기 아님). `OMP_NUM_THREADS=2
+OPENBLAS_NUM_THREADS=2 MKL_NUM_THREADS=2`로 프로덕션과 동일하게 맞추거나, 안 되면
+`EVAL_MEM_LIMIT_BYTES`를 이 1회성 관리 작업 동안만 임시로 올려서(예:
+`10*1024**3`) 실행할 것 — 두 조치 모두 로컬 프로세스에만 적용되고 배포된 daemon
+설정에는 영향 없다.
+
 ### 4-3. auto-submit 일시중단 복구
 
 cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_paused_reason`이 채워지고 해당 대회의 자동 제출이 멈춘다(decisions.md ADR-026). 발동 조건은
