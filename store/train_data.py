@@ -49,6 +49,27 @@ def _target_present(df: pl.DataFrame, target: str) -> pl.Expr:
     return expr
 
 
+_TWIN_ABORT_FRAC = 0.5  # EXTRA_TRAIN_PATHS 소스가 base와 이 비율 넘게 중복이면 설정
+# 실수로 보고 즉시 실패시킨다 — s4e11(#228)에서 Kaggle이 이미 train.csv에 원본 27,901행을
+# 통째로 포함시켜놨는데도 EXTRA_TRAIN_PATHS로 다시 병합해 twin 99.72%가 조용히 CV를
+# 오염시킨 사고(evaluator/harness.py의 validation twin이 학습 fold에 정답 사본으로 존재,
+# cv_score가 세계 1위 LB를 넘어서야 발견됨)의 재발 방지.
+
+
+def _dedup_key_expr(cols: list[str]) -> pl.Expr:
+    """cols 전체(타깃 포함)를 값 기준으로 정규화한 문자열 키. 숫자는 dtype 무관(문자열로
+    읽힌 "24"와 float 24.0)하게 Float64 경유로 통일하고, 그 외는 공백 trim한 문자열로
+    비교한다 — base/extra가 서로 다른 소스라 dtype이나 포맷팅이 어긋날 수 있어서다."""
+    parts = [
+        pl.when(pl.col(c).cast(pl.Float64, strict=False).is_not_null())
+        .then(pl.col(c).cast(pl.Float64, strict=False).cast(pl.Utf8))
+        .otherwise(pl.col(c).cast(pl.Utf8).str.strip_chars())
+        .fill_null("\x00NULL\x00")
+        for c in cols
+    ]
+    return pl.concat_str(parts, separator="|")
+
+
 def load_train(comp: object) -> pl.DataFrame:
     """comp(config.competitions.<slug> 모듈)의 train.csv를 로드하고 DROP_COLS를 적용한다.
 
@@ -61,7 +82,10 @@ def load_train(comp: object) -> pl.DataFrame:
     (`is_original` 플래그로 구분). target 컬럼명 매핑은 지원하지 않으므로 원본에
     comp.TARGET이 없으면 예외로 실패하고, 있어도 값이 비어 있는 행은 버린다 —
     타깃 결측 행은 그대로 두면 harness의 model.fit에서 "Input y contains NaN"으로
-    크래시한다(#245, s5e4 original.csv 52500행 중 5395행).
+    크래시한다(#245, s5e4 original.csv 52500행 중 5395행). 원본 소스가 base(train.csv)와
+    common_cols 전체 기준 완전 일치하는 twin 행은 base 쪽만 남기고 버린다(#228 s4e11
+    사고 — Kaggle이 이미 train.csv에 원본을 포함시켜놔 재병합이 CV를 암기로 오염시킴).
+    twin 비율이 소스의 50% 넘으면 설정 실수로 보고 예외로 실패한다.
 
     comp.MAX_TRAIN_ROWS(opt-in, 기본 없음)가 설정돼 있고 로드된 행 수가 그보다 크면
     고정 seed로 축소한다. 분류(IS_CLASSIFICATION=True)면 클래스 비율을 보존하는
@@ -83,13 +107,42 @@ def load_train(comp: object) -> pl.DataFrame:
                     f"(columns: {sorted(extra.columns)})"
                 )
             extra = extra.select(common_cols)
-            before = extra.height
+            loaded = extra.height
             extra = extra.filter(_target_present(extra, comp.TARGET))
-            if extra.height < before:
+            if extra.height < loaded:
                 _LOG.warning(
                     "load_train: %s dropped %d/%d rows with missing target %r",
-                    path, before - extra.height, before, comp.TARGET,
+                    path, loaded - extra.height, loaded, comp.TARGET,
                 )
+
+            # Kaggle 합성 대회는 원본 실데이터를 train.csv에 이미 일부/전부 포함시켜
+            # 놓는 경우가 있다(twin 행) — EXTRA_TRAIN_PATHS로 그걸 또 병합하면 같은 행이
+            # 학습 fold와 validation 양쪽에 들어가 CV가 암기로 부풀려진다(#228 s4e11 사고).
+            # base(원 train)와 common_cols 전체(타깃 포함) 기준 완전 일치 행은 버린다.
+            key_col = "_twin_dedup_key"
+            base_keys = train.select(common_cols).with_columns(
+                _dedup_key_expr(common_cols).alias(key_col)
+            ).select(key_col)
+            before_dedup = extra.height
+            extra = (
+                extra.with_columns(_dedup_key_expr(common_cols).alias(key_col))
+                .join(base_keys, on=key_col, how="anti")
+                .drop(key_col)
+            )
+            removed = before_dedup - extra.height
+            if removed:
+                twin_frac = removed / loaded
+                _LOG.warning(
+                    "load_train: %s dedup twin 행 %d/%d(%.1f%%) base와 중복 제거",
+                    path, removed, loaded, 100 * twin_frac,
+                )
+                if twin_frac > _TWIN_ABORT_FRAC:
+                    raise ValueError(
+                        f"EXTRA_TRAIN_PATHS {path!r}: base와 {twin_frac:.1%} 중복(twin) — "
+                        f"Kaggle이 이미 원본을 train.csv에 포함시켜놨을 가능성이 높다. "
+                        f"이 대회는 EXTRA_TRAIN_PATHS를 빈 리스트로 되돌려야 할 수 있다."
+                    )
+
             extra = extra.with_columns(pl.lit(True).alias("is_original"))
             frames.append(extra)
         train = pl.concat(frames, how="diagonal_relaxed")
