@@ -9,8 +9,10 @@ invalid_reason 문자열 반환)이 실제 대회 설정(s5e10, 로컬 CSV)으�
 from __future__ import annotations
 
 import importlib
+from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
-from bin.quarantine_leaks import _competition_id_to_slug, _scan_pipeline
+from bin.quarantine_leaks import _competition_id_to_slug, _scan_pipeline, quarantine_twin_extra_train
 
 _S5E10 = importlib.import_module("config.competitions.s5e10")
 
@@ -96,3 +98,49 @@ def test_scan_pipeline_data_load_failure_returns_none_not_quarantine_reason():
 def test_scan_pipeline_missing_patch_class_returns_none():
     """Patch 클래스가 없는 코드는 판정 대상이 아니므로 None(스킵)을 반환한다."""
     assert _scan_pipeline(_S5E10, "x = 1\n") is None
+
+
+# --- quarantine_twin_extra_train (#228/#287 twin 오염 격리) ---
+
+def test_quarantine_twin_extra_train_marks_pipelines_and_archives_reflections():
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.side_effect = [
+        [("pl1",), ("pl2",)],  # pipeline_rows
+        [("rf1",)],            # reflection_rows
+    ]
+    since = datetime(2026, 8, 24, tzinfo=timezone.utc)
+
+    n_pipelines, n_reflections = quarantine_twin_extra_train(
+        conn, "playground-series-s4e11", since, dry_run=False
+    )
+
+    assert (n_pipelines, n_reflections) == (2, 1)
+    update_calls = [c for c in conn.execute.call_args_list if "UPDATE" in c.args[0]]
+    assert any("raw.pipelines" in c.args[0] and c.args[1][1] == ["pl1", "pl2"] for c in update_calls)
+    assert any("raw.reflections" in c.args[0] and c.args[1][0] == ["rf1"] for c in update_calls)
+
+
+def test_quarantine_twin_extra_train_dry_run_issues_no_updates():
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.side_effect = [[("pl1",)], []]
+    since = datetime(2026, 8, 24, tzinfo=timezone.utc)
+
+    n_pipelines, n_reflections = quarantine_twin_extra_train(
+        conn, "playground-series-s4e11", since, dry_run=True
+    )
+
+    assert (n_pipelines, n_reflections) == (1, 0)
+    assert not any("UPDATE" in c.args[0] for c in conn.execute.call_args_list)
+
+
+def test_quarantine_twin_extra_train_noop_when_nothing_in_window():
+    conn = MagicMock()
+    conn.execute.return_value.fetchall.side_effect = [[], []]
+    since = datetime(2026, 8, 24, tzinfo=timezone.utc)
+
+    n_pipelines, n_reflections = quarantine_twin_extra_train(
+        conn, "playground-series-s4e11", since, dry_run=False
+    )
+
+    assert (n_pipelines, n_reflections) == (0, 0)
+    assert not any("UPDATE" in c.args[0] for c in conn.execute.call_args_list)
