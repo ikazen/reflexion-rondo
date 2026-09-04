@@ -159,6 +159,60 @@ def test_extra_paths_missing_target_column_raises():
             load_train(comp)
 
 
+def test_extra_paths_dedups_twin_rows_matching_base():
+    """base(train.csv)와 common_cols 전체(타깃 포함) 기준 완전 일치하는 원본 행은
+    twin으로 보고 버린다(#228 s4e11 사고 — Kaggle이 이미 원본을 train.csv에 포함시켜놔
+    재병합이 CV 암기 오염을 일으킴)."""
+    comp = _fake_comp(DROP_COLS=[], EXTRA_TRAIN_PATHS=["original.csv"], TARGET="y")
+    base_df = pl.DataFrame({"x": [1, 2, 3], "y": [0, 1, 0]})
+    # 원본 5행 중 (1, 0)/(2, 1)만 base에 이미 있는 twin(40%, 임계 50% 미만) —
+    # 나머지 3행(97/98/99)이 진짜 새 정보.
+    extra_df = pl.DataFrame({"x": [1, 2, 97, 98, 99], "y": [0, 1, 1, 0, 1]})
+
+    def fake_read_csv(path):
+        return extra_df if "original.csv" in str(path) else base_df
+
+    with patch("store.train_data.pl.read_csv", side_effect=fake_read_csv):
+        result = load_train(comp)
+
+    assert result.height == 6  # base 3행 + 진짜 신규 3행
+    orig_rows = result.filter(pl.col("is_original"))
+    assert sorted(orig_rows["x"].to_list()) == [97, 98, 99]
+
+
+def test_extra_paths_dedups_twin_rows_regardless_of_numeric_formatting():
+    """base가 정수형("1")으로, extra가 부동소수점("1.0")으로 같은 값을 실어도 같은
+    행으로 인식해 중복 제거한다 — 소스가 다르면 dtype/포맷이 어긋날 수 있어서다."""
+    comp = _fake_comp(DROP_COLS=[], EXTRA_TRAIN_PATHS=["original.csv"], TARGET="y")
+    base_df = pl.DataFrame({"x": [1, 2]}, schema={"x": pl.Int64}).with_columns(y=pl.Series([0, 1]))
+    extra_df = pl.DataFrame({"x": [1.0, 3.0], "y": [0.0, 1.0]})
+
+    def fake_read_csv(path):
+        return extra_df if "original.csv" in str(path) else base_df
+
+    with patch("store.train_data.pl.read_csv", side_effect=fake_read_csv):
+        result = load_train(comp)
+
+    assert result.height == 3  # base 2행 + extra의 진짜 신규 1행(x=3.0)만
+    orig_rows = result.filter(pl.col("is_original"))
+    assert orig_rows.height == 1
+
+
+def test_extra_paths_twin_over_threshold_raises():
+    """소스의 50% 넘게 base와 중복이면 EXTRA_TRAIN_PATHS 설정 실수(원본이 이미
+    train.csv에 포함된 경우, #228)로 보고 조용히 넘기지 않고 실패시킨다."""
+    comp = _fake_comp(DROP_COLS=[], EXTRA_TRAIN_PATHS=["original.csv"], TARGET="y")
+    base_df = pl.DataFrame({"x": [1, 2, 3, 4], "y": [0, 1, 0, 1]})
+    extra_df = pl.DataFrame({"x": [1, 2, 3, 99], "y": [0, 1, 0, 1]})  # 3/4 twin
+
+    def fake_read_csv(path):
+        return extra_df if "original.csv" in str(path) else base_df
+
+    with patch("store.train_data.pl.read_csv", side_effect=fake_read_csv):
+        with pytest.raises(ValueError, match="중복.*twin"):
+            load_train(comp)
+
+
 def test_extra_paths_all_targets_present_keeps_every_row():
     """결측이 없으면 한 행도 버리지 않는다 — 기존 대회 동작 불변."""
     comp = _fake_comp(DROP_COLS=[], EXTRA_TRAIN_PATHS=["original.csv"], TARGET="y")
@@ -239,7 +293,10 @@ def test_max_train_rows_applies_after_extra_paths_merge():
         MAX_TRAIN_ROWS=200, IS_CLASSIFICATION=True, TARGET="y",
     )
     base_df = _big_binary_df(600, minority_frac=0.2)
-    extra_df = _big_binary_df(600, minority_frac=0.2)
+    # x를 1000 오프셋으로 base와 겹치지 않게 — 안 그러면 twin dedup 가드가
+    # (x, y) 완전 일치를 진짜 원본 중복으로 보고 걸러내(또는 임계 초과로 실패)
+    # 이 테스트의 관심사(MAX_TRAIN_ROWS)와 무관하게 실패한다.
+    extra_df = _big_binary_df(600, minority_frac=0.2).with_columns(x=pl.col("x") + 1000)
 
     def fake_read_csv(path):
         return extra_df if "original.csv" in str(path) else base_df

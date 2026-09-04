@@ -14,9 +14,13 @@ IS_CLASSIFICATION = True
 DROP_COLS         = ["id", "Name"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s4e11/data/"
-EXTRA_TRAIN_PATHS: list[str] = ["original.csv"]  # hopesb/student-depression-dataset —
-# 17/19 컬럼 일치(Name/Working Professional or Student 없음, 학생 전용 서브셋이라
-# store/train_data.py의 컬럼 교집합+null 채움으로 자동 처리). MinIO kaggle/s4e11/data/original.csv.
+EXTRA_TRAIN_PATHS: list[str] = []  # hopesb/student-depression-dataset(MinIO
+# kaggle/s4e11/data/original.csv)을 #228로 붙였다가 #287로 되돌림 — Kaggle이 이 대회
+# train.csv의 Student 서브셋(27,901행)에 원본을 이미 통째로 포함시켜놔서 병합이 twin
+# 중복(정규화 14컬럼 기준 99.72% 완전 일치)이 됐다. validation twin이 학습 fold에
+# 정답 사본으로 들어가 cv_score가 이 대회 세계 1위 LB(0.94488)를 넘는 0.968대까지
+# 부풀려짐(실측). store/train_data.py의 twin dedup 가드가 재발은 막지만, 이 대회는
+# 애초에 병합할 새 정보가 없으므로(원본이 이미 train.csv 안에 있음) 빈 리스트가 맞다.
 ACTIVE            = True  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
 
 EDA_CARD = """competition: playground-series-s4e11 (Exploring Mental Health — Depression)
