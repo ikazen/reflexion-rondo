@@ -1,5 +1,45 @@
 # 변경 이력
 
+## v1.6.14 — 평가 신뢰성 복구: s4e11 twin 오염 제거 + 리더보드 상한 가드 + 북극성 지표 교체 (Milestone #16) (2026-09-05)
+
+7일 회고(1,323 attempt / 592 CPU-h / 신규 최고 LB 0건)에서 시작한 적대적 재검토.
+Milestone #16(#287~#291) 전체 반영.
+
+- #287: s4e11 confirmed cv_score(0.96789)가 이 대회 세계 1위 LB(0.94488)를 넘는
+  걸 실측으로 확정 — `EXTRA_TRAIN_PATHS=["original.csv"]`(#228, 08-24)가 train.csv에
+  이미 포함돼 있던 Student 서브셋(27,901행, original.csv와 99.72% twin)을 중복
+  병합해 validation twin이 학습 fold에 정답 사본으로 들어간 게 원인. `EXTRA_TRAIN_PATHS`를
+  빈 리스트로 되돌리고, `store/train_data.py:load_train`에 twin 중복 제거(정규화 키
+  anti-join, 50% 초과 시 실패) 가드 추가. 오염 기간(08-24~) 확정 pipeline 3건 격리,
+  reflection 391건 archive, pre-오염 pipeline 2건을 새 데이터로 재측정(cv
+  0.9418~0.9419 → 0.9396~0.9398, 세계 1위 미만으로 복귀) — 프로덕션 DB 즉시 반영
+  완료. ADR-040 갱신(train_fingerprint 가드는 일관성만 보장, 데이터 오염 자체는
+  못 잡음).
+- #288: `cycle/promotion.py:leaderboard_ceiling_violation` 신규 — cv_score가
+  리더보드 세계 1위를 넘으면 attempt-time(`run_attempt_core`) + confirm 게이트
+  양쪽에서 즉시 격리. #285(연속 delta 트립와이어, 11일 지연)보다 훨씬 빠른 방어선.
+  ADR-046. #284는 원인 오판(holdout 재사용 번인)이었음을 정정 후 close.
+- #289: 북극성 지표를 `lb_percentile`(rank-count 백분위)에서 `gap_to_p90`(p90까지
+  원점수 거리)으로 교체 — 저효과 진입이 두터운 대회(s5e4: p99=91.6, max=2.2e48)에서
+  백분위가 실력을 과대평가하는 문제 수정. 신규 뷰 `lb_gap_to_p90`, `/api/lb-northstar`
+  필드 추가, 대시보드 표시 컬럼 교체.
+- #290: `SUBMISSIONS_PER_DAY` 2→5(Kaggle 실제 한도) — 최근 7일 실사용이 예산의
+  7%뿐이었다. `_best_attempt`에 이미 complete 제출된 attempt_id 재제출 방지(s6e8
+  `75111ac2` 08-23/08-28 재제출 실측 재발 방지).
+- #291: `competition_snr` 뷰 신규(p90-p50 원점수 격차 / 실측 fold SE) — 온보딩·동결
+  판단 보조 축. 실측: s4e11 4.17(fleet 최다 활동인데 최저 SNR), s6e8 21.93, s4e10
+  28.66, s4e12 36.29, s5e4 100.79. ADR-047.
+
+배포: Airflow `reflexion_rondo_deploy` manual__2026-09-05T00:21:17, 4 task success
+(1차 통과), `rondo_task_image_version=v1.6.14`. 트리거 스크립트
+`scratchpad/trigger_deploy_v1614.py`. daemon 컷오버 `bash deploy/release.sh v1.6.14`
+— post-restart heartbeat exit 22(기존 타이밍 레이스, 수동 curl로 정상 200 확인,
+매 배포 반복 관측되는 알려진 패턴). compose bump `0ca13be`. health 5/5,
+`SUBMISSIONS_PER_DAY=5`/`s4e11.EXTRA_TRAIN_PATHS=[]` 컨테이너 내부에서 직접 확인.
+
+관측(다음 세션): s4e11 신규 제출 cv-LB gap 축소 여부, `gap_to_p90` 추이,
+일일 제출 건수 증가 여부 — 셋 중 하나도 개선 없으면 접근법 재검토.
+
 ## v1.6.13 — s5e4 동결 + ADR-044 CPU 예산 상향 롤백 (#283) (2026-09-04)
 
 - v1.6.12 배포 23h 실측으로 v1.6.12의 "관측(48h)" 항목에 답한다. #274 동결은 의도대로 동작
