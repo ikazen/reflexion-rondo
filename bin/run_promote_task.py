@@ -203,6 +203,7 @@ def main() -> None:
                     candidate_cv=winner_row[2],
                     candidate_fold_scores=winner_fold_scores,
                     cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
+                    conn=conn,
                 )
                 if confirm.holdout_score is not None:
                     conn.execute(

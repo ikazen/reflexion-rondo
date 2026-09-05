@@ -53,6 +53,7 @@ def _run(eval_side_effect, generate_code_mock=None, cpu_budget_secs=None):
         patch("cycle.run.generate_code", generate_code_mock),
         patch("cycle.run.validate_patch", return_value=[]),
         patch("cycle.run.eval_isolated", side_effect=eval_side_effect) as mock_eval,
+        patch("cycle.run.leaderboard_ceiling_violation", return_value=None),
         patch("cycle.run.is_significant_gain", return_value=False),
         patch("cycle.run._dynamic_eda_context", return_value=""),
         patch("cycle.run._load_best_pipeline", return_value="prev code"),
