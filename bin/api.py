@@ -2025,8 +2025,10 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
 
     @app.get("/api/lb-northstar")
     def lb_northstar():
-        """ACTIVE 대회별 LB 북극성 지표 — 최신 백분위, 마지막 LB 갱신 이후 경과일,
-        오늘 쓴 제출 예산, 미제출 confirmed 백로그."""
+        """ACTIVE 대회별 LB 북극성 지표 — p90(상위 10% 컷오프)까지의 원점수 거리
+        (gap_to_p90, #289), 마지막 LB 갱신 이후 경과일, 오늘 쓴 제출 예산, 미제출
+        confirmed 백로그. lb_percentile은 저효과 진입이 두터운 대회에서 과대평가되는
+        문제(#289)가 있어 대표 지표에서 내려가고 진단용으로만 남는다."""
         out = []
         for competition_id in sorted(_active_competition_ids()):
             row = conn.execute(
@@ -2046,6 +2048,10 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
                 """,
                 [competition_id],
             ).fetchone()
+            gap = conn.execute(
+                "select p90_score, best_lb_score, gap_to_p90 from lb_gap_to_p90 where competition_id = %s",
+                [competition_id],
+            ).fetchone()
             used = _submissions_today(conn, competition_id)
             backlog = conn.execute(
                 """
@@ -2062,6 +2068,9 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
             ).fetchone()
             out.append({
                 "competition_id": competition_id,
+                "p90_score": gap[0] if gap else None,
+                "best_lb_score": gap[1] if gap else None,
+                "gap_to_p90": gap[2] if gap else None,
                 "last_lb_score": row[0] if row else None,
                 "last_lb_percentile": row[1] if row else None,
                 "last_lb_at": row[2] if row else None,

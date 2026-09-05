@@ -523,8 +523,9 @@ CREATE TABLE IF NOT EXISTS raw.leaderboard_snapshot (
 -- 실제 LB를 쓴다. metric_sign을 곱해 "양수 = CV가 LB보다 낙관적"으로 방향을 통일했다.
 -- 원점수 차이라 대회 간 비교는 무의미하고, 한 대회 안에서 갭이 벌어지는지를 본다 —
 -- 갭이 시간에 따라 커지면 CV가 우리 폴드에 과적합되고 있다는 뜻이다.
--- lb_percentile은 대회 리더보드 분포 기준 백분위(높을수록 좋음, 스냅샷 없으면 null)로
--- 이쪽은 대회 간 비교가 가능한 유일한 지표다(#233, ADR-038).
+-- lb_percentile은 대회 리더보드 분포 기준 백분위(높을수록 좋음, 스냅샷 없으면 null,
+-- #233/ADR-038) — 진단용으로 유지하되, 저효과 진입이 두터운 대회에서 과대평가되는
+-- 문제(#289)가 있어 북극성 지표는 lb_gap_to_p90(아래)로 교체했다.
 CREATE OR REPLACE VIEW cv_lb_gap_trend AS
 SELECT
     s.submission_id,
@@ -579,6 +580,47 @@ SELECT
         AND metric_sign * (cv_score - prev_cv) > 0
         AND metric_sign * (lb_score - prev_lb) < -0.001 * abs(prev_lb)) AS diverged
 FROM ordered;
+
+-- 북극성 지표(#233 lb_percentile 대체, #289) — 백분위는 rank-count라 스케일에는
+-- 강건하지만, Kaggle Playground 리더보드가 저효과(sample_submission 그대로 제출 등)
+-- 진입으로 두터운 게 보통이라 "몇 %를 이겼는가"가 "강한 경쟁자 대비 얼마나 가까운가"를
+-- 과대평가한다(#289 s5e4 실측: 백분위 77.99%인데 실제 경쟁 밴드 11.5~11.87 대비 우리
+-- 12.6은 명백히 못 미침). p90(상위 10% 컷오프, 저효과 진입이 낀 하위 90%를 배제한 강한
+-- 경쟁자 기준선)까지의 원점수 거리로 교체 — 대회 간 절대값 비교는 여전히 무의미하고
+-- (metric 스케일이 다름), 한 대회 안에서 시간에 따라 좁혀지는지만 본다. 양수 = p90에
+-- 아직 못 미침, 0 이하 = 이미 도달·초과.
+CREATE OR REPLACE VIEW lb_gap_to_p90 AS
+WITH p90 AS (
+    SELECT
+        l.competition_id,
+        c.metric_sign,
+        c.metric_sign * percentile_cont(0.9) WITHIN GROUP (
+            ORDER BY c.metric_sign * s.score
+        ) AS p90_score
+    FROM raw.leaderboard_snapshot l
+    JOIN raw.competitions c USING (competition_id)
+    CROSS JOIN LATERAL (
+        SELECT (elem)::numeric AS score
+        FROM jsonb_array_elements_text(l.scores) AS elem
+    ) AS s
+    GROUP BY l.competition_id, c.metric_sign
+),
+best AS (
+    SELECT
+        k.competition_id,
+        max(k.lb_score * c.metric_sign) * c.metric_sign AS best_lb_score
+    FROM raw.kaggle_submissions k
+    JOIN raw.competitions c USING (competition_id)
+    WHERE k.status = 'complete' AND k.lb_score IS NOT NULL
+    GROUP BY k.competition_id, c.metric_sign
+)
+SELECT
+    p90.competition_id,
+    p90.p90_score,
+    best.best_lb_score,
+    p90.metric_sign * (p90.p90_score - best.best_lb_score) AS gap_to_p90
+FROM p90
+JOIN best USING (competition_id);
 
 -- bin/blend.py(파이프라인 밖 Ridge blend, 몇 달째 제출에 미소비 확인)가 #231로 폐기되며
 -- 함께 삭제 — 선언형 ensemble_spec method="stack"(evaluator/harness.py, ADR-036)이

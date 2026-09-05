@@ -87,7 +87,8 @@ except Exception as exc:
 st.subheader("Fleet Overview")
 st.caption(
     "전 대회 한눈에 — 어디부터 볼지 여기서 고른다. attention: 🔴 즉시 확인 / 🟡 관찰 필요 / 🟢 정상. "
-    "lb_percentile은 대회 리더보드 분포 기준 백분위(높을수록 좋음) — 대회 간 비교가 가능한 유일한 지표다."
+    "gap_to_p90은 리더보드 상위 10% 컷오프까지 남은 원점수 거리(0 이하 = 도달) — "
+    "lb_percentile(rank-count 백분위)은 저효과 진입이 두터운 대회에서 과대평가돼(#289) 내려감."
 )
 
 # raw.cycle_queue.competition은 슬러그(s4e7), 나머지 테이블은 풀 competition_id
@@ -145,6 +146,11 @@ lb_status = _query_df(
     """,
     ["competition_id", "lb_percentile", "days_since_lb"],
 )
+lb_gap = _query_df(
+    conn,
+    "select competition_id, gap_to_p90 from lb_gap_to_p90",
+    ["competition_id", "gap_to_p90"],
+)
 
 # 조인 소스가 비어 있으면(예: 지금은 paused=[]) _rows_df가 컬럼 dtype을 Null로 만들어
 # join key 타입이 안 맞아 죽는다 — join key만 명시 캐스팅해 방어.
@@ -153,6 +159,7 @@ pipeline_counts = pipeline_counts.with_columns(pl.col("competition_id").cast(pl.
 recent_activity = recent_activity.with_columns(pl.col("competition_id").cast(pl.Utf8))
 paused = paused.with_columns(pl.col("competition_id").cast(pl.Utf8))
 lb_status = lb_status.with_columns(pl.col("competition_id").cast(pl.Utf8))
+lb_gap = lb_gap.with_columns(pl.col("competition_id").cast(pl.Utf8))
 
 fleet = (
     all_comps
@@ -162,6 +169,7 @@ fleet = (
     .join(recent_activity, on="competition_id", how="left")
     .join(paused, on="competition_id", how="left")
     .join(lb_status, on="competition_id", how="left")
+    .join(lb_gap, on="competition_id", how="left")
     .drop("_slug")
 )
 
@@ -178,7 +186,7 @@ st.dataframe(
     fleet.select([
         "attention", "competition_id", "name", "is_active", "queue_status", "cycles_done",
         "n_cycles", "confirmed", "quarantined", "attempts_14d", "jumps_14d", "errors_14d",
-        "oom_14d", "lb_percentile", "days_since_lb", "auto_submit_paused_reason", "last_attempt",
+        "oom_14d", "gap_to_p90", "days_since_lb", "auto_submit_paused_reason", "last_attempt",
     ]),
     use_container_width=True,
     height=min(35 * (len(fleet) + 1), 500),
