@@ -292,6 +292,11 @@ uv run python -m bin.rebuild_best_pipeline --competition <competition-id>       
 
 ### 4-7. EXTRA_TRAIN_PATHS twin 중복 오염 격리 (#228/#287)
 
+이 계열 오염(cv_score가 비현실적으로 부풀려짐)은 이제 `cycle/promotion.py:
+leaderboard_ceiling_violation`(#288, ADR-046)이 attempt 시점·confirm 게이트 양쪽에서
+자동 격리한다 — cv_score가 `raw.leaderboard_snapshot` 세계 1위를 넘으면 즉시 거부.
+아래 소급 정리 절차는 이 가드가 배포되기 전 이미 쌓인 오염 이력을 치울 때만 필요하다.
+
 Kaggle Playground 합성 대회는 원본(original.csv) 실데이터를 train.csv에 이미 일부/전부
 포함시켜놓는 경우가 있다 — `EXTRA_TRAIN_PATHS`로 그걸 또 병합하면 같은 행이 학습 fold와
 validation 양쪽에 들어가 CV가 암기로 부풀려진다(s4e11 실사고: Student 서브셋 27,901행이

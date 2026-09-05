@@ -47,6 +47,7 @@ def _run(**kwargs):
         patch("cycle.run.generate_code", return_value="source"),
         patch("cycle.run.validate_patch", return_value=[]),
         patch("cycle.run.eval_isolated", return_value=_iso()),
+        patch("cycle.run.leaderboard_ceiling_violation", return_value=None),
         patch("cycle.run.is_significant_gain", return_value=False),
         patch("cycle.run._dynamic_eda_context", return_value=""),
         patch("cycle.run._load_best_pipeline", return_value="prev code"),

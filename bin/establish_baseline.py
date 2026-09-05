@@ -299,6 +299,7 @@ def establish_for_competition(conn, comp: object, top_k: int, dry_run: bool) -> 
             candidate_cv=cv_score,
             candidate_fold_scores=fold_scores,
             cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
+            conn=conn,
         )
         reason = (
             "confirmed" if confirm.confirmed

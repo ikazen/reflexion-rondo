@@ -878,6 +878,35 @@ baseline을 봤고, 그 사이 구간의 후보가 promote를 "jump"로 통과�
 
 ---
 
+## ADR-046 — cv_score가 리더보드 세계 1위를 넘으면 즉시 격리한다 (#288)
+
+- 결정: `cycle/promotion.py:leaderboard_ceiling_violation(conn, competition_id, cv_score)`를
+  두 지점에서 쓴다. (1) `cycle/run.py:run_attempt_core`가 attempt 평가 직후 —
+  cv_score가 `raw.leaderboard_snapshot`의 세계 1위를 metric_sign 방향으로 넘으면
+  `error_trace`를 채워 `label='error'`로 즉시 격리(정상 에러 경로와 동일하게
+  `error_signature`도 자동 기록됨). (2) `cycle/promotion.py:confirm_and_measure` —
+  conn이 주어지고 candidate_cv가 세계 1위를 넘으면 cross-seed eval 자체를 스킵하고
+  즉시 거부, cache가 있으면 memo에 남겨 재확인을 반복하지 않는다. 스냅샷이 없는
+  대회는 판정 불가로 통과(미탐지가 오탐보다 안전).
+- 근거: #287(s4e11 twin 중복) 실사고 — cv_score가 0.968대까지 부풀려졌는데(세계
+  1위 0.94488) 12일간 아무 가드도 안 잡았다. `#285`의 cv-LB 발산 트립와이어는
+  연속 delta 기반이라 실제 LB가 나와야(발생까지 11일) 발화했다 — 이 가드는
+  `raw.leaderboard_snapshot`이 이미 갖고 있는 세계 1위 값과 그냥 비교만 하면 되므로
+  제출 없이, attempt 시점에 즉시 잡는다.
+- 두 지점이 필요한 이유: (1)은 신규 attempt를 막지만 `bin/establish_baseline.py`
+  (콜드스타트/소급 확립)나 `bin/run_promote_task.py`(과거 raw.attempts 후보 재확인)처럼
+  이미 DB에 있는 과거 attempt를 candidate로 재검토하는 경로는 통과하지 않는다 —
+  (2)가 그 경로의 방어선이다.
+- `confirm_and_measure`에 `conn`을 `cache`와 독립된 선택 인자로 추가했다(기존
+  `cache.conn`을 재사용하지 않음) — `cache`는 4개 메서드(get/put memo·baseline)만
+  구현하면 되는 duck-type 계약(`tests/test_promotion_gate.py::_FakeCache`)이라
+  `.conn` 속성을 요구하면 그 계약이 깨진다.
+- 한계: 리더보드 스냅샷이 옛날 값이면(경쟁 심화로 세계 1위가 계속 오르는 대회)
+  판정이 보수적으로 느슨해질 수 있다 — 스냅샷 갱신(`POST /api/leaderboard/refresh`)
+  주기에 의존한다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |

@@ -108,6 +108,35 @@ def _rounded_signature(cv: float, fold_scores: list[float] | None) -> tuple:
     return (round(cv, 9), tuple(round(f, 9) for f in (fold_scores or [])))
 
 
+def leaderboard_ceiling_violation(conn, competition_id: str, cv_score: float) -> str | None:
+    """cv_score가 이 대회 리더보드 스냅샷(raw.leaderboard_snapshot)의 세계 1위 점수를
+    metric_sign 방향으로 넘으면 사유 문자열, 아니면 None(스냅샷 없음 포함 — 판정 불가).
+
+    CV가 test 정확도의 불편추정치라면 세계 1위를 넘는 건 산술적으로 불가능하다 —
+    데이터 오염(#228 twin 중복 실사고: cv가 0.968까지 부풀려짐, 세계 1위는 0.94488)의
+    cv-LB 발산 트립와이어(연속 delta 기반, 11일 지연)보다 훨씬 싸고 즉각적인 신호다(#288).
+    """
+    row = conn.execute(
+        """
+        select l.scores, c.metric_sign
+        from raw.leaderboard_snapshot l
+        join raw.competitions c using (competition_id)
+        where l.competition_id = %s
+        """,
+        [competition_id],
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    scores = row[0] if isinstance(row[0], list) else json.loads(row[0])
+    if not scores:
+        return None
+    metric_sign = row[1]
+    world_best = max(scores) if metric_sign > 0 else min(scores)
+    if metric_sign * cv_score <= metric_sign * world_best:
+        return None
+    return f"cv_exceeds_world_best: cv={cv_score:.6f} > world_best={world_best:.6f} (metric_sign={metric_sign})"
+
+
 def _rejected_by_error(seed_gains: dict) -> bool:
     """cross-seed 거부가 (baseline 또는 candidate) eval 에러 때문이었는지 판별.
     측정값 기반 거부(gain<=0)와 구분해야 한다 — 에러 기반 거부는 memo에 담지
@@ -242,6 +271,7 @@ def confirm_and_measure(
     candidate_cv: float | None = None,
     candidate_fold_scores: list[float] | None = None,
     cpu_budget_sec: float | None = None,
+    conn=None,
 ) -> ConfirmResult:
     """Cross-seed paired 재현 확인 + audit holdout 1회 측정·게이트.
 
@@ -261,6 +291,12 @@ def confirm_and_measure(
     이미 memo에 있으면 eval 없이 그 결과를 재사용한다. (2) best pipeline
     baseline eval을 캐시해 후보마다 재계산하지 않는다. 인자를 안 주면(기본값
     전부 None) 기존 동작과 완전히 동일하다.
+
+    conn(선택, cache와 독립)이 주어지고 candidate_cv가 이 대회 리더보드 세계 1위를
+    넘으면(#288, leaderboard_ceiling_violation) cross-seed eval 없이 즉시 거부한다 —
+    run_attempt_core의 attempt-time 가드가 못 잡는 경로(예: establish_baseline이
+    과거 raw.attempts 후보를 재확인하는 콜드스타트/소급 확립)의 방어선. cache가
+    있으면 거부를 memo에 남겨 재확인을 반복하지 않는다.
     """
     ctx_key: tuple | None = None
     if cache is not None and competition_id is not None:
@@ -277,6 +313,15 @@ def confirm_and_measure(
                     candidate_cv,
                 )
                 return memo
+
+    if conn is not None and competition_id is not None and candidate_cv is not None:
+        ceiling_reason = leaderboard_ceiling_violation(conn, competition_id, candidate_cv)
+        if ceiling_reason is not None:
+            _LOG.warning("%s — confirm 거부(promotion gate, #288), cross-seed eval 스킵", ceiling_reason)
+            result = ConfirmResult(confirmed=False, holdout_score=None, seed_gains=None, holdout_regressed=False)
+            if cache is not None and ctx_key is not None:
+                cache.put_memo(ctx_key, candidate_cv, candidate_fold_scores, confirm_seeds, competition_id, result)
+            return result
 
     confirmed, seed_gains = _cross_seed_confirm(
         source=source,

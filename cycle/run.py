@@ -32,6 +32,7 @@ from cycle.promotion import (
     PromotionCache,
     confirm_and_measure,
     effective_label,
+    leaderboard_ceiling_violation,
     train_data_fingerprint,
 )
 from evaluator.contract import validate_patch
@@ -382,6 +383,7 @@ def establish_bootstrap_baseline(
         candidate_cv=cv_score,
         candidate_fold_scores=fold_scores,
         cpu_budget_sec=cpu_budget_secs,
+        conn=conn,
     )
     if confirm.holdout_score is not None:
         conn.execute(
@@ -767,6 +769,12 @@ def run_attempt_core(
             else:
                 error_trace = iso.error_trace
 
+    if not error_trace and cv_score is not None:
+        ceiling_reason = leaderboard_ceiling_violation(conn, config.competition_id, cv_score)
+        if ceiling_reason is not None:
+            error_trace = ceiling_reason
+            _LOG.warning("%s — attempt 격리(promotion 이전 단계, #288)", ceiling_reason)
+
     if error_trace:
         label = "error"
         _LOG.warning("failed — %s", error_trace[:200])
@@ -871,6 +879,7 @@ def run_attempt_core(
             candidate_cv=cv_score,
             candidate_fold_scores=fold_scores,
             cpu_budget_sec=config.cpu_budget_secs,
+            conn=conn,
         )
         if confirm.holdout_score is not None:
             conn.execute(
