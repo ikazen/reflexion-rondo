@@ -622,6 +622,47 @@ SELECT
 FROM p90
 JOIN best USING (competition_id);
 
+-- 대회 신호 대 잡음비(SNR, #291, ADR-047) — 리더보드 p50→p90 원점수 격차를 실측
+-- fold 표준오차(sqrt(avg(cv_fold_var)/n_splits), SEM 공식)로 나눈 값. 이 격차가
+-- fold 노이즈 몇 배인지를 본다 — 낮으면(단자릿수) 후보 순위를 cv로 신뢰성 있게
+-- 매기기 어려운 대회라는 뜻(s4e11/s6e8 실측 약 7.7/18, ADR-043/045 동결 기준의
+-- 보조 축). n_splits는 config.N_SPLITS(Python, 기본 5)를 SQL에서 못 읽으므로
+-- raw.attempts.fold_scores 배열 길이의 평균으로 대체 실측한다 — 결측/0이면 snr null.
+-- avg_fold_var/avg_n_splits는 전체 이력 평균이라(시간 윈도우 없음) 최근 pipeline
+-- 변경으로 fold 분산이 달라졌으면 다소 지연 반영된다.
+CREATE OR REPLACE VIEW competition_snr AS
+WITH spread AS (
+    SELECT
+        l.competition_id,
+        percentile_cont(0.9) WITHIN GROUP (ORDER BY c.metric_sign * s.score)
+      - percentile_cont(0.5) WITHIN GROUP (ORDER BY c.metric_sign * s.score) AS p90_p50_spread
+    FROM raw.leaderboard_snapshot l
+    JOIN raw.competitions c USING (competition_id)
+    CROSS JOIN LATERAL (
+        SELECT (elem)::numeric AS score
+        FROM jsonb_array_elements_text(l.scores) AS elem
+    ) AS s
+    GROUP BY l.competition_id
+),
+fold_stats AS (
+    SELECT
+        competition_id,
+        avg(cv_fold_var) AS avg_fold_var,
+        avg(jsonb_array_length(fold_scores)) AS avg_n_splits
+    FROM raw.attempts
+    WHERE cv_fold_var IS NOT NULL AND fold_scores IS NOT NULL
+    GROUP BY competition_id
+)
+SELECT
+    spread.competition_id,
+    spread.p90_p50_spread,
+    fold_stats.avg_fold_var,
+    fold_stats.avg_n_splits,
+    spread.p90_p50_spread
+        / nullif(sqrt(fold_stats.avg_fold_var / nullif(fold_stats.avg_n_splits, 0)), 0) AS snr
+FROM spread
+JOIN fold_stats USING (competition_id);
+
 -- bin/blend.py(파이프라인 밖 Ridge blend, 몇 달째 제출에 미소비 확인)가 #231로 폐기되며
 -- 함께 삭제 — 선언형 ensemble_spec method="stack"(evaluator/harness.py, ADR-036)이
 -- 대체한다. 라이브 DB에 이미 있던 테이블은 여기서 명시적으로 drop해야 사라진다
