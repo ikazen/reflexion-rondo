@@ -623,7 +623,14 @@ _SUBMITTABLE_FILTER_SQL = """
 
 def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None:
     """raw.pipelines(cross-seed+holdout 확정, 격리 제외)로 후보를 제한한다 —
-    안 그러면 미검증 attempt가 --attempt-id escape hatch로 그대로 제출된다(#178)."""
+    안 그러면 미검증 attempt가 --attempt-id escape hatch로 그대로 제출된다(#178).
+
+    이미 complete 상태로 제출된 적 있는 attempt_id는 후보에서 제외한다(#290) —
+    LB가 이미 알려진 attempt를 다시 내면 같은 점수만 재확인할 뿐 새 정보가 없다.
+    실측(s6e8 `75111ac2` 08-23/08-28 재제출, 동일 lb=0.96625): _last_submitted_attempt는
+    "직전 제출과 같은가"만 보는데, best가 한 번 바뀌었다가 다시 예전 attempt로
+    돌아오면 그 attempt는 "직전"이 아니라서 걸러지지 않고 예산만 태웠다.
+    `_unsubmitted_confirmed`는 이미 이 조건이 있다(#233) — 이쪽 폴백 경로에도 맞춘다."""
     row = conn.execute(
         f"""
         select a.attempt_id, a.cv_score
@@ -634,6 +641,10 @@ def _best_attempt(conn: PgConn, competition_id: str) -> tuple[str, float] | None
           and a.cv_score is not null
           and a.error_trace is null
           and p.invalid_reason is null
+          and not exists (
+              select 1 from raw.kaggle_submissions s
+              where s.attempt_id = a.attempt_id and s.status = 'complete'
+          )
           {_SUBMITTABLE_FILTER_SQL}
         order by c.metric_sign * a.cv_score desc, a.run_ts asc, a.attempt_id asc
         limit 1
