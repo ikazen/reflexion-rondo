@@ -71,10 +71,12 @@ PROMOTE_CONFIRM_SEEDS: list[int] = [
     int(s) for s in os.getenv("PROMOTE_CONFIRM_SEEDS", "7,101,137").split(",")
 ]
 
-# Kaggle Playground 일일 제출 한도는 대회당 5건인데 실제로는 대회당 하루 0~1건만 써서
-# LB 피드백이 CV 신뢰성 검증에 필요한 양에 한참 못 미쳤다(#233). 수동 제출 여지를 남기고
-# 자동 제출은 2건까지 쓴다.
-SUBMISSIONS_PER_DAY: int = int(os.getenv("SUBMISSIONS_PER_DAY", "2"))
+# Kaggle Playground 일일 제출 한도는 대회당 5건. #233에서 2건으로 시작했는데(수동 제출
+# 여지), 실측(2026-09) 결과 활성 대회 2개 기준 최대 10/일 가능한데 최근 7일 실사용
+# 5건(7%)뿐이었다 — 편향된 프록시(CV)는 무제한 소비하면서 무편향 신호(LB)는 배급한
+# 셈. 한도 전체를 자동 제출에 쓴다(#290) — 수동 제출은 어차피 이 한도 내에서
+# _submissions_today가 상태와 무관하게 그날 전체를 세므로 자동이 다 안 써도 여지가 있다.
+SUBMISSIONS_PER_DAY: int = int(os.getenv("SUBMISSIONS_PER_DAY", "5"))
 
 _CLASSIFICATION_TASK_TYPES = frozenset({"binary", "multiclass"})
 

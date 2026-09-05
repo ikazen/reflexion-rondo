@@ -201,6 +201,9 @@ def test_auto_submit_prefers_unsubmitted_backlog_over_best(monkeypatch):
         last="already-submitted",
         significant=False,  # 백로그 경로는 유의성 게이트를 타지 않는다
         unsubmitted=[("cand-a", 0.9598), ("cand-b", 0.9591), ("cand-c", 0.9585)],
+        # 오늘 예산에서 2건만 남기고 이미 썼다고 두어 SUBMISSIONS_PER_DAY 기본값과
+        # 무관하게 "budget_left=2"를 고정 — 백로그 3건 중 2건만 나가는지가 이 테스트의 관심사.
+        submitted_today=SUBMISSIONS_PER_DAY - 2,
     )
     resp = client.post("/api/submissions/auto", json={})
     body = resp.json()
@@ -252,6 +255,21 @@ def test_unsubmitted_confirmed_excludes_candidate_with_own_unverifiable_verdict(
     assert "p.materialized_code is not null or p.materialized_origin is null" in sql
 
 
+def test_best_attempt_excludes_already_completed_submission():
+    """#290: best가 다시 예전 attempt로 돌아오면(더 나은 후보들이 전부 실패/재확인 안
+    되고 재조회 시점에 그 attempt가 다시 최고 cv가 되는 경우) _last_submitted_attempt
+    (직전 1건만 비교)로는 안 걸린다 — s6e8 `75111ac2` 08-23/08-28 재제출 실측(동일
+    lb=0.96625, 새 정보 없이 예산만 소모). 이미 complete 제출이 있는 attempt_id는
+    _best_attempt 쿼리 자체에서 제외해야 한다."""
+    import bin.api as api_mod
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None
+    api_mod._best_attempt(conn, "playground-series-s6e8")
+    sql = conn.execute.call_args.args[0]
+    assert "s.attempt_id = a.attempt_id and s.status = 'complete'" in sql
+
+
 def test_best_attempt_excludes_own_and_prior_unverifiable_pipeline():
     """#270: _best_attempt에 #254 unverifiable:* 하드 제외가 빠져 있어 s5e4 auto-submit이
     재현 불가 base로 3일 연속 실패했다. _unsubmitted_confirmed와 같은 필터를 공유해야 한다."""
@@ -274,7 +292,8 @@ def test_auto_submit_respects_daily_budget(monkeypatch):
         last="already-submitted",
         significant=False,
         unsubmitted=[("cand-a", 0.9598), ("cand-b", 0.9591)],
-        submitted_today=1,
+        # budget_left=1 고정(SUBMISSIONS_PER_DAY 기본값과 무관) — cand-a만 나가는지 확인.
+        submitted_today=SUBMISSIONS_PER_DAY - 1,
     )
     resp = client.post("/api/submissions/auto", json={})
     body = resp.json()

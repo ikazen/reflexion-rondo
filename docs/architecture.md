@@ -60,7 +60,7 @@ Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
 4. **Submit?**: (별도 스크립트) best 후보 → submission CSV/Kaggle. `raw.kaggle_submissions` + daemon
 API(`POST /api/submissions`, `/auto`, `/{id}/refresh`)가 제출·상태 폴링·`lb_score` 기록(attempts 테이블 backfill 포함)까지 수행한다. daemon
 유휴 틱마다 `status IN ('submitted','pending')` 제출을 지수 백오프로 자동 재폴링한다 — 수동 `/refresh` 호출 없이도 동작. `/auto`는 `ACTIVE=True` 대회별로
-`SUBMISSIONS_PER_DAY`(기본 2) 예산 안에서 아직 제출 안 한 confirmed pipeline을 cv 상위순으로 내보낸다(ADR-038).
+`SUBMISSIONS_PER_DAY`(기본 5, #290) 예산 안에서 아직 제출 안 한 confirmed pipeline을 cv 상위순으로 내보낸다(ADR-038).
 
 `action_bandit`(BON-109): `reflexion` 단계 attempt 완료 시 action_type별 α/β 업데이트. jump/gain>0 → α++, regression/error → β++,
 neutral → 소량 양방향. attempt 생성 시점의 잠정 label(confirm 이전)로 1차 업데이트되고, 승자가 confirm(cross-seed+holdout)에서 jump가 거부되면

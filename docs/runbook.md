@@ -165,7 +165,7 @@ dagrun(=사이클) 하나가 실패해도 배치를 중단하지 않는다 — �
 
 ## 4. 제출·LB score 추적
 
-- `POST /api/submissions` — attempt 지정 제출. `POST /api/submissions/auto` — `ACTIVE=True` 대회별로 일일 예산(`SUBMISSIONS_PER_DAY`, 기본 2)
+- `POST /api/submissions` — attempt 지정 제출. `POST /api/submissions/auto` — `ACTIVE=True` 대회별로 일일 예산(`SUBMISSIONS_PER_DAY`, 기본 5)
 안에서 아직 제출 안 한 confirmed pipeline을 cv 상위순 자동 제출(ADR-038). 미제출 백로그가 없으면 예전 "best 갱신 + 유의성" 경로로 떨어진다.
 - `POST /api/submissions/{id}/refresh` — Kaggle 상태 1회 수동 폴링. `complete`면 `raw.kaggle_submissions.lb_score` 갱신 + 해당
 `attempt_id`의 `raw.attempts.lb_score`까지 backfill.
