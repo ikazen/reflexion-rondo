@@ -1,5 +1,40 @@
 # 변경 이력
 
+## v1.6.15 — 산출 경로 복구: promote insert NaN 크래시 + 낡은 fingerprint pause (2026-09-08)
+
+"기능 구현한 것들 잘 되고 있나" 점검에서 배관은 전부 정상인데(daemon running, health 5/5,
+autosubmit DAG 매일 success) fleet 아웃컴이 완전히 정지한 걸 실측으로 확인했다. 유효 확정
+pipeline fleet 전체 16일간 0건(마지막 s4e12 08-23), 제출 09-04 이후 0건, 신규 최고 LB 0건.
+원인 두 개를 로그·트레이스백으로 특정.
+
+- #299: `store/db.py:insert_pipeline`이 `oof_preds` NaN으로 크래시. `evaluator/harness.py`의
+  OOF 배열은 `is_original` 행(#228 `EXTRA_TRAIN_PATHS` 병합분, 어떤 fold의 validation에도
+  안 들어감) 위치가 NaN으로 남는데, `json.dumps`가 bare `NaN`을 뱉어 Postgres `jsonb`가
+  거부한다. 발동 조건은 `EXTRA_TRAIN_PATHS != []` + 비-classification metric → s6e8(ACTIVE)/
+  s4e10/s5e4. s4e11은 metric=accuracy라 OOF를 안 모아 증상이 가려져 있었다. 크래시 지점이
+  최악 — cross-seed 3회 + holdout + merge-verify를 전부 통과한 승격이 마지막 INSERT에서
+  터지고 `upload_best_pipeline`까지 못 간다(Airflow promote 실패 13건 중 11건이 08-26 이후).
+  s6e8은 08-24 이후 831 attempt / 423 CPU-h를 태우고도 확정 pipeline 0. `oof_preds`는 #231로
+  소비처(`bin/blend.py`)가 폐기된 죽은 컬럼인데 그게 유일한 가치 산출 경로를 막고 있었다.
+  수정: 비유한값(NaN/±Inf)을 `None`으로 치환 후 직렬화 — 저장 계층에만, harness.py의 NaN
+  채움(#228 의도된 동작)은 유지.
+- #300: 낡은 `train_fingerprint` pause가 s4e11 auto-submit을 3일간 영구 차단. v1.6.14가
+  s4e11 `EXTRA_TRAIN_PATHS`를 `[]`로 되돌리는 순간 지문이 바뀌어 `_train_fingerprint_guard`가
+  pause를 심었고, 이후 지문이 다시 일치해 attempt는 정상 도는데(cv 0.939 정상 스케일) pause
+  문자열만 남았다. 해제 경로가 `establish_baseline --remeasure` 하나뿐이라 조용히 막혀 있었다.
+  수정: 지문 재일치(`stored == fp`) 분기에서 fp pause를 자동 해제(`_FP_PAUSE_PREFIX` 접두어
+  매칭, 다른 사유는 안 건드림). 상수를 `bin/establish_baseline.py`→`cycle/run.py`로 이동.
+  ADR-040 갱신.
+- ACTIVE=True 대회가 s4e11/s6e8 둘뿐(나머지 25개는 #227/#274/#283로 동결)이라 이 둘이 각각
+  다른 이유로 막히자 fleet 산출이 그대로 0이 됐다. 동결 대회 재개(#274/#283 근거 재검토)는
+  이 복구 효과 실측 후 별도 판단.
+
+배포: (스탬프 대기 — DAG 빌드 + `release.sh v1.6.15` + compose bump 해시 + heartbeat)
+
+검증: s6e8 유효 확정 pipeline 최소 1건(08-22 이후 첫), promote task 신규
+`InvalidTextRepresentation` 0건, 다음 21:00 UTC autosubmit이 `submitted=0 skipped=2` 아님,
+s4e11 `auto_submit_paused_reason` NULL 복귀.
+
 ## v1.6.14 — 평가 신뢰성 복구: s4e11 twin 오염 제거 + 리더보드 상한 가드 + 북극성 지표 교체 (Milestone #16) (2026-09-05)
 
 7일 회고(1,323 attempt / 592 CPU-h / 신규 최고 LB 0건)에서 시작한 적대적 재검토.

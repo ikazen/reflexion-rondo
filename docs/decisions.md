@@ -732,6 +732,13 @@ baseline 확립 시 지문을 심기만 한다(대조할 이전 baseline이 없�
   데이터가 깨끗한가"는 별개 질문이었다. `store/train_data.py`의 twin dedup 가드(#287)가
   데이터 쪽 원인을, 리더보드 상한 가드(#288)가 이 계열 오염의 일반적 방어선을 담당한다 —
   지문 가드는 "일관성"만, 상한 가드가 "타당성"을 본다.
+- 갱신(2026-09-08, #300): "재개는 remeasure로만"에 예외를 뒀다 — 설정을 원복해 현재
+  `load_train()` 지문이 다시 저장값과 일치하면(v1.6.14가 s4e11 `EXTRA_TRAIN_PATHS`를
+  `[]`로 되돌린 실사례) `_train_fingerprint_guard`가 그 대회의 fp pause를 스스로 해제한다.
+  remeasure는 baseline 숫자를 옮겨야 할 때만 필요하고, 원복은 baseline이 이미 맞는
+  스케일이므로 사람 개입이 불필요하다. `_FP_PAUSE_PREFIX` 접두어 매칭이라 다른 사유
+  (cv_lb_divergence, baseline 소스 불일치)의 pause는 건드리지 않는다. 이 자동 해제가
+  없어 s4e11 auto-submit이 3일간(09-05~09-08) 조용히 멈춰 있었다.
 
 ---
 
