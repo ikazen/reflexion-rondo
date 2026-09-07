@@ -48,8 +48,21 @@ def test_guard_stamps_when_unset():
 def test_guard_passes_when_match():
     conn = _conn(train_data_fingerprint(_BASE))
     _train_fingerprint_guard(conn, "s4e11", _BASE)
-    writes = [c for c in conn.execute.call_args_list if c.args[0].strip().lower().startswith("update")]
+    writes = [
+        c for c in conn.execute.call_args_list
+        if c.args[0].strip().lower().startswith("update raw.competitions set train_fingerprint")
+    ]
     assert writes == []
+
+
+def test_guard_clears_stale_fp_pause_when_match():
+    conn = _conn(train_data_fingerprint(_BASE))
+    _train_fingerprint_guard(conn, "s4e11", _BASE)
+    clears = [c for c in conn.execute.call_args_list if "auto_submit_paused_reason = null" in c.args[0]]
+    assert len(clears) == 1
+    sql, params = clears[0].args[0], clears[0].args[1]
+    assert "like %s" in sql  # 다른 사유(cv_lb_divergence 등)는 건드리지 않는다
+    assert params == ["s4e11", "train_fingerprint 불일치%"]
 
 
 def test_guard_raises_and_pauses_on_mismatch():

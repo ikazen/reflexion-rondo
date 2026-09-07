@@ -37,7 +37,7 @@ import polars as pl
 from config.settings import PROMOTE_CONFIRM_SEEDS
 from cycle.materialize import materialize_best_pipeline
 from cycle.promotion import PromotionCache, confirm_and_measure, train_data_fingerprint
-from cycle.run import _CODE_HEADER_SEP
+from cycle.run import _CODE_HEADER_SEP, _FP_PAUSE_PREFIX
 from evaluator.harness import split_audit_holdout
 from runtime.isolate import eval_isolated
 from store.db import connect, insert_pipeline
@@ -178,9 +178,6 @@ def _valid_confirmed_pipelines(conn, competition_id: str) -> list[tuple[str, str
         """,
         [competition_id],
     ).fetchall()
-
-
-_FP_PAUSE_PREFIX = "train_fingerprint 불일치"
 
 
 def remeasure_competition(conn, comp: object, dry_run: bool) -> bool:
