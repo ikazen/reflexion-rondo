@@ -29,11 +29,16 @@ pipeline fleet 전체 16일간 0건(마지막 s4e12 08-23), 제출 09-04 이후 
   다른 이유로 막히자 fleet 산출이 그대로 0이 됐다. 동결 대회 재개(#274/#283 근거 재검토)는
   이 복구 효과 실측 후 별도 판단.
 
-배포: (스탬프 대기 — DAG 빌드 + `release.sh v1.6.15` + compose bump 해시 + heartbeat)
+배포: Airflow `reflexion_rondo_deploy` `deploy_v1.6.15_1788804829`, 4 task success
+(build_daemon/build_task/preflight/bump_task_variable). daemon 컷오버
+`bash deploy/release.sh v1.6.15` — preflight health 4/5(ollama_local skip),
+compose bump `a68892b`, 재시작 정상(post-restart heartbeat 이번엔 통과). daemon/task
+모두 v1.6.15. health 5/5.
 
-검증: s6e8 유효 확정 pipeline 최소 1건(08-22 이후 첫), promote task 신규
-`InvalidTextRepresentation` 0건, 다음 21:00 UTC autosubmit이 `submitted=0 skipped=2` 아님,
-s4e11 `auto_submit_paused_reason` NULL 복귀.
+검증: s4e11 `auto_submit_paused_reason`이 배포 직후 첫 s4e11 사이클(#300 자동 해제 경로)에서
+NULL로 복귀 — 실측 확인. 나머지(s6e8 유효 확정 pipeline 08-22 이후 첫 1건, promote task 신규
+`InvalidTextRepresentation` 0건, 다음 21:00 UTC autosubmit이 `submitted=0 skipped=2` 아님)는
+24h 관측 대상 — s6e8 jump가 드물어(08-24 이후 13건) 다음 promotable jump까지 대기.
 
 ## v1.6.14 — 평가 신뢰성 복구: s4e11 twin 오염 제거 + 리더보드 상한 가드 + 북극성 지표 교체 (Milestone #16) (2026-09-05)
 
