@@ -118,6 +118,11 @@ class BaselineSourceMismatchError(RuntimeError):
     """
 
 
+# train_fingerprint 불일치로 걸린 pause 사유의 접두어. establish_baseline --remeasure와
+# 아래 가드 재일치 분기 양쪽이 이걸로 다른 사유(cv_lb_divergence 등)와 구분해 해제한다.
+_FP_PAUSE_PREFIX = "train_fingerprint 불일치"
+
+
 def _train_fingerprint_guard(conn: PgConn, competition_id: str, train90: pl.DataFrame) -> None:
     """train90의 지문이 raw.competitions.train_fingerprint와 어긋나면 승격 게이트를
     멈춘다. 최초 관측(저장값 NULL)이면 현재 지문을 심고 통과한다.
@@ -139,6 +144,13 @@ def _train_fingerprint_guard(conn: PgConn, competition_id: str, train90: pl.Data
         )
         return
     if stored == fp:
+        # 설정을 원복해 지문이 다시 일치하면(v1.6.14 s4e11 실사례) 이전에 심긴 fp pause는
+        # 조건이 이미 해소된 것이라 여기서 해제한다 — remeasure 없이도 재개돼야 한다.
+        conn.execute(
+            "update raw.competitions set auto_submit_paused_reason = null"
+            " where competition_id = %s and auto_submit_paused_reason like %s",
+            [competition_id, _FP_PAUSE_PREFIX + "%"],
+        )
         return
     cmd = f"uv run python -m bin.establish_baseline --remeasure --competition {competition_id}"
     reason = (
