@@ -170,11 +170,18 @@ def insert_pipeline(
 ) -> None:
     import hashlib
     import json
+    import math
     # forward 경로에서 두 해시는 같다(둘 다 방금 만든 병합본의 sha) — 다른 건 #254
     # 백필 행뿐이다. materialized_origin='promote'로 백필 행과 구분한다.
     materialized_sha256 = (
         hashlib.sha256(materialized_code.encode()).hexdigest()
         if materialized_code is not None else None
+    )
+    # oof_preds의 is_original 행 위치(#228 병합분)는 어떤 fold의 validation에도 안 들어가
+    # NaN으로 남는다 — Postgres jsonb는 NaN/Inf 토큰을 거부하므로 null로 눕힌다.
+    oof_json = (
+        json.dumps([v if v is not None and math.isfinite(v) else None for v in oof_preds])
+        if oof_preds is not None else None
     )
     conn.execute(
         """
@@ -187,8 +194,7 @@ def insert_pipeline(
         [
             pipeline_id, attempt_id, competition_id, json.dumps(fingerprint_snapshot),
             code, cv_score, gain_vs_best, pipeline_sha256,
-            json.dumps(oof_preds) if oof_preds is not None else None,
-            materialized_code, materialized_sha256,
+            oof_json, materialized_code, materialized_sha256,
         ],
     )
 
