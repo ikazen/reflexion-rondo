@@ -1,9 +1,10 @@
-"""bin/submit.py 정확성 버그 4건 + 무결성 검증 회귀 테스트.
+"""bin/submit.py 정확성 버그 회귀 테스트.
 
 (a) 자동 선택 경로는 confirmed 파이프라인(raw.pipelines)만 소스로 써야 한다.
 (b) predict_proba 분기는 metric_class == "binary_proba" 기준이어야 한다.
 (c) 제출 값 컬럼은 sample_submission.csv의 실제 컬럼명을 따라야 한다.
-(d) NaN 중앙값 대치는 train/test 대칭이어야 한다.
+(d) model_spec/ensemble_spec의 params에 random_state가 있어도 bag_seed마다 다른
+    모델을 학습해야 한다(#307).
 MinIO best_pipeline.py는 raw.pipelines.pipeline_sha256과 대조해야 한다.
 attempt_only 재구성은 Patch 인스턴스의 클래스 속성을 보존해야 한다.
 """
@@ -24,7 +25,6 @@ if str(ROOT) not in sys.path:
 from bin.submit import (
     _bagged_predict,
     _dummy_target_value,
-    _impute_train_test_median,
     _load_best_code,
     _load_pipeline,
     _submission_value_col,
@@ -553,26 +553,58 @@ def test_submission_value_col_falls_back_when_missing() -> None:
 
 
 
-def test_impute_train_test_median_fills_both() -> None:
-    train_np = np.array([[1.0, np.nan], [3.0, 4.0], [5.0, 6.0]])
-    test_np = np.array([[np.nan, 8.0]])
-
-    train_out, test_out = _impute_train_test_median(train_np, test_np)
-
-    assert not np.isnan(train_out).any()
-    assert not np.isnan(test_out).any()
-    # train의 NaN은 train 컬럼 중앙값(5.0)으로 대치돼야 한다 (col 1: [nan,4,6] -> median 5)
-    assert train_out[0, 1] == 5.0
-    # test의 NaN도 동일 train 중앙값 기준 (col 0: [1,3,5] -> median 3)
-    assert test_out[0, 0] == 3.0
+def _bagging_reg_ctx():
+    from evaluator.harness import PipelineContext
+    return PipelineContext(target_col="y", metric="rmse", n_splits=5, seed=42, is_classification=False)
 
 
-def test_impute_train_test_median_noop_when_no_nan() -> None:
-    train_np = np.array([[1.0, 2.0], [3.0, 4.0]])
-    test_np = np.array([[5.0, 6.0]])
-    train_out, test_out = _impute_train_test_median(train_np, test_np)
-    assert np.array_equal(train_out, train_np)
-    assert np.array_equal(test_out, test_np)
+def test_bagged_predict_strips_seed_from_model_spec_params() -> None:
+    """#307: model_spec.params에 random_state가 박혀 있으면
+    evaluator.models.build_registry_model이 ctx.seed로 채우지 못해 bag_seed가
+    무시된다 — 벗기지 않으면 서로 다른 bag_seeds로 불러도 동일 모델이 나온다."""
+    ctx = _bagging_reg_ctx()
+    pipeline = MagicMock()
+    pipeline.ensemble_spec.return_value = None
+    pipeline.model_spec.return_value = {
+        "model": "random_forest",
+        "params": {"n_estimators": 5, "max_features": 0.5, "random_state": 999},
+    }
+    rng = np.random.default_rng(0)
+    X_train = rng.standard_normal((60, 4))
+    y_train = rng.standard_normal(60)
+    X_test = rng.standard_normal((10, 4))
+
+    preds_seed_1 = _bagged_predict(
+        pipeline, {}, X_train, y_train, X_test, ctx, "regression_error", bag_seeds=[1],
+    )
+    preds_seed_2 = _bagged_predict(
+        pipeline, {}, X_train, y_train, X_test, ctx, "regression_error", bag_seeds=[2],
+    )
+    assert not np.allclose(preds_seed_1, preds_seed_2)
+
+
+def test_bagged_predict_strips_seed_from_ensemble_member_params() -> None:
+    """#307과 동일 버그, ensemble_spec 멤버 params 경로."""
+    ctx = _bagging_reg_ctx()
+    pipeline = MagicMock()
+    pipeline.ensemble_spec.return_value = {
+        "members": [
+            {"model": "random_forest", "params": {"n_estimators": 5, "max_features": 0.5, "random_state": 999}},
+        ],
+        "method": "weighted_average",
+    }
+    rng = np.random.default_rng(0)
+    X_train = rng.standard_normal((60, 4))
+    y_train = rng.standard_normal(60)
+    X_test = rng.standard_normal((10, 4))
+
+    preds_seed_1 = _bagged_predict(
+        pipeline, {}, X_train, y_train, X_test, ctx, "regression_error", bag_seeds=[1],
+    )
+    preds_seed_2 = _bagged_predict(
+        pipeline, {}, X_train, y_train, X_test, ctx, "regression_error", bag_seeds=[2],
+    )
+    assert not np.allclose(preds_seed_1, preds_seed_2)
 
 
 # 타입만 맞춘 placeholder(예: 0)는 Patch가 타깃을 exhaustive 매핑(replace_strict without

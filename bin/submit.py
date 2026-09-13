@@ -214,17 +214,37 @@ def _submission_value_col(sample_columns: list[str], fallback: str) -> str:
 from evaluator.harness import dummy_target_value as _dummy_target_value
 
 
-def _impute_train_test_median(train_np, test_np):
-    """NaN 중앙값 대치를 train/test 대칭 적용. medians는 train 기준."""
-    col_medians = np.nanmedian(train_np, axis=0)
-    train_mask, test_mask = np.isnan(train_np), np.isnan(test_np)
-    if train_mask.any():
-        train_np = np.where(train_mask, col_medians, train_np)
-        print(f"  NaN {train_mask.sum()}개(train) → 훈련 중앙값으로 대체")
-    if test_mask.any():
-        test_np = np.where(test_mask, col_medians, test_np)
-        print(f"  NaN {test_mask.sum()}개(test) → 훈련 중앙값으로 대체")
-    return train_np, test_np
+_SEED_KEYS = frozenset({"random_state", "random_seed", "seed"})
+
+
+def _strip_seed_keys(params: dict | None) -> dict:
+    return {k: v for k, v in (params or {}).items() if k not in _SEED_KEYS}
+
+
+def _strip_seed_from_spec(
+    model_spec_dict: dict | None, ensemble_spec_dict: dict | None
+) -> tuple[dict | None, dict | None]:
+    """model_spec/ensemble_spec의 params에서 seed 키를 벗긴다.
+
+    evaluator.models.build_registry_model은 params에 random_state/random_seed가
+    이미 있으면 ctx.seed로 채우지 않는다 — Patch가 반환한 spec에 이 키가 박혀 있으면
+    5-seed bagging의 bag_seed가 무시돼 동일 모델 5개를 평균내는 no-op가 된다(#307).
+    catboost는 random_state/random_seed 동시 지정이 fit() 크래시(#247)라 벗기면 이것도
+    같이 해소된다.
+    """
+    if model_spec_dict is not None:
+        model_spec_dict = {**model_spec_dict, "params": _strip_seed_keys(model_spec_dict.get("params"))}
+    if ensemble_spec_dict is not None:
+        ensemble_spec_dict = dict(ensemble_spec_dict)
+        members = ensemble_spec_dict.get("members")
+        if members:
+            ensemble_spec_dict["members"] = [
+                {**m, "params": _strip_seed_keys(m.get("params"))} for m in members
+            ]
+        meta = ensemble_spec_dict.get("meta")
+        if meta:
+            ensemble_spec_dict["meta"] = {**meta, "params": _strip_seed_keys(meta.get("params"))}
+    return model_spec_dict, ensemble_spec_dict
 
 
 def _bagged_predict(
@@ -252,6 +272,7 @@ def _bagged_predict(
     # ctx.seed를 참조해 구성을 바꾸는 구현이 나오면 이 가정이 깨진다.
     ensemble_spec_dict = pipeline.ensemble_spec(ctx)
     model_spec_dict = pipeline.model_spec(ctx) if ensemble_spec_dict is None else None
+    model_spec_dict, ensemble_spec_dict = _strip_seed_from_spec(model_spec_dict, ensemble_spec_dict)
     bag_preds = []
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -281,6 +302,10 @@ def _bagged_predict(
         # 이라 순수 numpy로 구현). binary_proba/regression_error는 연속값이라 기존
         # 평균(np.mean) 그대로 둔다.
         return _majority_vote(bag_preds)
+    # bag이 전부 같은 모델이면(#307 no-op) 표준편차가 0에 가깝다 — seed별 예측이
+    # 실제로 갈리는지 1줄로 남긴다.
+    bag_std = float(np.mean(np.std(np.stack(bag_preds, axis=0), axis=0)))
+    print(f"  bag 예측 표준편차(seed간, 평균): {bag_std:.6g}" + (" — no-op 의심(0에 가까움)" if bag_std < 1e-9 else ""))
     return np.mean(bag_preds, axis=0)
 
 
@@ -375,9 +400,13 @@ def generate_submission_csv(
     X_test = _strip_target(X_test, comp.TARGET)
     X_train, X_test = _encode_residual_categoricals(X_train, X_test)
 
-    X_train_np, X_test_np = _impute_train_test_median(
-        X_train.to_numpy().astype(float), X_test.to_numpy().astype(float)
-    )
+    # CV/holdout(evaluator/harness.py:evaluate_pipeline, runtime/runner.py:_eval_holdout)
+    # 둘 다 NaN을 대치 없이 그대로 넘긴다 — 제출만 여기서 median 대치를 하면 학습
+    # 데이터부터 다른 모델이 된다(#306). GBDT(BasePipeline 기본값 포함)는 NaN 네이티브라
+    # 대치가 애초에 불필요하고, ridge/elastic_net을 고른 Patch는 NaN에서 CV가 먼저
+    # 죽으므로 승격 자체가 안 된다 — 세 경로 다 대치 없이 astype(float)만 한다.
+    X_train_np = X_train.to_numpy().astype(float)
+    X_test_np = X_test.to_numpy().astype(float)
 
     from evaluator.metrics import get as get_metric
     _, _, metric_class = get_metric(comp.METRIC)
