@@ -287,11 +287,8 @@ def _bagged_predict(
                 action_type=ctx.action_type,
                 best_params=ctx.best_params,
             )
-            # yva=None — 전체 train으로 최종 fit하는 자리라 라벨 있는 held-out
-            # validation이 없음(test_np는 unlabeled). 억지로 train 일부를 떼면 최종
-            # 제출 방법론 자체가 바뀌므로 이번 범위에서 제외 — CV 경로(harness.py)만 적용.
             raw_preds, _ = fit_predict(
-                pipeline, params, bag_ctx, X_train_np, y_train, X_test_np, None, metric_class,
+                pipeline, params, bag_ctx, X_train_np, y_train, X_test_np, metric_class,
                 ensemble_spec_dict=ensemble_spec_dict, model_spec_dict=model_spec_dict,
             )
             bag_preds.append(raw_preds)
