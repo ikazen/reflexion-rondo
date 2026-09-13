@@ -294,18 +294,23 @@ def _latest_tuned_params(conn: PgConn, competition_id: str) -> dict | None:
 
 
 def _prev_best_fold_scores(conn: PgConn, competition_id: str) -> list[float] | None:
-    """확정 파이프라인(raw.pipelines)에 연결된 attempt의 fold_scores.
+    """확정 파이프라인(raw.pipelines)의 fold_scores.
 
     paired per-fold 유의성 검정(is_significant_gain)의 baseline으로 쓰인다.
     같은 seed로 생성된 fold split은 결정적이라 candidate의 fold_scores와 인덱스별로
     바로 대응시킬 수 있다.
+
+    raw.pipelines.fold_scores가 있으면 그걸 우선한다 — bin/establish_baseline.py
+    --remeasure(#262)가 cv_score 재측정 시 같이 갱신하는 값이라 최신 스케일이다.
+    없으면(재측정 이력 없음) 연결된 attempt의 fold_scores로 폴백 — forward 경로는
+    데이터/스케일이 안 바뀌었으므로 attempt 값 그대로가 맞다.
 
     확정 파이프라인이 없으면 None — 재측정 없는 attempt 최고값의 fold_scores로
     폴백하지 않는다(decisions.md ADR-025).
     """
     row = conn.execute(
         """
-        select a.fold_scores
+        select coalesce(p.fold_scores, a.fold_scores)
         from raw.pipelines p
         join raw.competitions c using (competition_id)
         join raw.attempts a using (attempt_id)

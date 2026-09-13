@@ -147,6 +147,12 @@ CREATE TABLE IF NOT EXISTS raw.pipelines (
     gain_vs_best         double precision
 );
 
+-- baseline 소스의 fold별 점수(paired 유의성 검정 기준값). establish_baseline
+-- --remeasure(#135/#258/#262)가 cv_score를 재측정할 때 이 컬럼도 같이 갱신해야
+-- cycle/run.py:_prev_best_fold_scores가 옛(재측정 전) fold_scores로 게이트를
+-- 잘못 판정하지 않는다 — raw.attempts.fold_scores는 재측정 대상이 아니다.
+ALTER TABLE raw.pipelines ADD COLUMN IF NOT EXISTS fold_scores jsonb;
+
 CREATE TABLE IF NOT EXISTS raw.cycle_queue (
     queue_id     text PRIMARY KEY,
     competition  text NOT NULL,

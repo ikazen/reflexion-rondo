@@ -149,3 +149,13 @@ def test_prev_best_fold_scores_primary_query_excludes_invalid_reason():
     _prev_best_fold_scores(conn, "s4e1")
     sql: str = conn.execute.call_args_list[0][0][0]
     assert "invalid_reason" in sql.lower()
+
+
+def test_prev_best_fold_scores_prefers_pipelines_column():
+    """#262: raw.pipelines.fold_scores(remeasure가 갱신)가 raw.attempts.fold_scores
+    (재측정 없이 옛 스케일로 남을 수 있음)보다 우선해야 한다 — SQL이 coalesce로
+    이 우선순위를 강제하는지 확인(값 자체는 DB가 고르므로 쿼리 텍스트로 검증)."""
+    conn = _conn_seq(([0.7, 0.71],))
+    _prev_best_fold_scores(conn, "s4e1")
+    sql: str = conn.execute.call_args_list[0][0][0]
+    assert "coalesce(p.fold_scores, a.fold_scores)" in sql
