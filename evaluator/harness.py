@@ -211,21 +211,19 @@ def _fit_with_early_stopping(model: object, Xtr, ytr, Xva, yva) -> None:
     model.fit(Xtr, ytr)
 
 
-def _fit_with_retry(build_fn, params: dict, Xtr, ytr, Xva, yva) -> object:
-    """build_fn(params)로 모델을 만들어 fit한다. yva가 있으면(CV/holdout) opt-in
-    early stopping을 쓰고, 없으면(제출처럼 라벨 없는 예측 대상) 전체 학습한다.
+def _fit_with_retry(build_fn, params: dict, Xtr, ytr) -> object:
+    """build_fn(params)로 모델을 만들어 Xtr/ytr 전체로 fit한다. CV fold fit이 채점
+    대상 fold를 early stopping eval_set으로 재사용해 낙관 편향을 만들던 경로를
+    제거했다(#305) — CV/holdout/제출 세 경로와 단일모델/ensemble 멤버 양쪽이
+    이제 이 하나의 fit 경로를 예외 없이 공유한다.
 
-    후자에서 생성자에 박힌 조기종료 kwarg(_EARLY_STOPPING_KEYS) 때문에 eval_set 없이
-    fit()이 죽으면(#71) 그 키만 벗기고 한 번 더 시도한다 — 원래 bin/submit.py의
+    생성자에 박힌 조기종료 kwarg(_EARLY_STOPPING_KEYS) 때문에 eval_set 없이 fit()이
+    죽으면(#71) 그 키만 벗기고 한 번 더 시도한다 — 원래 bin/submit.py의
     _fit_full_train에만 있던 안전망인데, ensemble_spec 멤버 fit(#226의 yva=None 분기)엔
     없어서 agents/coder.py가 명시적으로 허용하는 멤버 params(조기종료 키 포함)가 제출
-    시점에 죽을 수 있었다(#239, adversarial review에서 발견). CV/holdout/제출 세 경로와
-    단일모델/ensemble 멤버 양쪽이 이 하나의 재시도 로직을 공유한다.
+    시점에 죽을 수 있었다(#239, adversarial review에서 발견).
     """
     model = build_fn(params)
-    if yva is not None:
-        _fit_with_early_stopping(model, Xtr, ytr, Xva, yva)
-        return model
     try:
         model.fit(Xtr, ytr)
         return model
@@ -302,14 +300,14 @@ def _oof_member_predictions(
     for inner_tr, inner_va in splits:
         model = _fit_with_retry(
             lambda p, _name=model_name: build_registry_model(_name, p, ctx),
-            params, Xtr[inner_tr], ytr[inner_tr], Xtr[inner_va], ytr[inner_va],
+            params, Xtr[inner_tr], ytr[inner_tr],
         )
         oof[inner_va] = _member_predict(model, Xtr[inner_va], metric_class).astype(float)
     return oof
 
 
 def _fit_predict_stack(
-    spec: dict, Xtr: np.ndarray, ytr: np.ndarray, Xva: np.ndarray, yva: np.ndarray | None,
+    spec: dict, Xtr: np.ndarray, ytr: np.ndarray, Xva: np.ndarray,
     ctx: "PipelineContext", metric_class: str,
 ) -> np.ndarray:
     """method="stack" — 멤버 예측을 고정 가중치가 아니라 meta 모델(회귀)로 조합한다
@@ -346,7 +344,7 @@ def _fit_predict_stack(
         # meta만 inner OOF로 누수를 막는다).
         full_model = _fit_with_retry(
             lambda p, _name=model_name: build_registry_model(_name, p, ctx),
-            params, Xtr, ytr, Xva, yva,
+            params, Xtr, ytr,
         )
         va_cols.append(_member_predict(full_model, Xva, metric_class).astype(float))
 
@@ -363,7 +361,7 @@ def _fit_predict_stack(
 
 
 def _fit_predict_ensemble(
-    spec: dict, Xtr: np.ndarray, ytr: np.ndarray, Xva: np.ndarray, yva: np.ndarray | None,
+    spec: dict, Xtr: np.ndarray, ytr: np.ndarray, Xva: np.ndarray,
     ctx: "PipelineContext", metric_class: str,
 ) -> np.ndarray:
     """Patch.ensemble_spec(ctx)이 선언한 멤버를 harness가 직접 생성·적합·결합한다.
@@ -374,12 +372,10 @@ def _fit_predict_ensemble(
     다수결, 아니면 가중평균). weights 생략 시 균등가중(stack은 weights를 안 씀 —
     meta 모델이 조합을 학습).
 
-    yva가 주어지면(라벨 있는 검증 데이터, CV/holdout)멤버별 early stopping에 쓴다.
-    None이면(제출처럼 라벨 없는 예측 대상) 조기종료 없이 전체 학습한다 — 이 분기가
-    없어서 이전엔 submit.py/holdout 양쪽이 이 함수를 아예 호출하지 못하고 각자
-    build_model 단일 경로로 대체해 ensemble_spec을 조용히 무시했다(#226). 멤버별 fit은
-    _fit_with_retry를 거쳐 조기종료 kwarg가 eval_set 없이 fit을 죽이면 그 키만 벗기고
-    재시도한다(#239).
+    멤버는 전부 Xtr/ytr 전체로 학습한다(#305 — CV fold fit이 채점 대상 fold를 early
+    stopping eval_set으로 재사용하던 경로 제거). CV/holdout/제출 세 경로가 이 함수를
+    동일하게 호출한다 — 이전엔 submit.py/holdout 양쪽이 이 함수를 아예 호출하지 못하고
+    각자 build_model 단일 경로로 대체해 ensemble_spec을 조용히 무시했다(#226).
     """
     members = spec.get("members") or []
     if not members:
@@ -387,7 +383,7 @@ def _fit_predict_ensemble(
     method = spec.get("method") or ("majority_vote" if metric_class == "classification" else "weighted_average")
 
     if method == "stack":
-        return _fit_predict_stack(spec, Xtr, ytr, Xva, yva, ctx, metric_class)
+        return _fit_predict_stack(spec, Xtr, ytr, Xva, ctx, metric_class)
 
     weights = spec.get("weights") or [1.0] * len(members)
     if len(weights) != len(members):
@@ -401,7 +397,7 @@ def _fit_predict_ensemble(
         params = member.get("params") or {}
         built = _fit_with_retry(
             lambda p, _name=model_name: build_registry_model(_name, p, ctx),
-            params, Xtr, ytr, Xva, yva,
+            params, Xtr, ytr,
         )
         member_preds.append(_member_predict(built, Xva, metric_class))
 
@@ -419,7 +415,6 @@ def fit_predict(
     Xtr: np.ndarray,
     ytr: np.ndarray,
     Xva: np.ndarray,
-    yva: np.ndarray | None,
     metric_class: str,
     ensemble_spec_dict: dict | None = _NOT_GIVEN,  # type: ignore[assignment]
     model_spec_dict: dict | None = _NOT_GIVEN,  # type: ignore[assignment]
@@ -432,6 +427,9 @@ def fit_predict(
     놓쳤고, #226 수정 후에도 세 곳이 분기 로직만 개별 복제해서 네 번째 호출부가 생기면
     같은 실수가 재발할 수 있는 구조였다(#239, adversarial review). model_spec(#229)도
     처음부터 이 단일 진입점에 넣어 같은 함정을 피한다.
+
+    Xtr/ytr 전체로 fit하고 Xva로 예측한다 — 라벨 있는 va를 eval_set으로 쓰는 조기종료
+    분기는 없다(#305, 세 경로가 다른 모델을 학습하던 원인이라 제거).
 
     반환은 (raw_preds, fitted_single_model_or_None) — ensemble이면 단일 estimator 개념이
     없어 두 번째 값이 None(evaluate_pipeline의 permutation importance가 이 None으로
@@ -446,7 +444,7 @@ def fit_predict(
     if ensemble_spec_dict is _NOT_GIVEN:
         ensemble_spec_dict = pipeline.ensemble_spec(ctx)
     if ensemble_spec_dict is not None:
-        raw_preds = _fit_predict_ensemble(ensemble_spec_dict, Xtr, ytr, Xva, yva, ctx, metric_class)
+        raw_preds = _fit_predict_ensemble(ensemble_spec_dict, Xtr, ytr, Xva, ctx, metric_class)
         return raw_preds, None
 
     if model_spec_dict is _NOT_GIVEN:
@@ -456,11 +454,11 @@ def fit_predict(
         spec_params = model_spec_dict.get("params") or {}
         model = _fit_with_retry(
             lambda p, _name=model_name: build_registry_model(_name, p, ctx),
-            spec_params, Xtr, ytr, Xva, yva,
+            spec_params, Xtr, ytr,
         )
     else:
         model = _fit_with_retry(
-            lambda p: _build_model_safe(pipeline, p, ctx), params, Xtr, ytr, Xva, yva,
+            lambda p: _build_model_safe(pipeline, p, ctx), params, Xtr, ytr,
         )
     if metric_class == "binary_proba":
         raw_preds = model.predict_proba(Xva)[:, 1]
@@ -906,7 +904,7 @@ def evaluate_pipeline(
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             raw_preds, best_model = fit_predict(
-                pipeline, selected_params, ctx, Xtr_np, ytr, Xva_np, yva, metric_class,
+                pipeline, selected_params, ctx, Xtr_np, ytr, Xva_np, metric_class,
                 ensemble_spec_dict=ensemble_spec_dict, model_spec_dict=model_spec_dict,
             )
         preds = pipeline.postprocess_predictions(raw_preds, ctx)
