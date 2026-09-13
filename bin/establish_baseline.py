@@ -190,6 +190,11 @@ def remeasure_competition(conn, comp: object, dry_run: bool) -> bool:
     materialized_code를 그대로 새 데이터에 재평가만 한다. 반드시 새로 측정한 값만
     쓴다 — 과거 attempt 행의 cv_score를 그대로 심으면 옛 기준 값이 섞인다.
 
+    cv_score와 함께 raw.pipelines.fold_scores도 갱신한다 — cycle/run.py:
+    _prev_best_fold_scores(paired 유의성 검정 baseline)가 이 컬럼이 있으면 우선
+    쓴다. 안 갱신하면 그 함수가 raw.attempts의 옛(재측정 전 스케일) fold_scores로
+    폴백해 재측정 직후에도 게이트가 낡은 기준과 비교하게 된다(#262).
+
     재평가가 에러로 끝나는 행은 격리한다(invalid_reason='remeasure_failed:
     train_fingerprint', 이력 보존 — ADR-039와 같은 방식). 갱신된 지문이 있어야
     cycle 게이트(cycle/run.py:_train_fingerprint_guard)가 재개된다.
@@ -232,8 +237,8 @@ def remeasure_competition(conn, comp: object, dry_run: bool) -> bool:
         remeasured += 1
         if not dry_run:
             conn.execute(
-                "UPDATE raw.pipelines SET cv_score = %s WHERE pipeline_id = %s",
-                [result.cv_score, pipeline_id],
+                "UPDATE raw.pipelines SET cv_score = %s, fold_scores = %s::jsonb WHERE pipeline_id = %s",
+                [result.cv_score, json.dumps(result.fold_scores), pipeline_id],
             )
 
     if remeasured == 0:

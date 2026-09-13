@@ -199,14 +199,16 @@ def test_remeasure_updates_all_confirmed_and_stamps_fingerprint():
         patch("bin.establish_baseline.load_train", return_value=_TRAIN),
         patch("bin.establish_baseline.split_audit_holdout", return_value=(_TRAIN, _TRAIN)),
         patch("bin.establish_baseline.eval_isolated",
-              return_value=MagicMock(error_trace=None, cv_score=0.55)) as mock_eval,
+              return_value=MagicMock(error_trace=None, cv_score=0.55, fold_scores=[0.54, 0.56])) as mock_eval,
     ):
         result = remeasure_competition(conn, _Comp(), dry_run=False)
 
     assert result is True
     assert mock_eval.call_count == 2  # #262: 최고점 1건이 아니라 전체
     pipe_updates = [c for c in conn.execute.call_args_list if "UPDATE raw.pipelines SET cv_score" in c.args[0]]
-    assert {tuple(c.args[1]) for c in pipe_updates} == {(0.55, "pipe-1"), (0.55, "pipe-2")}
+    assert {tuple(c.args[1]) for c in pipe_updates} == {
+        (0.55, "[0.54, 0.56]", "pipe-1"), (0.55, "[0.54, 0.56]", "pipe-2"),
+    }
     fp_updates = [c for c in conn.execute.call_args_list if "SET train_fingerprint" in c.args[0]]
     assert len(fp_updates) == 1
 
@@ -218,7 +220,7 @@ def test_remeasure_dry_run_does_not_write():
         patch("bin.establish_baseline.load_train", return_value=_TRAIN),
         patch("bin.establish_baseline.split_audit_holdout", return_value=(_TRAIN, _TRAIN)),
         patch("bin.establish_baseline.eval_isolated",
-              return_value=MagicMock(error_trace=None, cv_score=0.55)),
+              return_value=MagicMock(error_trace=None, cv_score=0.55, fold_scores=[0.54, 0.56])),
     ):
         result = remeasure_competition(conn, _Comp(), dry_run=True)
 
@@ -254,7 +256,7 @@ def test_remeasure_prints_rebuild_hint_when_any_quarantined(capsys):
         patch("bin.establish_baseline.load_train", return_value=_TRAIN),
         patch("bin.establish_baseline.split_audit_holdout", return_value=(_TRAIN, _TRAIN)),
         patch("bin.establish_baseline.eval_isolated", side_effect=[
-            MagicMock(error_trace=None, cv_score=0.55),
+            MagicMock(error_trace=None, cv_score=0.55, fold_scores=[0.54, 0.56]),
             MagicMock(error_trace="boom", cv_score=None),
         ]),
     ):
