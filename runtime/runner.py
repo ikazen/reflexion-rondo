@@ -73,10 +73,9 @@ def _eval_holdout(
     Xtr_np, Xho_np = Xtr.to_numpy(), Xho.to_numpy()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        # yva=None(라벨 없는 holdout — 타깃은 dummy 상수) → ensemble_spec 파이프라인도
-        # build_model 단일 경로도 fit_predict()가 동일하게 처리한다(#226/#239) —
-        # bin/submit.py의 제출 경로와 정확히 같은 진입점을 공유.
-        raw_preds, _ = fit_predict(pipeline, params, ctx, Xtr_np, ytr, Xho_np, None, metric_class)
+        # ensemble_spec 파이프라인도 build_model 단일 경로도 fit_predict()가 동일하게
+        # 처리한다(#226/#239) — bin/submit.py의 제출 경로와 정확히 같은 진입점을 공유.
+        raw_preds, _ = fit_predict(pipeline, params, ctx, Xtr_np, ytr, Xho_np, metric_class)
     preds = pipeline.postprocess_predictions(raw_preds, ctx)
     return float(fn(yho_raw, preds))
 

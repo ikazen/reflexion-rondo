@@ -1186,7 +1186,7 @@ def test_weighted_majority_vote_equal_weights_majority_wins():
 def test_fit_predict_ensemble_empty_members_raises():
     with pytest.raises(ValueError, match="non-empty"):
         _fit_predict_ensemble(
-            {"members": []}, np.zeros((4, 2)), np.zeros(4), np.zeros((2, 2)), np.zeros(2),
+            {"members": []}, np.zeros((4, 2)), np.zeros(4), np.zeros((2, 2)),
             _reg_ctx(), "regression_error",
         )
 
@@ -1195,7 +1195,7 @@ def test_fit_predict_ensemble_weights_length_mismatch_raises():
     spec = {"members": [{"model": "ridge"}, {"model": "ridge"}], "weights": [1.0]}
     with pytest.raises(ValueError, match="weights length"):
         _fit_predict_ensemble(
-            spec, np.zeros((4, 2)), np.zeros(4), np.zeros((2, 2)), np.zeros(2),
+            spec, np.zeros((4, 2)), np.zeros(4), np.zeros((2, 2)),
             _reg_ctx(), "regression_error",
         )
 
@@ -1212,17 +1212,17 @@ def test_fit_predict_ensemble_regression_end_to_end():
         "method": "weighted_average",
         "weights": [0.7, 0.3],
     }
-    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xva, yva, _reg_ctx(), "regression_error")
+    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xva, _reg_ctx(), "regression_error")
     assert preds.shape == (20,)
     # 신호가 강한 데이터라 예측이 실제 타깃과 대체로 같은 부호/스케일이어야 함
     assert np.corrcoef(preds, yva)[0, 1] > 0.8
 
 
-def test_fit_predict_ensemble_no_early_stopping_when_yva_none():
-    """#226: yva=None(라벨 없는 예측 대상, 제출/전체학습 상황)이면 조기종료 없이
-    전체 학습해야 한다 — 이 분기가 없어서 이전엔 bin/submit.py와 runtime/runner.py의
-    holdout이 ensemble_spec을 아예 호출하지 못하고 각자 build_model 단일 경로로
-    조용히 대체했다."""
+def test_fit_predict_ensemble_works_without_labels():
+    """#226: 라벨 없는 예측 대상(제출/holdout)에서도 멤버를 전체 학습해 예측해야
+    한다 — 이 경로가 없어서 이전엔 bin/submit.py와 runtime/runner.py의 holdout이
+    ensemble_spec을 아예 호출하지 못하고 각자 build_model 단일 경로로 조용히
+    대체했다."""
     rng = np.random.default_rng(0)
     Xtr = rng.standard_normal((60, 3))
     ytr = Xtr[:, 0] * 2 + rng.standard_normal(60) * 0.01
@@ -1233,7 +1233,7 @@ def test_fit_predict_ensemble_no_early_stopping_when_yva_none():
         "method": "weighted_average",
         "weights": [0.7, 0.3],
     }
-    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xtest, None, _reg_ctx(), "regression_error")
+    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xtest, _reg_ctx(), "regression_error")
     assert preds.shape == (20,)
     assert np.all(np.isfinite(preds))
 
@@ -1245,7 +1245,7 @@ def test_fit_predict_ensemble_stack_empty_members_raises():
     with pytest.raises(ValueError, match="non-empty"):
         _fit_predict_ensemble(
             {"members": [], "method": "stack", "meta": {"model": "ridge"}},
-            np.zeros((10, 2)), np.zeros(10), np.zeros((4, 2)), np.zeros(4),
+            np.zeros((10, 2)), np.zeros(10), np.zeros((4, 2)),
             _reg_ctx(), "regression_error",
         )
 
@@ -1254,7 +1254,7 @@ def test_fit_predict_stack_no_meta_raises():
     spec = {"members": [{"model": "ridge"}], "method": "stack"}
     with pytest.raises(ValueError, match="'meta'"):
         _fit_predict_stack(
-            spec, np.zeros((10, 2)), np.zeros(10), np.zeros((4, 2)), np.zeros(4),
+            spec, np.zeros((10, 2)), np.zeros(10), np.zeros((4, 2)),
             _reg_ctx(), "regression_error",
         )
 
@@ -1265,7 +1265,7 @@ def test_fit_predict_stack_classification_metric_class_raises():
     spec = {"members": [{"model": "ridge"}], "meta": {"model": "ridge"}}
     with pytest.raises(ValueError, match="majority_vote"):
         _fit_predict_stack(
-            spec, np.zeros((10, 2)), np.zeros(10), np.zeros((4, 2)), np.zeros(4),
+            spec, np.zeros((10, 2)), np.zeros(10), np.zeros((4, 2)),
             _ctx(is_classification=True), "classification",
         )
 
@@ -1282,7 +1282,7 @@ def test_fit_predict_stack_regression_end_to_end():
         "method": "stack",
         "meta": {"model": "ridge", "params": {"alpha": 1.0}},
     }
-    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xva, yva_true, _reg_ctx(), "regression_error")
+    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xva, _reg_ctx(), "regression_error")
     assert preds.shape == (30,)
     assert np.all(np.isfinite(preds))
     assert np.corrcoef(preds, yva_true)[0, 1] > 0.8
@@ -1299,14 +1299,15 @@ def test_fit_predict_stack_binary_proba_end_to_end():
         "method": "stack",
         "meta": {"model": "ridge"},
     }
-    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xva, None, _ctx(is_classification=True), "binary_proba")
+    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xva, _ctx(is_classification=True), "binary_proba")
     assert preds.shape == (40,)
     assert np.all(np.isfinite(preds))
 
 
-def test_fit_predict_stack_no_early_stopping_when_yva_none():
-    """제출 경로(yva=None)에서도 stack이 죽지 않고 끝까지 도는지 — #226과 동일 클래스의
-    회귀 가드(weighted_average/majority_vote에 이미 있는 검증을 stack에도 대칭 적용)."""
+def test_fit_predict_stack_works_without_labels():
+    """라벨 없는 예측 대상(제출 경로)에서도 stack이 죽지 않고 끝까지 도는지 — #226과
+    동일 클래스의 회귀 가드(weighted_average/majority_vote에 이미 있는 검증을 stack에도
+    대칭 적용)."""
     rng = np.random.default_rng(0)
     Xtr = rng.standard_normal((80, 3))
     ytr = Xtr[:, 0] * 2 + rng.standard_normal(80) * 0.1
@@ -1317,7 +1318,7 @@ def test_fit_predict_stack_no_early_stopping_when_yva_none():
         "method": "stack",
         "meta": {"model": "ridge"},
     }
-    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xtest, None, _reg_ctx(), "regression_error")
+    preds = _fit_predict_ensemble(spec, Xtr, ytr, Xtest, _reg_ctx(), "regression_error")
     assert preds.shape == (20,)
     assert np.all(np.isfinite(preds))
 
@@ -1613,6 +1614,35 @@ def test_evaluate_pipeline_model_type_none_without_model_spec():
     assert result.model_type is None
 
 
+def test_evaluate_pipeline_cv_folds_never_use_eval_set():
+    """#305 회귀 가드 — CV fold fit이 채점 대상 fold를 early stopping eval_set으로
+    재사용하지 않는지 evaluate_pipeline 진입점에서 직접 확인한다(_fit_with_retry
+    단위 테스트와 별개로, evaluate_pipeline 전체 fold 루프를 통과해야 검증됨).
+    각 fold에서 새 _LGBMLikeModel을 만들어 fit_calls를 전부 모은다."""
+    fit_calls: list[dict] = []
+
+    class _RecordingModel:
+        def fit(self, X, y, sample_weight=None, eval_set=None, callbacks=None):
+            fit_calls.append({"eval_set": eval_set, "callbacks": callbacks})
+
+        def predict(self, X):
+            return np.zeros(len(X))
+
+    class _RecordingPatch:
+        action_type = "model_swap"
+
+        def build_model(self, params, ctx):
+            return _RecordingModel()
+
+    df = _make_df(is_classification=False, n=100)
+    ctx = _reg_ctx()
+    pipeline = PatchedPipeline(BasePipeline(), _RecordingPatch())
+    evaluate_pipeline(pipeline, df, ctx)
+
+    assert len(fit_calls) == ctx.n_splits  # fold마다 정확히 1회 fit
+    assert all(call["eval_set"] is None for call in fit_calls)
+
+
 def test_fit_predict_routes_to_model_spec_when_present():
     pipeline = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
     ctx = _reg_ctx()
@@ -1620,7 +1650,7 @@ def test_fit_predict_routes_to_model_spec_when_present():
     Xtr, ytr = rng.standard_normal((40, 3)), rng.standard_normal(40)
     Xva = rng.standard_normal((10, 3))
 
-    raw_preds, model = fit_predict(pipeline, {}, ctx, Xtr, ytr, Xva, None, "regression_error")
+    raw_preds, model = fit_predict(pipeline, {}, ctx, Xtr, ytr, Xva, "regression_error")
 
     assert raw_preds.shape == (10,)
     assert model is not None
@@ -1637,7 +1667,7 @@ def test_fit_predict_model_spec_precomputed_skips_recomputation():
     Xva = rng.standard_normal((10, 3))
 
     raw_preds, model = fit_predict(
-        pipeline, {}, ctx, Xtr, ytr, Xva, None, "regression_error",
+        pipeline, {}, ctx, Xtr, ytr, Xva, "regression_error",
         model_spec_dict={"model": "ridge", "params": {}},
     )
     assert model is not None
@@ -1655,7 +1685,7 @@ def test_fit_with_retry_strips_early_stopping_params_on_failure():
     build_fn = MagicMock(side_effect=[failing_model, working_model])
 
     params = {"n_estimators": 100, "early_stopping_rounds": 50, "learning_rate": 0.05}
-    model = _fit_with_retry(build_fn, params, np.zeros((2, 1)), np.zeros(2), None, None)
+    model = _fit_with_retry(build_fn, params, np.zeros((2, 1)), np.zeros(2))
 
     assert model is working_model
     assert build_fn.call_count == 2
@@ -1670,7 +1700,7 @@ def test_fit_with_retry_reraises_when_retry_also_fails():
     build_fn = MagicMock(return_value=model)
 
     with pytest.raises(ValueError, match="still broken"):
-        _fit_with_retry(build_fn, {"early_stopping_rounds": 50}, np.zeros((2, 1)), np.zeros(2), None, None)
+        _fit_with_retry(build_fn, {"early_stopping_rounds": 50}, np.zeros((2, 1)), np.zeros(2))
 
 
 def test_fit_with_retry_no_early_stopping_keys_reraises_immediately():
@@ -1679,7 +1709,7 @@ def test_fit_with_retry_no_early_stopping_keys_reraises_immediately():
     build_fn = MagicMock(return_value=model)
 
     with pytest.raises(RuntimeError, match="unrelated failure"):
-        _fit_with_retry(build_fn, {"learning_rate": 0.05}, np.zeros((2, 1)), np.zeros(2), None, None)
+        _fit_with_retry(build_fn, {"learning_rate": 0.05}, np.zeros((2, 1)), np.zeros(2))
     assert build_fn.call_count == 1
 
 
@@ -1688,20 +1718,21 @@ def test_fit_with_retry_does_not_strip_when_fit_succeeds():
     build_fn = MagicMock(return_value=model)
     params = {"early_stopping_rounds": 50, "learning_rate": 0.05}
 
-    result = _fit_with_retry(build_fn, params, np.zeros((2, 1)), np.zeros(2), None, None)
+    result = _fit_with_retry(build_fn, params, np.zeros((2, 1)), np.zeros(2))
 
     assert result is model
     assert build_fn.call_count == 1
     assert build_fn.call_args.args[0] == params
 
 
-def test_fit_with_retry_uses_early_stopping_when_yva_given():
-    """yva가 주어지면(CV/holdout) 조기종료 키 재시도가 아니라
-    _fit_with_early_stopping 경로를 타 eval_set이 실제로 전달돼야 한다."""
+def test_fit_with_retry_never_uses_eval_set():
+    """#305 회귀 가드 — CV fold fit이 채점 대상 fold를 early stopping eval_set으로
+    재사용하던 경로를 제거했다. eval_set을 받는 estimator라도 항상 eval_set=None으로
+    fit돼야 한다(CV/holdout/제출 세 경로가 동일 모델을 학습하게 하는 전제)."""
     model = _LGBMLikeModel()
-    _fit_with_retry(lambda p: model, {}, _XTR, _YTR, _XVA, _YVA)
+    _fit_with_retry(lambda p: model, {}, _XTR, _YTR)
     assert len(model.fit_calls) == 1
-    assert model.fit_calls[0]["eval_set"] == [(_XVA, _YVA)]
+    assert model.fit_calls[0]["eval_set"] is None
 
 
 # fit_predict — CV/holdout/제출 세 경로 공유 진입점 (#239)
@@ -1713,7 +1744,7 @@ def test_fit_predict_routes_to_ensemble_when_spec_present():
     Xtr, ytr = rng.standard_normal((40, 3)), rng.standard_normal(40)
     Xva = rng.standard_normal((10, 3))
 
-    raw_preds, model = fit_predict(pipeline, {}, ctx, Xtr, ytr, Xva, None, "regression_error")
+    raw_preds, model = fit_predict(pipeline, {}, ctx, Xtr, ytr, Xva, "regression_error")
 
     assert raw_preds.shape == (10,)
     assert model is None  # ensemble엔 단일 estimator가 없음
@@ -1729,7 +1760,7 @@ def test_fit_predict_routes_to_single_model_when_no_spec():
     Xtr, ytr = rng.standard_normal((40, 3)), rng.standard_normal(40)
     Xva = rng.standard_normal((10, 3))
 
-    raw_preds, model = fit_predict(pipeline, {}, ctx, Xtr, ytr, Xva, None, "regression_error")
+    raw_preds, model = fit_predict(pipeline, {}, ctx, Xtr, ytr, Xva, "regression_error")
 
     assert raw_preds.shape == (10,)
     assert model is not None
@@ -1913,7 +1944,7 @@ def test_fit_predict_precomputed_spec_skips_recomputation():
     Xva = rng.standard_normal((10, 3))
 
     raw_preds, model = fit_predict(
-        pipeline, {}, ctx, Xtr, ytr, Xva, None, "regression_error",
+        pipeline, {}, ctx, Xtr, ytr, Xva, "regression_error",
         ensemble_spec_dict=None,  # "미리 계산했더니 None(ensemble 아님)"
     )
     assert model is not None

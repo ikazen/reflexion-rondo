@@ -115,8 +115,8 @@ values here, and do not treat a missing/None ctx.tuned_params as an error.
 
 ## ensemble action_type — use ensemble_spec, not a hand-written wrapper class
 For ensemble, implement `ensemble_spec(self, ctx) -> dict` instead of writing a custom
-estimator/wrapper class by hand. The harness builds, fits (with early stopping where
-supported), and combines the member models itself:
+estimator/wrapper class by hand. The harness builds, fits, and combines the member
+models itself:
 
 ```python
 class Patch:
