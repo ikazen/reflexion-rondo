@@ -1,5 +1,33 @@
 # 변경 이력
 
+## v1.6.16 — CV-LB 정렬 1단계: 세 경로 fit 계약 통일 (Milestone "CV-LB 정렬", 2026-09-13)
+
+v1.6.15 배포 검증(promote 실패 0건, s6e8 신규 최고 LB 확인) 중 s4e11이 7일간 506
+attempt에 jump 0건·유효 확정 pipeline 0건인 걸 발견. 코드 감사로 `cv_score`가
+측정하는 모델과 `bin/submit.py`가 제출하는 모델이 세 경로에서 서로 다른 객체임을
+확인(#304 Milestone 요약, ADR-048). #305/#306/#307 반영.
+
+- #305: `evaluator/harness.py:_fit_with_retry`가 CV fold fit에서만 채점 대상
+  fold를 early stopping eval_set으로 재사용하던 경로 제거. CV/holdout/제출 세
+  경로가 `model.fit(Xtr, ytr)` 하나만 공유하도록 통일 — `fit_predict`/
+  `_fit_predict_ensemble`/`_fit_predict_stack`의 죽은 `yva` 매개변수도 같이 제거.
+- #306: `bin/submit.py`의 제출 전용 median 대치(`_impute_train_test_median`)
+  제거 — CV/holdout처럼 NaN을 그대로 넘긴다. GBDT 결측 네이티브 처리와 median
+  대치는 다른 모델을 학습시키고 있었다.
+- #307: 5-seed bagging이 `model_spec`/`ensemble_spec`의 `params`에 `random_state`가
+  박혀 있으면 `build_registry_model`의 seed 채움을 우회해 동일 모델 5개를
+  평균내는 no-op였던 버그 수정(`_strip_seed_from_spec`). catboost `random_seed`/
+  `random_state` 동시 지정 크래시(#247)도 같이 해소.
+- #262: `raw.pipelines`에 `fold_scores` 컬럼 추가 — `establish_baseline
+  --remeasure`가 cv_score 재측정 시 같이 갱신해, `_prev_best_fold_scores`(paired
+  유의성 검정 baseline)가 재측정 후에도 낡은 스케일과 비교하지 않게 한다.
+
+영향: 확정 pipeline 전체의 `cv_score` 스케일이 바뀐다. 배포 직후
+`establish_baseline --remeasure`로 ACTIVE 대회(s6e8/s4e11) 재측정 필요 —
+격리 발생 시 `rebuild_best_pipeline`로 MinIO 재구성(#278/ADR-042).
+
+배포/검증: 대기 중 — 태그 bump는 사용자 실행(daemon 재시작 필요).
+
 ## v1.6.15 — 산출 경로 복구: promote insert NaN 크래시 + 낡은 fingerprint pause (2026-09-08)
 
 "기능 구현한 것들 잘 되고 있나" 점검에서 배관은 전부 정상인데(daemon running, health 5/5,

@@ -947,6 +947,33 @@ baseline을 봤고, 그 사이 구간의 후보가 promote를 "jump"로 통과�
   정직한 재측정 데이터가 며칠 안 쌓였다. 다음 상태 점검에서 SNR과 `gap_to_p90`
   (ADR 미부여, #289)을 같이 보고 판단한다.
 
+## ADR-048 — CV/holdout/제출 세 경로가 동일한 fit 계약을 공유한다 (Milestone "CV-LB 정렬", #305/#306/#307)
+
+- 결정: `evaluator/harness.py:_fit_with_retry`에서 `yva is not None` 분기(CV fold
+  fit만 채점 대상 fold를 early stopping eval_set으로 쓰던 경로)를 제거해 CV/holdout/
+  제출 세 경로가 `model.fit(Xtr, ytr)` 하나만 공유하게 통일했다(#305). `fit_predict`/
+  `_fit_predict_ensemble`/`_fit_predict_stack`의 `yva` 매개변수도 이제 어디서도 안
+  읽는 죽은 배선이 돼 시그니처에서 제거했다. `bin/submit.py`의 제출 전용 median
+  대치(`_impute_train_test_median`)도 제거해 CV/holdout과 동일하게 NaN을 그대로
+  넘긴다(#306) — GBDT 결측 네이티브 처리와 median 대치는 다른 모델이었다. 5-seed
+  bagging이 `model_spec`/`ensemble_spec`의 `params`에 박힌 `random_state` 때문에
+  `evaluator/models.py:build_registry_model`의 seed 채움 로직을 우회해 동일 모델
+  5개를 평균내는 no-op였던 버그도 같이 고쳤다(#307, `_strip_seed_from_spec`).
+- 근거: v1.6.14 회고(1,323 attempt / 592 CPU-h / 신규 최고 LB 0건) 이후에도 s4e11이
+  7일간 506 attempt에 jump 0건·유효 확정 pipeline 0건으로 정체됐다. 코드 감사 결과
+  `cv_score`가 측정하는 모델과 `bin/submit.py`가 실제로 제출하는 모델이 세 곳에서
+  서로 다른 객체였다는 게 근본원인으로 특정됐다(#304 Milestone 요약). cross-seed
+  confirm은 fold 분할만 바꾸므로 이 편향을 항상 통과시켰고, 편향 크기(s4e11 SNR
+  4.04, ADR-047)가 실제 경쟁 격차와 같은 자릿수라 후보 순위를 뒤집기에 충분했다.
+- 영향: 확정 pipeline 전체의 `cv_score` 스케일이 바뀐다 — `bin/establish_baseline.py
+  --remeasure`로 재측정 필요(ADR-039/040과 같은 절차). 재측정 시 `raw.pipelines.
+  fold_scores`도 같이 갱신해야 `cycle/run.py:_prev_best_fold_scores`의 paired
+  유의성 검정이 낡은(재측정 전 스케일) baseline과 비교하지 않는다(#262, 신규 컬럼).
+- 범위 밖(#304의 남은 항목, 이 Milestone 후속 판단 대상): audit holdout을 이진
+  veto가 아니라 랭킹 신호로 쓰는 것(#308), accuracy 계열 대회의 확률 경로 복원
+  (#309), Optuna 튜닝 레인 자동화(#310) — 전부 이 ADR이 세운 "정직한 측정"
+  전제 위에서만 의미가 있어 #305 배포 후 재판단한다.
+
 ---
 
 ## 미정 항목 (TBD)
