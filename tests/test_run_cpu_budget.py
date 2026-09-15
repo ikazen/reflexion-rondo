@@ -40,9 +40,11 @@ def _cpu_kill(peak_cpu_sec: float, budget: float = DEFAULT_CPU_BUDGET_SECS) -> I
     )
 
 
-def _run(eval_side_effect, generate_code_mock=None, cpu_budget_secs=None):
+def _run(eval_side_effect, generate_code_mock=None, cpu_budget_secs=None,
+         validate_patch_mock=None):
     conn = MagicMock()
     generate_code_mock = generate_code_mock or MagicMock(return_value="source")
+    validate_patch_mock = validate_patch_mock or MagicMock(return_value=[])
     with (
         patch("cycle.run.detect_stagnation",
               return_value=StagnationSignal(False, 0, (), 0)),
@@ -51,7 +53,7 @@ def _run(eval_side_effect, generate_code_mock=None, cpu_budget_secs=None):
             hypothesis="h", action_type="hyperparam_search", reflection_ids=[])),
         patch("cycle.run.top_error_pitfalls", return_value=[]),
         patch("cycle.run.generate_code", generate_code_mock),
-        patch("cycle.run.validate_patch", return_value=[]),
+        patch("cycle.run.validate_patch", validate_patch_mock),
         patch("cycle.run.eval_isolated", side_effect=eval_side_effect) as mock_eval,
         patch("cycle.run.leaderboard_ceiling_violation", return_value=None),
         patch("cycle.run.is_significant_gain", return_value=False),
@@ -147,3 +149,54 @@ def test_regenerate_feedback_is_actionable_not_raw_rc_message():
     assert "cpu budget exceeded" not in feedback
     assert "rc=" not in feedback
     assert "CPU 예산" in feedback
+
+
+def test_post_kill_regen_retries_on_static_violation():
+    """#273: CPU kill 후 재생성 코드가 정적검사에 걸려도 codegen 루프처럼
+    재시도한다 — 첫 재생성이 pandas-only API를 쓰면 피드백을 주고 한 번 더
+    시도해서 성공하면 eval 2회차까지 진행한다."""
+    ok = IsolatedResult(
+        cv_score=0.9, cv_fold_var=0.001, fold_scores=[0.89, 0.9, 0.91],
+        label="neutral", gain_vs_best=0.01, error_trace=None,
+        peak_cpu_sec=50.0,
+    )
+    validate_patch_mock = MagicMock(side_effect=[
+        [],  # 최초 codegen 정적검사 통과
+        ["pandas-only API (not on polars): groupby()"],  # post-kill 재생성 1회차 실패
+        [],  # post-kill 재생성 2회차 통과
+    ])
+    generate_code_mock = MagicMock(return_value="source")
+    data, mock_insert, mock_eval, _ = _run(
+        eval_side_effect=[_cpu_kill(peak_cpu_sec=300.0, budget=900), ok],
+        generate_code_mock=generate_code_mock,
+        validate_patch_mock=validate_patch_mock,
+    )
+
+    assert mock_eval.call_count == 2
+    assert data.label == "neutral"
+    # 최초 codegen 1회 + post-kill 재생성 2회(1회차 실패 → 2회차 성공) = 3회
+    assert generate_code_mock.call_count == 3
+
+
+def test_post_kill_regen_exhausted_preserves_original_kill_reason():
+    """#273: 재생성이 재시도를 전부 소진해도 원래 CPU kill 사유를
+    error_trace에서 잃지 않는다 — 정적 가드 메시지만 남으면 통계(#136/#182/
+    #269)가 진짜 원인을 오분류한다."""
+    validate_patch_mock = MagicMock(side_effect=[
+        [],  # 최초 codegen 정적검사 통과
+        ["pandas-only API (not on polars): groupby()"],
+        ["pandas-only API (not on polars): iterrows()"],
+        ["pandas-only API (not on polars): apply()"],
+    ])
+    data, mock_insert, mock_eval, generate_code_mock = _run(
+        eval_side_effect=[_cpu_kill(peak_cpu_sec=300.0, budget=900)],
+        validate_patch_mock=validate_patch_mock,
+    )
+
+    assert mock_eval.call_count == 1  # eval 2회차는 아예 안 감
+    assert data.label == "error"
+    row = mock_insert.call_args[0][1]
+    assert "cpu budget exceeded" in row["error_trace"]
+    assert "apply()" in row["error_trace"]
+    # 최초 codegen 1회 + post-kill 재생성 3회(_MAX_CODE_RETRIES+1) = 4회
+    assert generate_code_mock.call_count == 4

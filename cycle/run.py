@@ -776,12 +776,33 @@ def run_attempt_core(
                 error_trace = iso.error_trace
                 break
             if _eval_i == 0:
+                # #273: 재생성 정적검사도 codegen 루프(위, _MAX_CODE_RETRIES)와 동일한
+                # 재시도 폭을 준다 — 예전엔 1회 실패로 즉시 attempt를 포기해 eval 2회차와
+                # 남은 CPU 예산을 통째로 버렸다. 전부 실패해도 원래 kill 사유(CPU 예산
+                # 초과 등)를 error_trace에 남겨 정적 가드 메시지가 진짜 원인을 가리지
+                # 않게 한다.
+                original_kill_reason = iso.error_trace
                 feedback = _resource_kill_feedback(iso.error_trace, cpu_remaining)
-                source = generate_code(**gen_kwargs, error_feedback=feedback)
-                retries += 1
-                static_errs = validate_patch(source, action_type)
-                if static_errs:
-                    error_trace = "\n".join(static_errs)
+                static_errs: list[str] = []
+                for _regen_i in range(_MAX_CODE_RETRIES + 1):
+                    source = generate_code(**gen_kwargs, error_feedback=feedback)
+                    retries += 1
+                    static_errs = validate_patch(source, action_type)
+                    if not static_errs:
+                        break
+                    if _regen_i < _MAX_CODE_RETRIES:
+                        _LOG.info(
+                            "post-kill regen static error (%d violation(s)) → retrying (%d)",
+                            len(static_errs), _regen_i + 1,
+                        )
+                        feedback = "\n".join(static_errs)
+                    else:
+                        error_trace = (
+                            f"{original_kill_reason}\n(regeneration also failed static "
+                            f"validation after {_MAX_CODE_RETRIES + 1} tries: "
+                            f"{'; '.join(static_errs)})"
+                        )
+                if error_trace:
                     break
             else:
                 error_trace = iso.error_trace
