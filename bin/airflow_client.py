@@ -18,6 +18,7 @@ _AIRFLOW_USER = os.getenv("AIRFLOW_USER", "admin")
 _AIRFLOW_PASSWORD = os.getenv("AIRFLOW_PASSWORD", "")
 
 DAG_ID = "reflexion_rondo_cycle"
+_TUNE_DAG_ID = "reflexion_rondo_tune"
 _TERMINAL = {"success", "failed", "cancelled"}  # dag_run state
 _TI_TERMINAL = {"success", "failed", "upstream_failed", "skipped", "removed"}  # task instance state
 
@@ -64,6 +65,39 @@ def trigger_dag_run(competition_id: str, stage: str, queue_id: str) -> str:
                 "stage": stage,
                 "queue_id": queue_id,
             },
+        },
+        headers=_headers(),
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()["dag_run_id"]
+
+
+def trigger_tune_dag_run(
+    competition_slug: str,
+    n_trials: int = 100,
+    timeout_sec: int | None = None,
+) -> str:
+    """Optuna 튜닝 DAG(reflexion_rondo_tune) 1개 트리거. dag_run_id 반환.
+
+    reflexion_rondo_cycle과 별도 DAG — conf 계약이 다르다(competition은
+    COMPETITION_ID가 아니라 config 모듈 slug, 예: "s6e8". airflow-stack
+    dags/reflexion_rondo_tune.py 참고). fire-and-forget — 완료를 기다리지
+    않는다(별도 컴퓨트 레인이라 promote task/daemon 사이클을 막을 이유가
+    없다, #318).
+    """
+    now = datetime.now(timezone.utc)
+    ts = now.strftime("%Y%m%dT%H%M%S")
+    run_id = f"rondo_tune_{competition_slug}_{ts}"
+    conf: dict = {"competition": competition_slug, "n_trials": n_trials}
+    if timeout_sec is not None:
+        conf["timeout_sec"] = timeout_sec
+    resp = requests.post(
+        f"{_AIRFLOW_URL}/api/v2/dags/{_TUNE_DAG_ID}/dagRuns",
+        json={
+            "dag_run_id": run_id,
+            "logical_date": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "conf": conf,
         },
         headers=_headers(),
         timeout=15,

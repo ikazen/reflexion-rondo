@@ -373,6 +373,96 @@ def _sweep_queue_refill(conn) -> None:
     print(f"[daemon] queue refill — {len(idle_slugs)} idle competition(s) re-enqueued: {idle_slugs}")
 
 
+def _maybe_trigger_tune(conn, competition_slug: str, competition_id: str, attempt_id: str) -> None:
+    """#318 주 트리거 — 이번 사이클 attempt가 실제로 확정 pipeline이 됐으면(merge-verify
+    까지 통과, raw.pipelines에 유효 행 존재) Optuna 튜닝 레인(별도 DAG, 900s attempt
+    예산 밖)에 태운다. `was_promoted`만으로는 확정 여부를 못 가린다 — run_promote_task.py가
+    승자 선정 시 모든 attempt에 True를 찍고 실제 승격은 merge-verify 통과 후에만
+    일어나므로, raw.pipelines에 해당 attempt_id 행이 있는지로 직접 확인한다.
+
+    best-effort — 실패해도 사이클 자체는 성공 처리한다. daemon(여기)에서 트리거하는
+    이유: run_promote_task.py는 Airflow task 컨테이너로 도는데 AIRFLOW_URL/USER/PASSWORD
+    자격증명이 주입돼 있지 않다(reflexion_rondo_cycle이 RONDO_DB_URL 등만 주입) — daemon은
+    이미 reflexion_rondo_cycle을 직접 트리거하므로 이 자격증명을 그대로 갖고 있다.
+    """
+    if not airflow_client.available():
+        return
+    try:
+        pipeline_row = conn.execute(
+            "select 1 from raw.pipelines where attempt_id = %s and invalid_reason is null",
+            [attempt_id],
+        ).fetchone()
+        if not pipeline_row:
+            return
+        tune_run_id = airflow_client.trigger_tune_dag_run(competition_slug)
+        print(f"[daemon] promotion-triggered tune DAG for {competition_slug}: {tune_run_id}")
+    except Exception as exc:
+        print(f"[daemon] tune DAG trigger failed for {competition_slug} (non-fatal): {exc}")
+
+
+_TUNE_SWEEP_INTERVAL_SEC = 3600  # 1시간마다만 훑는다 — 매 poll마다 대회 수만큼 쿼리할 필요 없음
+_TUNE_IDLE_HOURS = 48
+_last_tune_sweep: float = 0.0
+
+
+def _sweep_idle_tuning(conn) -> None:
+    """#318 보조 트리거 — 승격 트리거(주 트리거, 위 _maybe_trigger_tune)만으로는 승격이
+    드문 대회(낮은 SNR 등)가 튜닝 레인의 혜택을 영영 못 받을 수 있다. 마지막 튜닝 실행이
+    _TUNE_IDLE_HOURS 넘은 ACTIVE 대회는 승격 여부와 무관하게 현재 확정 pipeline을
+    대상으로 튜닝한다(확정 pipeline 자체가 없으면 튜닝할 대상이 없으니 스킵)."""
+    global _last_tune_sweep
+    now_mono = time.monotonic()
+    if now_mono - _last_tune_sweep < _TUNE_SWEEP_INTERVAL_SEC:
+        return
+    _last_tune_sweep = now_mono
+
+    if not airflow_client.available():
+        return
+
+    active_ids = active_competition_ids()
+    slug_to_cid = {
+        slug: cid for cid, slug in competition_id_to_slug().items() if cid in active_ids
+    }
+    if not slug_to_cid:
+        return
+
+    last_tune = dict(conn.execute(
+        "select competition_id, max(created_at) from raw.tuned_params"
+        " where competition_id = any(%s) group by 1",
+        [list(slug_to_cid.values())],
+    ).fetchall())
+    has_confirmed = {
+        r[0] for r in conn.execute(
+            "select distinct competition_id from raw.pipelines"
+            " where competition_id = any(%s) and invalid_reason is null",
+            [list(slug_to_cid.values())],
+        ).fetchall()
+    }
+
+    # raw.tuned_params.created_at은 timezone 없는 컬럼 — 이 repo 관례대로 naive를
+    # 암묵적 UTC로 보고 비교 전 양쪽을 naive로 맞춘다(#223 패턴, _sweep_queue_refill과 동일).
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    idle_cutoff = now_naive - timedelta(hours=_TUNE_IDLE_HOURS)
+
+    triggered = []
+    for slug, cid in sorted(slug_to_cid.items()):
+        if cid not in has_confirmed:
+            continue
+        last = last_tune.get(cid)
+        if last is not None:
+            last = last.replace(tzinfo=None) if last.tzinfo else last
+        if last is not None and last >= idle_cutoff:
+            continue
+        try:
+            tune_run_id = airflow_client.trigger_tune_dag_run(slug)
+            triggered.append(slug)
+            print(f"[daemon] idle-tune triggered {slug}: {tune_run_id}")
+        except Exception as exc:
+            print(f"[daemon] idle-tune trigger failed for {slug} (non-fatal): {exc}")
+    if triggered:
+        print(f"[daemon] idle tuning sweep — {len(triggered)} competition(s) triggered: {triggered}")
+
+
 def _run_api(state: DaemonState) -> None:
     import uvicorn
     api_conn = connect(apply_schema=False)
@@ -492,6 +582,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                     if cv is not None:
                         latest_score = cv
                     print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} winner={aid[:8]} cv={cv} label={label}")
+                    _maybe_trigger_tune(conn, competition, comp.COMPETITION_ID, aid)
                 successes += 1
                 consecutive_failures = 0
                 pacer.record()
@@ -673,6 +764,7 @@ def main() -> None:
         _sweep_stale_submissions(conn)
         _sweep_low_gain_lessons(conn)
         _sweep_queue_refill(conn)
+        _sweep_idle_tuning(conn)
         item = _pop_pending(conn)
         if item is None:
             time.sleep(POLL_INTERVAL_SEC)
