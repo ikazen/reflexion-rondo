@@ -79,6 +79,20 @@ ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS peak_rss_bytes bigint;
 -- peak_rss_bytes와 동일한 계약(GH #159).
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS peak_cpu_sec double precision;
 
+-- 아래 ALTER TABLE raw.pipelines 문들보다 먼저 나와야 한다(#113/#243) — 완전히 빈
+-- DB에 처음 스키마를 적용할 때 ALTER가 CREATE보다 앞서면 "relation raw.pipelines
+-- does not exist"로 부트스트랩이 실패한다. 라이브 프로덕션 DB는 테이블이 항상 이미
+-- 있어 순서 문제가 드러나지 않았다(신규 로컬/CI DB 최초 1회 부트스트랩에서만 재현).
+CREATE TABLE IF NOT EXISTS raw.pipelines (
+    pipeline_id          text PRIMARY KEY,
+    attempt_id           text,
+    competition_id       text,
+    fingerprint_snapshot jsonb,
+    code                 text,
+    cv_score             double precision,
+    gain_vs_best         double precision
+);
+
 -- materialize 시 sha256 기록 — submit.py exec 전 MinIO 다운로드본과 대조해
 -- 익명 write 버킷 변조를 탐지한다. code 컬럼(raw.attempts 원본)이 아니라
 -- 실제 exec되는 materialized best_pipeline.py 내용의 해시.
@@ -136,16 +150,6 @@ CREATE TABLE IF NOT EXISTS raw.reflections (
     archived        boolean DEFAULT false
 );
 ALTER TABLE raw.reflections ADD COLUMN IF NOT EXISTS lesson_type text;
-
-CREATE TABLE IF NOT EXISTS raw.pipelines (
-    pipeline_id          text PRIMARY KEY,
-    attempt_id           text,
-    competition_id       text,
-    fingerprint_snapshot jsonb,
-    code                 text,
-    cv_score             double precision,
-    gain_vs_best         double precision
-);
 
 -- baseline 소스의 fold별 점수(paired 유의성 검정 기준값). establish_baseline
 -- --remeasure(#135/#258/#262)가 cv_score를 재측정할 때 이 컬럼도 같이 갱신해야
