@@ -182,6 +182,33 @@ def test_refresh_submission_row_pending_updates_checked_at_only():
     assert rec["checked_at"] is not None
 
 
+def test_refresh_submission_row_not_found_within_window_treated_as_pending():
+    """#173: kaggle 최근 목록에 없어도(not_found) 제출 후 얼마 안 됐으면
+    아직 목록에 안 올라온 정상 범위 — pending과 동일하게 checked_at만 갱신."""
+    recent = datetime.now(timezone.utc) - timedelta(hours=1)
+    row = ("sub-1", "s4e1", "attempt-1", recent, "msg", None, "submitted", None, None, None)
+    conn = _row_conn(row)
+    with patch("bin.api._poll_kaggle_once", return_value=("not_found", None)):
+        rec = refresh_submission_row(conn, "sub-1")
+    assert rec["status"] == "submitted"  # 안 바뀜 — 재시도 위임
+    assert rec["checked_at"] is not None
+
+
+def test_refresh_submission_row_not_found_past_stale_window_marks_unknown():
+    """#173 재현 사례: 11일 지나도 kaggle 최근 목록(페이지네이션 없음)에서
+    영영 안 잡히던 두 건이 checked_at만 갱신되며 pending에 영구 고착됐다.
+    24h 지나면 목록 이탈로 판단해 'unknown'으로 전환, 이후 자동 스윕
+    대상에서 빠진다(실패로 단정하지 않음 — 실제 성공했을 수도 있음)."""
+    old = datetime.now(timezone.utc) - timedelta(days=11)
+    row = ("sub-1", "s4e1", "attempt-1", old, "msg", None, "submitted", None, None, None)
+    conn = _row_conn(row)
+    with patch("bin.api._poll_kaggle_once", return_value=("not_found", None)):
+        rec = refresh_submission_row(conn, "sub-1")
+    assert rec["status"] == "unknown"
+    update_calls = [c for c in conn.execute.call_args_list if "update raw.kaggle_submissions" in c.args[0]]
+    assert any("'unknown'" in c.args[0] for c in update_calls)
+
+
 def test_refresh_submission_row_complete_updates_lb_score_and_attempts():
     row = ("sub-1", "s4e1", "attempt-1", _now(), "msg", None, "submitted", None, None, None)
     conn = MagicMock()

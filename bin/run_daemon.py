@@ -281,7 +281,7 @@ def _sweep_stale_submissions(conn) -> None:
             rec = refresh_submission_row(conn, submission_id)
             if rec and rec.get("status") == "complete":
                 print(f"[daemon] submission {submission_id[:8]} refreshed → complete lb={rec.get('lb_score')}")
-            elif rec and rec.get("status") in ("error", "invalid"):
+            elif rec and rec.get("status") in ("error", "invalid", "unknown"):
                 print(f"[daemon] submission {submission_id[:8]} refreshed → {rec['status']}")
         except Exception as exc:
             print(f"[daemon] submission {submission_id[:8]} refresh failed: {exc}")
