@@ -21,7 +21,7 @@ EXTRA_TRAIN_PATHS: list[str] = []  # hopesb/student-depression-dataset(MinIO
 # 정답 사본으로 들어가 cv_score가 이 대회 세계 1위 LB(0.94488)를 넘는 0.968대까지
 # 부풀려짐(실측). store/train_data.py의 twin dedup 가드가 재발은 막지만, 이 대회는
 # 애초에 병합할 새 정보가 없으므로(원본이 이미 train.csv 안에 있음) 빈 리스트가 맞다.
-ACTIVE            = True  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
+ACTIVE            = False  # deep tier 동결 (#316, ADR-049) — 33일 확정 pipeline 0건, LB 하락, fleet 최저 SNR
 
 EDA_CARD = """competition: playground-series-s4e11 (Exploring Mental Health — Depression)
 task: binary classification  metric: accuracy  target: Depression
