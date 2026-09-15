@@ -198,6 +198,12 @@ class AutoSubmitRequest(BaseModel):
 
 
 _TERMINAL = frozenset({"complete", "error", "invalid"})
+# kaggle submissions --csv는 페이지네이션 없이 최근 목록만 반환한다 — 매일
+# auto-submit이 도는 대회는 이 목록이 며칠 안에 갱신돼 오래된 제출이 밀려난다.
+# 이 시간이 지나도 매칭이 안 되면 "아직 채점 중"이 아니라 "목록 밖으로 밀려남"으로
+# 판단해 영구 재폴링을 멈춘다(#173) — Kaggle 채점은 보통 분 단위라 24h는 채점
+# 대기와 목록 이탈을 가르기에 충분히 여유 있는 문턱이다.
+_NOT_FOUND_STALE_HOURS = 24
 # 제출 CSV 생성은 CV 분할 없이 전체 train에 5-seed bagging fit이라 attempt 1회
 # eval보다 무겁다 — eval CPU 예산(runtime.isolate.DEFAULT_CPU_BUDGET_SECS, #182)과
 # 같은 값으로 맞춘다. 600->1200s 상향(s5e5 75만 행) 때와 같은 이유로 또 부족했다:
@@ -418,8 +424,13 @@ def _poll_kaggle_once(
 ) -> tuple[str, float | None]:
     """kaggle submissions 1회 조회 → (status, lb_score).
 
-    반환 status: 'complete' | 'error' | 'invalid' | 'pending'
-    kaggle CLI 오류 시 'pending' 반환 (재시도 위임).
+    반환 status: 'complete' | 'error' | 'invalid' | 'pending' | 'not_found'
+    kaggle CLI/토큰 등 우리 쪽 infra 오류 시 'pending' 반환(재시도 위임).
+    'not_found'는 kaggle CLI가 정상 응답했지만 이 제출의 description이 최근 목록
+    (CSV, 페이지네이션 없음)에 전혀 없다는 뜻 — "매칭됐고 아직 채점 중"(진짜
+    pending)과는 다른 의미다. 매일 auto-submit이 도는 대회는 최근 목록이 금방
+    갱신돼 오래된 제출이 밀려날 수 있다(#173) — refresh_submission_row가 이
+    구분으로 나이 기준 처리한다.
     """
     try:
         with _kaggle_home_env() as env:
@@ -438,11 +449,9 @@ def _poll_kaggle_once(
         # kaggle CLI may print Warning lines to stdout before CSV — skip them
         csv_lines = [l for l in poll.stdout.splitlines() if not l.startswith("Warning:")]
         reader = csv_module.DictReader(io.StringIO("\n".join(csv_lines)))
-        matched = False
         for row in reader:
             if (row.get("description") or "").strip() != message:
                 continue
-            matched = True
             status = (row.get("status") or "").lower()
             if status.endswith("complete"):
                 raw_score = row.get("publicScore") or row.get("public score") or ""
@@ -454,12 +463,12 @@ def _poll_kaggle_once(
                 return "complete", lb_score
             if status.endswith("error") or status.endswith("invalid"):
                 return status.rsplit(".", 1)[-1], None
-            return "pending", None  # 아직 채점 중
-        if not matched:
-            print(f"  [poll/warn] no kaggle row matched description={message!r}")
+            return "pending", None  # 매칭됐고 아직 채점 중
+        print(f"  [poll/warn] no kaggle row matched description={message!r}")
+        return "not_found", None
     except Exception as exc:
         print(f"  [poll/warn] exception: {exc}")
-    return "pending", None
+        return "pending", None
 
 
 def _start_submission(
@@ -916,6 +925,29 @@ def refresh_submission_row(conn: PgConn, submission_id: str) -> dict | None:
         return rec
 
     kaggle_status, lb_score = _poll_kaggle_once(rec["competition_id"], rec["message"])
+    if kaggle_status == "not_found":
+        # #173: naive timestamp 비교 관례(bin/run_daemon.py:_submission_refresh_due와
+        # 동일) — DB의 timezone 없는 timestamp를 암묵적 UTC로 보고 양쪽을 naive로
+        # 맞춘 뒤 뺀다.
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        submitted_at = rec["submitted_at"]
+        submitted_at = submitted_at.replace(tzinfo=None) if submitted_at.tzinfo else submitted_at
+        age_hours = (now - submitted_at).total_seconds() / 3600
+        if age_hours < _NOT_FOUND_STALE_HOURS:
+            kaggle_status = "pending"  # 아직 목록에 없을 수 있는 정상 범위 — pending과 동일 취급
+        else:
+            # 목록 밖으로 밀려난 것으로 판단 — 실패로 단정하지 않는다(실제로는
+            # 성공했을 수도 있음). 자동 재폴링 스윕(_sweep_stale_submissions) 대상
+            # status 목록에 'unknown'이 없어 더 이상 재시도되지 않는다.
+            conn.execute(
+                "update raw.kaggle_submissions set status = 'unknown', checked_at = %s"
+                " where submission_id = %s",
+                [datetime.now(timezone.utc), submission_id],
+            )
+            rec["status"] = "unknown"
+            rec["checked_at"] = datetime.now(timezone.utc)
+            return rec
+
     if kaggle_status == "pending":
         conn.execute(
             "update raw.kaggle_submissions set checked_at = %s where submission_id = %s",
