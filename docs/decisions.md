@@ -1029,6 +1029,45 @@ baseline을 봤고, 그 사이 구간의 후보가 promote를 "jump"로 통과�
 
 ---
 
+## ADR-050 — Optuna 튜닝 레인은 승격-트리거 + 48h idle 스윕으로 자동 실행한다 (#318)
+
+- 결정: `evaluator/tuner.py` + Airflow DAG `reflexion_rondo_tune`(#230)을 daemon이
+자동으로 트리거한다. 두 트리거 병행:
+  1. **주 트리거**: super-cycle이 실제로 새 확정 pipeline을 만들면(`raw.pipelines`에
+     해당 attempt_id 행 존재 확인 — `was_promoted`만으론 부족, ADR 본문 근거 아래)
+     `bin/run_daemon.py:_maybe_trigger_tune`가 즉시 트리거.
+  2. **보조 트리거**: ACTIVE 대회 중 확정 pipeline은 있는데 마지막 튜닝이 48h
+     넘은 대회를 `bin/run_daemon.py:_sweep_idle_tuning`(1시간 주기)이 승격 여부와
+     무관하게 트리거 — 승격이 드문 대회(낮은 SNR 등)가 튜닝 레인 혜택을 영영 못
+     받는 것 방지.
+- 트리거 위치를 daemon으로 정한 이유: `bin/run_promote_task.py`는 Airflow
+  DockerOperator task 컨테이너로 도는데, 주입 env가 `RONDO_DB_URL`/`OLLAMA_*`/
+  `MINIO_ENDPOINT`뿐이라(`airflow-stack/dags/reflexion_rondo_cycle.py`)
+  Airflow REST API 호출에 필요한 `AIRFLOW_URL`/`USER`/`PASSWORD` 자격증명이 없다.
+  daemon은 이미 `reflexion_rondo_cycle`을 직접 트리거하므로 이 자격증명을 갖고
+  있어, 새 Airflow Variable이나 credential 배선 없이 구현 가능했다.
+- `was_promoted`가 확정 신호가 될 수 없는 이유: `bin/run_promote_task.py`가 super-
+  cycle 승자를 정할 때 confirm 게이트 전에 이미 모든 attempt에 `was_promoted=True`를
+  찍는다(#164 관련 구조) — 실제 확정(merge-verify 통과)은 그 뒤 조건부다. 주
+  트리거는 `raw.pipelines`에 해당 `attempt_id`의 유효(`invalid_reason IS NULL`)
+  행이 있는지로 직접 확인한다.
+- `n_trials`/`timeout_sec`는 `airflow_client.trigger_tune_dag_run`의 기본값(100
+  trial, 무제한 — DAG `execution_timeout=4h`가 바깥 상한)을 그대로 쓴다. 대회별
+  조정은 이번 범위 밖 — 자동 실행 자체가 며칠 전무했으므로 우선 기본값으로 가동해
+  실측을 쌓고 필요시 후속 조정.
+- fire-and-forget: 두 트리거 모두 튜닝 DAG의 완료를 기다리지 않는다 — 별도
+  컴퓨트 레인(`big` 큐, `execution_timeout=4h`)이라 daemon의 사이클 루프나 idle
+  스윕을 블로킹할 이유가 없다.
+- 관측: `dashboard.py`의 "Tuning Lane" 섹션(#319)이 대회별 마지막 튜닝 시각·
+  누적 실행/결과 건수·improved 비율을 보여준다. 이전 수동 전용 상태의 lifetime
+  산출물이 2행뿐이었던 사각지대(#310)를 반복하지 않기 위한 최소 장치.
+- 후속 판단 대상(이번 범위 아님): `raw.tuned_params.improved=True` 비율이 배포
+  후에도 낮게 유지되면(#252 구조적 원인이 재발하는지, 혹은 단순히 탐색 범위
+  문제인지) #308/#309/#311과 함께 재검토. #311("검증 컴퓨트가 탐색을 굶긴다")은
+  튜닝 레인이 별도 레인으로 분리되며 완화되는지 관찰 후 재판단.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |

@@ -51,6 +51,16 @@ def _fetch_stagnation(_conn: PgConn, competition_id: str):
 _LB_STALE_DAYS = 7  # #233 완료 기준: deep tier 전 대회가 주 1회 이상 LB 갱신
 
 
+def _tune_status(row: dict) -> str:
+    """#318/#319 — 튜닝 레인이 다시 조용히 죽지 않았는지(#310 배경, 자동 트리거
+    배선 전엔 lifetime 산출물 2행뿐) 한눈에 보이게."""
+    if row["hours_since_last_tune"] is None:
+        return "⚪ never"
+    if row["hours_since_last_tune"] > 48:
+        return "🟡 stale"
+    return "🟢"
+
+
 def _fleet_attention(row: dict) -> str:
     """대회 하나의 "지금 봐야 하나" 판정 — _traffic_light와 신호 조합이 달라
     별도 함수. 천장 진단(2026-08-03)에서 대회 26개를 하나씩 SQL로 찔러 찾았던
@@ -624,6 +634,51 @@ else:
             st.bar_chart(chart_rows.to_pandas().set_index("action_type"))
     with bc_right:
         st.dataframe(bandit_df, use_container_width=True)
+
+st.divider()
+
+st.subheader("Tuning Lane")
+st.caption(
+    "Optuna 튜닝 레인(evaluator/tuner.py, 별도 Airflow DAG reflexion_rondo_tune) 실행 현황 — "
+    "#318이 자동 트리거를 배선하기 전엔 lifetime 산출물이 2행뿐이었다(#319)."
+)
+
+tune_df = _query_df(
+    conn,
+    """
+    select competition_id, max(created_at) as last_tune_at,
+           extract(epoch from (now() - max(created_at))) / 3600.0 as hours_since_last_tune,
+           count(*) as n_results,
+           count(*) filter (where improved) as n_improved,
+           count(distinct tuning_run_id) as n_runs
+    from raw.tuned_params
+    group by 1
+    """,
+    ["competition_id", "last_tune_at", "hours_since_last_tune", "n_results", "n_improved", "n_runs"],
+)
+tune_df = tune_df.with_columns(pl.col("competition_id").cast(pl.Utf8))
+
+tune_active = (
+    pl.DataFrame({"competition_id": sorted(active_ids)}, schema={"competition_id": pl.Utf8})
+    .join(tune_df, on="competition_id", how="left")
+    .with_columns([
+        pl.col("n_results").fill_null(0),
+        pl.col("n_improved").fill_null(0),
+        pl.col("n_runs").fill_null(0),
+    ])
+)
+if tune_active.is_empty():
+    st.info("No ACTIVE competition.")
+else:
+    tune_active = tune_active.with_columns(
+        pl.Series("tune_status", [_tune_status(r) for r in tune_active.iter_rows(named=True)])
+    )
+    st.dataframe(
+        tune_active.select([
+            "tune_status", "competition_id", "last_tune_at", "n_runs", "n_results", "n_improved",
+        ]),
+        use_container_width=True,
+    )
 
 st.divider()
 
