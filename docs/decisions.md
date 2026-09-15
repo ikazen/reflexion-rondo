@@ -1011,6 +1011,22 @@ baseline을 봤고, 그 사이 구간의 후보가 promote를 "jump"로 통과�
   대상이 없다.
 - ADR-032·043·045는 삭제하지 않는다(living document) — 이 ADR이 그 갱신 사실이다.
 
+- **갱신 (2026-09-15, #317)**: 회귀 대회 교체 완료. #39 백로그의 회귀 후보 중
+  `POST /api/leaderboard/refresh`로 s5e2/s5e10 스냅샷을 확보해 `competition_snr`
+  뷰로 비교:
+
+  | 대회 | SNR | lifetime 에러율 | 비고 |
+  |---|---|---|---|
+  | s5e2(Backpack Price, rmse) | 8.17 | 20.3% | 선택 |
+  | s5e10(Road Accident Risk, rmse) | 1.12 | 40.6% | s4e11(4.02, 방금 동결한 값)보다도
+    낮음 — 방금 SNR이 낮다는 이유로 동결한 대회보다 더 나쁜 신호비를 가진 대회를
+    새로 편입하는 건 자기모순이라 제외. #85(MinIO↔Postgres sha256 드리프트) 미해결도
+    남아 있었음. |
+
+  s5e2는 ADR-032 breadth-first 시기에 이미 EDA 카드 작성·데이터 스테이징까지
+  끝나 있어(`config/competitions/s5e2.py`, 660 lifetime attempt 기록) 온보딩이
+  `ACTIVE=True` 플래그 전환뿐이었다 — 신규 EDA 작업 불필요.
+
 ---
 
 ## 미정 항목 (TBD)

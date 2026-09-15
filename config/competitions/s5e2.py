@@ -15,7 +15,7 @@ DROP_COLS         = ["id"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s5e2/data/"
 EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
-ACTIVE            = False  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
+ACTIVE            = True  # deep tier 편입 (#317, ADR-049 갱신) — s4e11 동결로 빈 회귀 트랙 슬롯 교체, SNR 8.17(s5e10 1.12 대비 압도적 우위)
 
 EDA_CARD = """competition: playground-series-s5e2 (Backpack Price Prediction)
 task: regression  metric: RMSE  target: Price
