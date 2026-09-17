@@ -85,9 +85,15 @@ def trigger_tune_dag_run(
     dags/reflexion_rondo_tune.py 참고). fire-and-forget — 완료를 기다리지
     않는다(별도 컴퓨트 레인이라 promote task/daemon 사이클을 막을 이유가
     없다, #318).
+
+    logical_date는 마이크로초까지 포함한다 — 초 단위였을 때 `_sweep_idle_tuning`이
+    같은 스윕 틱에서 대회 여러 개를 연달아 트리거하면(밀리초 간격) 같은 초에 몰려
+    Airflow의 (dag_id, logical_date) 유일성 제약에 걸려 두 번째부터 전부 409
+    Conflict로 실패했다(실측: s5e2/s6e8 동시 ACTIVE 상태에서 알파벳순으로 먼저
+    도는 s5e2는 매번 성공, s6e8은 24회 연속 100% 실패).
     """
     now = datetime.now(timezone.utc)
-    ts = now.strftime("%Y%m%dT%H%M%S")
+    ts = now.strftime("%Y%m%dT%H%M%S%f")
     run_id = f"rondo_tune_{competition_slug}_{ts}"
     conf: dict = {"competition": competition_slug, "n_trials": n_trials}
     if timeout_sec is not None:
@@ -96,7 +102,7 @@ def trigger_tune_dag_run(
         f"{_AIRFLOW_URL}/api/v2/dags/{_TUNE_DAG_ID}/dagRuns",
         json={
             "dag_run_id": run_id,
-            "logical_date": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "logical_date": now.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
             "conf": conf,
         },
         headers=_headers(),
