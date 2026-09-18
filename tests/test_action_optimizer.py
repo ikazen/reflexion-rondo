@@ -10,6 +10,7 @@ from cycle.action_optimizer import (
     _BANDIT_DECAY,
     _HALF_SUCCESS,
     _NEUTRAL_INCREMENT,
+    _NOOP_TIE_PENALTY,
     assign_super_cycle_actions,
     get_action_prior,
     update_bandit,
@@ -83,9 +84,15 @@ def test_assign_seed_makes_deterministic():
 
 
 
-def _update(label: str, gain: float | None, error: str | None, action: str = "feature_engineering"):
+def _update(
+    label: str,
+    gain: float | None,
+    error: str | None,
+    action: str = "feature_engineering",
+    is_noop_tie: bool = False,
+):
     conn = _conn()
-    update_bandit(conn, "s4e1", action, label, gain, error)
+    update_bandit(conn, "s4e1", action, label, gain, error, is_noop_tie=is_noop_tie)
     return conn
 
 
@@ -133,6 +140,31 @@ def test_update_jump_is_full_win_not_positive_gain():
     params_ng = conn_neutral_gain.execute.call_args[0][1]
     assert params_jump[3] == pytest.approx(1.0) and params_jump[4] == pytest.approx(0.0)
     assert params_ng[3] == pytest.approx(_HALF_SUCCESS) and params_ng[4] == pytest.approx(_NEUTRAL_INCREMENT)
+
+
+def test_update_noop_tie_penalizes_beta_weaker_than_failure():
+    """no-op tie는 실패(β+=1.0)보다 약하지만 neutral(β+=0.1)보다 뚜렷한 페널티."""
+    conn = _update("neutral", 0.0, None, is_noop_tie=True)
+    params = conn.execute.call_args[0][1]
+    da, db = params[3], params[4]
+    assert da == 0.0 and db == pytest.approx(_NOOP_TIE_PENALTY)
+    assert db > _NEUTRAL_INCREMENT
+
+
+def test_update_noop_tie_overrides_jump_label():
+    """tie면 label이 어떻게 찍혀 있든(방어적으로) neutral 취급 안 받는다."""
+    conn = _update("jump", 0.0, None, is_noop_tie=True)
+    params = conn.execute.call_args[0][1]
+    da, db = params[3], params[4]
+    assert da == 0.0 and db == pytest.approx(_NOOP_TIE_PENALTY)
+
+
+def test_update_noop_tie_default_is_false():
+    """is_noop_tie 생략 시 기존 neutral 동작 그대로(하위 호환)."""
+    conn = _update("neutral", 0.0, None)
+    params = conn.execute.call_args[0][1]
+    da, db = params[3], params[4]
+    assert da == pytest.approx(_NEUTRAL_INCREMENT) and db == pytest.approx(_NEUTRAL_INCREMENT)
 
 
 def test_update_decay_in_sql():

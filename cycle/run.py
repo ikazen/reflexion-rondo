@@ -1003,6 +1003,7 @@ def run_attempt_core(
             label=reward_label,
             gain_vs_best=gain_vs_best,
             error_trace=error_trace,
+            is_noop_tie=is_noop_tie,
         )
 
     return _AttemptData(
