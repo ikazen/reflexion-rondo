@@ -9,6 +9,8 @@ import pytest
 from evaluator.harness import BasePipeline, PatchedPipeline, PipelineContext
 from evaluator.tuner import (
     TunerResult,
+    _extract_base_params_literal,
+    _optimize,
     _to_result,
     infer_registry_model,
     tune_confirmed_pipeline,
@@ -223,3 +225,128 @@ def test_to_result_falls_back_to_baseline_when_no_trials_completed():
     assert result.n_trials == 0
     assert result.improved is False
     assert result.best_cv_score == 0.5 == result.baseline_cv_score
+
+
+# #331 — Optuna 튜너가 탐색공간 밖 baseline과 비교되는 문제 (search-space seeding)
+
+_S6E8_LIKE_WITH_NONLITERAL_SEED = '''
+import xgboost as xgb
+class Patch:
+    action_type = "model_swap"
+    def build_model(self, params, ctx):
+        base_params = {"objective": "binary:logistic", "random_state": ctx.seed, "n_estimators": 1500}
+        base_params.update(params or {})
+        model = xgb.XGBClassifier(**base_params)
+        return model
+'''
+
+_FREEFORM_RIDGE_LITERAL = '''
+class Patch:
+    action_type = "model_swap"
+    def build_model(self, params, ctx):
+        from sklearn.linear_model import Ridge
+        base_params = {"alpha": 5.0}
+        base_params.update(params or {})
+        model = Ridge(**base_params)
+        return model
+'''
+
+
+def test_extract_base_params_literal_skips_nonliteral_values_only():
+    """딕셔너리 안 값 하나(random_state: ctx.seed)가 비리터럴이어도 나머지 리터럴
+    키는 살아남는다 — 전체를 ast.literal_eval하면 여기서 전부 유실된다(s6e8 실측 형태)."""
+    extracted = _extract_base_params_literal(_S6E8_LIKE_WITH_NONLITERAL_SEED)
+    assert extracted == {"objective": "binary:logistic", "n_estimators": 1500}
+    assert "random_state" not in extracted
+
+
+def test_extract_base_params_literal_no_dict_literal_returns_empty():
+    assert _extract_base_params_literal(_S5E4_LIKE) == {}
+
+
+def test_extract_base_params_literal_not_a_patch_returns_empty():
+    assert _extract_base_params_literal("def not_a_patch(): pass") == {}
+
+
+def test_extract_base_params_literal_syntax_error_returns_empty():
+    assert _extract_base_params_literal("class Patch:\n  def build_model(") == {}
+
+
+def test_optimize_enqueues_seed_trial_when_given():
+    def objective(trial: "optuna.Trial") -> float:
+        return trial.suggest_int("x", 1, 10)
+
+    study = _optimize(objective, n_trials=1, timeout_sec=None, direction="minimize", seed_params={"x": 7})
+    assert study.trials[0].params["x"] == 7
+
+
+def test_optimize_no_extra_trial_when_seed_params_none():
+    def objective(trial: "optuna.Trial") -> float:
+        return trial.suggest_int("x", 1, 10)
+
+    study = _optimize(objective, n_trials=2, timeout_sec=None, direction="minimize")
+    assert len(study.trials) == 2
+
+
+def test_optimize_seed_out_of_range_used_verbatim_not_clipped():
+    """탐색범위 밖 seed(예: n_estimators=1500 vs suggest 상한 1000)도 UserWarning만
+    내고 그대로 쓴다 — clip이나 예외 없음(2026-09 optuna 4.x 실측, #331)."""
+    def objective(trial: "optuna.Trial") -> float:
+        return trial.suggest_int("n_estimators", 100, 1000)
+
+    study = _optimize(
+        objective, n_trials=1, timeout_sec=None, direction="minimize",
+        seed_params={"n_estimators": 1500},
+    )
+    assert study.trials[0].params["n_estimators"] == 1500
+
+
+def test_optimize_seed_extra_keys_ignored_silently():
+    """objective가 요구 안 하는 키(예: objective/eval_metric)는 조용히 무시된다."""
+    def objective(trial: "optuna.Trial") -> float:
+        return trial.suggest_int("x", 1, 10)
+
+    study = _optimize(
+        objective, n_trials=1, timeout_sec=None, direction="minimize",
+        seed_params={"x": 3, "objective": "binary:logistic", "eval_metric": "auc"},
+    )
+    assert study.trials[0].params == {"x": 3}
+
+
+def test_tune_confirmed_pipeline_freeform_seeds_first_trial_from_literal():
+    """추론된 자유형 경로도 model_spec 경로와 동일하게 baseline params를 시드한다 —
+    n_trials=1이면 유일한 trial이 곧 enqueue된 시드 trial이라 best_params로 직접 검증."""
+    class _FreeformRidge:
+        action_type = "model_swap"
+
+        def build_model(self, params, ctx):
+            from sklearn.linear_model import Ridge
+            base_params = {"alpha": 5.0}
+            base_params.update(params or {})
+            return Ridge(**base_params)
+
+    pipeline = PatchedPipeline(BasePipeline(), _FreeformRidge())
+    ctx = _ctx(is_classification=False)
+    df = _make_df()
+    results = tune_confirmed_pipeline(
+        pipeline, df, ctx, n_trials=1, pipeline_source=_FREEFORM_RIDGE_LITERAL,
+    )
+    assert results[0].best_params["alpha"] == 5.0
+
+
+def test_tune_single_model_seeds_from_model_spec_params():
+    """model_spec 경로는 별도 추출 없이 spec의 params를 그대로 seed로 쓴다."""
+    pipeline = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
+    ctx = _ctx()
+    df = _make_df()
+    results = tune_confirmed_pipeline(pipeline, df, ctx, n_trials=1)
+    assert results[0].best_params["alpha"] == 1.0
+
+
+def test_tune_ensemble_member_seeds_from_member_params():
+    """ensemble_spec 경로는 base_spec의 해당 멤버 params를 그대로 seed로 쓴다."""
+    pipeline = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
+    ctx = _ctx()
+    df = _make_df()
+    result = tune_ensemble_member(pipeline, df, ctx, member_index=1, n_trials=1)
+    assert result.best_params["n_estimators"] == 10

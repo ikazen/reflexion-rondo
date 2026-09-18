@@ -90,8 +90,23 @@ class _EnsembleMemberTrialPipeline:
         return None
 
 
-def _optimize(objective, n_trials: int, timeout_sec: int | None, direction: str) -> optuna.Study:
+def _optimize(
+    objective,
+    n_trials: int,
+    timeout_sec: int | None,
+    direction: str,
+    seed_params: dict | None = None,
+) -> optuna.Study:
     study = optuna.create_study(direction=direction, sampler=optuna.samplers.TPESampler(seed=_SEED))
+    if seed_params:
+        # 현재 확정 pipeline의 params를 1번째 trial로 등록 — TPE가 이미 검증된
+        # 지점을 전혀 모른 채 처음부터 탐색하면 best-of-N이 baseline보다 나쁠 수
+        # 있다(#331 실측: s6e8 100-trial이 탐색공간 밖 n_estimators=1500 baseline과
+        # 비교돼 전량 improved=False). enqueue된 값이 해당 trial의 suggest 범위 밖이면
+        # UserWarning만 내고 그대로 쓰고(clip 안 함), objective가 요구 안 하는 여분
+        # 키(objective/eval_metric 등)는 조용히 무시된다 — 실측 확인(2026-09,
+        # optuna 4.x). 그래서 search space 키로 사전 필터링할 필요가 없다.
+        study.enqueue_trial(seed_params, skip_if_exists=True)
     study.optimize(objective, n_trials=n_trials, timeout=timeout_sec, catch=(Exception,))
     return study
 
@@ -108,6 +123,7 @@ def tune_single_model(
     model_name: str,
     n_trials: int = _DEFAULT_N_TRIALS,
     timeout_sec: int | None = None,
+    seed_params: dict | None = None,
 ) -> TunerResult:
     """pipeline.model_spec(ctx)이 선언한 단일 모델의 params를 탐색한다."""
     # get_search_space를 trial 루프 밖(여기)에서 미리 조회한다 — 등록 안 된 모델명은
@@ -122,7 +138,7 @@ def tune_single_model(
         trial_pipeline = _SingleModelTrialPipeline(pipeline, model_name, params)
         return evaluate_pipeline(trial_pipeline, train, ctx).cv_score
 
-    study = _optimize(objective, n_trials, timeout_sec, _direction(ctx))
+    study = _optimize(objective, n_trials, timeout_sec, _direction(ctx), seed_params=seed_params)
     return _to_result(study, model_name, None, baseline_cv, ctx)
 
 
@@ -143,6 +159,9 @@ def tune_ensemble_member(
     if not (0 <= member_index < len(members)):
         raise ValueError(f"tune_ensemble_member: member_index={member_index} out of range (0..{len(members) - 1})")
     model_name = members[member_index]["model"]
+    # 이 멤버가 confirmed ensemble_spec에서 이미 쓰던 params — base_spec에서 바로
+    # 확보되니(외부 인자 불필요) 그대로 seed로 등록한다(#331).
+    seed_params = members[member_index].get("params") or None
     space_fn = get_search_space(model_name)
     baseline_cv = evaluate_pipeline(pipeline, train, ctx).cv_score
 
@@ -151,7 +170,7 @@ def tune_ensemble_member(
         trial_pipeline = _EnsembleMemberTrialPipeline(pipeline, base_spec, member_index, params)
         return evaluate_pipeline(trial_pipeline, train, ctx).cv_score
 
-    study = _optimize(objective, n_trials, timeout_sec, _direction(ctx))
+    study = _optimize(objective, n_trials, timeout_sec, _direction(ctx), seed_params=seed_params)
     return _to_result(study, model_name, member_index, baseline_cv, ctx)
 
 
@@ -269,6 +288,44 @@ def infer_registry_model(source: str) -> str | None:
     return key
 
 
+def _extract_base_params_literal(source: str) -> dict:
+    """자유형 build_model 본문의 딕셔너리 리터럴에서 상수 kwargs만 best-effort로
+    추출한다(#331) — Optuna 튜닝 seed_params용. 키별로 개별 평가하므로 같은 딕셔너리
+    안에 `random_state: ctx.seed`처럼 비리터럴 값이 섞여 있어도(s6e8 실측 형태) 나머지
+    리터럴 키는 살아남는다 — 딕셔너리 전체를 `ast.literal_eval`하면 값 하나만 비리터럴
+    이어도 전체가 실패한다. 여러 딕셔너리 리터럴이 있으면 전부 병합(나중 것이 우선).
+    과추출(무관한 딕셔너리 포함)은 안전하다 — `_optimize`의 `enqueue_trial`이 실제
+    탐색공간 키가 아닌 항목은 조용히 무시한다.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {}
+    patch = next(
+        (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "Patch"), None
+    )
+    if patch is None:
+        return {}
+    build_model = next(
+        (n for n in patch.body if isinstance(n, ast.FunctionDef) and n.name == "build_model"), None
+    )
+    if build_model is None:
+        return {}
+
+    extracted: dict = {}
+    for node in ast.walk(build_model):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key_node, val_node in zip(node.keys, node.values):
+            if not (isinstance(key_node, ast.Constant) and isinstance(key_node.value, str)):
+                continue
+            try:
+                extracted[key_node.value] = ast.literal_eval(val_node)
+            except (ValueError, SyntaxError):
+                continue
+    return extracted
+
+
 def tune_confirmed_pipeline(
     pipeline: object,
     train: object,
@@ -289,12 +346,19 @@ def tune_confirmed_pipeline(
         ]
     model_spec = pipeline.model_spec(ctx)
     if model_spec is not None:
-        return [tune_single_model(pipeline, train, ctx, model_spec["model"], n_trials=n_trials, timeout_sec=timeout_sec)]
+        return [tune_single_model(
+            pipeline, train, ctx, model_spec["model"], n_trials=n_trials, timeout_sec=timeout_sec,
+            seed_params=model_spec.get("params") or None,
+        )]
 
     inferred = infer_registry_model(pipeline_source) if pipeline_source else None
     if inferred is not None:
         _LOG.info("tune_confirmed_pipeline: freeform build_model → inferred registry model %r", inferred)
-        return [tune_single_model(pipeline, train, ctx, inferred, n_trials=n_trials, timeout_sec=timeout_sec)]
+        seed_params = _extract_base_params_literal(pipeline_source) or None
+        return [tune_single_model(
+            pipeline, train, ctx, inferred, n_trials=n_trials, timeout_sec=timeout_sec,
+            seed_params=seed_params,
+        )]
 
     raise ValueError(
         "tune_confirmed_pipeline: pipeline declares neither ensemble_spec nor model_spec, and "
