@@ -13,6 +13,11 @@ Global/Cluster 티어는 대회 누적 후 승격 예정.
                                             promotion과 동일 기준의 유의미 이득)
   gain_vs_best > 0 (non-jump) → α += 0.5  (half-success, 유의미 미달 양수 이득)
   regression 또는 error_trace → β += 1.0
+  is_noop_tie                 → β += 0.3  (cv_score가 prev_best와 완전 동일 —
+                                            patch가 유효 계산을 안 바꿨다는 확정
+                                            신호. 실패보다 약하지만 neutral과는
+                                            구분 — #330, neutral로 묻히면 밴딧이
+                                            무효과 액션을 계속 선호하게 된다)
   neutral                     → α, β 각 0.1 (약한 신호 유지)
 
 ON CONFLICT 시 decay(_BANDIT_DECAY=0.95)로 기존 α/β를 prior(1.0) 쪽으로 수축 후 가산.
@@ -27,6 +32,7 @@ from store.db import PgConn
 
 _NEUTRAL_INCREMENT = 0.1
 _HALF_SUCCESS = 0.5
+_NOOP_TIE_PENALTY = 0.3
 _BANDIT_DECAY = 0.95
 _SCOPE_LOCAL = "local"
 
@@ -38,12 +44,15 @@ def update_bandit(
     label: str,
     gain_vs_best: float | None,
     error_trace: str | None,
+    is_noop_tie: bool = False,
 ) -> None:
     if action_type not in ACTION_TYPES:
         return
 
     if error_trace is not None or label == "regression":
         da, db = 0.0, 1.0
+    elif is_noop_tie:
+        da, db = 0.0, _NOOP_TIE_PENALTY
     elif label == "jump":
         da, db = 1.0, 0.0
     elif gain_vs_best is not None and gain_vs_best > 0:
