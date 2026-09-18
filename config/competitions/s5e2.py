@@ -15,7 +15,9 @@ DROP_COLS         = ["id"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s5e2/data/"
 EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
-ACTIVE            = True  # deep tier 편입 (#317, ADR-049 갱신) — s4e11 동결로 빈 회귀 트랙 슬롯 교체, SNR 8.17(s5e10 1.12 대비 압도적 우위)
+ACTIVE            = False  # deep tier 동결 (#332, ADR-051) — 재활성 3일 jump 0/960, 유일한
+# 확정 pipeline(07-26)이 model_spec 이전 자유형이라 Optuna 튜닝 레인 정적 추론 불가(#327,
+# 매시간 실패). s5e4로 교체(SNR 100.8, fleet 2위의 3배)
 
 EDA_CARD = """competition: playground-series-s5e2 (Backpack Price Prediction)
 task: regression  metric: RMSE  target: Price
