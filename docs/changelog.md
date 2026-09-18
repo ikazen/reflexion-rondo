@@ -1,5 +1,34 @@
 # 변경 이력
 
+## v1.6.19 — 탐색 컴퓨트 회수: no-op tie 차단 + 튜너 정합 + deep tier 포트폴리오 교체 (Milestone "탐색 컴퓨트 회수", 2026-09-19)
+
+"저번 배포뿐 아니라 거시적으로" 상태 점검 중 `raw.attempts`/`raw.tuned_params` 실측으로
+fleet 컴퓨트 상당 부분이 결과가 이미 정해진 재계산에 쓰이고 있음을 확인. 인프라(daemon/
+health/Airflow)는 전부 정상 — 탐색 전략 문제였다.
+
+- #311: `preselect_params` 후보 수 12→6, cross-seed confirm 3→2. 실측: s6e8
+  hyperparam_search attempt의 87%(s5e2 70%)가 소수점 16자리까지 동일한 cv_score를
+  전체 CV 비용으로 재생산(고정 seed 단일 80/20 split이 같은 후보 풀에서 결정적으로
+  같은 승자를 재선택).
+- #330: `is_noop_tie`(위와 동일 신호, `evaluator/harness.py`)를 밴딧 보상에 반영 —
+  기존엔 neutral과 동일 취급(α,β += 0.1,0.1)해 s6e8 밴딧이 87% 무효과인
+  hyperparam_search를 5개 액션 중 최고로 선호하는 역설이 있었다. tie는 이제
+  β += 0.3(실패보다 약하지만 neutral과는 구분).
+- #331: Optuna 튜너에 confirmed baseline params 시딩. s6e8 100-trial 튜닝이
+  `best_cv=0.964684`를 `baseline=0.966277`보다 나쁘게 보고한 원인은 탐색공간이
+  baseline(`n_estimators=1500`)을 애초에 포함 못 했기 때문(범위 100~1000) —
+  `study.enqueue_trial`로 현재 확정 params를 1번째 trial로 등록해 TPE가 도달
+  불가능한 목표를 반복 확인하는 대신 실제 개선 여지를 검증하게 한다.
+- #332(ADR-051): deep tier 포트폴리오 교체 — s5e2 동결, s5e4 재활성. s5e2는 재활성
+  3일간 jump 0/960이고 유일한 확정 pipeline이 구조적으로 튜닝 불가(#327, 매시간
+  실패 — 이 배포로 해소). s5e4는 SNR 100.8(fleet 2위의 3배)로 headroom이 가장 크다.
+
+배포/검증: 대기 중 — 태그 bump는 사용자 실행(daemon 재시작 필요). 배포 후 관찰 대상:
+s6e8/s5e4 hyperparam_search tie 비율 감소 여부, `raw.action_bandit` hyperparam_search
+posterior 하락 추세, 다음 튜닝 트리거에서 `raw.tuned_params.improved` 비율 상승 여부,
+`raw.cycle_queue`에 s5e4 신규 pending row(idle refill, 최대 6h) 및 s5e2 신규 attempt
+중단.
+
 ## v1.6.16 — CV-LB 정렬 1단계: 세 경로 fit 계약 통일 (Milestone "CV-LB 정렬", 2026-09-13)
 
 v1.6.15 배포 검증(promote 실패 0건, s6e8 신규 최고 LB 확인) 중 s4e11이 7일간 506
