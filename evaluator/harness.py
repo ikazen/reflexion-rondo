@@ -21,7 +21,11 @@ from evaluator.models import build_registry_model, construct_with_kwarg_retry, r
 
 _PI_REPEATS = 3
 _PI_TOP_N = 20
-_MAX_PARAM_CANDIDATES = 12
+# 12였을 때 고정 seed 단일 80/20 split(preselect_params)이 결정적으로 같은 승자를
+# 재선택해 hyperparam_search attempt의 87%가 소수점 16자리까지 동일한 cv_score를
+# 전체 CV 비용으로 재생산했다(#311 실측, 2026-09). 완전 제거 대신 절반으로 축소 —
+# 자유형 build_model 대회는 아직 attempt-내 동기 탐색이 유일한 경로라서.
+_MAX_PARAM_CANDIDATES = 6
 _LEAK_PERFECT_HIGH = 0.9999
 _LEAK_PERFECT_LOW = 1e-9
 _EARLY_STOPPING_ROUNDS = 50

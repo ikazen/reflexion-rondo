@@ -67,8 +67,10 @@ LABEL_Z: float = 2.0
 # 기본값에서 42 제거 — 메인 CV seed(cycle/run.py의 config.seed)가 42라
 # 2σ 게이트를 seed 42에서 통과한 후보는 seed 42 confirm을 자명하게 통과해버려
 # 실질 독립 확인이 4개가 아니라 3개뿐이었다.
+# 3→2로 추가 축소(#311, 2026-09) — promote 최대 8회 eval 중 cross-seed 비중을 줄여
+# big 큐 경합(promote 1건이 heavy 슬롯을 최대 3시간 점유)을 완화한다.
 PROMOTE_CONFIRM_SEEDS: list[int] = [
-    int(s) for s in os.getenv("PROMOTE_CONFIRM_SEEDS", "7,101,137").split(",")
+    int(s) for s in os.getenv("PROMOTE_CONFIRM_SEEDS", "7,101").split(",")
 ]
 
 # Kaggle Playground 일일 제출 한도는 대회당 5건. #233에서 2건으로 시작했는데(수동 제출
