@@ -52,17 +52,23 @@ def main() -> None:
     import logging
     logging.basicConfig(level=logging.INFO)
 
+    sys.path.insert(0, str(ROOT))
+
+    from config.settings import TUNE_TIMEOUT_SEC
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--competition", "-c", required=True)
     parser.add_argument("--n-trials", type=int, default=100)
-    parser.add_argument("--timeout-sec", type=int, default=None, help="모델/멤버 1개당 wall-clock 상한")
+    parser.add_argument(
+        "--timeout-sec", type=int, default=TUNE_TIMEOUT_SEC,
+        help="모델/멤버 1개당 wall-clock 상한 (기본 TUNE_TIMEOUT_SEC — 튜닝 DAG의 "
+             "execution_timeout보다 여유 있게 study가 스스로 종료하도록)",
+    )
     args = parser.parse_args()
-
-    sys.path.insert(0, str(ROOT))
 
     import importlib
 
-    from evaluator.harness import BasePipeline, PatchedPipeline, PipelineContext
+    from evaluator.harness import BasePipeline, PatchedPipeline, PipelineContext, split_audit_holdout
     from evaluator.tuner import tune_confirmed_pipeline
     from store.db import connect, insert_tuned_params
     from store.train_data import load_train
@@ -91,7 +97,11 @@ def main() -> None:
         sys.exit(1)
     pipeline = PatchedPipeline(BasePipeline(), patch_cls())
 
-    train = load_train(comp)
+    # attempt/confirm/promote가 전부 train90(split_audit_holdout 결과)으로 측정하는데
+    # 튜너만 전량 train을 썼다(#341) — baseline_cv_score가 raw.pipelines.cv_score와
+    # 애초에 다른 데이터 기준이라 비교 불가능한 숫자였다. 동일 데이터로 맞춘다.
+    full_train = load_train(comp)
+    train, _holdout10 = split_audit_holdout(full_train, comp.TARGET, comp.IS_CLASSIFICATION)
     ctx = PipelineContext(
         target_col=comp.TARGET,
         metric=comp.METRIC,

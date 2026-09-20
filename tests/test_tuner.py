@@ -6,11 +6,12 @@ import optuna
 import polars as pl
 import pytest
 
-from evaluator.harness import BasePipeline, PatchedPipeline, PipelineContext
+from evaluator.harness import BasePipeline, PatchedPipeline, PipelineContext, evaluate_pipeline
 from evaluator.tuner import (
     TunerResult,
     _extract_base_params_literal,
     _optimize,
+    _SingleModelTrialPipeline,
     _to_result,
     infer_registry_model,
     tune_confirmed_pipeline,
@@ -78,6 +79,47 @@ def test_tune_single_model_baseline_matches_direct_eval():
     df = _make_df()
     direct = evaluate_pipeline(pipeline, df, ctx).cv_score
     result = tune_single_model(pipeline, df, ctx, "ridge", n_trials=2)
+    assert result.baseline_cv_score == direct
+
+
+def test_seeded_baseline_uses_same_registry_path_as_trials_not_raw_freeform():
+    """#341: 자유형 build_model이 레지스트리 생성자와 다르게 동작하면(여기선 alpha를
+    5배 증폭하는 커스텀 로직) baseline_cv_score는 trial과 동일한 레지스트리 경로
+    (_SingleModelTrialPipeline)로 평가해야 한다 — 원본 freeform 경로 그대로 평가하면
+    params가 같아도 다른 모델을 비교하게 돼 improved 판정이 구조적으로 왜곡된다."""
+    class _FreeformRidgeAmplifiesAlpha:
+        action_type = "model_swap"
+
+        def build_model(self, params, ctx):
+            from sklearn.linear_model import Ridge
+            alpha = (params or {}).get("alpha", 1.0) * 5.0
+            return Ridge(alpha=alpha)
+
+    pipeline = PatchedPipeline(BasePipeline(), _FreeformRidgeAmplifiesAlpha())
+    ctx = _ctx(is_classification=False)
+    df = _make_df()
+    seed_params = {"alpha": 1.0}
+
+    raw_freeform_cv = evaluate_pipeline(pipeline, df, ctx).cv_score
+    wrapped_cv = evaluate_pipeline(
+        _SingleModelTrialPipeline(pipeline, "ridge", seed_params), df, ctx
+    ).cv_score
+    assert raw_freeform_cv != wrapped_cv  # 전제: 두 경로가 실제로 다른 모델임을 확인
+
+    result = tune_single_model(pipeline, df, ctx, "ridge", n_trials=1, seed_params=seed_params)
+    assert result.baseline_cv_score == wrapped_cv
+    assert result.baseline_cv_score != raw_freeform_cv
+
+
+def test_unseeded_baseline_falls_back_to_raw_pipeline():
+    """seed_params가 없으면(알려진 baseline params 자체가 없는 극단적 경우) 동등한
+    wrapper를 만들 수 없으니 원본 pipeline 직접 평가로 폴백한다."""
+    from evaluator.harness import evaluate_pipeline as _eval
+    pipeline = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
+    ctx = _ctx()
+    df = _make_df()
+    direct = _eval(pipeline, df, ctx).cv_score
+    result = tune_single_model(pipeline, df, ctx, "ridge", n_trials=1, seed_params=None)
     assert result.baseline_cv_score == direct
 
 

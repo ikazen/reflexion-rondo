@@ -131,7 +131,18 @@ def tune_single_model(
     # catch=(Exception,)가 매 trial을 조용히 흡수해 "n_trials개 다 실패, 개선 없음"으로만
     # 보고되고 진짜 원인(오탈자 모델명 등)이 로그에 묻힌다.
     space_fn = get_search_space(model_name)
-    baseline_cv = evaluate_pipeline(pipeline, train, ctx).cv_score
+    # baseline도 trial과 동일한 _SingleModelTrialPipeline(레지스트리 build_registry_model
+    # 경로)로 평가한다(#341). pipeline이 model_spec을 직접 선언하는 경우 이미 같은 경로라
+    # 무해한 재확인이지만, infer_registry_model(#252)로 추론된 자유형 build_model
+    # 경로에서는 원래 baseline이 freeform Patch.build_model을 그대로 태워 trial(레지스트리
+    # 생성자)과 다른 구현을 비교했다 — early stopping/커스텀 인코딩/다중 seed 배깅 등이
+    # 있으면 params가 같아도 점수가 재현 안 됐다. seed_params가 없으면(알려진 params가
+    # 전혀 없어 동등 wrapper를 못 만드는 극단적 경우) 원본 pipeline으로 폴백한다.
+    baseline_pipeline = (
+        _SingleModelTrialPipeline(pipeline, model_name, seed_params)
+        if seed_params is not None else pipeline
+    )
+    baseline_cv = evaluate_pipeline(baseline_pipeline, train, ctx).cv_score
 
     def objective(trial: "optuna.Trial") -> float:
         params = space_fn(trial, ctx.is_classification)

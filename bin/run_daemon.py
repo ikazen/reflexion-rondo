@@ -27,6 +27,7 @@ import polars as pl
 import bin.airflow_client as airflow_client
 from bin.api import _SUBMIT_TIMEOUT_SEC, DaemonState, create_app, refresh_submission_row
 from config.competitions import active_competition_ids, competition_id_to_slug
+from config.settings import TUNE_LANE_ENABLED, TUNE_TIMEOUT_SEC
 from bin.archive_lessons import archive_low_gain_lessons
 from cycle.run import (
     BaselineSourceMismatchError,
@@ -385,7 +386,7 @@ def _maybe_trigger_tune(conn, competition_slug: str, competition_id: str, attemp
     자격증명이 주입돼 있지 않다(reflexion_rondo_cycle이 RONDO_DB_URL 등만 주입) — daemon은
     이미 reflexion_rondo_cycle을 직접 트리거하므로 이 자격증명을 그대로 갖고 있다.
     """
-    if not airflow_client.available():
+    if not TUNE_LANE_ENABLED or not airflow_client.available():
         return
     try:
         pipeline_row = conn.execute(
@@ -394,7 +395,7 @@ def _maybe_trigger_tune(conn, competition_slug: str, competition_id: str, attemp
         ).fetchone()
         if not pipeline_row:
             return
-        tune_run_id = airflow_client.trigger_tune_dag_run(competition_slug)
+        tune_run_id = airflow_client.trigger_tune_dag_run(competition_slug, timeout_sec=TUNE_TIMEOUT_SEC)
         print(f"[daemon] promotion-triggered tune DAG for {competition_slug}: {tune_run_id}")
     except Exception as exc:
         print(f"[daemon] tune DAG trigger failed for {competition_slug} (non-fatal): {exc}")
@@ -410,6 +411,8 @@ def _sweep_idle_tuning(conn) -> None:
     드문 대회(낮은 SNR 등)가 튜닝 레인의 혜택을 영영 못 받을 수 있다. 마지막 튜닝 실행이
     _TUNE_IDLE_HOURS 넘은 ACTIVE 대회는 승격 여부와 무관하게 현재 확정 pipeline을
     대상으로 튜닝한다(확정 pipeline 자체가 없으면 튜닝할 대상이 없으니 스킵)."""
+    if not TUNE_LANE_ENABLED:
+        return
     global _last_tune_sweep
     now_mono = time.monotonic()
     if now_mono - _last_tune_sweep < _TUNE_SWEEP_INTERVAL_SEC:
@@ -454,7 +457,7 @@ def _sweep_idle_tuning(conn) -> None:
         if last is not None and last >= idle_cutoff:
             continue
         try:
-            tune_run_id = airflow_client.trigger_tune_dag_run(slug)
+            tune_run_id = airflow_client.trigger_tune_dag_run(slug, timeout_sec=TUNE_TIMEOUT_SEC)
             triggered.append(slug)
             print(f"[daemon] idle-tune triggered {slug}: {tune_run_id}")
         except Exception as exc:
