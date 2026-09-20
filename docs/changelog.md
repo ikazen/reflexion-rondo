@@ -1,5 +1,40 @@
 # 변경 이력
 
+## v1.6.20 — 산출 경로 복구: fold-1 조기 중단 + s5e4 단가 축소 + 튜닝 레인 정합 (Milestone "산출 경로 복구 2026-09", 2026-09-20)
+
+v1.6.19 배포 1일 후 거시 점검: 인프라는 정상인데 09-11 이후 9일째 확정 pipeline
+0건·제출 0건. 14일 CPU 회계(931.9h) 실측 결과 31%는 CPU 예산 kill, 39%는 이미
+관측한 cv_score 재생산 — 새 점수를 낸 평가는 29%뿐이었다. v1.6.19의 4개 변경
+아웃컴도 함께 재검증: #311(tie 감소, 미달)·#331(튜너 improved 유도, 미달)은
+가설이 틀렸고, #332(s5e4 재활성)는 역효과(재활성 1일 만에 attempt 70% CPU kill)
+였다.
+
+- #339: `evaluator/harness.py`의 `evaluate_pipeline`이 fold-1 검증 점수를
+  confirmed baseline의 fold-1과 비트 단위로 비교해, 동일하면 나머지 fold를
+  건너뛰고 즉시 tie로 확정한다. 폴드 분할이 결정적이라(`_make_folds`) patch가
+  유효 계산을 못 바꾸면 fold-1부터 이미 같다 — 5-fold를 전부 돌 필요가 없다.
+  `cycle/run.py`는 조기 tie + 예산 잔여 시 다른 후보로 1회 재시도한다. `#311`이
+  후보 수를 줄여 해결하려던 문제(s6e8 hyperparam_search 87%가 동일 cv_score
+  재생산)를 근본 원인(고정 seed 단일 80/20 split의 결정적 재선택) 그대로 두고
+  비용만 회수하는 방향으로 대체.
+- #340(ADR-052): s5e4 `MAX_TRAIN_ROWS` 500k→150k, `N_SPLITS` 5→3. ADR-044(CPU
+  예산 3600→10800 상향)는 이미 s5e4에서 실패로 결론났다(킬 비율 그대로, 소각량만
+  3배) — 남은 개입 축은 예산이 아니라 attempt 단가였다. 배포 후
+  `bin/establish_baseline.py --remeasure` 필수(train_fingerprint 가드).
+- #341(ADR-050 개정): 튜닝 레인이 baseline은 freeform `build_model` 경로로,
+  모든 trial(#331 시드 포함)은 레지스트리 생성자 경로로 평가해 params가 같아도
+  다른 구현을 비교하던 비대칭 제거. 튜너가 전량 train을 쓰던 것도 train90으로
+  통일(attempt/promote와 동일 데이터). 탐색공간 상한(n_estimators 등) 1000→2000,
+  `TUNE_TIMEOUT_SEC`(기본 10800s) 신설로 DAG `execution_timeout=4h` 안에 study가
+  스스로 종료하게 함(09-19 실측 6런 중 4런 타임아웃). `TUNE_LANE_ENABLED` 킬스위치
+  신설.
+
+배포/검증: 대기 중 — 태그 bump는 사용자 실행. 배포 후 필수: s5e4 remeasure,
+`reflexion_rondo_tune` DAG unpause(이번 수정 동안 pause 상태). 24h 관측 대상:
+중복 재생산 CPU 비율(39%→10% 미만 목표), s5e4 CPU kill 비율(70%→s6e8 수준 12%
+목표), `raw.tuned_params.improved` True 전환 여부, 신규 확정 pipeline/제출 재개
+(핵심 아웃컴).
+
 ## v1.6.19 — 탐색 컴퓨트 회수: no-op tie 차단 + 튜너 정합 + deep tier 포트폴리오 교체 (Milestone "탐색 컴퓨트 회수", 2026-09-19)
 
 "저번 배포뿐 아니라 거시적으로" 상태 점검 중 `raw.attempts`/`raw.tuned_params` 실측으로
