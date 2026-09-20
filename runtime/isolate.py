@@ -101,6 +101,7 @@ class IsolatedResult:
     peak_rss_bytes: int | None = None
     peak_cpu_sec: float | None = None
     model_type: str | None = None
+    noop_early_exit: bool = False
 
 
 def _read_rss_bytes(pid: int) -> int | None:
@@ -151,6 +152,7 @@ def eval_isolated(
     timeout_sec: int | None = None,
     holdout_data: pl.DataFrame | None = None,
     cpu_budget_sec: float | None = None,
+    prev_best_fold_scores: list[float] | None = None,
 ) -> IsolatedResult:
     with tempfile.TemporaryDirectory(prefix="rondo-eval-") as tmpdir:
         ws = Path(tmpdir)
@@ -167,6 +169,7 @@ def eval_isolated(
             "best_params": best_params,
             "tuned_params": tuned_params,
             "collect_oof": collect_oof,
+            "prev_best_fold_scores": prev_best_fold_scores,
         }))
         if best_source:
             (ws / "best_pipeline.py").write_text(best_source)
@@ -284,6 +287,7 @@ def eval_isolated(
             model_type=out.get("model_type"),
             peak_rss_bytes=peak_rss_bytes,
             peak_cpu_sec=peak_cpu_sec,
+            noop_early_exit=out.get("noop_early_exit", False),
         )
 
 

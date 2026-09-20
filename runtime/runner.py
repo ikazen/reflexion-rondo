@@ -149,6 +149,7 @@ def main() -> None:
         action_type=inp.get("action_type", ""),
         best_params=inp.get("best_params"),
         tuned_params=inp.get("tuned_params"),
+        prev_best_fold_scores=inp.get("prev_best_fold_scores"),
     )
 
     try:
@@ -180,6 +181,7 @@ def main() -> None:
         "error_trace": None,
         "holdout_score": holdout_score,
         "model_type": result.model_type,
+        "noop_early_exit": result.noop_early_exit,
     })
 
 

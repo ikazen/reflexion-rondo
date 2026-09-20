@@ -474,8 +474,10 @@ def fit_predict(
 @dataclass
 class EvalResult:
     cv_score: float
-    cv_fold_var: float
-    fold_scores: list[float]
+    # noop_early_exit(#339)일 때만 None — 1-fold만 계산했으므로 5-fold 분산/전체
+    # fold_scores를 만들 수 없다(만들면 SNR 뷰 오염, 위 EvalResult 생성부 주석 참고).
+    cv_fold_var: float | None
+    fold_scores: list[float] | None
     label: str
     gain_vs_best: float | None
     feature_importance: dict | None = None
@@ -492,6 +494,10 @@ class EvalResult:
     # model_spec(#229)이 선언한 레지스트리 모델 이름(예: "lgbm") — model_spec을 안 쓰는
     # attempt(자유형 build_model, ensemble)는 None. 분석/모델다양성 추적용 부가 필드.
     model_type: str | None = None
+    # fold-1 비트 단위 tie로 나머지 fold를 건너뛰었는지(#339) — is_noop_tie는 이미
+    # True지만, 이 필드는 "5-fold를 다 돌고 나서야 안 tie"와 "1 fold만 쓰고 조기
+    # 확정한 tie"를 구분해 재시도 여부 판단에 쓴다.
+    noop_early_exit: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,6 +518,10 @@ class PipelineContext:
     # X/y는 절대 안 넣는다 — 탐색 책임을 LLM에 되돌리면 #230이 없애려는 실패 패턴이
     # 재발한다.
     tuned_params: dict | None = None
+    # confirmed baseline의 fold별 점수(#339) — fold-1이 이 리스트의 0번째와 비트
+    # 단위로 같으면 patch가 유효 계산을 못 바꿨다는 뜻이라 나머지 fold를 건너뛴다.
+    # None이면(baseline 없음/길이 불일치) 조기 중단을 하지 않는다.
+    prev_best_fold_scores: list[float] | None = None
 
 
 class BasePipeline:
@@ -913,6 +923,40 @@ def evaluate_pipeline(
             )
         preds = pipeline.postprocess_predictions(raw_preds, ctx)
         fold_scores.append(float(fn(yva_raw, preds)))
+
+        # fold-1 비트 단위 tie 조기 중단(#339) — 폴드 분할이 ctx.seed/ctx.n_splits로
+        # 결정적이므로(_make_folds), patch가 유효 계산을 못 바꾸면 fold-1 점수부터
+        # confirmed baseline과 완전히 동일하다. 이 신호를 5-fold를 전부 돌고 나서
+        # (is_noop_tie, 아래) 확인하던 걸 여기서 조기에 잡아 나머지 fold 계산을
+        # 통째로 아낀다. collect_oof=True(merge-verify 등)는 전체 fold가 필요해 제외.
+        if (
+            fold_idx == 0
+            and not collect_oof
+            and ctx.prev_best is not None
+            and ctx.prev_best_fold_scores is not None
+            and len(ctx.prev_best_fold_scores) == ctx.n_splits
+            and fold_scores[0] == ctx.prev_best_fold_scores[0]
+        ):
+            # fold_scores/cv_fold_var는 None으로 반환한다(1-fold 값을 채우지 않음) —
+            # `competition_snr` 뷰가 `raw.attempts.fold_scores`/`cv_fold_var`를 SNR
+            # 분산 추정에 직접 평균낸다(ADR-047). 1-fold짜리 값을 채워 넣으면 그
+            # 평균이 0/1-fold 쪽으로 오염돼 포트폴리오 판단(ADR-051 등)의 근거
+            # 지표가 깨진다 — None은 뷰의 `is not null` 필터로 자연히 제외된다.
+            return EvalResult(
+                cv_score=ctx.prev_best,
+                cv_fold_var=None,
+                fold_scores=None,
+                label="neutral",
+                gain_vs_best=0.0,
+                gain_vs_best_relative=0.0,
+                feature_importance=None,
+                is_noop_tie=True,
+                selected_params=selected_params,
+                oof_preds=None,
+                model_type=model_type,
+                noop_early_exit=True,
+            )
+
         if metric_class == "regression_error":
             baseline_pred = np.full_like(yva_raw, fill_value=float(np.mean(ytr_raw)), dtype=float)
             baseline_fold_scores.append(float(fn(yva_raw, baseline_pred)))

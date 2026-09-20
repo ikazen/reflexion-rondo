@@ -612,6 +612,19 @@ def _resource_kill_feedback(error_trace: str, cpu_budget_sec: float) -> str:
     return error_trace
 
 
+def _noop_tie_feedback(action_type: str) -> str:
+    """fold-1 조기 중단(#339)으로 확인된 no-op tie를 재생성 피드백으로 알린다.
+
+    폴드 분할이 결정적이라(_make_folds) fold-1 점수가 confirmed baseline과
+    비트 단위로 같다는 것 자체가 patch가 유효 계산을 못 바꿨다는 확정 신호다 —
+    나머지 4개 fold를 마저 돌려봐야 결과가 달라지지 않는다."""
+    return (
+        f"이 {action_type} patch는 fold-1 검증 점수가 confirmed baseline과 완전히"
+        " 동일했다(유효 계산 변화 없음 — params가 무시됐거나 기존 로직을 그대로"
+        " 재발명했을 가능성). 다른 접근으로 다시 써라."
+    )
+
+
 
 def run_attempt_core(
     conn: PgConn,
@@ -705,6 +718,9 @@ def run_attempt_core(
     peak_rss_bytes: int | None = None
     peak_cpu_sec: float | None = None
     model_type: str | None = None
+    # is_significant_gain(아래)과 eval_isolated의 fold-1 조기 중단(#339) 양쪽이
+    # 같은 baseline fold_scores를 쓰므로 attempt당 1회만 조회해 재사용한다.
+    prev_best_fold_scores = _prev_best_fold_scores(conn, config.competition_id)
 
     if not error_trace:
         # CPU 예산은 eval 회차가 아니라 attempt 전체 기준으로 집행한다 — 과거엔
@@ -736,6 +752,7 @@ def run_attempt_core(
                 best_params=_prev_best_params(conn, config.competition_id),
                 tuned_params=_latest_tuned_params(conn, config.competition_id),
                 cpu_budget_sec=cpu_remaining,
+                prev_best_fold_scores=prev_best_fold_scores,
             )
             peak_rss_bytes = iso.peak_rss_bytes
             peak_cpu_sec = iso.peak_cpu_sec
@@ -759,9 +776,29 @@ def run_attempt_core(
                 if is_noop_tie:
                     _LOG.warning(
                         "no-op tie: cv_score exactly matches prev_best "
-                        "(action=%s) — patch made no effective change",
-                        action_type,
+                        "(action=%s)%s — patch made no effective change",
+                        action_type, " [fold-1 조기 중단]" if iso.noop_early_exit else "",
                     )
+                if iso.noop_early_exit and _eval_i == 0 and cpu_budget_total - cpu_spent > 0:
+                    # fold-1만으로 tie가 확정됐고 예산이 남아 있으면, 나머지 4-fold를
+                    # 도는 대신 그 예산으로 다른 후보를 1회 더 시도한다(#339) — tie
+                    # 결과는 이미 유효하니 재시도가 실패해도 잃을 게 없다.
+                    _LOG.info("noop tie (fold-1 조기 중단) → 다른 후보로 재시도")
+                    feedback = _noop_tie_feedback(action_type)
+                    static_errs = []
+                    for _regen_i in range(_MAX_CODE_RETRIES + 1):
+                        source = generate_code(**gen_kwargs, error_feedback=feedback)
+                        retries += 1
+                        static_errs = validate_patch(source, action_type)
+                        if not static_errs:
+                            break
+                        if _regen_i < _MAX_CODE_RETRIES:
+                            feedback = "\n".join(static_errs)
+                    if static_errs:
+                        # 재생성이 정적검사를 못 넘겨도 이미 확보한 tie 결과가
+                        # 유효하므로 그대로 채택한다.
+                        break
+                    continue
                 break
             _LOG.warning("eval error (try %d) → regenerating: %s",
                          _eval_i + 1, (iso.error_trace or "")[:120])
@@ -827,7 +864,7 @@ def run_attempt_core(
         is_significant_gain(
             gain_vs_best, cv_fold_var,
             candidate_fold_scores=fold_scores,
-            baseline_fold_scores=_prev_best_fold_scores(conn, config.competition_id),
+            baseline_fold_scores=prev_best_fold_scores,
             metric_sign=_metric_sign,
         )
         if not error_trace
