@@ -80,6 +80,19 @@ PROMOTE_CONFIRM_SEEDS: list[int] = [
 # _submissions_today가 상태와 무관하게 그날 전체를 세므로 자동이 다 안 써도 여지가 있다.
 SUBMISSIONS_PER_DAY: int = int(os.getenv("SUBMISSIONS_PER_DAY", "5"))
 
+# 튜닝 레인(#230/ADR-050) 킬스위치 — daemon의 자동 트리거 2곳(_maybe_trigger_tune/
+# _sweep_idle_tuning, bin/run_daemon.py)만 게이트한다. 수동 bin/tune_pipeline.py
+# 실행은 영향받지 않는다. #341: 정합 버그(baseline과 trial이 다른 모델 생성 경로를
+# 비교)를 고치는 동안 Airflow DAG 자체를 pause했는데, 다음에 또 끊어야 할 상황이
+# 오면 REST 호출 대신 이 설정으로 처리한다.
+TUNE_LANE_ENABLED: bool = os.getenv("TUNE_LANE_ENABLED", "true").lower() not in ("false", "0", "off")
+
+# 튜닝 DAG(execution_timeout=4h, airflow-stack dags/reflexion_rondo_tune.py)보다
+# 여유 있게 study가 스스로 종료하도록 하는 wall-clock 상한(모델/멤버 1개당). #341:
+# 상한이 없으면(과거 기본 None) DAG가 study 중간에 컨테이너를 강제 종료해 결과가
+# 전혀 기록되지 않는다(2026-09 실측: 6런 중 4런이 4h 타임아웃으로 결과 0).
+TUNE_TIMEOUT_SEC: int = int(os.getenv("TUNE_TIMEOUT_SEC", "10800"))
+
 _CLASSIFICATION_TASK_TYPES = frozenset({"binary", "multiclass"})
 
 

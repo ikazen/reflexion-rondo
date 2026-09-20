@@ -16,7 +16,10 @@ SearchSpaceFn = Callable[["optuna.Trial", bool], dict]
 
 def _lgbm_space(trial: "optuna.Trial", is_classification: bool) -> dict:
     return {
-        "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
+        # 상한 1000→2000(#341) — 자유형 build_model이 자주 쓰는 n_estimators=1500
+        # 같은 confirmed baseline 값이 탐색공간 밖 고립점이 되면(#331 실측) TPE가
+        # 그 영역을 전혀 샘플링 못 해 seed trial만 유일하게 좋은 값으로 남는다.
+        "n_estimators": trial.suggest_int("n_estimators", 100, 2000),
         "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.3, log=True),
         "num_leaves": trial.suggest_int("num_leaves", 15, 255),
         "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
@@ -32,7 +35,9 @@ def _lgbm_space(trial: "optuna.Trial", is_classification: bool) -> dict:
 
 def _xgboost_space(trial: "optuna.Trial", is_classification: bool) -> dict:
     return {
-        "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
+        # 상한 1000→2000(#341) — s6e8 confirmed baseline이 n_estimators=1500을 써서
+        # 이전 상한 밖이었다(2026-09 실측 UserWarning).
+        "n_estimators": trial.suggest_int("n_estimators", 100, 2000),
         "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.3, log=True),
         "max_depth": trial.suggest_int("max_depth", 3, 12),
         "min_child_weight": trial.suggest_float("min_child_weight", 1.0, 20.0, log=True),
@@ -45,7 +50,8 @@ def _xgboost_space(trial: "optuna.Trial", is_classification: bool) -> dict:
 
 def _catboost_space(trial: "optuna.Trial", is_classification: bool) -> dict:
     return {
-        "iterations": trial.suggest_int("iterations", 100, 1000),
+        # 상한 1000→2000(#341) — lgbm/xgboost와 동일한 이유(baseline 고립점 방지).
+        "iterations": trial.suggest_int("iterations", 100, 2000),
         "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.3, log=True),
         "depth": trial.suggest_int("depth", 4, 10),
         "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1.0, 10.0, log=True),
@@ -57,7 +63,8 @@ def _catboost_space(trial: "optuna.Trial", is_classification: bool) -> dict:
 
 def _hgb_space(trial: "optuna.Trial", is_classification: bool) -> dict:
     return {
-        "max_iter": trial.suggest_int("max_iter", 100, 500),
+        # 상한 500→2000(#341) — 나머지 boosting 계열과 동일한 이유(baseline 고립점 방지).
+        "max_iter": trial.suggest_int("max_iter", 100, 2000),
         "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.3, log=True),
         "max_depth": trial.suggest_int("max_depth", 3, 15),
         "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 15, 255),

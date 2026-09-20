@@ -16,6 +16,7 @@ from bin.run_daemon import (
     _maybe_trigger_tune,
     _sweep_idle_tuning,
 )
+from config.settings import TUNE_TIMEOUT_SEC
 
 
 def _long_ago() -> float:
@@ -29,6 +30,18 @@ def test_maybe_trigger_tune_skips_when_airflow_unavailable():
     conn = MagicMock()
     with patch("bin.run_daemon.airflow_client.available", return_value=False):
         _maybe_trigger_tune(conn, "s6e8", "playground-series-s6e8", "attempt-1")
+    conn.execute.assert_not_called()
+
+
+def test_maybe_trigger_tune_skips_when_lane_disabled():
+    """#341: TUNE_LANE_ENABLED=False면 airflow.available() 확인도 없이 즉시 스킵한다."""
+    conn = MagicMock()
+    with (
+        patch("bin.run_daemon.TUNE_LANE_ENABLED", False),
+        patch("bin.run_daemon.airflow_client.available", return_value=True) as mock_available,
+    ):
+        _maybe_trigger_tune(conn, "s6e8", "playground-series-s6e8", "attempt-1")
+    mock_available.assert_not_called()
     conn.execute.assert_not_called()
 
 
@@ -53,7 +66,7 @@ def test_maybe_trigger_tune_triggers_when_pipeline_confirmed():
         patch("bin.run_daemon.airflow_client.trigger_tune_dag_run", return_value="run-1") as mock_trigger,
     ):
         _maybe_trigger_tune(conn, "s6e8", "playground-series-s6e8", "attempt-1")
-    mock_trigger.assert_called_once_with("s6e8")
+    mock_trigger.assert_called_once_with("s6e8", timeout_sec=TUNE_TIMEOUT_SEC)
 
 
 def test_maybe_trigger_tune_swallows_trigger_exception():
@@ -77,6 +90,15 @@ def _patch_scan(comp_slugs: dict[str, str], active: set[str] | None = None):
             return_value=set(comp_slugs) if active is None else active,
         ),
     )
+
+
+def test_idle_tuning_sweep_skips_when_lane_disabled(monkeypatch):
+    """#341: 킬스위치가 꺼져 있으면 sweep 레이트 게이트 타이머도 건드리지 않는다."""
+    monkeypatch.setattr(run_daemon, "_last_tune_sweep", _long_ago())
+    conn = MagicMock()
+    with patch("bin.run_daemon.TUNE_LANE_ENABLED", False):
+        _sweep_idle_tuning(conn)
+    conn.execute.assert_not_called()
 
 
 def test_idle_tuning_sweep_respects_rate_gate(monkeypatch):

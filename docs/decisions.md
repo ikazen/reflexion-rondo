@@ -1066,6 +1066,30 @@ baseline을 봤고, 그 사이 구간의 후보가 promote를 "jump"로 통과�
   문제인지) #308/#309/#311과 함께 재검토. #311("검증 컴퓨트가 탐색을 굶긴다")은
   튜닝 레인이 별도 레인으로 분리되며 완화되는지 관찰 후 재판단.
 
+**개정 (#341, 2026-09)**: 위 "후속 판단 대상"이 실측으로 확인됐다 — `improved`가
+lifetime 전량 False. 원인은 탐색 범위가 아니라 baseline과 trial이 **다른 모델
+생성 경로**를 비교하는 구조적 버그였다:
+
+- `bin/tune_pipeline.py`가 전량 train으로 튜닝했는데 attempt/confirm/promote는
+  전부 train90(`split_audit_holdout`)이라 `baseline_cv_score`가 `raw.pipelines.
+  cv_score`와 애초에 다른 데이터 기준이었다 — train90 사용으로 통일.
+- `infer_registry_model`(ADR-035/#252)로 추론된 자유형 `build_model` 경로에서
+  baseline은 원본 freeform Patch(`_build_model_safe`)로, 모든 trial(#331 seed
+  trial 포함)은 `_SingleModelTrialPipeline`(레지스트리 `build_registry_model`)로
+  평가돼 params가 같아도 다른 구현을 비교했다 — baseline도 seed_params가 있으면
+  동일 wrapper로 평가하도록 통일(model_spec을 직접 선언하는 대회는 원래도 이미
+  같은 경로라 무해한 재확인).
+- `evaluator/search_spaces.py`의 `n_estimators`/`iterations`/`max_iter` 상한이
+  1000(hgb는 500)이라 s6e8 confirmed baseline(1500)이 탐색공간 밖 고립점이었다 —
+  2000으로 상향.
+- `n_trials`/`timeout_sec` 기본값(무제한)이 DAG `execution_timeout=4h`보다 먼저
+  study를 끝내지 못해 결과가 아예 기록 안 되는 경우가 잦았다(2026-09 실측: 6런
+  중 4런 타임아웃) — `config/settings.py` `TUNE_TIMEOUT_SEC`(기본 10800=3h,
+  모델/멤버 1개당) 신설, daemon 트리거·CLI 기본값 양쪽에 적용.
+- `config/settings.py` `TUNE_LANE_ENABLED` 킬스위치 신설 — 이번 수정처럼 정합
+  버그를 고치는 동안 Airflow REST pause 대신 설정으로 자동 트리거만 끌 수 있다
+  (수동 `bin/tune_pipeline.py` 실행은 영향 없음).
+
 ---
 
 ## ADR-051 — deep tier 포트폴리오 교체: s5e2 동결, s5e4 재활성 (#332)
