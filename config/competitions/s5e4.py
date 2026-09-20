@@ -17,20 +17,23 @@ S3_DATA_PATH      = "s5e4/data/"
 EXTRA_TRAIN_PATHS: list[str] = ["original.csv"]  # sangampaudel530/original-podcast-dataset —
 # 컬럼 완전 일치. MinIO kaggle/s5e4/data/original.csv.
 ACTIVE            = True  # deep tier 재활성 (#332, ADR-051) — s5e2 동결로 빈 회귀 트랙 슬롯
-# 교체, SNR 100.8(fleet 2위의 3배)·gap_to_p90 fleet 최대. 과거 동결 사유(#283, ADR-045
-# CPU kill 비율)는 예산 상향으로도 안 풀렸다는 게 이미 결론(ADR-044) — 재활성 시 전역
-# 기본값(3600s)으로 되돌아가는 것 자체가 그 결론과 정합적이라 별도 예산 재조정 없이 진행
+# 교체, SNR 100.8(fleet 2위의 3배)·gap_to_p90 fleet 최대.
 
-# 2026-08 처리량 진단(#135): 최근 7일 rc=-9(OOM SIGKILL) 140/450건(31%), 평균 775초를
-# 태우고 죽음 — 계산의 4분의 1을 이 대회와 s4e12 둘이 태웠다. 회귀라
-# store/train_data.py:load_train의 단순 랜덤 샘플 경로(고정 seed 42)를 탄다.
-# 적용 전 baseline(raw.pipelines.cv_score)은 전량 데이터 기준이라 이 데이터로 더 이상
-# 비교 불가 — bin/establish_baseline.py --remeasure로 재측정 필요(#135).
-MAX_TRAIN_ROWS = 500_000
+# 2026-09 재활성 1일 실측(#340, ADR-052): attempt 70%가 CPU 예산(3600s) kill, fleet
+# CPU의 65%(89h 중 57.5h)를 이 대회 하나가 소각. ADR-044(예산 3600→10800 상향)는 이미
+# s5e4에서 실패로 결론났다(킬 비율 그대로, 소각량만 3배) — 남은 개입 축은 예산이 아니라
+# attempt 단가다. MAX_TRAIN_ROWS 500k→150k + N_SPLITS 5(기본)→3으로 1회 eval 비용을
+# 줄인다. 데이터/fold 구조가 바뀌므로 배포 후 bin/establish_baseline.py --remeasure
+# 필수(train_fingerprint 가드가 재측정 전까지 attempt를 막는다).
+#
+# 2026-08 처리량 진단(#135): 당시 최근 7일 rc=-9(OOM SIGKILL) 140/450건(31%) — 500k행
+# 자체가 이미 무거웠다는 선행 신호였다.
+MAX_TRAIN_ROWS = 150_000
+N_SPLITS = 3
 
 EDA_CARD = """competition: playground-series-s5e4 (Podcast Listening Time Prediction)
 task: regression  metric: RMSE  target: Listening_Time_minutes
-rows: ~500000 (MAX_TRAIN_ROWS로 랜덤 샘플링 — 원본 750000행에서 OOM 방지)  features: 10
+rows: ~150000 (MAX_TRAIN_ROWS로 랜덤 샘플링 — 원본 750000행에서 CPU 예산 초과 방지, #340)  features: 10
 target range: 0.0 - 119.97  mean: 45.44  nunique: 42807 (범위 좁고 skew 약함 — raw scale RMSE
   학습이 기본)
 결측: Episode_Length_minutes 11.6%, Guest_Popularity_percentage 19.5%, Number_of_Ads <0.1%
