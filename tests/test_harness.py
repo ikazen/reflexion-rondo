@@ -1019,6 +1019,92 @@ def test_different_prev_best_is_not_noop_tie():
     assert result.is_noop_tie is False
 
 
+def test_prev_best_fold_scores_none_disables_early_exit():
+    """prev_best_fold_scores를 안 주면(#339 이전 호출부) 여전히 5-fold를 전부
+    돌고 post-loop is_noop_tie 판정으로만 tie를 잡는다 — noop_early_exit=False."""
+    df = _make_df()
+    baseline = evaluate_pipeline(BasePipeline(), df, _ctx())
+    ctx_with_prev = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42,
+        is_classification=True, prev_best=baseline.cv_score,
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx_with_prev)
+    assert result.is_noop_tie is True
+    assert result.noop_early_exit is False
+    assert result.fold_scores is not None
+    assert len(result.fold_scores) == 3
+
+
+def test_fold1_match_triggers_early_exit():
+    """fold-1 점수가 prev_best_fold_scores[0]과 비트 단위로 같으면 나머지
+    fold를 건너뛰고 조기 확정한다(#339). cv_fold_var/fold_scores는 competition_snr
+    뷰 오염을 피하려고 None으로 남긴다(위 evaluate_pipeline 주석 참고)."""
+    df = _make_df()
+    baseline = evaluate_pipeline(BasePipeline(), df, _ctx())
+    ctx_with_prev = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42,
+        is_classification=True, prev_best=baseline.cv_score,
+        prev_best_fold_scores=baseline.fold_scores,
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx_with_prev)
+    assert result.is_noop_tie is True
+    assert result.noop_early_exit is True
+    assert result.cv_score == baseline.cv_score
+    assert result.cv_fold_var is None
+    assert result.fold_scores is None
+
+
+def test_fold1_mismatch_does_not_exit_early():
+    """fold-1 점수가 prev_best_fold_scores[0]과 다르면 조기 중단하지 않고
+    나머지 fold를 마저 돈다."""
+    df = _make_df()
+    baseline = evaluate_pipeline(BasePipeline(), df, _ctx())
+    mismatched = [baseline.fold_scores[0] + 0.5, *baseline.fold_scores[1:]]
+    ctx_with_prev = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42,
+        is_classification=True, prev_best=baseline.cv_score,
+        prev_best_fold_scores=mismatched,
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx_with_prev)
+    assert result.noop_early_exit is False
+    assert result.fold_scores is not None
+    assert len(result.fold_scores) == 3
+
+
+def test_prev_best_fold_scores_length_mismatch_disables_early_exit():
+    """prev_best_fold_scores 길이가 ctx.n_splits와 다르면(예: N_SPLITS 변경
+    직후, 재측정 전) 조기 중단하지 않는다 — baseline이 다른 fold 구조로
+    측정된 값이라 fold-1 대응이 무의미하다."""
+    df = _make_df()
+    baseline = evaluate_pipeline(BasePipeline(), df, _ctx())
+    ctx_with_prev = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42,
+        is_classification=True, prev_best=baseline.cv_score,
+        prev_best_fold_scores=baseline.fold_scores[:-1],
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx_with_prev)
+    assert result.noop_early_exit is False
+    assert result.fold_scores is not None
+    assert len(result.fold_scores) == 3
+
+
+def test_collect_oof_disables_early_exit():
+    """collect_oof=True(merge-verify 등)는 전체 fold의 OOF가 필요해 fold-1
+    tie가 나도 조기 중단하지 않는다."""
+    df = _make_df()
+    baseline = evaluate_pipeline(BasePipeline(), df, _ctx())
+    ctx_with_prev = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42,
+        is_classification=True, prev_best=baseline.cv_score,
+        prev_best_fold_scores=baseline.fold_scores,
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx_with_prev, collect_oof=True)
+    assert result.noop_early_exit is False
+    assert result.oof_preds is not None
+    assert result.fold_scores is not None
+    assert len(result.fold_scores) == 3
+
+
 
 def test_split_audit_holdout_deterministic():
     """같은 입력 → 항상 같은 분리 (고정 seed)."""
