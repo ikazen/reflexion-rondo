@@ -123,23 +123,21 @@ class BaselineSourceMismatchError(RuntimeError):
 _FP_PAUSE_PREFIX = "train_fingerprint 불일치"
 
 
-def _train_fingerprint_guard(conn: PgConn, competition_id: str, train90: pl.DataFrame) -> None:
-    """train90의 지문이 raw.competitions.train_fingerprint와 어긋나면 승격 게이트를
-    멈춘다. 최초 관측(저장값 NULL)이면 현재 지문을 심고 통과한다.
-
-    호출부는 train90(split_audit_holdout 결과)을 넘겨야 한다 — remeasure도 같은
-    분할을 거치므로 그때만 지문 비교가 성립한다. holdout이 분리되지 않은
-    smoke/direct 경로는 호출하지 않는다.
+def _fingerprint_guard(
+    conn: PgConn, competition_id: str, *, column: str, fp: str, pause_prefix: str, issue: str,
+    error_cls: type[RuntimeError], hint: str,
+) -> None:
+    """raw.competitions.<column>의 저장 지문과 현재 지문 fp가 어긋나면 승격 게이트를 멈춘다.
+    최초 관측(저장값 NULL)이면 현재 지문을 심고 통과한다. 일치하면 이전에 심긴 같은 접두어의 pause를 푼다.
     """
-    fp = train_data_fingerprint(train90)
     row = conn.execute(
-        "select train_fingerprint from raw.competitions where competition_id = %s",
+        f"select {column} from raw.competitions where competition_id = %s",
         [competition_id],
     ).fetchone()
     stored = row[0] if row else None
     if stored is None:
         conn.execute(
-            "update raw.competitions set train_fingerprint = %s where competition_id = %s",
+            f"update raw.competitions set {column} = %s where competition_id = %s",
             [fp, competition_id],
         )
         return
@@ -149,14 +147,10 @@ def _train_fingerprint_guard(conn: PgConn, competition_id: str, train90: pl.Data
         conn.execute(
             "update raw.competitions set auto_submit_paused_reason = null"
             " where competition_id = %s and auto_submit_paused_reason like %s",
-            [competition_id, _FP_PAUSE_PREFIX + "%"],
+            [competition_id, pause_prefix + "%"],
         )
         return
-    cmd = f"uv run python -m bin.establish_baseline --remeasure --competition {competition_id}"
-    reason = (
-        f"train_fingerprint 불일치 (#258): 저장 {stored[:12]} != 현재 {fp[:12]}. "
-        f"load_train 설정이 바뀌었으면 `{cmd}` 실행 후 재개."
-    )
+    reason = f"{pause_prefix} ({issue}): 저장 {stored[:12]} != 현재 {fp[:12]}. {hint}"
     conn.execute(
         "update raw.competitions"
         " set auto_submit_paused_reason = coalesce(auto_submit_paused_reason, %s)"
@@ -164,7 +158,22 @@ def _train_fingerprint_guard(conn: PgConn, competition_id: str, train90: pl.Data
         [reason, competition_id],
     )
     _LOG.error("%s", reason)
-    raise TrainFingerprintMismatchError(reason)
+    raise error_cls(reason)
+
+
+def _train_fingerprint_guard(conn: PgConn, competition_id: str, train90: pl.DataFrame) -> None:
+    """train90의 지문이 raw.competitions.train_fingerprint와 어긋나면 승격 게이트를 멈춘다.
+
+    호출부는 train90(split_audit_holdout 결과)을 넘겨야 한다 — remeasure도 같은
+    분할을 거치므로 그때만 지문 비교가 성립한다. holdout이 분리되지 않은
+    smoke/direct 경로는 호출하지 않는다.
+    """
+    cmd = f"uv run python -m bin.establish_baseline --remeasure --competition {competition_id}"
+    _fingerprint_guard(
+        conn, competition_id, column="train_fingerprint", fp=train_data_fingerprint(train90),
+        pause_prefix=_FP_PAUSE_PREFIX, issue="#258", error_cls=TrainFingerprintMismatchError,
+        hint=f"load_train 설정이 바뀌었으면 `{cmd}` 실행 후 재개.",
+    )
 
 
 def _baseline_source_guard(conn: PgConn, competition_id: str) -> None:
