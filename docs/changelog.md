@@ -1,5 +1,19 @@
 # 변경 이력
 
+## v1.6.21 — #311 롤백: s6e8 base 점수 복원 (Milestone "산출 경로 재복구 2026-09", 2026-09-21)
+
+v1.6.20 배포 1일 후 점검에서 s6e8이 v1.6.19 배포 시각(09-19 00:29 UTC)부터 attempt 전부 label=regression
+(237건/118.7 CPU-h, neutral·jump·확정 pipeline·제출 0)임을 발견. gain_vs_best는 예외 없이 -0.0010889로
+일정했다.
+
+- #347: `_MAX_PARAM_CANDIDATES` 6 -> 12 롤백. #311의 캡 축소는 비용 절감이 아니라 확정 pipeline의 base 점수
+  변경이었다 — `preselect_params`는 base 평가 안에서 실행되고 후보 목록은 promote마다 뒤에 누적되므로 캡
+  절단은 가장 최근 승자부터 제거한다. s6e8 union 11개 중 승자(인덱스 10)가 캡 6에서 잘려 base가
+  0.966210 -> 0.965122로 내려앉았다. train_fingerprint는 불변이라 remeasure 불필요.
+- 임시 조치: union이 11/12라 다음 promote에서 캡 12도 넘는다. 근본 수정은 #349(params 동결).
+- v1.6.20 아웃컴(24h 실측): #340 성공(s5e4 CPU kill 61% -> 9.5%, p50 CPU 2400s -> 270s). #339는 s6e8이
+  회귀 상태라 tie가 없어 미발동. #341 튜닝 레인은 improved 전량 False에 4h 벽 초과(#350).
+
 ## v1.6.20 — 산출 경로 복구: fold-1 조기 중단 + s5e4 단가 축소 + 튜닝 레인 정합 (Milestone "산출 경로 복구 2026-09", 2026-09-20)
 
 v1.6.19 배포 1일 후 거시 점검: 인프라는 정상인데 09-11 이후 9일째 확정 pipeline
@@ -29,11 +43,8 @@ v1.6.19 배포 1일 후 거시 점검: 인프라는 정상인데 09-11 이후 9�
   스스로 종료하게 함(09-19 실측 6런 중 4런 타임아웃). `TUNE_LANE_ENABLED` 킬스위치
   신설.
 
-배포/검증: 대기 중 — 태그 bump는 사용자 실행. 배포 후 필수: s5e4 remeasure,
-`reflexion_rondo_tune` DAG unpause(이번 수정 동안 pause 상태). 24h 관측 대상:
-중복 재생산 CPU 비율(39%→10% 미만 목표), s5e4 CPU kill 비율(70%→s6e8 수준 12%
-목표), `raw.tuned_params.improved` True 전환 여부, 신규 확정 pipeline/제출 재개
-(핵심 아웃컴).
+배포/검증: 2026-09-20 02:19 UTC 배포 완료, s5e4 remeasure와 `reflexion_rondo_tune` DAG
+unpause도 완료. 24h 실측 결과는 v1.6.21 항목 참고.
 
 ## v1.6.19 — 탐색 컴퓨트 회수: no-op tie 차단 + 튜너 정합 + deep tier 포트폴리오 교체 (Milestone "탐색 컴퓨트 회수", 2026-09-19)
 
