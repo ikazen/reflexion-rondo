@@ -61,8 +61,8 @@ def main() -> None:
     parser.add_argument("--n-trials", type=int, default=100)
     parser.add_argument(
         "--timeout-sec", type=int, default=TUNE_TIMEOUT_SEC,
-        help="모델/멤버 1개당 wall-clock 상한 (기본 TUNE_TIMEOUT_SEC — 튜닝 DAG의 "
-             "execution_timeout보다 여유 있게 study가 스스로 종료하도록)",
+        help="baseline 평가와 모든 멤버를 합친 튜닝 런 전체의 wall-clock 예산 (기본 TUNE_TIMEOUT_SEC — "
+             "튜닝 DAG의 execution_timeout보다 여유 있게 스스로 종료하도록)",
     )
     args = parser.parse_args()
 

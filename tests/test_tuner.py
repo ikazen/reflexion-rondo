@@ -1,11 +1,14 @@
 """evaluator.tuner — Optuna 튜닝 레인(#230) 단위 테스트. n_trials를 작게 줘 빠르게 돈다."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import optuna
 import polars as pl
 import pytest
 
+import evaluator.tuner as tuner_module
 from evaluator.harness import BasePipeline, PatchedPipeline, PipelineContext, evaluate_pipeline
 from evaluator.tuner import (
     TunerResult,
@@ -392,3 +395,85 @@ def test_tune_ensemble_member_seeds_from_member_params():
     df = _make_df()
     result = tune_ensemble_member(pipeline, df, ctx, member_index=1, n_trials=1)
     assert result.best_params["n_estimators"] == 10
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class _ThreeMemberPipeline:
+    def ensemble_spec(self, ctx):
+        return {"members": [{}, {}, {}]}
+
+
+def _fake_members(monkeypatch, clock: _Clock, spend: list[float]) -> list[float | None]:
+    monkeypatch.setattr(tuner_module, "time", SimpleNamespace(monotonic=clock))
+    seen: list[float | None] = []
+
+    def fake_member(pipeline, train, ctx, i, n_trials, timeout_sec):
+        seen.append(None if timeout_sec is None else round(timeout_sec, 1))
+        clock.now += spend[i]
+        return TunerResult(
+            model_name="lgbm", member_index=i, best_params={}, best_cv_score=0.0, baseline_cv_score=0.0,
+            n_trials=1, improved=False,
+        )
+
+    monkeypatch.setattr(tuner_module, "tune_ensemble_member", fake_member)
+    return seen
+
+
+def test_ensemble_run_budget_is_split_across_remaining_members(monkeypatch):
+    """timeout_sec는 멤버별 상한이 아니라 런 전체 예산 — 앞 멤버가 쓴 시간을 뺀 나머지를 남은 멤버 수로 나눈다(#350)."""
+    seen = _fake_members(monkeypatch, _Clock(), spend=[100.0, 300.0, 50.0])
+    results = tune_confirmed_pipeline(_ThreeMemberPipeline(), None, None, n_trials=5, timeout_sec=900)
+    assert seen == [300.0, 400.0, 500.0]
+    assert len(results) == 3
+
+
+def test_ensemble_run_skips_remaining_members_when_budget_is_spent(monkeypatch):
+    seen = _fake_members(monkeypatch, _Clock(), spend=[1000.0, 1.0, 1.0])
+    results = tune_confirmed_pipeline(_ThreeMemberPipeline(), None, None, n_trials=5, timeout_sec=900)
+    assert seen == [300.0]
+    assert [r.member_index for r in results] == [0]
+
+
+def test_ensemble_run_without_timeout_passes_no_budget_to_members(monkeypatch):
+    seen = _fake_members(monkeypatch, _Clock(), spend=[100.0, 100.0, 100.0])
+    tune_confirmed_pipeline(_ThreeMemberPipeline(), None, None, n_trials=5, timeout_sec=None)
+    assert seen == [None, None, None]
+
+
+def _single_model_study_budget(monkeypatch, baseline_seconds: float, timeout_sec: float | None) -> float | None:
+    clock = _Clock()
+    monkeypatch.setattr(tuner_module, "time", SimpleNamespace(monotonic=clock))
+
+    def fake_evaluate(pipeline, train, ctx):
+        clock.now += baseline_seconds
+        return SimpleNamespace(cv_score=0.5)
+
+    captured: dict = {}
+
+    def fake_optimize(objective, n_trials, timeout, direction, seed_params=None):
+        captured["timeout"] = timeout
+        return SimpleNamespace(trials=[])
+
+    monkeypatch.setattr(tuner_module, "evaluate_pipeline", fake_evaluate)
+    monkeypatch.setattr(tuner_module, "_optimize", fake_optimize)
+    tune_single_model(object(), None, _ctx(), "lgbm", n_trials=1, timeout_sec=timeout_sec)
+    return captured["timeout"]
+
+
+def test_single_model_study_budget_excludes_baseline_evaluation_time(monkeypatch):
+    assert _single_model_study_budget(monkeypatch, baseline_seconds=200.0, timeout_sec=900) == 700.0
+
+
+def test_single_model_study_budget_keeps_one_second_for_the_seed_trial(monkeypatch):
+    assert _single_model_study_budget(monkeypatch, baseline_seconds=5000.0, timeout_sec=900) == 1.0
+
+
+def test_single_model_study_budget_none_stays_unbounded(monkeypatch):
+    assert _single_model_study_budget(monkeypatch, baseline_seconds=200.0, timeout_sec=None) is None

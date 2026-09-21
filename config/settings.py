@@ -88,9 +88,11 @@ SUBMISSIONS_PER_DAY: int = int(os.getenv("SUBMISSIONS_PER_DAY", "5"))
 TUNE_LANE_ENABLED: bool = os.getenv("TUNE_LANE_ENABLED", "true").lower() not in ("false", "0", "off")
 
 # 튜닝 DAG(execution_timeout=4h, airflow-stack dags/reflexion_rondo_tune.py)보다
-# 여유 있게 study가 스스로 종료하도록 하는 wall-clock 상한(모델/멤버 1개당). #341:
-# 상한이 없으면(과거 기본 None) DAG가 study 중간에 컨테이너를 강제 종료해 결과가
-# 전혀 기록되지 않는다(2026-09 실측: 6런 중 4런이 4h 타임아웃으로 결과 0).
+# 여유 있게 튜닝이 스스로 종료하도록 하는 런 전체의 wall-clock 예산(baseline 평가와 모든 멤버 합계).
+# #341: 상한이 없으면(과거 기본 None) DAG가 중간에 컨테이너를 강제 종료해 결과가 전혀 기록되지 않는다
+# (2026-09 실측: 6런 중 4런이 4h 타임아웃으로 결과 0). #350: 처음엔 멤버 1개당 상한이라 3멤버 앙상블(s5e4)이
+# 4h 벽을 구조적으로 넘었다 — 이제 남은 예산을 남은 멤버 수로 나눠 배분한다. Optuna timeout은 새 trial 시작만 막고
+# 진행 중인 trial은 끝까지 돌므로 멤버 수만큼의 trial 초과분과 데이터 로드가 DAG 벽과의 1h 여유에 들어가야 한다.
 TUNE_TIMEOUT_SEC: int = int(os.getenv("TUNE_TIMEOUT_SEC", "10800"))
 
 _CLASSIFICATION_TASK_TYPES = frozenset({"binary", "multiclass"})
