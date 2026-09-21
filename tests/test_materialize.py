@@ -5,7 +5,7 @@ import ast
 import textwrap
 
 import pytest
-from cycle.materialize import materialize_best_pipeline, _validate_materialized
+from cycle.materialize import materialize_best_pipeline, with_frozen_params, _validate_materialized
 
 
 _BASE = textwrap.dedent("""
@@ -750,3 +750,119 @@ def test_multi_target_assign_emitted_once():
     result = materialize_best_pipeline(None, patch)
     ast.parse(result)
     assert result.count("x = y = 42") == 1
+
+
+_PC_ROUND1 = textwrap.dedent("""
+    class Patch:
+        action_type = "hyperparam_search"
+        changed_stages = ["param_candidates"]
+        rationale = "round1"
+
+        def param_candidates(self, ctx):
+            return [{"lr": 0.1}, {"lr": 0.2}, {"lr": 0.3}]
+""").strip()
+
+_PC_ROUND2 = textwrap.dedent("""
+    class Patch:
+        action_type = "hyperparam_search"
+        changed_stages = ["param_candidates"]
+        rationale = "round2"
+
+        def param_candidates(self, ctx):
+            return [{"lr": 0.4}, {"lr": 0.5}]
+""").strip()
+
+_FE_ONLY = textwrap.dedent("""
+    class Patch:
+        action_type = "feature_engineering"
+        changed_stages = ["feature_transform"]
+        rationale = "fe only"
+
+        def feature_transform(self, train, valid, target, ctx):
+            return train, valid
+""").strip()
+
+
+def _candidates(source: str) -> list[dict]:
+    ns: dict = {}
+    exec(compile(source, "<test>", "exec"), ns)  # noqa: S102
+    return ns["Patch"]().param_candidates(None)
+
+
+def test_frozen_params_collapse_composed_candidates_to_single():
+    round2 = materialize_best_pipeline(_PC_ROUND1, with_frozen_params(_PC_ROUND2, {"lr": 0.4}))
+    assert _candidates(round2) == [{"lr": 0.4}]
+
+
+def test_frozen_params_prune_dead_composition_helpers():
+    round2 = materialize_best_pipeline(_PC_ROUND1, with_frozen_params(_PC_ROUND2, {"lr": 0.4}))
+    assert "_param_candidates_prev" not in round2
+    assert "_param_candidates_new" not in round2
+    assert "frozen_params" not in round2
+
+
+def test_without_frozen_params_composition_still_accumulates():
+    round2 = materialize_best_pipeline(_PC_ROUND1, _PC_ROUND2)
+    assert len(_candidates(round2)) == 5
+
+
+def test_frozen_base_plus_new_patch_recomposes_then_refreezes():
+    round1 = materialize_best_pipeline(None, with_frozen_params(_PC_ROUND1, {"lr": 0.2}))
+    assert _candidates(round1) == [{"lr": 0.2}]
+    unfrozen_round2 = materialize_best_pipeline(round1, _PC_ROUND2)
+    assert _candidates(unfrozen_round2) == [{"lr": 0.2}, {"lr": 0.4}, {"lr": 0.5}]
+    refrozen = materialize_best_pipeline(round1, with_frozen_params(_PC_ROUND2, {"lr": 0.5}))
+    assert _candidates(refrozen) == [{"lr": 0.5}]
+
+
+def test_frozen_params_from_fe_only_patch_freeze_base_pool():
+    """param_candidates를 정의하지 않은 patch가 이겨도 winner가 고른 params로 base 풀이 동결된다."""
+    base = materialize_best_pipeline(_PC_ROUND1, _PC_ROUND2)
+    merged = materialize_best_pipeline(base, with_frozen_params(_FE_ONLY, {"lr": 0.3}))
+    assert _candidates(merged) == [{"lr": 0.3}]
+    assert "feature_transform" in merged
+
+
+def test_frozen_params_noop_when_pipeline_has_no_param_candidates():
+    merged = materialize_best_pipeline(None, with_frozen_params(_FE_ONLY, {"lr": 0.3}))
+    assert "param_candidates" not in merged
+
+
+def test_frozen_params_keep_helper_referenced_by_other_member():
+    patch = textwrap.dedent("""
+        class Patch:
+            action_type = "hyperparam_search"
+            changed_stages = ["param_candidates"]
+            rationale = "uses helper"
+
+            def param_candidates(self, ctx):
+                return [{"lr": 0.9}]
+
+            def build_model(self, params, ctx):
+                return self._param_candidates_prev(ctx)
+    """).strip()
+    merged = materialize_best_pipeline(_PC_ROUND1, with_frozen_params(patch, {"lr": 0.9}))
+    assert "def _param_candidates_prev" in merged
+
+
+def test_with_frozen_params_appends_single_trailing_assignment():
+    out = with_frozen_params(_PC_ROUND2, {"lr": 0.4, "depth": None})
+    assert out.startswith(_PC_ROUND2)
+    assert out.rstrip().endswith("Patch.frozen_params = {'lr': 0.4, 'depth': None}")
+    ast.parse(out)
+
+
+@pytest.mark.parametrize("params", [None, {}, {"lr": float("nan")}, {"lr": float("inf")}])
+def test_with_frozen_params_returns_source_unchanged_for_unfreezable_params(params):
+    assert with_frozen_params(_PC_ROUND2, params) == _PC_ROUND2
+
+
+def test_replay_of_frozen_promotions_reproduces_same_materialization():
+    """동결 표식이 승격 소스(raw.pipelines.code)에 실려 있으면 처음부터 재생해도 같은 병합본이 나온다."""
+    code1 = with_frozen_params(_PC_ROUND1, {"lr": 0.2})
+    code2 = with_frozen_params(_PC_ROUND2, {"lr": 0.5})
+    live = materialize_best_pipeline(materialize_best_pipeline(None, code1), code2)
+    replayed = None
+    for code in (code1, code2):
+        replayed = materialize_best_pipeline(replayed, code)
+    assert replayed == live

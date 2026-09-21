@@ -124,13 +124,15 @@ _FULL_ID = "playground-series-s4e1"
 _SLUG = "s4e1"
 _WINNER_CV = 0.85
 
+_WINNER_PARAMS = {"n_estimators": 300, "learning_rate": 0.05}
+
 # attempts SELECT 컬럼 순서:
 # attempt_id, gain_vs_best, cv_score, label, error_trace,
-# hypothesis, action_type, reflection_ids, cv_fold_var, code_path
+# hypothesis, action_type, reflection_ids, cv_fold_var, code_path, fold_scores, params
 _ATTEMPT_ROWS = [
-    ("w0000000", 0.05, _WINNER_CV, "jump", None, "hyp-w", "model_swap", [], 0.0, "s3://w", None),
-    ("l1111111", 0.01, 0.81, "neutral", None, "hyp-1", "feature_engineering", [], 0.0, "s3://l1", None),
-    ("l2222222", -0.01, 0.79, "neutral", None, "hyp-2", "preprocessing", [], 0.0, "s3://l2", None),
+    ("w0000000", 0.05, _WINNER_CV, "jump", None, "hyp-w", "model_swap", [], 0.0, "s3://w", None, _WINNER_PARAMS),
+    ("l1111111", 0.01, 0.81, "neutral", None, "hyp-1", "feature_engineering", [], 0.0, "s3://l1", None, None),
+    ("l2222222", -0.01, 0.79, "neutral", None, "hyp-2", "preprocessing", [], 0.0, "s3://l2", None, None),
 ]
 
 
@@ -231,7 +233,9 @@ def _run_promote_with_mocks(
             upload_submission_csv_mock = stack.enter_context(patch("store.s3_code.upload_submission_csv"))
             stack.enter_context(patch("store.s3_code.download_submission_csv", download_submission_csv_mock))
             stack.enter_context(patch("bin.api._best_attempt", best_attempt_mock))
-            stack.enter_context(patch("cycle.materialize.materialize_best_pipeline", return_value="code"))
+            materialize_mock = stack.enter_context(
+                patch("cycle.materialize.materialize_best_pipeline", return_value="code")
+            )
             stack.enter_context(patch("cycle.promotion.confirm_and_measure", confirm_mock))
             stack.enter_context(patch("cycle.action_optimizer.update_bandit", update_bandit_mock))
             stack.enter_context(patch("agents.reflector.reflect", reflect_mock))
@@ -250,6 +254,7 @@ def _run_promote_with_mocks(
         if str(ROOT) in sys.path:
             sys.path.remove(str(ROOT))
     conn.insert_pipeline_mock = insert_pipeline_mock
+    conn.materialize_mock = materialize_mock
     conn.upload_best_pipeline_mock = upload_best_pipeline_mock
     conn.eval_isolated_mock = eval_isolated_mock
     conn.generate_csv_mock = generate_csv_mock
@@ -329,8 +334,8 @@ def test_winner_selection_tolerates_fewer_than_three_attempts(monkeypatch) -> No
     """attempt_gate(#203) 도입 후 promote가 3개를 다 기다리지 않고 2개(또는 1개)만 있는
     상태로 뜰 수 있다 — winner 선정이 enumerate 기반이라 행 수와 무관하게 동작해야 한다."""
     two_rows = [
-        ("w0000000", 0.05, _WINNER_CV, "jump", None, "hyp-w", "model_swap", [], 0.0, "s3://w", None),
-        ("l1111111", 0.01, 0.81, "neutral", None, "hyp-1", "feature_engineering", [], 0.0, "s3://l1", None),
+        ("w0000000", 0.05, _WINNER_CV, "jump", None, "hyp-w", "model_swap", [], 0.0, "s3://w", None, None),
+        ("l1111111", 0.01, 0.81, "neutral", None, "hyp-1", "feature_engineering", [], 0.0, "s3://l1", None, None),
     ]
     monkeypatch.setattr(sys.modules[__name__], "_ATTEMPT_ROWS", two_rows)
     reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
@@ -366,6 +371,21 @@ def test_merge_verify_matching_cv_allows_promotion() -> None:
     )
     assert conn.insert_pipeline_mock.call_count == 1
     assert conn.upload_best_pipeline_mock.call_count == 1
+
+
+def test_promotion_freezes_winner_params_into_promoted_source() -> None:
+    """승격 시 winner의 selected_params(raw.attempts.params)가 승격 소스에 동결 표식으로 붙어
+    materialize와 raw.pipelines.code 양쪽에 같은 소스가 전달돼야 replay가 같은 병합본을 재현한다(#349)."""
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
+        MagicMock(return_value=SimpleNamespace(reflection_id="rid")),
+        MagicMock(),
+    )
+    frozen_line = f"Patch.frozen_params = {_WINNER_PARAMS!r}"
+    materialize_source = conn.materialize_mock.call_args.args[1]
+    assert materialize_source.rstrip().endswith(frozen_line)
+    _, insert_kwargs = conn.insert_pipeline_mock.call_args
+    assert insert_kwargs["code"] == materialize_source
 
 
 def test_merge_verify_passes_oof_preds_to_insert_pipeline() -> None:

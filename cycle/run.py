@@ -26,7 +26,7 @@ from config.settings import MODEL_CODER, PROMOTE_CONFIRM_SEEDS
 from cycle.action_optimizer import get_action_prior, update_bandit
 from cycle.error_pitfalls import normalize_error, top_error_pitfalls
 from cycle.stagnation import detect_stagnation
-from cycle.materialize import materialize_best_pipeline
+from cycle.materialize import materialize_best_pipeline, with_frozen_params
 from cycle.promotion import (
     ConfirmResult,
     PromotionCache,
@@ -976,7 +976,8 @@ def run_attempt_core(
             # materialize 먼저 → 해시는 실제 MinIO에 올라가는 내용(submit.py가 exec하는
             # 그 문자열) 기준이어야 한다. raw.pipelines.code(winner source)와는
             # 다른 문자열이므로 순서를 바꿔 sha256을 insert_pipeline에 함께 기록한다.
-            materialized = materialize_best_pipeline(prev_code, source)
+            promoted_source = with_frozen_params(source, selected_params)
+            materialized = materialize_best_pipeline(prev_code, promoted_source)
             pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
 
             # OOF 확보 — bin/run_promote_task.py의 merge-verify와 동일 패턴
@@ -1011,7 +1012,7 @@ def run_attempt_core(
                     attempt_id=attempt_id,
                     competition_id=config.competition_id,
                     fingerprint_snapshot=fp_dict,
-                    code=source,
+                    code=promoted_source,
                     cv_score=cv_score,
                     gain_vs_best=gain_vs_best,
                     pipeline_sha256=pipeline_sha256,

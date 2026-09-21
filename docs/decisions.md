@@ -1170,6 +1170,38 @@ lifetime 전량 False. 원인은 탐색 범위가 아니라 baseline과 trial이
 
 ---
 
+## ADR-054 — 확정 pipeline의 params는 승격 시 동결한다 (#349)
+
+- 결정: 승격 시 winner가 고른 `selected_params`(`raw.attempts.params`)를 materialized pipeline의 `param_candidates`에 단일 후보로
+  동결한다. 승격 소스 끝에 `Patch.frozen_params = {...}` 한 줄을 붙여 `raw.pipelines.code`에 저장하고
+  (`cycle/materialize.py:with_frozen_params`), `materialize_best_pipeline`이 이를 읽어 병합본의 `param_candidates`를 `[params]`로
+  교체한 뒤 더는 참조되지 않는 합성 체인 helper(`_param_candidates_prev/_new*`)를 걷어낸다. 두 승격 경로(`cycle/run.py`,
+  `bin/run_promote_task.py`) 모두 적용한다. 승격 시 동결은 forward-only이고, 이미 누적된 base 풀은 `bin/freeze_base.py`로 소급
+  동결한다(동결본을 실제 평가해 저장된 cv와 일치할 때만 반영).
+- 근거(2026-09 실측): (1) base 점수가 `_MAX_PARAM_CANDIDATES`의 함수였다. 후보는 promote마다 `_union_param_candidates(prev, new)`로
+  뒤에 누적되고 캡은 꼬리를 자르므로 가장 최근 승자부터 빠진다 — s6e8 union 11개 중 승자(인덱스 10)가 캡 6에서 잘려 base가 -0.0011
+  회귀하고 237 attempt(118.7 CPU-h)가 무산출이었다(#347). (2) 풀이 캡에 가까우면 hyperparam patch의 신규 후보는 대부분 평가조차 안
+  된다(union 11 + 신규 6은 캡 12에서 1개만 평가). (3) 매 평가마다 후보 N개를 fit하는 preselect가 attempt 비용의 큰 몫이다.
+- 실측 검증: s6e8 확정 pipeline(union 11개)을 동결해 실데이터(train90 629,732행, 5-fold, seed 42)로 평가한 결과 cv
+  `0.966210408605035`와 fold 점수 5개가 저장된 값과 비트 단위로 일치했고, peak CPU는 522s로 기존 attempt 평균(1,600~2,400s)의 약
+  1/4였다.
+- 동결이 pipeline 소스에 실려야 하는 이유: 평가 진입점(attempt, confirm baseline, promote, submit, remeasure, tuner)이 전부 소스를
+  그대로 exec한다. 표식을 `raw.pipelines.code`에 두면 `replay_best_pipeline`이 같은 병합본을 재현하고 스키마 변경도 필요 없다.
+- 기각한 대안: (a) `[:cap]`을 `[-cap:]`으로 바꿔 최신 후보를 보존 — 한 줄이지만 풀이 캡을 넘으면 base 점수가 여전히 캡의 함수이고
+  preselect 비용도 그대로다. (b) `raw.pipelines`에 frozen_params 컬럼 추가 — task 이미지가 daemon보다 먼저 라이브라 새 컬럼 INSERT가
+  구 스키마에서 죽는 간극이 생긴다. (c) ctx/DB로 동결값 주입 — 진입점 하나가 빠지면 조용히 재발한다.
+- 동결하지 않는 경우: `selected_params`가 비었거나(ensemble_spec/model_spec/후보 없음) 파이썬 리터럴로 왕복되지 않으면(nan/inf) 그대로
+  둔다.
+- 트레이드오프: FE/전처리 patch가 암묵적으로 얻던 "누적 후보 중 재선택"이 사라진다. base와 같은 params로 비교하므로 gain 측정에 param
+  재선택 효과가 섞이지 않는 대신, 그 이득은 이제 hyperparam_search가 명시적으로 찾아야 한다.
+- 알려진 한계: `materialize_best_pipeline`은 병합할 때마다 `textwrap.indent`가 docstring/멀티라인 문자열 내부 줄까지 들여써 텍스트가
+  멱등이 아니다(40 -> 44 -> 48칸). 동결 여부를 텍스트 비교가 아니라 AST로 판정하는 이유이며, 멀티라인 문자열 리터럴을 데이터로 쓰는
+  pipeline에서는 값이 바뀔 수 있다(관측 사례 없음, 별도 이슈).
+- 재고 트리거: 동결 후에도 s6e8 hyperparam_search의 양의 gain 비율이 0에 수렴하면(09-09 이후 254건 중 0건이 기준선) 후보 생성 방식
+  자체를 재검토한다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |
