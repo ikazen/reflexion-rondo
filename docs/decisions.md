@@ -667,7 +667,8 @@ param_candidates는 의미 없는 빈 `{}` 후보가 매번 끼어들어(`tests/
 1라운드·2라운드 엔지니어링 컬럼을 **둘 다** 포함함을 확인(이전 로직이면 1라운드 컬럼은 사라졌을 것).
 - 한계: `param_candidates` 합성이 base 체인에 이미 여러 라운드 누적되면 탐색 후보 수가 계속
 늘어난다 — `_MAX_PARAM_CANDIDATES`(harness.py)가 여전히 캡을 걸지만, 상한 근처에서 새 patch의
-후보가 밀려날 수 있다. `feature_transform` 컬럼 합집합은 동명 충돌 시 patch가 무조건 이겨 base의
+후보가 밀려날 수 있다(2026-09 실측: 캡이 꼬리를 자르므로 가장 최근 승자가 먼저 잘려 s6e8 base가
+회귀했다, #347 — 확정 pipeline의 params 동결 #349로 해소). `feature_transform` 컬럼 합집합은 동명 충돌 시 patch가 무조건 이겨 base의
 같은 이름 컬럼이 조용히 사라질 수 있다(의도된 override 시맨틱과 동일 원리이나, 이름을 안 바꾸고
 다른 의미로 재사용하면 혼란 여지).
 
@@ -1121,8 +1122,9 @@ lifetime 전량 False. 원인은 탐색 범위가 아니라 baseline과 trial이
   패턴이라 Optuna 추론 조건을 통과한다(s5e2와 달리 안전 — DB에서 직접 확인).
 - ADR-045의 s5e4 동결 사유(CPU kill 비율, 예산 상향에도 40%→38%로 불변)는
   ADR-044가 이미 "예산 문제가 아니다"로 결론낸 것과 같은 결이라, 재활성 시
-  전역 기본값(3600s, `PROMOTE_CONFIRM_SEEDS`·`_MAX_PARAM_CANDIDATES`는 #311로
-  이미 조정됨)으로 되돌아가는 것 자체가 그 결론과 정합적이다 — 별도 예산
+  전역 기본값(3600s, `PROMOTE_CONFIRM_SEEDS`는 #311로 이미 조정됨. 같은 #311의
+  `_MAX_PARAM_CANDIDATES` 12->6은 s6e8 base 점수를 깨뜨려 #347에서 롤백)으로
+  되돌아가는 것 자체가 그 결론과 정합적이다 — 별도 예산
   재조정 없이 재활성한다. kill 비율이 재현되는지는 재활성 후 관측 대상.
 - 잃는 것: 없음 — s5e2는 lifetime 확정 pipeline이 07-26 1건뿐이고 그마저 튜닝
   불가라 잃을 산출이 사실상 없다. s5e2 attempts 이력은 보존한다(ADR-025·032·
