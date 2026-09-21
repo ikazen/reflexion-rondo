@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import copy
 import logging
+import time
 from dataclasses import dataclass
 
 import optuna
@@ -90,10 +91,17 @@ class _EnsembleMemberTrialPipeline:
         return None
 
 
+def _remaining_budget(timeout_sec: float | None, started_at: float) -> float | None:
+    """baseline 평가에 쓴 시간을 뺀 study 예산. 최소 1초를 줘 seed trial 1개는 돌게 한다."""
+    if timeout_sec is None:
+        return None
+    return max(timeout_sec - (time.monotonic() - started_at), 1.0)
+
+
 def _optimize(
     objective,
     n_trials: int,
-    timeout_sec: int | None,
+    timeout_sec: float | None,
     direction: str,
     seed_params: dict | None = None,
 ) -> optuna.Study:
@@ -122,10 +130,12 @@ def tune_single_model(
     ctx: PipelineContext,
     model_name: str,
     n_trials: int = _DEFAULT_N_TRIALS,
-    timeout_sec: int | None = None,
+    timeout_sec: float | None = None,
     seed_params: dict | None = None,
 ) -> TunerResult:
-    """pipeline.model_spec(ctx)이 선언한 단일 모델의 params를 탐색한다."""
+    """pipeline.model_spec(ctx)이 선언한 단일 모델의 params를 탐색한다. timeout_sec는 baseline 평가를 포함한
+    이 호출 전체의 wall-clock 예산이다."""
+    started_at = time.monotonic()
     # get_search_space를 trial 루프 밖(여기)에서 미리 조회한다 — 등록 안 된 모델명은
     # 설정 오류지 trial 하나하나의 우연한 실패가 아니다. 안에서 조회하면 study.optimize의
     # catch=(Exception,)가 매 trial을 조용히 흡수해 "n_trials개 다 실패, 개선 없음"으로만
@@ -149,7 +159,9 @@ def tune_single_model(
         trial_pipeline = _SingleModelTrialPipeline(pipeline, model_name, params)
         return evaluate_pipeline(trial_pipeline, train, ctx).cv_score
 
-    study = _optimize(objective, n_trials, timeout_sec, _direction(ctx), seed_params=seed_params)
+    study = _optimize(
+        objective, n_trials, _remaining_budget(timeout_sec, started_at), _direction(ctx), seed_params=seed_params,
+    )
     return _to_result(study, model_name, None, baseline_cv, ctx)
 
 
@@ -159,10 +171,11 @@ def tune_ensemble_member(
     ctx: PipelineContext,
     member_index: int,
     n_trials: int = _DEFAULT_N_TRIALS,
-    timeout_sec: int | None = None,
+    timeout_sec: float | None = None,
 ) -> TunerResult:
     """pipeline.ensemble_spec(ctx)의 member_index번째 멤버 params를 탐색한다(다른
-    멤버는 confirmed 값에 고정)."""
+    멤버는 confirmed 값에 고정). timeout_sec는 baseline 평가를 포함한 이 호출 전체의 wall-clock 예산이다."""
+    started_at = time.monotonic()
     base_spec = pipeline.ensemble_spec(ctx)
     if base_spec is None:
         raise ValueError("tune_ensemble_member: pipeline has no ensemble_spec")
@@ -181,7 +194,9 @@ def tune_ensemble_member(
         trial_pipeline = _EnsembleMemberTrialPipeline(pipeline, base_spec, member_index, params)
         return evaluate_pipeline(trial_pipeline, train, ctx).cv_score
 
-    study = _optimize(objective, n_trials, timeout_sec, _direction(ctx), seed_params=seed_params)
+    study = _optimize(
+        objective, n_trials, _remaining_budget(timeout_sec, started_at), _direction(ctx), seed_params=seed_params,
+    )
     return _to_result(study, model_name, member_index, baseline_cv, ctx)
 
 
@@ -342,19 +357,31 @@ def tune_confirmed_pipeline(
     train: object,
     ctx: PipelineContext,
     n_trials: int = _DEFAULT_N_TRIALS,
-    timeout_sec: int | None = None,
+    timeout_sec: float | None = None,
     pipeline_source: str | None = None,
 ) -> list[TunerResult]:
     """pipeline이 model_spec이면 단일 결과, ensemble_spec이면 멤버별 독립 튜닝 결과
     목록을 반환한다. 둘 다 없으면 pipeline_source에서 레지스트리 모델을 정적 추론하고
-    (infer_registry_model), 추론도 실패하면 튜닝 대상이 없다는 에러."""
+    (infer_registry_model), 추론도 실패하면 튜닝 대상이 없다는 에러.
+
+    timeout_sec는 멤버 전체를 합친 런의 wall-clock 예산이다(멤버별 상한이 아니다) — 앙상블은 남은 예산을
+    남은 멤버 수로 나눠 배분하고, 예산이 바닥나면 나머지 멤버는 튜닝하지 않는다(#350).
+    """
     ensemble_spec = pipeline.ensemble_spec(ctx)
     if ensemble_spec is not None:
-        members = ensemble_spec.get("members") or []
-        return [
-            tune_ensemble_member(pipeline, train, ctx, i, n_trials=n_trials, timeout_sec=timeout_sec)
-            for i in range(len(members))
-        ]
+        n_members = len(ensemble_spec.get("members") or [])
+        started_at = time.monotonic()
+        results: list[TunerResult] = []
+        for i in range(n_members):
+            member_timeout = None
+            if timeout_sec is not None:
+                remaining = timeout_sec - (time.monotonic() - started_at)
+                if remaining <= 0:
+                    _LOG.warning("tune_confirmed_pipeline: 예산 소진 — 멤버 %d..%d 튜닝 생략", i, n_members - 1)
+                    break
+                member_timeout = remaining / (n_members - i)
+            results.append(tune_ensemble_member(pipeline, train, ctx, i, n_trials=n_trials, timeout_sec=member_timeout))
+        return results
     model_spec = pipeline.model_spec(ctx)
     if model_spec is not None:
         return [tune_single_model(
