@@ -1,10 +1,9 @@
 """승격 winner의 Patch를 현재 best pipeline 소스에 병합(materialize_best_pipeline).
 
-patch가 새로 정의한 hook은 보존하고, base에만 있는 hook도 보존한다. 양쪽이 같은 합성
-가능 훅(_COMPOSABLE_HOOKS)을 다르게 정의하면 완전 교체 대신 base 실행 후 patch를
-적용하는 wrapper를 합성한다(ADR-037, #232, patch가 override로 명시하면 완전 교체).
-그 외 훅(build_model 등)은 여전히 patch가 이긴다. 병합 결과는 undefined-name/
-optional-dependency 가드로 검증한다.
+patch가 새로 정의한 hook은 보존하고, base에만 있는 hook도 보존한다. 양쪽이 같은 합성 가능 훅(_COMPOSABLE_HOOKS)을 다르게 정의하면
+완전 교체 대신 base 실행 후 patch를 적용하는 wrapper를 합성한다(ADR-037, #232, patch가 override로 명시하면 완전 교체). 그 외 훅
+(build_model 등)은 여전히 patch가 이긴다. 승격 소스에 `Patch.frozen_params`가 있으면 param_candidates를 그 값 하나로 동결한다(ADR-054).
+병합 결과는 undefined-name/optional-dependency 가드로 검증한다.
 """
 from __future__ import annotations
 
@@ -12,6 +11,7 @@ import ast
 import builtins
 import hashlib
 import logging
+import re
 import textwrap
 from typing import TYPE_CHECKING
 
@@ -57,6 +57,64 @@ _COMPOSE_TEMPLATES: dict[str, str] = {
         "    return _union_param_candidates(self.{base}(ctx), self.{patch}(ctx))\n"
     ),
 }
+
+
+_FROZEN_ATTR = "frozen_params"
+# _synthesize_composed_member가 만드는 이름: _param_candidates_prev, _param_candidates_new_2
+_COMPOSED_CANDIDATES_HELPER = re.compile(r"^_param_candidates_(prev|new)(_\d+)?$")
+
+
+def with_frozen_params(source: str, params: dict | None) -> str:
+    """승격 소스 끝에 `Patch.frozen_params = {...}`를 붙인다(ADR-054, #349).
+
+    materialize_best_pipeline이 이 값을 읽어 병합본의 param_candidates를 단일 후보로 동결한다. 동결 표식이 승격 소스
+    (raw.pipelines.code)에 실려 있어야 replay_best_pipeline이 같은 병합본을 재현한다. 값이 없거나 파이썬 리터럴로
+    왕복되지 않으면(nan 등) 원본 그대로 돌려준다.
+    """
+    if not params:
+        return source
+    literal = repr(params)
+    try:
+        if ast.literal_eval(literal) != params:
+            return source
+    except (ValueError, SyntaxError):
+        return source
+    return f"{source.rstrip()}\n\n\nPatch.{_FROZEN_ATTR} = {literal}\n"
+
+
+def _extract_frozen_params(source: str) -> dict | None:
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if (
+            isinstance(target, ast.Attribute) and target.attr == _FROZEN_ATTR
+            and isinstance(target.value, ast.Name) and target.value.id == "Patch"
+        ):
+            value = ast.literal_eval(node.value)
+            return value if isinstance(value, dict) and value else None
+    return None
+
+
+def _apply_frozen_params(members: dict[str, ast.stmt], params: dict) -> None:
+    """병합된 param_candidates를 [params] 하나로 교체하고 더는 참조되지 않는 합성 체인 helper를 걷어낸다.
+    병합본에 param_candidates가 없으면 손대지 않는다."""
+    if "param_candidates" not in members:
+        return
+    members["param_candidates"] = ast.parse(
+        f"def param_candidates(self, ctx):\n    return [{params!r}]\n"
+    ).body[0]
+    # 합성 체인이 중첩돼 있어 바깥 wrapper를 걷어내야 안쪽 helper의 참조가 끊기므로 더 지울 게 없을 때까지 반복한다.
+    while True:
+        referenced = {
+            n.attr for m in members.values() for n in ast.walk(m)
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "self"
+        }
+        dead = [k for k in members if _COMPOSED_CANDIDATES_HELPER.match(k) and k not in referenced]
+        if not dead:
+            return
+        for k in dead:
+            del members[k]
 
 
 def _extract_imports(source: str) -> list[str]:
@@ -236,6 +294,11 @@ def materialize_best_pipeline(base_source: str | None, patch_source: str) -> str
         merged_members[name] = wrapper
         if name in _COMPOSE_HELPER_IMPORTS:
             extra_compose_imports.add(_COMPOSE_HELPER_IMPORTS[name])
+
+    # 합성 루프 뒤에 적용해야 한다 — 앞이면 위에서 만든 합성 wrapper가 동결본을 덮어쓴다.
+    frozen_params = _extract_frozen_params(patch_source)
+    if frozen_params is not None:
+        _apply_frozen_params(merged_members, frozen_params)
 
     seen_imports: set[str] = set()
     imports: list[str] = []

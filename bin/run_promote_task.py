@@ -44,7 +44,7 @@ def main() -> None:
     from agents.reflector import AttemptContext, reflect
     from config.settings import PROMOTE_CONFIRM_SEEDS
     from cycle.action_optimizer import update_bandit
-    from cycle.materialize import materialize_best_pipeline
+    from cycle.materialize import materialize_best_pipeline, with_frozen_params
     from cycle.promotion import MERGE_VERIFY_TOLERANCE, PromotionCache, confirm_and_measure, effective_label
     from evaluator.harness import is_significant_gain, split_audit_holdout
     from memory.retriever import EmbeddingUnavailableError
@@ -76,7 +76,7 @@ def main() -> None:
         """
         SELECT attempt_id, gain_vs_best, cv_score, label, error_trace,
                hypothesis, action_type, reflection_ids, cv_fold_var, code_path,
-               fold_scores
+               fold_scores, params
         FROM raw.attempts
         WHERE super_cycle_id = %s
         ORDER BY run_ts
@@ -121,6 +121,9 @@ def main() -> None:
     winner_error = winner_row[4]
     winner_code_path = winner_row[9]
     winner_fold_scores = winner_row[10]
+    winner_params = winner_row[11]
+    if isinstance(winner_params, str):
+        winner_params = _json.loads(winner_params)
 
     # paired per-fold 검정용 metric_sign + baseline fold_scores.
     # 이 시점엔 comp 모듈을 아직 import 안 했으므로(뒤에서 필요할 때 import) DB에서 바로 조회.
@@ -247,7 +250,8 @@ def main() -> None:
                 fp_dict = fp_val if isinstance(fp_val, dict) else _json.loads(fp_val)
                 # materialize 먼저 → 해시는 실제 MinIO 업로드 내용(submit.py가 exec하는
                 # 문자열) 기준. raw.pipelines.code(winner source)와는 다른 문자열.
-                materialized = materialize_best_pipeline(current_best, winner_source)
+                promoted_source = with_frozen_params(winner_source, winner_params)
+                materialized = materialize_best_pipeline(current_best, promoted_source)
                 pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
 
                 # merge-verify — 병합본을 실제로 1회 평가해 winner 자신의 cv_score와
@@ -298,7 +302,7 @@ def main() -> None:
                             attempt_id=winner_row[0],
                             competition_id=competition_id,
                             fingerprint_snapshot=fp_dict,
-                            code=winner_source,
+                            code=promoted_source,
                             cv_score=winner_row[2],
                             gain_vs_best=winner_gain,
                             pipeline_sha256=pipeline_sha256,
@@ -339,7 +343,7 @@ def main() -> None:
     for i, r in enumerate(rows):
         (attempt_id, gain_vs_best, cv_score, label, error_trace,
          hypothesis, action_type, reflection_ids, cv_fold_var, code_path,
-         _fold_scores) = r
+         _fold_scores, _params) = r
 
         is_winner = (i == winner_idx)
         # winner: jump/regression/error만 reflect (neutral은 교훈 불명확)
