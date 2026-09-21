@@ -333,6 +333,38 @@ OPENBLAS_NUM_THREADS=2 MKL_NUM_THREADS=2`로 프로덕션과 동일하게 맞추
 `10*1024**3`) 실행할 것 — 두 조치 모두 로컬 프로세스에만 적용되고 배포된 daemon
 설정에는 영향 없다.
 
+### 4-8. 평가 노브 변경 시 baseline 재측정 (#348, ADR-053)
+
+`evaluator/harness.py`의 **`_MAX_PARAM_CANDIDATES` / `_PRESELECT_VALID_FRAC` / `_EARLY_STOPPING_ROUNDS` / `_AUDIT_SEED`**,
+`store/train_data.py`의 `_MAX_TRAIN_ROWS_SEED`, 대회 `N_SPLITS`, CV seed는 데이터가 그대로여도 확정 baseline의 `cv_score`를
+바꾼다(#311이 후보 캡을 12 -> 6으로 줄여 s6e8 base가 -0.0011 이동, 3일간 무산출). 이 값을 바꾸면
+`cycle/run.py:_eval_fingerprint_guard`가 해당 대회의 모든 cycle을 `EvalFingerprintMismatchError`로 멈추고
+`auto_submit_paused_reason`을 `eval_fingerprint 불일치`로 채운다 — 자동 remeasure는 없다. 사람이 변경이 점수를 얼마나 옮기는지 보고 정한다:
+
+```bash
+uv run python -m bin.establish_baseline --remeasure --competition <competition-id> --dry-run   # 델타 확인
+uv run python -m bin.establish_baseline --remeasure --competition <competition-id>             # 반영
+```
+
+반영하면 `train_fingerprint`와 `eval_fingerprint`가 함께 갱신되고 두 종류의 pause가 풀린다. 델타가 크면 노브 변경을 되돌리는 게 맞는
+경우가 많다 — 되돌리면 지문이 다시 일치해 가드가 스스로 pause를 푼다. 새 수치 상수를 harness/train_data에 추가하면
+`tests/test_eval_fingerprint.py`가 지문 대상인지 예외인지 분류하라고 실패한다. 격리가 발생하면 §4-5와 같이 MinIO를 재구성한다(§4-6).
+
+### 4-9. 확정 pipeline params 소급 동결 (#349, ADR-054)
+
+승격 시 winner의 `selected_params`가 `param_candidates` 단일 후보로 동결된다(forward-only). 이미 후보가 누적된 base 풀(예: s6e8
+union 11개)은 다음 승격 전까지 남으므로 소급 동결한다. 동결본을 실제 평가해 저장된 cv와 일치할 때만 반영한다:
+
+```bash
+uv run python -m bin.freeze_base --competition <competition-id> --dry-run   # 동결본 cv가 저장 cv와 일치하는지만 확인
+uv run python -m bin.freeze_base --competition <competition-id>             # MinIO blob + raw.pipelines 반영
+```
+
+**해당 대회 사이클이 없을 때 실행한다** — MinIO blob과 레지스트리 sha가 잠깐 어긋나면 `_baseline_source_guard`가 대회를 멈추고 사람이
+풀 때까지 유지한다(§4-6). 대기 큐를 `PATCH /api/queue/{id}`로 취소하고 실행 중 dagRun이 없는 것을 확인한 뒤 실행하고 큐를 다시 등록한다.
+평가는 약 6분(s6e8)이고 daemon 컨테이너(`docker exec deploy-rondo-daemon-1 uv run --no-sync python -m bin.freeze_base ...`)에서 돌리면
+운영 환경과 같은 데이터·자격으로 실행된다.
+
 ### 4-3. auto-submit 일시중단 복구
 
 cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_paused_reason`이 채워지고 해당 대회의 자동 제출이 멈춘다(decisions.md ADR-026). 발동 조건은
@@ -343,6 +375,8 @@ cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_pause
 수동 NULL이 아니라 `establish_baseline --remeasure`가 재측정 후 자동 해제한다.
 
 사유가 `baseline 소스 불일치`로 시작하면 §4-6 — `rebuild_best_pipeline` 후 수동 NULL.
+
+사유가 `eval_fingerprint 불일치`로 시작하면 §4-8(평가 노브 변경) — `establish_baseline --remeasure`가 재측정 후 자동 해제한다.
 
 ```bash
 # 현재 일시중단된 대회 확인

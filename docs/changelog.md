@@ -1,5 +1,25 @@
 # 변경 이력
 
+## v1.6.23 — eval_fingerprint 가드 + 튜닝 레인 런 예산 (Milestone "산출 경로 재복구 2026-09", 2026-09-21)
+
+- #348(ADR-053): 평가 노브(`_MAX_PARAM_CANDIDATES`, `_PRESELECT_VALID_FRAC`, `_EARLY_STOPPING_ROUNDS`, `_AUDIT_SEED`,
+  `_MAX_TRAIN_ROWS_SEED`, 대회 `N_SPLITS`, CV seed)의 지문을 `raw.competitions.eval_fingerprint`에 저장하고 어긋나면 attempt를
+  멈춘다. 자동 remeasure는 없고 `establish_baseline --remeasure`가 `train_fingerprint`와 함께 갱신한다. harness/train_data의 새 수치
+  상수는 지문 대상인지 예외인지 분류하도록 테스트가 강제한다. baseline eval 캐시(TTL 30일)가 노브를 키에 넣지 않아 옛 점수를
+  재사용하던 것도 고쳤다. 배포 전 컬럼 선반영, 배포 후 확정 pipeline이 있는 24개 대회를 일괄 시딩했다.
+- #350: `TUNE_TIMEOUT_SEC`를 멤버별 상한에서 런 전체 예산으로 재정의하고, 앙상블은 남은 예산을 남은 멤버 수로 배분한다. s5e4 현재
+  best가 3멤버 스태킹이라 멤버별 3h면 4h DAG 벽을 구조적으로 넘던 것(09-20 12:21 런이 3h59m에 죽음)을 해소.
+
+## v1.6.22 — 확정 pipeline params 동결 (Milestone "산출 경로 재복구 2026-09", 2026-09-21)
+
+- #349(ADR-054): 승격 시 winner의 `selected_params`를 `param_candidates` 단일 후보로 동결한다. 표식(`Patch.frozen_params`)을
+  `raw.pipelines.code`에 실어 replay/rebuild도 같은 병합본을 재현하고 스키마 변경은 없다. base 점수가 후보 캡과 무관해지고,
+  캡에 막혀 평가되지 않던 hyperparam patch의 신규 후보가 다시 평가되며, 매 평가의 preselect fit이 사라진다.
+- `bin/freeze_base.py`: 이미 누적된 base 풀을 소급 동결하는 도구. 동결본을 실제 평가해 저장된 cv와 일치할 때만 반영하고,
+  `upload_best_pipeline`이 MinIO 실패를 삼키는 것을 재조회로 방어한다.
+- 검증: s6e8 base(union 11개)를 동결해 실데이터(train90 629,732행, 5-fold)로 평가한 cv가 저장값 0.966210408605035와 비트 일치,
+  peak CPU 522s(기존 attempt 평균 1,600~2,400s의 약 1/4). 14:33 UTC에 s6e8 base에 소급 적용했다.
+
 ## v1.6.21 — #311 롤백: s6e8 base 점수 복원 (Milestone "산출 경로 재복구 2026-09", 2026-09-21)
 
 v1.6.20 배포 1일 후 점검에서 s6e8이 v1.6.19 배포 시각(09-19 00:29 UTC)부터 attempt 전부 label=regression
