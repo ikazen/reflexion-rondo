@@ -36,8 +36,8 @@ import polars as pl
 
 from config.settings import PROMOTE_CONFIRM_SEEDS
 from cycle.materialize import materialize_best_pipeline
-from cycle.promotion import PromotionCache, confirm_and_measure, train_data_fingerprint
-from cycle.run import _CODE_HEADER_SEP, _FP_PAUSE_PREFIX
+from cycle.promotion import PromotionCache, confirm_and_measure, eval_semantics_fingerprint, train_data_fingerprint
+from cycle.run import _CODE_HEADER_SEP, _EVAL_FP_PAUSE_PREFIX, _FP_PAUSE_PREFIX
 from evaluator.harness import split_audit_holdout
 from runtime.isolate import eval_isolated
 from store.db import connect, insert_pipeline
@@ -207,6 +207,7 @@ def remeasure_competition(conn, comp: object, dry_run: bool) -> bool:
     train = load_train(comp)
     train90, _holdout10 = split_audit_holdout(train, comp.TARGET, comp.IS_CLASSIFICATION)
     new_fp = train_data_fingerprint(train90)
+    n_splits, seed = getattr(comp, "N_SPLITS", 5), 42
     action = "dry-run, 미반영" if dry_run else "반영"
 
     remeasured = 0
@@ -218,8 +219,8 @@ def remeasure_competition(conn, comp: object, dry_run: bool) -> bool:
             target_col=comp.TARGET,
             metric=comp.METRIC,
             prev_best=None,
-            n_splits=getattr(comp, "N_SPLITS", 5),
-            seed=42,
+            n_splits=n_splits,
+            seed=seed,
             is_classification=comp.IS_CLASSIFICATION,
         )
         if result.error_trace or result.cv_score is None:
@@ -242,7 +243,7 @@ def remeasure_competition(conn, comp: object, dry_run: bool) -> bool:
             )
 
     if remeasured == 0:
-        print(f"  {comp.COMPETITION_ID}: 재측정 성공 0건 — train_fingerprint 미갱신")
+        print(f"  {comp.COMPETITION_ID}: 재측정 성공 0건 — train/eval_fingerprint 미갱신")
         return False
 
     print(f"  {comp.COMPETITION_ID}: 재측정 {remeasured}건, 격리 {quarantined}건, "
@@ -255,14 +256,15 @@ def remeasure_competition(conn, comp: object, dry_run: bool) -> bool:
         print(f"    uv run python -m bin.rebuild_best_pipeline --competition {comp.COMPETITION_ID}")
     if not dry_run:
         conn.execute(
-            "UPDATE raw.competitions SET train_fingerprint = %s WHERE competition_id = %s",
-            [new_fp, comp.COMPETITION_ID],
+            "UPDATE raw.competitions SET train_fingerprint = %s, eval_fingerprint = %s WHERE competition_id = %s",
+            [new_fp, eval_semantics_fingerprint(n_splits, seed), comp.COMPETITION_ID],
         )
-        conn.execute(
-            "UPDATE raw.competitions SET auto_submit_paused_reason = NULL"
-            " WHERE competition_id = %s AND auto_submit_paused_reason LIKE %s",
-            [comp.COMPETITION_ID, _FP_PAUSE_PREFIX + "%"],
-        )
+        for pause_prefix in (_FP_PAUSE_PREFIX, _EVAL_FP_PAUSE_PREFIX):
+            conn.execute(
+                "UPDATE raw.competitions SET auto_submit_paused_reason = NULL"
+                " WHERE competition_id = %s AND auto_submit_paused_reason LIKE %s",
+                [comp.COMPETITION_ID, pause_prefix + "%"],
+            )
     return True
 
 

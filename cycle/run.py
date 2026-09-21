@@ -32,6 +32,7 @@ from cycle.promotion import (
     PromotionCache,
     confirm_and_measure,
     effective_label,
+    eval_semantics_fingerprint,
     leaderboard_ceiling_violation,
     train_data_fingerprint,
 )
@@ -108,6 +109,15 @@ class TrainFingerprintMismatchError(RuntimeError):
     """
 
 
+class EvalFingerprintMismatchError(RuntimeError):
+    """평가 노브(preselect 후보 캡·fold 수·조기중단·분할 seed)가 확정 baseline을 측정할 때와 다르다.
+
+    데이터가 그대로여도 이 값들이 바뀌면 raw.pipelines.cv_score(옛 노브 기준)와 새 attempt의 cv_score가
+    비교 불가능해진다 — #311이 후보 캡을 줄여 s6e8이 3일간 전부 regression이었다(#347, #348, ADR-053).
+    `bin.establish_baseline --remeasure`로 baseline을 재측정하고 raw.competitions.eval_fingerprint를 갱신해야 재개된다.
+    """
+
+
 class BaselineSourceMismatchError(RuntimeError):
     """MinIO best_pipeline.py가 raw.pipelines 유효행이 가리키는 병합본과 다르다.
 
@@ -121,25 +131,25 @@ class BaselineSourceMismatchError(RuntimeError):
 # train_fingerprint 불일치로 걸린 pause 사유의 접두어. establish_baseline --remeasure와
 # 아래 가드 재일치 분기 양쪽이 이걸로 다른 사유(cv_lb_divergence 등)와 구분해 해제한다.
 _FP_PAUSE_PREFIX = "train_fingerprint 불일치"
+_EVAL_FP_PAUSE_PREFIX = "eval_fingerprint 불일치"
 
 
-def _train_fingerprint_guard(conn: PgConn, competition_id: str, train90: pl.DataFrame) -> None:
-    """train90의 지문이 raw.competitions.train_fingerprint와 어긋나면 승격 게이트를
-    멈춘다. 최초 관측(저장값 NULL)이면 현재 지문을 심고 통과한다.
-
-    호출부는 train90(split_audit_holdout 결과)을 넘겨야 한다 — remeasure도 같은
-    분할을 거치므로 그때만 지문 비교가 성립한다. holdout이 분리되지 않은
-    smoke/direct 경로는 호출하지 않는다.
+def _fingerprint_guard(
+    conn: PgConn, competition_id: str, *, column: str, fp: str, pause_prefix: str, issue: str,
+    error_cls: type[RuntimeError], hint: str,
+) -> None:
+    """raw.competitions.<column>의 저장 지문과 현재 지문 fp가 어긋나면 승격 게이트를 멈춘다.
+    최초 관측(저장값 NULL)이면 현재 지문을 심고 통과한다. 일치하면 이전에 심긴 같은 접두어의 pause를 푼다.
+    column은 SQL에 그대로 삽입되므로 호출부의 상수 컬럼명만 넘긴다.
     """
-    fp = train_data_fingerprint(train90)
     row = conn.execute(
-        "select train_fingerprint from raw.competitions where competition_id = %s",
+        f"select {column} from raw.competitions where competition_id = %s",
         [competition_id],
     ).fetchone()
     stored = row[0] if row else None
     if stored is None:
         conn.execute(
-            "update raw.competitions set train_fingerprint = %s where competition_id = %s",
+            f"update raw.competitions set {column} = %s where competition_id = %s",
             [fp, competition_id],
         )
         return
@@ -149,14 +159,10 @@ def _train_fingerprint_guard(conn: PgConn, competition_id: str, train90: pl.Data
         conn.execute(
             "update raw.competitions set auto_submit_paused_reason = null"
             " where competition_id = %s and auto_submit_paused_reason like %s",
-            [competition_id, _FP_PAUSE_PREFIX + "%"],
+            [competition_id, pause_prefix + "%"],
         )
         return
-    cmd = f"uv run python -m bin.establish_baseline --remeasure --competition {competition_id}"
-    reason = (
-        f"train_fingerprint 불일치 (#258): 저장 {stored[:12]} != 현재 {fp[:12]}. "
-        f"load_train 설정이 바뀌었으면 `{cmd}` 실행 후 재개."
-    )
+    reason = f"{pause_prefix} ({issue}): 저장 {stored[:12]} != 현재 {fp[:12]}. {hint}"
     conn.execute(
         "update raw.competitions"
         " set auto_submit_paused_reason = coalesce(auto_submit_paused_reason, %s)"
@@ -164,7 +170,35 @@ def _train_fingerprint_guard(conn: PgConn, competition_id: str, train90: pl.Data
         [reason, competition_id],
     )
     _LOG.error("%s", reason)
-    raise TrainFingerprintMismatchError(reason)
+    raise error_cls(reason)
+
+
+def _train_fingerprint_guard(conn: PgConn, competition_id: str, train90: pl.DataFrame) -> None:
+    """train90의 지문이 raw.competitions.train_fingerprint와 어긋나면 승격 게이트를 멈춘다.
+
+    호출부는 train90(split_audit_holdout 결과)을 넘겨야 한다 — remeasure도 같은
+    분할을 거치므로 그때만 지문 비교가 성립한다. holdout이 분리되지 않은
+    smoke/direct 경로는 호출하지 않는다.
+    """
+    cmd = f"uv run python -m bin.establish_baseline --remeasure --competition {competition_id}"
+    _fingerprint_guard(
+        conn, competition_id, column="train_fingerprint", fp=train_data_fingerprint(train90),
+        pause_prefix=_FP_PAUSE_PREFIX, issue="#258", error_cls=TrainFingerprintMismatchError,
+        hint=f"load_train 설정이 바뀌었으면 `{cmd}` 실행 후 재개.",
+    )
+
+
+def _eval_fingerprint_guard(conn: PgConn, competition_id: str, n_splits: int, seed: int) -> None:
+    """평가 노브 지문이 raw.competitions.eval_fingerprint와 어긋나면 승격 게이트를 멈춘다(자동 remeasure 없음).
+
+    점수 회귀를 조용히 수용하지 않고 사람이 remeasure 여부를 판단하게 하는 게 요점이다.
+    """
+    cmd = f"uv run python -m bin.establish_baseline --remeasure --competition {competition_id}"
+    _fingerprint_guard(
+        conn, competition_id, column="eval_fingerprint", fp=eval_semantics_fingerprint(n_splits, seed),
+        pause_prefix=_EVAL_FP_PAUSE_PREFIX, issue="#348", error_cls=EvalFingerprintMismatchError,
+        hint=f"평가 노브(후보 캡/fold 수/조기중단/seed)가 바뀌었으면 `{cmd}` 실행 후 재개.",
+    )
 
 
 def _baseline_source_guard(conn: PgConn, competition_id: str) -> None:
@@ -640,6 +674,7 @@ def run_attempt_core(
     """Strategize → Generate → Evaluate → Persist one attempt. Returns data needed for reflect."""
     if config.holdout is not None:
         _train_fingerprint_guard(conn, config.competition_id, config.train)
+        _eval_fingerprint_guard(conn, config.competition_id, config.n_splits, config.seed)
         _baseline_source_guard(conn, config.competition_id)
     attempt_id = str(uuid.uuid4())
     attempt_start = time.monotonic()

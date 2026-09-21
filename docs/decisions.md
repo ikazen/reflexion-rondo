@@ -1170,6 +1170,32 @@ lifetime 전량 False. 원인은 탐색 범위가 아니라 baseline과 trial이
 
 ---
 
+## ADR-053 — 평가 노브가 바뀌면 baseline 재측정 전까지 attempt를 멈춘다 (#348)
+
+- 결정: `raw.competitions.eval_fingerprint`에 확정 baseline이 측정된 평가 노브 지문을 저장하고, 어긋나면 `train_fingerprint`
+  (ADR-040)와 같은 방식으로 attempt를 멈춘다(pause 사유 기록 + `EvalFingerprintMismatchError`, daemon은 리스를 즉시 중단).
+  지문 대상(`cycle/promotion.py:_EVAL_KNOB_CONSTANTS`)은 `_MAX_PARAM_CANDIDATES`, `_PRESELECT_VALID_FRAC`,
+  `_EARLY_STOPPING_ROUNDS`, `_AUDIT_SEED`, `_MAX_TRAIN_ROWS_SEED`와 대회 `N_SPLITS`, CV seed다. 최초 관측(NULL)이면 심고
+  통과한다. `establish_baseline --remeasure`가 재측정 후 두 지문을 함께 갱신하고 두 종류의 pause를 해제한다.
+- 근거: #311이 `_MAX_PARAM_CANDIDATES`를 12->6으로 줄여 s6e8 base 점수가 -0.0011 이동했지만 `train_fingerprint`(데이터만)와
+  `_baseline_source_guard`(blob만)는 못 잡아 237 attempt(118.7 CPU-h)가 3일간 무산출이었다(#347). 같은 계열인 #340
+  (`MAX_TRAIN_ROWS`/`N_SPLITS`)은 행수가 바뀌어 train_fingerprint가 발동해 살아남았지만, `N_SPLITS`만 바뀌었다면 못 잡았다.
+- 자동 remeasure가 아니라 pause인 이유: 점수 회귀를 조용히 수용하는 것이 이번 사고의 본질이다. 노브를 바꾸는 사람이 remeasure를
+  실행하기 전에 그 변경이 base 점수를 얼마나 이동시키는지 보게 한다. 대가로 노브를 바꾸면 활성 대회 전부가 remeasure 전까지
+  멈추는데, 의도된 비용이다.
+- 새 노브 방지: `tests/test_eval_fingerprint.py`가 `evaluator/harness.py`와 `store/train_data.py`의 수치 모듈 상수가 지문 대상이거나
+  사유가 적힌 예외로 분류돼 있는지 강제한다. #311의 캡은 "점수에 영향이 있는 줄 몰랐던" 노브였다.
+- 부수: baseline eval 캐시(`raw.baseline_eval_cache`, TTL 30일)는 best_source 해시 키라 노브가 바뀌어도 옛 점수가 재사용됐다.
+  평가 노브를 `_eval_context_key`에 포함했다(confirm memo는 결과값 키라 스스로 무효화된다).
+- 한계: 함수 본문 리터럴과 다른 모듈(`evaluator/models.py` 등)의 상수는 분류 테스트가 못 잡는다(이번에 preselect의 inner split
+  비율만 상수로 추출했다). promote task에는 배선하지 않았다 — 노브가 attempt와 promote 사이에 바뀌면 merge-verify가 승자 cv와
+  병합본 cv의 어긋남으로 승격을 막고, attempt 시점 가드를 통과한 승자만 promote에 도달한다.
+- 배포 절차: task 이미지가 daemon보다 먼저 라이브라 새 컬럼 SELECT가 구 스키마에서 죽는 간극이 있어, 배포 전에 `ALTER TABLE
+  raw.competitions ADD COLUMN IF NOT EXISTS eval_fingerprint text`를 daemon 컨테이너에서 선반영한다. 배포 직후 confirmed
+  pipeline이 있는 대회를 일괄 시딩해 동결 대회의 NULL self-seed 구멍(재활성 시점의 노브로 심겨 그 사이 변경을 못 잡음)을 막는다.
+
+---
+
 ## ADR-054 — 확정 pipeline의 params는 승격 시 동결한다 (#349)
 
 - 결정: 승격 시 winner가 고른 `selected_params`(`raw.attempts.params`)를 materialized pipeline의 `param_candidates`에 단일 후보로

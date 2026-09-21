@@ -25,6 +25,7 @@ _PI_TOP_N = 20
 # 자르므로 가장 최근 승자부터 빠진다. 12->6으로 줄였다가 s6e8 base가 -0.0011 회귀해 3일간
 # 무산출이었다(#347). 바꾸면 대회별 remeasure가 필요하다.
 _MAX_PARAM_CANDIDATES = 12
+_PRESELECT_VALID_FRAC = 0.2
 _LEAK_PERFECT_HIGH = 0.9999
 _LEAK_PERFECT_LOW = 1e-9
 _EARLY_STOPPING_ROUNDS = 50
@@ -799,10 +800,10 @@ def preselect_params(
     y_synth = y[synth_idx]
 
     if ctx.is_classification:
-        sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=ctx.seed)
+        sss = StratifiedShuffleSplit(n_splits=1, test_size=_PRESELECT_VALID_FRAC, random_state=ctx.seed)
         tr_local, va_local = next(sss.split(np.zeros(len(y_synth)), y_synth))
     else:
-        ss = ShuffleSplit(n_splits=1, test_size=0.2, random_state=ctx.seed)
+        ss = ShuffleSplit(n_splits=1, test_size=_PRESELECT_VALID_FRAC, random_state=ctx.seed)
         tr_local, va_local = next(ss.split(np.zeros(len(y_synth))))
     tr_idx = np.concatenate([synth_idx[tr_local], orig_idx]) if len(orig_idx) else synth_idx[tr_local]
     va_idx = synth_idx[va_local]
