@@ -22,6 +22,12 @@ ALTER TABLE raw.competitions ADD COLUMN IF NOT EXISTS auto_submit_paused_reason 
 -- (#258, ADR-040). establish_baseline --remeasure가 재측정 후 이 값을 갱신한다.
 ALTER TABLE raw.competitions ADD COLUMN IF NOT EXISTS train_fingerprint text;
 
+-- 확정 baseline이 측정된 평가 노브 지문 (cycle/promotion.py:eval_semantics_fingerprint).
+-- preselect 후보 캡/fold 수/조기중단처럼 데이터가 그대로여도 cv_score를 바꾸는 값이 어긋나면
+-- cycle 게이트가 옛/새 cv_score 혼용을 막고 멈춘다(#348, ADR-053). 자동 remeasure는 없고
+-- establish_baseline --remeasure를 사람이 실행하면 그때 이 값을 갱신한다.
+ALTER TABLE raw.competitions ADD COLUMN IF NOT EXISTS eval_fingerprint text;
+
 CREATE TABLE IF NOT EXISTS raw.attempts (
     attempt_id       text PRIMARY KEY,
     competition_id   text,

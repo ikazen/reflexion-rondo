@@ -15,11 +15,14 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
+from types import ModuleType
 
 import polars as pl
 
+from evaluator import harness
 from evaluator.metrics import get as get_metric
 from runtime.isolate import eval_isolated
+from store import train_data
 
 _LOG = logging.getLogger(__name__)
 
@@ -70,6 +73,29 @@ def train_data_fingerprint(train90: pl.DataFrame) -> str:
     return hashlib.sha256(f"{_train_fingerprint(train90)}|h={train90.height}".encode()).hexdigest()
 
 
+# 새 수치 상수는 tests/test_eval_fingerprint.py가 여기에 넣거나 예외로 분류하도록 강제한다.
+_EVAL_KNOB_CONSTANTS: dict[ModuleType, tuple[str, ...]] = {
+    harness: ("_MAX_PARAM_CANDIDATES", "_PRESELECT_VALID_FRAC", "_EARLY_STOPPING_ROUNDS", "_AUDIT_SEED"),
+    train_data: ("_MAX_TRAIN_ROWS_SEED",),
+}
+
+
+def _eval_knob_values() -> dict[str, float]:
+    return {
+        f"{mod.__name__}.{name}": getattr(mod, name)
+        for mod, names in _EVAL_KNOB_CONSTANTS.items() for name in names
+    }
+
+
+def eval_semantics_fingerprint(n_splits: int, seed: int) -> str:
+    """raw.competitions.eval_fingerprint에 저장하는 값 — 같은 코드·같은 데이터에서 cv_score를 결정적으로 바꾸는 평가
+    노브(preselect 후보 캡·inner split 비율·조기중단·분할/표본 seed·fold 수)의 sha256. train_data_fingerprint가 데이터를
+    보는 것과 달리, 데이터가 그대로여도 확정 baseline의 점수를 이동시키는 값이 바뀌었는지 게이트가 알게 한다(#348, ADR-053).
+    """
+    knobs = {**_eval_knob_values(), "n_splits": n_splits, "cv_seed": seed}
+    return hashlib.sha256(json.dumps(knobs, sort_keys=True).encode()).hexdigest()
+
+
 def _hash_key(*parts: object) -> str:
     h = hashlib.sha256()
     for p in parts:
@@ -89,7 +115,8 @@ def _eval_context_key(
     is_classification: bool,
 ) -> tuple:
     """confirm_and_measure 호출을 식별하는 공통 키 요소 — baseline 캐시와 confirm
-    memo가 공유한다. best_source가 바뀌면(=승격 발생) 자동으로 다른 키가 된다."""
+    memo가 공유한다. best_source가 바뀌면(=승격 발생) 자동으로 다른 키가 된다. 평가 노브도 키에 넣는다 —
+    baseline 캐시는 소스 해시 키라 노브가 바뀌어도 옛 노브로 잰 점수가 30일 재사용된다."""
     return (
         competition_id,
         hashlib.sha256((best_source or "").encode()).hexdigest(),
@@ -99,6 +126,7 @@ def _eval_context_key(
         metric,
         n_splits,
         is_classification,
+        tuple(sorted(_eval_knob_values().items())),
     )
 
 

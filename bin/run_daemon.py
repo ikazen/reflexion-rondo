@@ -32,6 +32,7 @@ from bin.archive_lessons import archive_low_gain_lessons
 from cycle.run import (
     BaselineSourceMismatchError,
     CycleConfig,
+    EvalFingerprintMismatchError,
     TrainFingerprintMismatchError,
     establish_bootstrap_baseline,
     run_cycle,
@@ -624,9 +625,9 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                 print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} skipped — embedding unavailable: {exc}")
                 skipped += 1
                 cycle_skipped = True
-            except (TrainFingerprintMismatchError, BaselineSourceMismatchError) as exc:
-                # baseline 게이트 정합성 문제(load_train 설정 변경 미반영 #258, 또는
-                # 격리/remeasure 후 MinIO 미재구성 #278) — 재시도해봐야 계속 막히므로
+            except (TrainFingerprintMismatchError, EvalFingerprintMismatchError, BaselineSourceMismatchError) as exc:
+                # baseline 게이트 정합성 문제(load_train 설정 변경 미반영 #258, 평가 노브 변경 미반영 #348,
+                # 또는 격리/remeasure 후 MinIO 미재구성 #278) — 재시도해봐야 계속 막히므로
                 # 리스를 즉시 중단한다. 가드가 이미 auto_submit_paused_reason을 심어
                 # 대시보드에 노출된다.
                 print(f"[daemon] queue_id={qid} aborted — {exc}")
