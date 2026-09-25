@@ -112,6 +112,23 @@ def trigger_tune_dag_run(
     return resp.json()["dag_run_id"]
 
 
+def tune_run_in_flight(competition_slug: str) -> bool:
+    """raw.tuned_params는 런이 끝나야(약 3h) 갱신돼 DB만으로는 진행 중인 런을 알 수 없다(#360).
+    수동 트리거는 dag_run_id 형식이 달라 conf도 함께 본다."""
+    resp = requests.get(
+        f"{_AIRFLOW_URL}/api/v2/dags/{_TUNE_DAG_ID}/dagRuns",
+        params=[("state", "queued"), ("state", "running"), ("limit", 100)],
+        headers=_headers(),
+        timeout=15,
+    )
+    resp.raise_for_status()
+    prefix = f"rondo_tune_{competition_slug}_"
+    return any(
+        run["dag_run_id"].startswith(prefix) or (run.get("conf") or {}).get("competition") == competition_slug
+        for run in resp.json().get("dag_runs", [])
+    )
+
+
 def get_dag_run_state(dag_run_id: str) -> str:
     resp = requests.get(
         f"{_AIRFLOW_URL}/api/v2/dags/{DAG_ID}/dagRuns/{dag_run_id}",

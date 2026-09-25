@@ -457,6 +457,15 @@ def _sweep_idle_tuning(conn) -> None:
             last = last.replace(tzinfo=None) if last.tzinfo else last
         if last is not None and last >= idle_cutoff:
             continue
+        # 승격 트리거(_maybe_trigger_tune)는 새 pipeline이 대상이라 진행 중인 런과 무관하게 필요하지만, 이 스윕은
+        # 런이 끝나 tuned_params가 갱신될 때까지(약 3h) 같은 pipeline을 매시간 다시 트리거한다(#360).
+        try:
+            if airflow_client.tune_run_in_flight(slug):
+                print(f"[daemon] idle-tune skipped {slug}: tune run already in flight")
+                continue
+        except Exception as exc:
+            print(f"[daemon] tune in-flight check failed for {slug} (이번 스윕은 건너뜀): {exc}")
+            continue
         try:
             tune_run_id = airflow_client.trigger_tune_dag_run(slug, timeout_sec=TUNE_TIMEOUT_SEC)
             triggered.append(slug)

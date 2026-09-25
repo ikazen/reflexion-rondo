@@ -69,6 +69,20 @@ def test_maybe_trigger_tune_triggers_when_pipeline_confirmed():
     mock_trigger.assert_called_once_with("s6e8", timeout_sec=TUNE_TIMEOUT_SEC)
 
 
+def test_maybe_trigger_tune_ignores_in_flight_runs():
+    """#360: 승격 트리거는 새로 확정된 pipeline이 대상이라 같은 대회 런이 진행 중이어도 트리거해야 한다."""
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = (1,)
+    with (
+        patch("bin.run_daemon.airflow_client.available", return_value=True),
+        patch("bin.run_daemon.airflow_client.tune_run_in_flight", return_value=True) as mock_in_flight,
+        patch("bin.run_daemon.airflow_client.trigger_tune_dag_run", return_value="run-1") as mock_trigger,
+    ):
+        _maybe_trigger_tune(conn, "s6e8", "playground-series-s6e8", "attempt-1")
+    mock_in_flight.assert_not_called()
+    mock_trigger.assert_called_once_with("s6e8", timeout_sec=TUNE_TIMEOUT_SEC)
+
+
 def test_maybe_trigger_tune_swallows_trigger_exception():
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = (1,)
@@ -174,6 +188,7 @@ def test_idle_tuning_sweep_triggers_stale_or_never_tuned_confirmed_competitions(
     with (
         scan, active,
         patch("bin.run_daemon.airflow_client.available", return_value=True),
+        patch("bin.run_daemon.airflow_client.tune_run_in_flight", return_value=False),
         patch("bin.run_daemon.airflow_client.trigger_tune_dag_run", return_value="run-1") as mock_trigger,
     ):
         _sweep_idle_tuning(conn)
@@ -194,6 +209,7 @@ def test_idle_tuning_sweep_swallows_trigger_exception_and_continues(monkeypatch)
     with (
         scan, active,
         patch("bin.run_daemon.airflow_client.available", return_value=True),
+        patch("bin.run_daemon.airflow_client.tune_run_in_flight", return_value=False),
         patch(
             "bin.run_daemon.airflow_client.trigger_tune_dag_run",
             side_effect=[RuntimeError("boom"), "run-2"],
@@ -201,3 +217,41 @@ def test_idle_tuning_sweep_swallows_trigger_exception_and_continues(monkeypatch)
     ):
         _sweep_idle_tuning(conn)  # 예외가 여기까지 전파되면 실패
     assert mock_trigger.call_count == 2
+
+
+def _stale_two_competitions(conn) -> dict[str, str]:
+    conn.execute.return_value.fetchall.side_effect = [
+        [],  # last_tune 없음 — 둘 다 신규 취급
+        [("playground-series-s6e8",), ("playground-series-s5e2",)],  # has_confirmed
+    ]
+    return {"playground-series-s6e8": "s6e8", "playground-series-s5e2": "s5e2"}
+
+
+def test_idle_tuning_sweep_skips_competition_with_tune_run_in_flight(monkeypatch):
+    """#360: 런은 끝날 때 한 번에 결과를 쓰므로 진행 중인 대회를 다시 트리거하면 같은 pipeline을 중복 튜닝한다."""
+    monkeypatch.setattr(run_daemon, "_last_tune_sweep", _long_ago())
+    conn = MagicMock()
+    scan, active = _patch_scan(_stale_two_competitions(conn))
+    with (
+        scan, active,
+        patch("bin.run_daemon.airflow_client.available", return_value=True),
+        patch("bin.run_daemon.airflow_client.tune_run_in_flight", side_effect=lambda slug: slug == "s6e8"),
+        patch("bin.run_daemon.airflow_client.trigger_tune_dag_run", return_value="run-1") as mock_trigger,
+    ):
+        _sweep_idle_tuning(conn)
+    mock_trigger.assert_called_once_with("s5e2", timeout_sec=TUNE_TIMEOUT_SEC)
+
+
+def test_idle_tuning_sweep_skips_competition_when_in_flight_check_fails(monkeypatch):
+    """조회 실패는 보수적으로 스킵한다(확인 못 한 채 트리거하면 중복 런 위험). 다른 대회 처리는 계속한다."""
+    monkeypatch.setattr(run_daemon, "_last_tune_sweep", _long_ago())
+    conn = MagicMock()
+    scan, active = _patch_scan(_stale_two_competitions(conn))
+    with (
+        scan, active,
+        patch("bin.run_daemon.airflow_client.available", return_value=True),
+        patch("bin.run_daemon.airflow_client.tune_run_in_flight", side_effect=[RuntimeError("503"), False]),
+        patch("bin.run_daemon.airflow_client.trigger_tune_dag_run", return_value="run-1") as mock_trigger,
+    ):
+        _sweep_idle_tuning(conn)  # 스윕은 slug 순(s5e2 -> s6e8)이라 첫 조회가 실패한다
+    mock_trigger.assert_called_once_with("s6e8", timeout_sec=TUNE_TIMEOUT_SEC)
