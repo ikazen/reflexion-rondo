@@ -1,13 +1,17 @@
-"""bin/run_daemon.py — cycle_queue 고갈 시 자동 재보급 스윕 (#196).
+"""bin/run_daemon.py — cycle_queue 고갈 시 자동 재보급 스윕 (#196, #363).
 
 2026-08-17~18 실측: 큐가 완전히 비면 daemon이 idle에 멈추고 사람이 enqueue할
 때까지 27시간 attempt 0건이었다. _sweep_queue_refill이 pending/running이
 하나도 없을 때만, 오래 idle한(또는 한 번도 안 돈) 대회를 재큐잉하는지 검증한다.
+직전 큐가 정상 종료(done)였으면 idle 임계값이 짧다(#363).
 """
 from __future__ import annotations
 
+import datetime as dt
 import time
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 import bin.run_daemon as run_daemon
 from bin.run_daemon import _QUEUE_REFILL_SWEEP_INTERVAL_SEC, _sweep_queue_refill
@@ -54,16 +58,18 @@ def test_sweep_reenqueues_idle_and_never_run_competitions(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = None  # 큐 비어있음
 
-    import datetime as dt
     # raw.attempts.run_ts는 naive(#223) — psycopg2 실반환 형태. 프로덕션 idle_cutoff는
     # UTC 기준(datetime.now(timezone.utc) - 6h)이므로 fixture도 로컬 datetime.now()가
     # 아니라 naive UTC로 만들어야 한다 — 안 그러면 UTC보다 6시간 이상 뒤처진 타임존
     # (미국 서부 등)에서 이 테스트가 허위로 실패한다(#239, adversarial review — #223을
     # 막으려던 테스트 파일에서 같은 클래스의 타임존 버그가 재발할 뻔함).
     now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
-    conn.execute.return_value.fetchall.return_value = [
-        ("playground-series-s6e8", now),  # 방금 돔 — idle 아님
-        ("playground-series-s6e1", now - dt.timedelta(hours=100)),  # idle
+    conn.execute.return_value.fetchall.side_effect = [
+        [
+            ("playground-series-s6e8", now),  # 방금 돔 — idle 아님
+            ("playground-series-s6e1", now - dt.timedelta(hours=100)),  # idle
+        ],
+        [],  # 큐 이력 없음
     ]
 
     # bin.api._competition_id_to_slug()의 실제 반환 형태({competition_id: slug}).
@@ -92,7 +98,7 @@ def test_sweep_skips_inactive_competitions(monkeypatch):
     monkeypatch.setattr(run_daemon, "_last_queue_refill_sweep", _long_ago())
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = None  # 큐 비어있음
-    conn.execute.return_value.fetchall.return_value = []  # 둘 다 attempt 이력 없음(신규 취급)
+    conn.execute.return_value.fetchall.side_effect = [[], []]  # 둘 다 attempt·큐 이력 없음(신규 취급)
 
     comp_slugs = {
         "playground-series-s6e8": "s6e8",   # ACTIVE=True
@@ -138,14 +144,13 @@ def test_sweep_noop_when_nothing_idle(monkeypatch):
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = None
 
-    import datetime as dt
     # raw.attempts.run_ts는 naive(#223) — psycopg2 실반환 형태. 프로덕션 idle_cutoff는
     # UTC 기준(datetime.now(timezone.utc) - 6h)이므로 fixture도 로컬 datetime.now()가
     # 아니라 naive UTC로 만들어야 한다 — 안 그러면 UTC보다 6시간 이상 뒤처진 타임존
     # (미국 서부 등)에서 이 테스트가 허위로 실패한다(#239, adversarial review — #223을
     # 막으려던 테스트 파일에서 같은 클래스의 타임존 버그가 재발할 뻔함).
     now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
-    conn.execute.return_value.fetchall.return_value = [("playground-series-s6e8", now)]
+    conn.execute.return_value.fetchall.side_effect = [[("playground-series-s6e8", now)], []]
 
     scan, active = _patch_scan({"playground-series-s6e8": "s6e8"})
     with scan, active:
@@ -156,3 +161,55 @@ def test_sweep_noop_when_nothing_idle(monkeypatch):
         if "insert into raw.cycle_queue" in c.args[0]
     ]
     assert insert_calls == []
+
+
+def _sweep_with(
+    monkeypatch, attempt_hours_ago: dict[str, float], queue_status: dict[str, str],
+) -> tuple[set[str], list]:
+    """slug -> 마지막 attempt가 몇 시간 전인지, slug -> 가장 최근 큐 상태로 스윕을 돌려 재큐잉된 slug를 돌려준다."""
+    monkeypatch.setattr(run_daemon, "_last_queue_refill_sweep", _long_ago())
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    conn.execute.return_value.fetchall.side_effect = [
+        [(f"playground-series-{slug}", now - dt.timedelta(hours=h)) for slug, h in attempt_hours_ago.items()],
+        list(queue_status.items()),
+    ]
+    scan, active = _patch_scan({f"playground-series-{slug}": slug for slug in attempt_hours_ago})
+    with scan, active:
+        _sweep_queue_refill(conn)
+    inserted = {c.args[1][1] for c in conn.execute.call_args_list if "insert into raw.cycle_queue" in c.args[0]}
+    return inserted, conn.execute.call_args_list
+
+
+def test_sweep_refills_quickly_after_a_queue_that_finished_normally(monkeypatch):
+    """#363: 두 대회가 큐를 번갈아 돌 때 방금 끝난 대회가 아닌 쪽(1h 전에 끝남)은 6h를 기다리지 않고 바로 재보급한다."""
+    inserted, _ = _sweep_with(monkeypatch, {"s5e4": 1.0, "s6e8": 0.05}, {"s5e4": "done", "s6e8": "done"})
+    assert inserted == {"s5e4"}
+
+
+def test_sweep_does_not_refill_a_competition_that_just_finished(monkeypatch):
+    """done 직후(임계값 0.5h 이내)에는 재보급하지 않는다 — 전 사이클이 즉시 skip되는 경우의 재보급 루프 방지."""
+    inserted, _ = _sweep_with(monkeypatch, {"s6e8": 0.2}, {"s6e8": "done"})
+    assert inserted == set()
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_sweep_keeps_the_six_hour_threshold_after_an_unsuccessful_queue(monkeypatch, status):
+    """실패/취소로 끝난 대회는 1h 뒤에 다시 넣으면 안 된다(실패 루프) — 기존 6h를 유지한다."""
+    inserted, _ = _sweep_with(monkeypatch, {"s6e8": 1.0}, {"s6e8": status})
+    assert inserted == set()
+    inserted, _ = _sweep_with(monkeypatch, {"s6e8": 7.0}, {"s6e8": status})
+    assert inserted == {"s6e8"}
+
+
+def test_sweep_keeps_the_six_hour_threshold_without_queue_history(monkeypatch):
+    inserted, _ = _sweep_with(monkeypatch, {"s6e8": 1.0}, {})
+    assert inserted == set()
+
+
+def test_sweep_looks_up_queue_status_by_slug_not_competition_id(monkeypatch):
+    """raw.cycle_queue.competition은 slug다 — competition_id로 조회하면 상태가 항상 비어 6h로 폴백한다."""
+    _, calls = _sweep_with(monkeypatch, {"s6e8": 1.0}, {"s6e8": "done"})
+    status_call = next(c for c in calls if "distinct on (competition)" in c.args[0])
+    assert status_call.args[1] == [["s6e8"]]

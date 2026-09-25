@@ -313,10 +313,14 @@ def _sweep_low_gain_lessons(conn) -> None:
 
 # cycle_queue 완전 고갈 시 자동 재보급 — 안 그러면 사람이 enqueue할 때까지 daemon 전체가
 # idle에 멈춘다(#196 실측: 2026-08-17~18 큐 소진 후 27시간 attempt 0건). pending/running이
-# 하나도 없을 때만, config/competitions/*.py 전체 중 최근 _QUEUE_REFILL_IDLE_HOURS시간
-# 이상 attempt가 없던(또는 한 번도 없던) 대회를 재큐잉한다.
-_QUEUE_REFILL_SWEEP_INTERVAL_SEC = 1800
+# 하나도 없을 때만, config/competitions/*.py 전체 중 최근 idle 임계값 이상 attempt가 없던(또는
+# 한 번도 없던) 대회를 재큐잉한다. 임계값은 직전 큐가 정상 종료(done)였으면 짧게, 실패/취소/이력
+# 없음이면 길게 잡는다 — 6h를 일괄 적용하면 두 대회가 큐를 번갈아 돌 때 방금 끝난 쪽은 idle이
+# 아니고 다른 쪽은 6h가 찰 때까지 fleet이 논다(#363 실측: 큐 전환 21회 중 10회에 1~6h 공백).
+# 긴 임계값은 실패하는 대회가 재보급 루프를 도는 것을 막는 안전장치라 남겨둔다.
+_QUEUE_REFILL_SWEEP_INTERVAL_SEC = 300
 _QUEUE_REFILL_IDLE_HOURS = 6
+_QUEUE_REFILL_IDLE_HOURS_AFTER_DONE = 0.5
 _QUEUE_REFILL_N_CYCLES = 20
 _last_queue_refill_sweep: float = 0.0
 
@@ -350,15 +354,29 @@ def _sweep_queue_refill(conn) -> None:
         [list(slug_to_cid.values())],
     ).fetchall())
 
+    # cycle_queue.competition은 slug다.
+    last_queue_status = dict(conn.execute(
+        "select distinct on (competition) competition, status from raw.cycle_queue"
+        " where competition = any(%s) order by competition, created_at desc",
+        [list(slug_to_cid)],
+    ).fetchall())
+
     now = datetime.now(timezone.utc)
-    # raw.attempts.run_ts는 timezone 없는 컬럼이라 psycopg2가 naive datetime으로
-    # 반환한다 — aware idle_cutoff와 그대로 비교하면 TypeError(#223). 이 repo에서
-    # timestamp 컬럼에 쓰는 aware datetime은 전부 UTC 기준으로 저장되므로 naive로
-    # 맞춰서 비교한다.
-    idle_cutoff = (now - timedelta(hours=_QUEUE_REFILL_IDLE_HOURS)).replace(tzinfo=None)
+
+    def idle_cutoff(slug: str) -> datetime:
+        hours = (
+            _QUEUE_REFILL_IDLE_HOURS_AFTER_DONE if last_queue_status.get(slug) == "done"
+            else _QUEUE_REFILL_IDLE_HOURS
+        )
+        # raw.attempts.run_ts는 timezone 없는 컬럼이라 psycopg2가 naive datetime으로
+        # 반환한다 — aware cutoff와 그대로 비교하면 TypeError(#223). 이 repo에서
+        # timestamp 컬럼에 쓰는 aware datetime은 전부 UTC 기준으로 저장되므로 naive로
+        # 맞춰서 비교한다.
+        return (now - timedelta(hours=hours)).replace(tzinfo=None)
+
     idle_slugs = sorted(
         slug for slug, cid in slug_to_cid.items()
-        if last_run.get(cid) is None or last_run[cid] < idle_cutoff
+        if last_run.get(cid) is None or last_run[cid] < idle_cutoff(slug)
     )
     if not idle_slugs:
         return
