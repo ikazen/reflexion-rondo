@@ -1183,6 +1183,9 @@ lifetime 전량 False. 원인은 탐색 범위가 아니라 baseline과 trial이
 - ADR-044·045·051은 삭제하지 않는다 — 이 ADR은 개입 축을 예산에서 단가로
   옮긴 갱신이다.
 
+**갱신 (2026-09-25, #355)**: 이 ADR은 attempt 1회 단가만 논거로 삼았고 제출 학습셋이 같은 캡을 받아 함께 줄어드는 것은 검토하지 않았다.
+ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
+
 ---
 
 ## ADR-053 — 평가 노브가 바뀌면 baseline 재측정 전까지 attempt를 멈춘다 (#348)
@@ -1240,6 +1243,28 @@ lifetime 전량 False. 원인은 탐색 범위가 아니라 baseline과 trial이
   pipeline에서는 값이 바뀔 수 있다(관측 사례 없음, 별도 이슈).
 - 재고 트리거: 동결 후에도 s6e8 hyperparam_search의 양의 gain 비율이 0에 수렴하면(09-09 이후 254건 중 0건이 기준선) 후보 생성 방식
   자체를 재검토한다.
+
+---
+
+## ADR-055 — s5e4 제출은 MAX_TRAIN_ROWS 축소 없이 전량으로 학습한다 (#355)
+
+- 결정: 대회 config의 `SUBMIT_FULL_DATA = True`(s5e4만 opt-in)이면 제출 CSV fit이 `load_train(comp, apply_row_cap=False)`로 전량(약 79.7만 행)을
+  학습한다. `SUBMIT_BAG_SEEDS = [42]`로 seed는 1개다. 다른 대회는 불변이다(s4e7의 캡은 OOM 방지라 건드리지 않는다).
+- 왜: ADR-052가 attempt 단가를 줄이려고 `MAX_TRAIN_ROWS`를 150k로 낮췄는데 제출 fit도 같은 캡을 받았다. 제출에는 CV가 없어 축소할 이유가 없다.
+  LB는 CV의 정직한 거울이고 둘 다 학습 행수를 따른다. 2026-09-25 A/B: 같은 계열 best attempt `a8e23c79`(cv 13.037)를 학습 행수만 바꿔 제출해
+  캡 제출 LB 13.076(백분위 46.7, 캡 3건 13.076~13.105) -> 전량 12.834(65.5)가 됐다. 성공 기준(LB <= 12.9)을 충족했다.
+- 비용(실측): 전량 1-seed는 16코어 로컬에서 179초, CPU 29.5분, 피크 RSS 1.5GB다. 기존 캡 5-seed는 CPU 45.3분이었고 promote task(1.5 CPU, 같은
+  호스트의 다른 task와 경합)에서는 78~125분 걸렸다. 그래서 seed는 5개가 아니라 1개다 — 이득의 대부분은 seed 평균이 아니라 학습 행수에서 나온다.
+- 실행 위치: fit은 promote task에서 `bin.submit`을 별도 프로세스로 돌린다(`generate_submission_csv_isolated`, wall 상한 150분 < promote
+  `execution_timeout` 180분). in-process fit은 C 확장 안에서 타임아웃을 받지 못해 초과하면 태스크가 통째로 죽고 daemon이 사이클을 실패로 센다.
+  상한을 넘기면 MinIO에 `submissions/{competition_id}/{attempt_id}.timeout` 표식을 남겨 다음 promote가 같은 attempt의 fit을 반복하지 않는다
+  (일반 실패는 표식 없이 재시도). 78~125분 promote가 daemon의 60분 대기에 걸려 timeout으로 세어지던 결합은 #366에서 5시간으로 고쳤다.
+- daemon 폴백(`bin/api.py:_kaggle_submit` 캐시 미스)은 계속 캡 학습이다. ops-vm(2 vCPU, 3600s)에서 전량을 돌리지 않는다.
+- 체제 경계: 2026-09-25 이후 s5e4 제출은 전량 학습이다. cv-LB 발산 트립와이어는 "CV는 좋아졌는데 LB가 나빠진" 쌍을 세므로, 전량 제출(LB 12.83) 뒤에
+  폴백 캡 제출(LB 13.08)이 나가면 한 쌍이 오탐으로 잡힐 수 있다(2쌍 이상이어야 pause). `cv_lb_calibration`의 s5e4 쌍도 이 날짜 전후를 같은 회귀선으로
+  보면 안 된다.
+- 한계: 탐색은 여전히 150k/3-fold 체제다. 이전 최고 LB 12.5966(08-04)은 500k행 체제에서 최적화된 pipeline이라, 캡 체제에서 고른 pipeline이 전량
+  학습에서 최선이 아닐 수 있다. 재고 트리거: 전량 제출이 3주 안에 LB 12.60을 못 넘으면 deep tier 평가 체제(`MAX_TRAIN_ROWS`/`N_SPLITS`)를 재검토한다.
 
 ---
 
