@@ -1,5 +1,29 @@
 # 변경 이력
 
+## v1.6.25 — fold-1 CPU 투영 조기 중단 + ensemble base 멤버 (Milestone "LB 레버 복구와 낭비 제거 2026-09", 2026-09-25)
+
+- #361(ADR-056): `evaluate_pipeline`이 fold-1 종료 직후 `현재 CPU + fold-1 소모 x (n_splits - 1)`로 전체를 투영해 attempt 예산의 1.15배를 넘으면
+  `CpuBudgetProjectedError("cpu budget exceeded: projected ...")`로 중단한다. 예산은 `eval_isolated`가 watchdog이 집행하는 값 그대로 `input.json`으로 넘기고 runner는 이 예외만
+  traceback 없이 기록한다(`cpu budget exceeded` 접두 유지로 kill 재생성 경로와 분석 쿼리가 그대로 동작). `collect_oof`, 예산 없음, fold-1 tie 조기 확정(#339)이 먼저인 경우는 제외.
+  실측 보정: s5e4 현재 best의 fold별 CPU가 403/421/384초로 fold-1이 평균의 1.00배, 투영 오차 0.1%. 최악 총비용은 그대로이고 목적은 kill을 재생성 가능한 attempt로 바꾸는 것이다.
+- #362(ADR-057): ensemble 예약어 멤버 `{"model": "base"}`(현재 pipeline의 `build_model` + 동결 단일 후보 params). 튜너는 `base` 멤버를 건너뛴다. 코더 프롬프트에서
+  `n_estimators: 300, learning_rate: 0.05` 앵커링을 없애고 "멤버를 base보다 약하게 만들지 말 것" 규칙을 넣었으며, ensemble action의 CPU kill 피드백은 트리 수 축소 대신 멤버 수 축소/
+  `weighted_average`를 안내한다. 실데이터: `[base]` 단독 앙상블이 s6e8 저장 cv를 12자리까지 재현, 기본값 멤버 블렌드는 -0.0006~-0.0028(LLM ensemble 21건의 범위와 같은 현상).
+
+## v1.6.24 — s5e4 전량 제출과 낭비 수정 (Milestone "LB 레버 복구와 낭비 제거 2026-09", 2026-09-25)
+
+목표 점검 2라운드: 신규 fleet best LB가 13일간 0건이었고 fleet CPU의 47%가 kill/tie 소각, 유휴가 16%였다. 측정이 아니라 레버 문제였다.
+
+- #355(ADR-055): s5e4 제출을 `MAX_TRAIN_ROWS` 축소 없이 전량(약 79.7만 행)으로 학습한다(`SUBMIT_FULL_DATA`, `SUBMIT_BAG_SEEDS=[42]`). ADR-052의 캡이 제출 fit에도 적용돼 있었다(검토 누락).
+  A/B: 같은 계열 best `a8e23c79`를 학습 행수만 바꿔 제출해 LB 13.076(백분위 46.7) -> 12.834(65.5). promote의 제출 CSV fit은 별도 프로세스와 wall 상한 150분으로 격리하고
+  상한 초과 attempt는 `.timeout` 표식으로 재시도를 막는다.
+- #360(ADR-050 개정): 튜닝 idle 스윕이 진행 중인 런이 있는 대회를 다시 트리거하지 않는다(트리거 7건 중 3건이 중복이었다). 튜너 baseline이 확정 pipeline cv와 상대 1e-6 넘게 다르면
+  탐색을 건너뛰고 `n_trials=0` 행만 기록한다(s6e8 0.96433 vs 0.96621).
+- #363: 큐 재보급 idle 임계값을 직전 큐가 `done`이면 0.5h, 그 외 6h로 나누고 스윕을 5분 주기로 줄인다(큐 전환 21회 중 10회에 1~6시간 공백, 유휴 16%). 배포 직후 1시간 넘게 idle이던
+  fleet이 즉시 복귀했다.
+- #366: daemon의 promote/DAG 대기 timeout을 3600초에서 5시간으로 늘린다. 캡 5-seed 제출 fit이 promote를 78~125분 잡아 09-21~22에 사이클 4건이 `state=timeout`으로 실패 처리되고
+  다음 사이클이 겹쳐 시작됐다.
+
 ## v1.6.23 — eval_fingerprint 가드 + 튜닝 레인 런 예산 (Milestone "산출 경로 재복구 2026-09", 2026-09-21)
 
 - #348(ADR-053): 평가 노브(`_MAX_PARAM_CANDIDATES`, `_PRESELECT_VALID_FRAC`, `_EARLY_STOPPING_ROUNDS`, `_AUDIT_SEED`,
