@@ -26,6 +26,8 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 _DEFAULT_N_TRIALS = 100
 _SEED = 42
+# 같은 pipeline의 baseline도 실행마다 상대 1e-8 안팎으로 흔들린다(s5e4 rmse 13.046045137~13.046045327)
+_BASELINE_MATCH_REL_TOL = 1e-6
 
 
 @dataclass
@@ -124,6 +126,23 @@ def _direction(ctx: PipelineContext) -> str:
     return "maximize" if metric_sign > 0 else "minimize"
 
 
+def _skip_if_baseline_incomparable(
+    model_name: str, member_index: int | None, baseline_cv: float, expected_cv: float | None,
+) -> TunerResult | None:
+    """baseline이 확정 cv와 다르면 다른 구현 경로라 탐색 결과를 확정 pipeline과 비교할 수 없다(#360).
+    이 결과도 raw.tuned_params에 행으로 남겨야 48h idle 스윕이 매시간 다시 트리거하지 않는다."""
+    if expected_cv is None or abs(baseline_cv - expected_cv) <= _BASELINE_MATCH_REL_TOL * max(1.0, abs(expected_cv)):
+        return None
+    _LOG.warning(
+        "tuner: baseline %.6f != confirmed cv %.6f (model=%s member=%s) — 비교 불가능, 탐색 생략",
+        baseline_cv, expected_cv, model_name, member_index,
+    )
+    return TunerResult(
+        model_name=model_name, member_index=member_index, best_params={},
+        best_cv_score=baseline_cv, baseline_cv_score=baseline_cv, n_trials=0, improved=False,
+    )
+
+
 def tune_single_model(
     pipeline: object,
     train: object,
@@ -132,6 +151,7 @@ def tune_single_model(
     n_trials: int = _DEFAULT_N_TRIALS,
     timeout_sec: float | None = None,
     seed_params: dict | None = None,
+    expected_baseline_cv: float | None = None,
 ) -> TunerResult:
     """pipeline.model_spec(ctx)이 선언한 단일 모델의 params를 탐색한다. timeout_sec는 baseline 평가를 포함한
     이 호출 전체의 wall-clock 예산이다."""
@@ -153,6 +173,9 @@ def tune_single_model(
         if seed_params is not None else pipeline
     )
     baseline_cv = evaluate_pipeline(baseline_pipeline, train, ctx).cv_score
+    skipped = _skip_if_baseline_incomparable(model_name, None, baseline_cv, expected_baseline_cv)
+    if skipped is not None:
+        return skipped
 
     def objective(trial: "optuna.Trial") -> float:
         params = space_fn(trial, ctx.is_classification)
@@ -172,6 +195,7 @@ def tune_ensemble_member(
     member_index: int,
     n_trials: int = _DEFAULT_N_TRIALS,
     timeout_sec: float | None = None,
+    expected_baseline_cv: float | None = None,
 ) -> TunerResult:
     """pipeline.ensemble_spec(ctx)의 member_index번째 멤버 params를 탐색한다(다른
     멤버는 confirmed 값에 고정). timeout_sec는 baseline 평가를 포함한 이 호출 전체의 wall-clock 예산이다."""
@@ -188,6 +212,9 @@ def tune_ensemble_member(
     seed_params = members[member_index].get("params") or None
     space_fn = get_search_space(model_name)
     baseline_cv = evaluate_pipeline(pipeline, train, ctx).cv_score
+    skipped = _skip_if_baseline_incomparable(model_name, member_index, baseline_cv, expected_baseline_cv)
+    if skipped is not None:
+        return skipped
 
     def objective(trial: "optuna.Trial") -> float:
         params = space_fn(trial, ctx.is_classification)
@@ -359,6 +386,7 @@ def tune_confirmed_pipeline(
     n_trials: int = _DEFAULT_N_TRIALS,
     timeout_sec: float | None = None,
     pipeline_source: str | None = None,
+    expected_baseline_cv: float | None = None,
 ) -> list[TunerResult]:
     """pipeline이 model_spec이면 단일 결과, ensemble_spec이면 멤버별 독립 튜닝 결과
     목록을 반환한다. 둘 다 없으면 pipeline_source에서 레지스트리 모델을 정적 추론하고
@@ -380,13 +408,16 @@ def tune_confirmed_pipeline(
                     _LOG.warning("tune_confirmed_pipeline: 예산 소진 — 멤버 %d..%d 튜닝 생략", i, n_members - 1)
                     break
                 member_timeout = remaining / (n_members - i)
-            results.append(tune_ensemble_member(pipeline, train, ctx, i, n_trials=n_trials, timeout_sec=member_timeout))
+            results.append(tune_ensemble_member(
+                pipeline, train, ctx, i, n_trials=n_trials, timeout_sec=member_timeout,
+                expected_baseline_cv=expected_baseline_cv,
+            ))
         return results
     model_spec = pipeline.model_spec(ctx)
     if model_spec is not None:
         return [tune_single_model(
             pipeline, train, ctx, model_spec["model"], n_trials=n_trials, timeout_sec=timeout_sec,
-            seed_params=model_spec.get("params") or None,
+            seed_params=model_spec.get("params") or None, expected_baseline_cv=expected_baseline_cv,
         )]
 
     inferred = infer_registry_model(pipeline_source) if pipeline_source else None
@@ -395,7 +426,7 @@ def tune_confirmed_pipeline(
         seed_params = _extract_base_params_literal(pipeline_source) or None
         return [tune_single_model(
             pipeline, train, ctx, inferred, n_trials=n_trials, timeout_sec=timeout_sec,
-            seed_params=seed_params,
+            seed_params=seed_params, expected_baseline_cv=expected_baseline_cv,
         )]
 
     raise ValueError(

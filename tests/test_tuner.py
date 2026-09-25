@@ -15,6 +15,7 @@ from evaluator.tuner import (
     _extract_base_params_literal,
     _optimize,
     _SingleModelTrialPipeline,
+    _skip_if_baseline_incomparable,
     _to_result,
     infer_registry_model,
     tune_confirmed_pipeline,
@@ -414,7 +415,7 @@ def _fake_members(monkeypatch, clock: _Clock, spend: list[float]) -> list[float 
     monkeypatch.setattr(tuner_module, "time", SimpleNamespace(monotonic=clock))
     seen: list[float | None] = []
 
-    def fake_member(pipeline, train, ctx, i, n_trials, timeout_sec):
+    def fake_member(pipeline, train, ctx, i, n_trials, timeout_sec, expected_baseline_cv=None):
         seen.append(None if timeout_sec is None else round(timeout_sec, 1))
         clock.now += spend[i]
         return TunerResult(
@@ -477,3 +478,103 @@ def test_single_model_study_budget_keeps_one_second_for_the_seed_trial(monkeypat
 
 def test_single_model_study_budget_none_stays_unbounded(monkeypatch):
     assert _single_model_study_budget(monkeypatch, baseline_seconds=200.0, timeout_sec=None) is None
+
+
+def _fail_if_searched(monkeypatch) -> None:
+    def boom(*args, **kwargs):
+        raise AssertionError("baseline이 비교 불가능한데 탐색이 실행됐다")
+
+    monkeypatch.setattr(tuner_module, "_optimize", boom)
+
+
+def test_single_model_skips_search_when_baseline_differs_from_confirmed_cv(monkeypatch):
+    """#360: tuner baseline이 확정 pipeline cv와 다르면 탐색하지 않고 n_trials=0 결과(행 기록용)를 돌려준다."""
+    pipeline = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
+    ctx = _ctx()
+    df = _make_df()
+    direct = evaluate_pipeline(pipeline, df, ctx).cv_score
+    _fail_if_searched(monkeypatch)
+    result = tune_single_model(pipeline, df, ctx, "ridge", n_trials=3, expected_baseline_cv=direct + 0.01)
+    assert result == TunerResult(
+        model_name="ridge", member_index=None, best_params={}, best_cv_score=direct, baseline_cv_score=direct,
+        n_trials=0, improved=False,
+    )
+
+
+def test_single_model_searches_when_baseline_matches_confirmed_cv():
+    pipeline = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
+    ctx = _ctx()
+    df = _make_df()
+    direct = evaluate_pipeline(pipeline, df, ctx).cv_score
+    result = tune_single_model(pipeline, df, ctx, "ridge", n_trials=2, expected_baseline_cv=direct)
+    assert result.n_trials == 2
+
+
+def test_baseline_gate_tolerance_boundary(monkeypatch):
+    pipeline = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
+    ctx = _ctx()
+    df = _make_df()
+    direct = evaluate_pipeline(pipeline, df, ctx).cv_score
+    assert tune_single_model(pipeline, df, ctx, "ridge", n_trials=1, expected_baseline_cv=direct + 9e-7).n_trials == 1
+    _fail_if_searched(monkeypatch)
+    assert tune_single_model(pipeline, df, ctx, "ridge", n_trials=1, expected_baseline_cv=direct + 2e-6).n_trials == 0
+
+
+def test_ensemble_member_skips_search_when_baseline_differs_from_confirmed_cv(monkeypatch):
+    pipeline = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
+    ctx = _ctx()
+    df = _make_df()
+    direct = evaluate_pipeline(pipeline, df, ctx).cv_score
+    _fail_if_searched(monkeypatch)
+    result = tune_ensemble_member(pipeline, df, ctx, member_index=1, n_trials=3, expected_baseline_cv=direct - 0.02)
+    assert result == TunerResult(
+        model_name="random_forest", member_index=1, best_params={}, best_cv_score=direct, baseline_cv_score=direct,
+        n_trials=0, improved=False,
+    )
+
+
+def test_gate_is_off_without_expected_baseline_cv():
+    """expected_baseline_cv를 안 주는 호출(기존 호출부·수동 실행)은 이전과 동일하게 탐색한다."""
+    pipeline = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
+    assert tune_single_model(pipeline, _make_df(), _ctx(), "ridge", n_trials=2).n_trials == 2
+
+
+def test_confirmed_pipeline_forwards_expected_baseline_cv_on_every_path(monkeypatch):
+    calls: list[tuple[str, float | None]] = []
+
+    def fake_single(pipeline, train, ctx, model_name, **kwargs):
+        calls.append(("single:" + model_name, kwargs["expected_baseline_cv"]))
+        return TunerResult(model_name, None, {}, 0.0, 0.0, 0, False)
+
+    def fake_member(pipeline, train, ctx, i, **kwargs):
+        calls.append((f"member:{i}", kwargs["expected_baseline_cv"]))
+        return TunerResult("ridge", i, {}, 0.0, 0.0, 0, False)
+
+    monkeypatch.setattr(tuner_module, "tune_single_model", fake_single)
+    monkeypatch.setattr(tuner_module, "tune_ensemble_member", fake_member)
+    ctx = _ctx()
+
+    tune_confirmed_pipeline(PatchedPipeline(BasePipeline(), _ModelSpecPatch()), None, ctx, expected_baseline_cv=0.5)
+    tune_confirmed_pipeline(PatchedPipeline(BasePipeline(), _EnsembleSpecPatch()), None, ctx, expected_baseline_cv=0.5)
+    src = "class Patch:\n    def build_model(self, params, ctx):\n        return LGBMClassifier(**params)\n"
+    tune_confirmed_pipeline(
+        PatchedPipeline(BasePipeline(), _FreeformPatch()), None, ctx, pipeline_source=src, expected_baseline_cv=0.5,
+    )
+    assert calls == [
+        ("single:ridge", 0.5), ("member:0", 0.5), ("member:1", 0.5), ("single:lgbm", 0.5),
+    ]
+
+
+@pytest.mark.parametrize(("baseline", "expected", "skipped"), [
+    (13.046045137, 13.046045327, False),  # s5e4 실측: 같은 pipeline의 baseline 흔들림(상대 1.5e-8)
+    (13.046045327 + 5e-6, 13.046045327, False),  # 절대 오차는 1e-6 초과지만 상대 4e-7 — 큰 스케일 지표
+    (13.046045327, 13.0373, True),        # 다른 pipeline
+    (0.964329682, 0.966210409, True),     # s6e8 실측: 레지스트리 경로 vs 자유형 build_model
+    (0.5 + 9e-7, 0.5, False),
+    (0.5 + 2e-6, 0.5, True),
+])
+def test_baseline_tolerance_scales_with_metric_magnitude(baseline, expected, skipped):
+    result = _skip_if_baseline_incomparable("xgboost", None, baseline, expected)
+    assert (result is not None) is skipped
+    if skipped:
+        assert result.n_trials == 0 and result.improved is False and result.baseline_cv_score == baseline

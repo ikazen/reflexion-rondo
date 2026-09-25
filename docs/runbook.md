@@ -365,6 +365,21 @@ uv run python -m bin.freeze_base --competition <competition-id>             # Mi
 평가는 약 6분(s6e8)이고 daemon 컨테이너(`docker exec deploy-rondo-daemon-1 uv run --no-sync python -m bin.freeze_base ...`)에서 돌리면
 운영 환경과 같은 데이터·자격으로 실행된다.
 
+### 4-10. 튜닝 레인 점검 (#318, #360, ADR-050)
+
+`reflexion_rondo_tune` 런은 끝날 때(약 3h) 한 번에 `raw.tuned_params`를 쓴다. daemon 스윕은 진행 중인 런이 있으면 같은 대회를 다시 트리거하지
+않지만(`tune_run_in_flight`), 수동 트리거나 재기동 직후에는 같은 대회 런이 겹칠 수 있다. 겹치면 가장 이른 런만 남기고 나머지를 종료한다:
+
+```bash
+# 진행 중 런 조회와 종료 (Airflow REST)
+GET /api/v2/dags/reflexion_rondo_tune/dagRuns?state=queued&state=running
+PATCH /api/v2/dags/reflexion_rondo_tune/dagRuns/<dag_run_id>   {"state": "failed"}
+```
+
+`raw.tuned_params`에 `n_trials=0`, `improved=false`, `params={}` 행만 있으면 baseline 게이트가 탐색을 건너뛴 것이다(튜너 baseline이 확정
+pipeline cv와 상대 1e-6 넘게 다름 — 태스크 로그에 `tuner: baseline ... 비교 불가능`). 자유형 `build_model` base(s6e8)에서 정상이며
+advisory(`ctx.tuned_params`)는 생성되지 않는다.
+
 ### 4-3. auto-submit 일시중단 복구
 
 cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_paused_reason`이 채워지고 해당 대회의 자동 제출이 멈춘다(decisions.md ADR-026). 발동 조건은

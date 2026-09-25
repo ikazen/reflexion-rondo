@@ -1091,6 +1091,21 @@ lifetime 전량 False. 원인은 탐색 범위가 아니라 baseline과 trial이
   버그를 고치는 동안 Airflow REST pause 대신 설정으로 자동 트리거만 끌 수 있다
   (수동 `bin/tune_pipeline.py` 실행은 영향 없음).
 
+**개정 (#360, 2026-09)**: 09-21~09-24 트리거 7건에서 두 가지 낭비가 실측됐다.
+
+- **스윕 중복**: 런은 끝날 때(약 3h) 한 번에 `raw.tuned_params`를 쓰므로 `_sweep_idle_tuning`이 마지막 기록만 보면 진행 중인 런과
+  같은 pipeline을 같은 TPE seed(42)로 매시간 다시 트리거한다(3건이 중복, s5e4 3개가 동시에 `big` 슬롯을 3h씩 점유). 트리거 직전에
+  `airflow_client.tune_run_in_flight(slug)`(튜닝 DAG의 queued/running 런 중 id 접두 `rondo_tune_{slug}_` 또는 `conf.competition`
+  일치)로 확인해 건너뛴다. 조회가 실패하면 이번 스윕은 건너뛴다(확인 못 한 채 트리거하면 중복 위험이고 다음 스윕은 1시간 뒤다).
+  승격 트리거(`_maybe_trigger_tune`)에는 넣지 않는다 — 방금 확정된 pipeline은 진행 중인 런의 대상이 아니므로 튜닝이 필요하다.
+- **비교 불가능한 baseline**: `bin/tune_pipeline.py`가 확정 pipeline의 cv를 `expected_baseline_cv`로 넘기고, 튜너 baseline이 상대 1e-6
+  (`max(1, |cv|)` 스케일)보다 다르면 탐색하지 않고 `n_trials=0, improved=False` 행만 기록한다. s6e8은 레지스트리 경로가 자유형
+  `build_model`보다 0.0019 낮아(0.96433 vs 0.96621) 3h를 쓰고도 `improved=True`가 실제 pipeline과 무관했다. 행을 남겨야 48h idle
+  로직이 매시간 재트리거하지 않고, `improved=False`뿐인 런은 `_latest_tuned_params`가 advisory를 내지 않는다(비교 불가능한 advisory가
+  코더에 흘러가던 것도 함께 사라진다). 상대 오차인 이유: 같은 s5e4 pipeline의 baseline도 실행마다 최대 1.9e-7(rmse 13.046045137~
+  13.046045327) 흔들려 절대 1e-6은 여유가 5배뿐이다.
+- 한계: 게이트는 비교 불가능한 탐색을 막을 뿐 원인(자유형 base와 레지스트리 경로의 격차)을 고치지 않는다. s6e8 튜닝은 그동안 스킵된다.
+
 ---
 
 ## ADR-051 — deep tier 포트폴리오 교체: s5e2 동결, s5e4 재활성 (#332)
