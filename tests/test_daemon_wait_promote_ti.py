@@ -9,7 +9,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from bin.api import DaemonState
-from bin.run_daemon import OllamaPacer, _process
+from bin.run_daemon import _CYCLE_WAIT_TIMEOUT_SEC, OllamaPacer, _process
 
 
 def _queue_item() -> dict:
@@ -37,7 +37,7 @@ def test_flag_off_waits_on_dag_run_not_task_instance():
         patch("bin.run_daemon.DAEMON_CYCLES_PER_LEASE", 1),
     ):
         _process(conn, _queue_item(), _disabled_pacer(), DaemonState())
-    mock_wait_run.assert_called_once_with("run1")
+    mock_wait_run.assert_called_once_with("run1", timeout=_CYCLE_WAIT_TIMEOUT_SEC)
     mock_wait_ti.assert_not_called()
 
 
@@ -55,7 +55,7 @@ def test_flag_on_waits_on_promote_task_instance():
         patch("bin.run_daemon.DAEMON_CYCLES_PER_LEASE", 1),
     ):
         _process(conn, _queue_item(), _disabled_pacer(), DaemonState())
-    mock_wait_ti.assert_called_once_with("run1", "promote")
+    mock_wait_ti.assert_called_once_with("run1", "promote", timeout=_CYCLE_WAIT_TIMEOUT_SEC)
     mock_wait_run.assert_not_called()
 
 
@@ -76,3 +76,9 @@ def test_flag_on_treats_failed_promote_as_cycle_failure():
     # status, **extra) 마지막 호출의 status 위치 인자(args[2]) 확인.
     final_status = mock_status.call_args_list[-1].args[2]
     assert final_status == "failed"
+
+
+def test_cycle_wait_timeout_covers_the_dag_worst_case():
+    """#366: retrieve 15분 + attempt 45분 + promote 180분(airflow-stack DAG의 execution_timeout 합)보다 길어야 한다.
+    이보다 짧으면 정상 진행 중인 사이클을 실패로 세고 다음 사이클을 겹쳐 트리거한다."""
+    assert _CYCLE_WAIT_TIMEOUT_SEC >= (15 + 45 + 180) * 60
