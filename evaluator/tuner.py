@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import optuna
 
-from evaluator.harness import PipelineContext, evaluate_pipeline
+from evaluator.harness import _BASE_MEMBER, PipelineContext, evaluate_pipeline
 from evaluator.metrics import get as get_metric
 from evaluator.models import registry_key_for_class
 from evaluator.search_spaces import get_search_space
@@ -217,8 +217,10 @@ def tune_ensemble_member(
     if not (0 <= member_index < len(members)):
         raise ValueError(f"tune_ensemble_member: member_index={member_index} out of range (0..{len(members) - 1})")
     model_name = members[member_index]["model"]
-    if model_name == "base":
-        raise ValueError(f"tune_ensemble_member: member {member_index} is 'base' — the pipeline's own model has no search space")
+    if model_name == _BASE_MEMBER:
+        raise ValueError(
+            f"tune_ensemble_member: member {member_index} is {_BASE_MEMBER!r} — the pipeline's own model has no search space"
+        )
     # 이 멤버가 confirmed ensemble_spec에서 이미 쓰던 params — base_spec에서 바로
     # 확보되니(외부 인자 불필요) 그대로 seed로 등록한다(#331).
     seed_params = members[member_index].get("params") or None
@@ -410,9 +412,9 @@ def tune_confirmed_pipeline(
     ensemble_spec = pipeline.ensemble_spec(ctx)
     if ensemble_spec is not None:
         members = ensemble_spec.get("members") or []
-        tunable = [i for i, m in enumerate(members) if m.get("model") != "base"]
+        tunable = [i for i, m in enumerate(members) if m.get("model") != _BASE_MEMBER]
         if members and not tunable:
-            raise ValueError("tune_confirmed_pipeline: every ensemble member is 'base' — nothing to tune")
+            raise ValueError(f"tune_confirmed_pipeline: every ensemble member is {_BASE_MEMBER!r} — nothing to tune")
         started_at = time.monotonic()
         results: list[TunerResult] = []
         for pos, i in enumerate(tunable):
