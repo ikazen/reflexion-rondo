@@ -317,17 +317,34 @@ def main() -> None:
     # 무관하게 매 promote task 종료 시점마다 그 attempt의 제출 CSV를 미리 캐싱해두면
     # ops-vm daemon이 auto-submit 시점에 fit 없이 업로드만 하게 된다(fit은 이미 big
     # 큐에서 도는 이 promote task 쪽으로 옮겨짐). 이미 캐시돼 있으면 재fit하지 않는다.
-    # best-effort — 실패해도 promote 자체는 성공 처리한다.
+    # fit은 별도 프로세스에서 wall 상한을 걸어 돌리고, 상한을 넘긴 attempt는 표식을 남겨 다음 promote가 같은
+    # 실패를 반복하지 않게 한다(#355). best-effort — 실패해도 promote 자체는 성공 처리한다.
     best = None
     try:
+        import subprocess
+
         from bin.api import _best_attempt
-        from bin.submit import generate_submission_csv
-        from store.s3_code import download_submission_csv, upload_submission_csv
+        from bin.submit import generate_submission_csv_isolated
+        from store.s3_code import (
+            download_submission_csv,
+            mark_submission_csv_timed_out,
+            submission_csv_timed_out,
+            upload_submission_csv,
+        )
         best = _best_attempt(conn, competition_id)
-        if best:
+        if best and download_submission_csv(competition_id, best[0]) is None:
             best_attempt_id, best_cv = best
-            if download_submission_csv(competition_id, best_attempt_id) is None:
-                csv_path, _, _ = generate_submission_csv(args.competition, attempt_id=best_attempt_id)
+            if submission_csv_timed_out(competition_id, best_attempt_id):
+                print(f"[run_promote_task] submission csv skipped for best={best_attempt_id[:8]}: previous fit timed out")
+            else:
+                comp = importlib.import_module(f"config.competitions.{args.competition}")
+                try:
+                    csv_path = generate_submission_csv_isolated(
+                        args.competition, best_attempt_id, full_data=getattr(comp, "SUBMIT_FULL_DATA", False),
+                    )
+                except subprocess.TimeoutExpired:
+                    mark_submission_csv_timed_out(competition_id, best_attempt_id)
+                    raise
                 upload_submission_csv(competition_id, best_attempt_id, csv_path.read_bytes())
                 print(f"[run_promote_task] submission csv cached for best={best_attempt_id[:8]} cv={best_cv}")
     except Exception as exc:

@@ -148,6 +148,23 @@ def download_submission_csv(competition_id: str, attempt_id: str) -> bytes | Non
     return path.read_bytes() if path.exists() else None
 
 
+def mark_submission_csv_timed_out(competition_id: str, attempt_id: str) -> None:
+    """이 attempt의 제출 CSV fit이 wall 상한을 넘었다는 표식(#355). best-effort — 실패하면 다음 promote가 다시 시도한다."""
+    key = f"{_SUBMISSIONS_PREFIX}/{competition_id}/{attempt_id}.timeout"
+    try:
+        requests.put(f"{_ENDPOINT}/{_BUCKET}/{key}", data=b"timeout", timeout=30).raise_for_status()
+    except Exception:
+        pass
+
+
+def submission_csv_timed_out(competition_id: str, attempt_id: str) -> bool:
+    key = f"{_SUBMISSIONS_PREFIX}/{competition_id}/{attempt_id}.timeout"
+    try:
+        return requests.get(f"{_ENDPOINT}/{_BUCKET}/{key}", timeout=30).status_code == 200
+    except Exception:
+        return False
+
+
 def delete(uri: str) -> bool:
     """URI가 가리키는 파일 삭제. 성공 여부 반환."""
     if uri.startswith("s3://"):

@@ -30,7 +30,9 @@ from bin.submit import (
     _load_best_code,
     _load_pipeline,
     _submission_value_col,
+    SUBMIT_FIT_TIMEOUT_SEC,
     generate_submission_csv,
+    generate_submission_csv_isolated,
     main,
 )
 
@@ -692,3 +694,56 @@ def test_cli_full_data_flag(monkeypatch, argv, expected) -> None:
     monkeypatch.setattr(sys, "argv", ["bin.submit", *argv])
     main()
     assert generate.call_args.kwargs == {"full_data": expected}
+
+
+def _completed(returncode=0, stdout="", stderr=""):
+    return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+_FIT_OUTPUT = (
+    "best attempt: a8e23c79  cv=13.03735\n"
+    "submission fit: rows=797105 full_data=True seeds=1 elapsed=179s peak_rss=1502MB\n"
+    "submission saved: /app/runs/submission_s5e4_20260925_045726.csv\n"
+)
+
+
+@pytest.mark.parametrize(("full_data", "flag_present"), [(True, True), (False, False)])
+def test_isolated_generation_runs_bin_submit_in_a_bounded_subprocess(full_data, flag_present, capsys) -> None:
+    """#355: fit은 promote task 프로세스 안이 아니라 wall 상한을 건 별도 프로세스에서 돈다."""
+    with patch("bin.api._run_in_pgroup", return_value=_completed(stdout=_FIT_OUTPUT)) as run:
+        path = generate_submission_csv_isolated("s5e4", "a8e23c79-full-id", full_data=full_data)
+    cmd = run.call_args.args[0]
+    assert cmd[:3] == [sys.executable, "-m", "bin.submit"]
+    assert cmd[cmd.index("--competition") + 1] == "s5e4"
+    assert cmd[cmd.index("--attempt-id") + 1] == "a8e23c79-full-id"
+    assert ("--full-data" in cmd) is flag_present
+    assert "--submit" not in cmd
+    assert run.call_args.kwargs["timeout"] == SUBMIT_FIT_TIMEOUT_SEC
+    assert path == Path("/app/runs/submission_s5e4_20260925_045726.csv")
+    assert "submission fit: rows=797105" in capsys.readouterr().out
+
+
+def test_isolated_generation_wall_limit_fits_inside_the_promote_task_timeout() -> None:
+    """airflow-stack DAG의 promote execution_timeout(180분)보다 짧아야 promote가 상한에 죽지 않는다."""
+    assert SUBMIT_FIT_TIMEOUT_SEC < 180 * 60
+
+
+def test_isolated_generation_reports_the_stderr_tail_on_failure() -> None:
+    failed = _completed(returncode=1, stderr="x" * 3000 + "ValueError: no confirmed pipeline")
+    with patch("bin.api._run_in_pgroup", return_value=failed):
+        with pytest.raises(RuntimeError, match=r"rc=1.*ValueError: no confirmed pipeline"):
+            generate_submission_csv_isolated("s5e4", "a8e23c79", full_data=False)
+
+
+def test_isolated_generation_requires_the_saved_path_line() -> None:
+    with patch("bin.api._run_in_pgroup", return_value=_completed(stdout="best attempt: a8e23c79\n")):
+        with pytest.raises(RuntimeError, match="no 'submission saved:' line"):
+            generate_submission_csv_isolated("s5e4", "a8e23c79", full_data=False)
+
+
+def test_isolated_generation_propagates_the_wall_timeout() -> None:
+    import subprocess
+
+    with patch("bin.api._run_in_pgroup", side_effect=subprocess.TimeoutExpired(cmd="bin.submit", timeout=9000)):
+        with pytest.raises(subprocess.TimeoutExpired):
+            generate_submission_csv_isolated("s5e4", "a8e23c79", full_data=True)
