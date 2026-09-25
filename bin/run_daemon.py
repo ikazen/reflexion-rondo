@@ -52,6 +52,9 @@ DAEMON_CYCLES_PER_LEASE = int(os.getenv("DAEMON_CYCLES_PER_LEASE", "5"))
 # 변화가 없다. gate가 며칠 안정화된 뒤에만 on으로 바꾼다(이미지 재빌드 없이 되돌릴
 # 수 있는 롤백 레버, #204).
 _WAIT_ON_PROMOTE_TI = os.getenv("RONDO_WAIT_ON_PROMOTE_TI", "") not in ("", "0", "false", "False")
+# DAG 정상 상한(retrieve 15분 + attempt 45분 + promote execution_timeout 180분 = 4시간) + 여유 1시간. airflow_client의
+# 기본 3600초로 기다리면 promote가 길어질 때 진행 중인 사이클을 실패로 세고 다음 사이클을 겹쳐 트리거한다(#366).
+_CYCLE_WAIT_TIMEOUT_SEC = 5 * 3600
 ROOT = Path(__file__).parent.parent
 
 _running = True
@@ -591,9 +594,11 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                     # execution_timeout까지 DAG run을 running 상태로 붙잡는다 — DAG run
                     # 전체를 기다리면 gate를 추가한 의미가 없다(#204). promote task
                     # instance 하나의 완료만 기다린다.
-                    final_state = airflow_client.wait_for_task_instance(dag_run_id, "promote")
+                    final_state = airflow_client.wait_for_task_instance(
+                        dag_run_id, "promote", timeout=_CYCLE_WAIT_TIMEOUT_SEC,
+                    )
                 else:
-                    final_state = airflow_client.wait_for_dag_run(dag_run_id)
+                    final_state = airflow_client.wait_for_dag_run(dag_run_id, timeout=_CYCLE_WAIT_TIMEOUT_SEC)
             except Exception as exc:
                 final_state, err_msg = "error", str(exc)
                 print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} airflow error: {err_msg}")
