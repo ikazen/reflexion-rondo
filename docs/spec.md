@@ -379,6 +379,9 @@ def ensemble_spec(self, ctx) -> dict | None:
   `extra_trees` / `ridge` / `elastic_net` — `model_spec`(아래)과 공유하는 동일 레지스트리.
 - `method` 기본값: 이산 라벨 분류(`metric_class == "classification"`)는 `majority_vote`, 그 외는 `weighted_average`.
 - 각 멤버는 `random_state=ctx.seed`가 기본으로 들어간다.
+- 예약어 `{"model": "base"}`(#362, ADR-057): 현재 pipeline의 `build_model`을 그 pipeline의 동결 단일 후보(`param_candidates(ctx)[0]`) params로 만든
+  모델이다. `params`를 주면 그 값을 쓴다. 체인의 어떤 patch도 `build_model`을 정의하지 않은 pipeline(예: 선언형 ensemble만 있는 s5e4)은 BasePipeline의
+  트리비얼 기본 모델이라 `base`를 쓸 수 없고 에러가 난다. 튜너는 `base` 멤버를 건너뛴다(탐색 공간 없음).
 - 기존 자유형 `build_model` 기반 ensemble 훅도 병행 허용 — 강제 마이그레이션 아님.
 
 #### `method="stack"` — 학습된 meta 모델로 조합 (#231, decisions.md ADR-036)

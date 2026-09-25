@@ -1287,6 +1287,29 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 
 ---
 
+## ADR-057 — ensemble 멤버에 예약어 base를 두고 코더가 멤버를 경량화하지 못하게 한다 (#362)
+
+- 결정: `ensemble_spec` 멤버 이름으로 예약어 `base`를 허용한다(`{"model": "base"}`, 선택적 `params`). 현재 pipeline의 `build_model`을 그 pipeline의 동결 단일 후보
+  (`param_candidates(ctx)[0]`) params로 만든 모델이다. `evaluator/harness.py:fit_predict`가 CV/holdout/제출 세 경로 공통으로 풀며(`_base_member`), 체인의 어떤 patch도
+  `build_model`을 정의하지 않은 pipeline(선언형 ensemble만 있는 s5e4 등)은 BasePipeline의 트리비얼 기본 모델이라 `base`를 쓸 수 없다(에러). 튜너는 `base` 멤버를 건너뛴다(탐색 공간 없음).
+  코더 프롬프트는 기본 예시를 `base` 멤버로 시작하게 바꾸고 `n_estimators: 300, learning_rate: 0.05` 앵커링을 없앴으며 "멤버를 base보다 약하게 만들지 말 것, 시간/메모리를 이유로
+  n_estimators를 낮추지 말 것, `ctx.best_params`/`ctx.tuned_params`에서 출발할 것, stack보다 weighted_average"를 규칙으로 넣었다. ensemble action의 CPU kill 피드백
+  (`_resource_kill_feedback`)은 트리 수 축소 대신 "멤버 수를 줄이거나 stack 대신 weighted_average"를 안내한다.
+- 근거(2026-09-24 실측, s6e8): 이틀간 232 attempt 중 최대 양의 gain이 1.3e-5(LB 격차 0.0034의 1/250)이고 LLM ensemble 21건은 전부 -0.0026~-0.012다. 실제 생성 코드에서
+  (1) 코더가 멤버를 스스로 경량화하고("1500-tree XGBoost caused OOM", "modest number of trees"), (2) 프롬프트 예시의 `n_estimators: 300, learning_rate: 0.05`를 그대로 따라 하며,
+  (3) "ensemble_spec을 쓰면 build_model을 쓰지 말라" 규칙 때문에 튜닝된 base 모델이 앙상블에서 통째로 빠지고 코더가 base를 멤버로 다시 지정할 방법이 없었고,
+  (4) CPU kill 재생성 피드백이 "n_estimators를 줄여 더 싼 파이프라인"을 지시했다. 하네스 측 비대칭은 없다(#305 이후 단일 모델과 ensemble 멤버가 같은 fit 경로).
+- 실데이터 검증(2026-09-25, s6e8 확정 pipeline, train90 629,732행/5-fold, 로컬 16코어): `[base]` 단독 앙상블이 저장 cv 0.966210408605를 12자리까지 재현했다(base 멤버 =
+  확정 pipeline의 모델). 기본값 멤버와의 블렌드는 전부 base보다 나빴다: lgbm 0.5/0.5 -0.00276, xgboost 0.5/0.5 -0.00139, catboost 0.5/0.5 -0.00061, lgbm 0.8/0.2 -0.00062.
+  약한 멤버의 비중이 클수록 나빠 LLM ensemble 21건의 범위(-0.0026~-0.012)와 같은 현상이다 — 문제는 하네스가 아니라 "강한 멤버를 넣을 수단과 유도"였다는 진단과 일치한다.
+  이 표는 기본값 멤버의 하한이다: 성공하려면 멤버가 base 수준으로 튜닝돼 있거나 base 비중이 커야 한다.
+- 병합/재현: `materialize_best_pipeline`은 base에만 있는 훅(`build_model`)을 병합본에 보존하므로 ensemble 승격 후에도 `base`는 attempt 평가, merge-verify, 제출에서 같은 모델로 풀린다.
+- 한계: `base`는 단일 후보 params를 쓴다(후보가 여럿인 옛 pool이면 첫 번째). stack은 멤버당 fold마다 6회 fit이라 base 멤버가 무거운 대회(s6e8 base 5-fold CPU 약 1,155초/16코어)에선
+  예산을 넘기기 쉬워 프롬프트가 weighted_average를 권한다. 이 실험은 s6e8 ensemble 레버의 상한이 작을 수 있음을 전제로 한다(기본값 catboost 0.5도 -0.0006).
+- 판정 기준(배포 후 24~48h, s6e8): ensemble attempt의 gain 분포. 성공은 최소 1건이 gain >= -0.0002(현 최대 -0.0026)이거나 양의 gain. 전부 -0.001 이하이면 s6e8 동결(ADR-045 방식)을 재판단한다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |
