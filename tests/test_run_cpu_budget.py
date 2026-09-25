@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 
 from agents.strategist import StrategyDecision
-from cycle.run import CycleConfig, run_attempt_core
+from cycle.run import CycleConfig, _resource_kill_feedback, run_attempt_core
 from cycle.stagnation import StagnationSignal
 from runtime.isolate import DEFAULT_CPU_BUDGET_SECS, IsolatedResult
 
@@ -41,7 +41,7 @@ def _cpu_kill(peak_cpu_sec: float, budget: float = DEFAULT_CPU_BUDGET_SECS) -> I
 
 
 def _run(eval_side_effect, generate_code_mock=None, cpu_budget_secs=None,
-         validate_patch_mock=None):
+         validate_patch_mock=None, action_type="hyperparam_search"):
     conn = MagicMock()
     generate_code_mock = generate_code_mock or MagicMock(return_value="source")
     validate_patch_mock = validate_patch_mock or MagicMock(return_value=[])
@@ -50,7 +50,7 @@ def _run(eval_side_effect, generate_code_mock=None, cpu_budget_secs=None,
               return_value=StagnationSignal(False, 0, (), 0)),
         patch("cycle.run.get_action_prior", return_value={}),
         patch("cycle.run.strategize", return_value=StrategyDecision(
-            hypothesis="h", action_type="hyperparam_search", reflection_ids=[])),
+            hypothesis="h", action_type=action_type, reflection_ids=[])),
         patch("cycle.run.top_error_pitfalls", return_value=[]),
         patch("cycle.run.generate_code", generate_code_mock),
         patch("cycle.run.validate_patch", validate_patch_mock),
@@ -149,6 +149,47 @@ def test_regenerate_feedback_is_actionable_not_raw_rc_message():
     assert "cpu budget exceeded" not in feedback
     assert "rc=" not in feedback
     assert "CPU 예산" in feedback
+
+
+_CPU_KILL = "cpu budget exceeded: 900s CPU used (limit 900s)"
+
+
+def test_ensemble_kill_feedback_does_not_tell_the_coder_to_shrink_members():
+    """#362, ADR-057: "n_estimators를 줄여 더 싼 파이프라인을 써라"는 지시가 s6e8 ensemble 멤버를 base보다 약하게 만들었다."""
+    feedback = _resource_kill_feedback(_CPU_KILL, 900, "ensemble")
+    assert "CPU 예산 900초" in feedback
+    assert "줄이지 마라" in feedback
+    assert "weighted_average" in feedback
+    assert "더 싼 파이프라인" not in feedback
+
+
+def test_non_ensemble_kill_feedback_is_unchanged():
+    feedback = _resource_kill_feedback(_CPU_KILL, 900, "hyperparam_search")
+    assert "더 싼 파이프라인" in feedback
+    assert _resource_kill_feedback(_CPU_KILL, 900) == feedback
+
+
+def test_ensemble_memory_kill_feedback_is_unchanged():
+    memory = "memory watchdog: peak RSS 7000MB > limit 6144MB"
+    assert _resource_kill_feedback(memory, 900, "ensemble") == _resource_kill_feedback(memory, 900, "model_swap")
+
+
+def test_projected_abort_of_an_ensemble_gets_the_ensemble_feedback():
+    projected = "cpu budget exceeded: projected 4500s CPU after fold 1 (limit 3600s)"
+    assert "줄이지 마라" in _resource_kill_feedback(projected, 3600, "ensemble")
+
+
+def test_regenerate_after_an_ensemble_kill_passes_the_ensemble_feedback():
+    ok = IsolatedResult(
+        cv_score=0.9, cv_fold_var=0.001, fold_scores=[0.89, 0.9, 0.91],
+        label="neutral", gain_vs_best=0.01, error_trace=None, peak_cpu_sec=50.0,
+    )
+    generate_code_mock = MagicMock(return_value="source")
+    _run(
+        eval_side_effect=[_cpu_kill(peak_cpu_sec=300.0, budget=900), ok],
+        generate_code_mock=generate_code_mock, action_type="ensemble",
+    )
+    assert "줄이지 마라" in generate_code_mock.call_args_list[1].kwargs["error_feedback"]
 
 
 def test_post_kill_regen_retries_on_static_violation():

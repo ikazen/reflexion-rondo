@@ -578,3 +578,77 @@ def test_baseline_tolerance_scales_with_metric_magnitude(baseline, expected, ski
     assert (result is not None) is skipped
     if skipped:
         assert result.n_trials == 0 and result.improved is False and result.baseline_cv_score == baseline
+
+
+class _BaseModelPatch:
+    action_type = "model_swap"
+
+    def param_candidates(self, ctx):
+        return [{"alpha": 1.0}]
+
+    def build_model(self, params, ctx):
+        from sklearn.linear_model import Ridge
+
+        return Ridge(**params)
+
+
+class _EnsembleWithBasePatch:
+    action_type = "ensemble"
+
+    def ensemble_spec(self, ctx):
+        return {
+            "members": [
+                {"model": "base"},
+                {"model": "ridge", "params": {"alpha": 1.0}},
+                {"model": "random_forest", "params": {"n_estimators": 10}},
+            ],
+            "method": "weighted_average",
+        }
+
+
+def _ensemble_with_base_pipeline():
+    return PatchedPipeline(PatchedPipeline(BasePipeline(), _BaseModelPatch()), _EnsembleWithBasePatch())
+
+
+def test_tune_confirmed_pipeline_skips_base_members():
+    """#362: 예약어 멤버 base는 탐색 공간이 없어 튜닝 대상에서 뺀다 — 나머지 멤버는 그대로 튜닝한다."""
+    results = tune_confirmed_pipeline(_ensemble_with_base_pipeline(), _make_df(), _ctx(is_classification=False), n_trials=1)
+    assert [r.member_index for r in results] == [1, 2]
+    assert [r.model_name for r in results] == ["ridge", "random_forest"]
+
+
+def test_ensemble_member_trials_resolve_the_base_member_like_the_confirmed_pipeline():
+    ctx = _ctx(is_classification=False)
+    pipeline = _ensemble_with_base_pipeline()
+    df = _make_df()
+    baseline = evaluate_pipeline(pipeline, df, ctx).cv_score
+    result = tune_ensemble_member(pipeline, df, ctx, member_index=1, n_trials=1)
+    assert result.baseline_cv_score == baseline
+    assert result.n_trials == 1
+
+
+def test_tune_ensemble_member_rejects_the_base_member():
+    with pytest.raises(ValueError, match="member 0 is 'base'"):
+        tune_ensemble_member(_ensemble_with_base_pipeline(), _make_df(), _ctx(is_classification=False), member_index=0)
+
+
+class _OnlyBaseMembersPipeline:
+    def ensemble_spec(self, ctx):
+        return {"members": [{"model": "base"}, {"model": "base"}]}
+
+
+def test_ensemble_of_only_base_members_has_nothing_to_tune():
+    with pytest.raises(ValueError, match="every ensemble member is 'base'"):
+        tune_confirmed_pipeline(_OnlyBaseMembersPipeline(), None, None, n_trials=1)
+
+
+class _BaseAndTwoMembersPipeline:
+    def ensemble_spec(self, ctx):
+        return {"members": [{"model": "base"}, {}, {}]}
+
+
+def test_ensemble_run_budget_is_split_across_tunable_members_only(monkeypatch):
+    seen = _fake_members(monkeypatch, _Clock(), spend=[0.0, 100.0, 50.0])
+    results = tune_confirmed_pipeline(_BaseAndTwoMembersPipeline(), None, None, n_trials=5, timeout_sec=900)
+    assert seen == [450.0, 800.0]  # 멤버 1: 900/2, 멤버 2: (900-100)/1 — base 멤버는 몫을 차지하지 않는다
+    assert [r.member_index for r in results] == [1, 2]

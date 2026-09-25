@@ -262,3 +262,25 @@ def test_contract_prefers_ensemble_spec_over_wrapper_class() -> None:
         assert model_name in _REFLEXION_CONTRACT
     assert "weighted_average" in _REFLEXION_CONTRACT
     assert "majority_vote" in _REFLEXION_CONTRACT
+
+
+def test_ensemble_prompt_offers_the_base_member_and_forbids_weakening_members():
+    """#362, ADR-057: s6e8 ensemble 21건이 전부 -0.003~-0.012였다 — 튜닝된 base 모델이 앙상블에서 빠지고 코더가 멤버를 스스로
+    경량화했다. 프롬프트가 base 멤버를 제공하고 멤버 경량화를 금지해야 한다."""
+    from agents.coder import _REFLEXION_CONTRACT
+
+    main_example = _REFLEXION_CONTRACT.split("## ensemble action_type")[1].split('### `method: "stack"`')[0]
+    assert '{"model": "base"}' in main_example  # 기본 예시 자체가 base 멤버로 시작한다
+    assert "Allowed model names: base," in _REFLEXION_CONTRACT
+    assert "A member must not be weaker than the model it joins" in _REFLEXION_CONTRACT
+    assert "ctx.best_params" in _REFLEXION_CONTRACT and "ctx.tuned_params" in _REFLEXION_CONTRACT
+    assert "Prefer weighted_average" in _REFLEXION_CONTRACT
+
+
+def test_ensemble_prompt_examples_do_not_anchor_on_small_member_params():
+    """예시의 n_estimators 300 / learning_rate 0.05를 코더가 그대로 따라 멤버가 base보다 약해졌다(앵커링)."""
+    from agents.coder import _REFLEXION_CONTRACT
+
+    ensemble_section = _REFLEXION_CONTRACT.split("## ensemble action_type")[1].split("## model_swap action_type")[0]
+    assert "n_estimators" not in ensemble_section.replace("Do NOT lower `n_estimators`", "")
+    assert "0.05" not in ensemble_section

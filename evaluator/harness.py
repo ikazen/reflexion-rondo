@@ -287,9 +287,40 @@ def _member_predict(built: object, Xva: np.ndarray, metric_class: str) -> np.nda
     return np.asarray(built.predict(Xva)).reshape(-1)
 
 
+# ensemble 멤버의 예약어: 현재 pipeline의 build_model을 그 pipeline의 동결 단일 후보 params로 만든 모델(#362, ADR-057).
+_BASE_MEMBER = "base"
+
+
+def _base_member(pipeline: object, ctx: "PipelineContext") -> tuple | None:
+    """(build_fn, 기본 params) 또는 None. 체인의 어떤 patch도 build_model을 정의하지 않았으면 BasePipeline의 트리비얼
+    기본 모델로 귀결되므로 "현재 best 모델"이 아니다 — 멤버로 쓸 수 없게 None을 준다."""
+    chain_defines = getattr(pipeline, "_chain_defines", None)
+    if chain_defines is not None and not chain_defines("build_model"):
+        return None
+    candidates = pipeline.param_candidates(ctx)
+    return (lambda p: _build_model_safe(pipeline, p, ctx)), (dict(candidates[0]) if candidates else {})
+
+
+def _member_build_fn(model_name: str, ctx: "PipelineContext", base: tuple | None):
+    if model_name != _BASE_MEMBER:
+        return lambda p, _name=model_name: build_registry_model(_name, p, ctx)
+    if base is None:
+        raise ValueError(
+            "ensemble_spec: member 'base' needs the current best pipeline to define build_model — it does not"
+        )
+    return base[0]
+
+
+def _member_params(member: dict, base: tuple | None) -> dict:
+    params = member.get("params") or {}
+    if member.get("model") == _BASE_MEMBER and not params and base is not None:
+        return base[1]
+    return params
+
+
 def _oof_member_predictions(
     model_name: str, params: dict, Xtr: np.ndarray, ytr: np.ndarray,
-    ctx: "PipelineContext", metric_class: str, n_inner_splits: int = 5,
+    ctx: "PipelineContext", metric_class: str, n_inner_splits: int = 5, base: tuple | None = None,
 ) -> np.ndarray:
     """멤버 모델의 inner K-fold out-of-fold 예측 — stacking meta 모델 학습 전용 입력.
 
@@ -304,18 +335,16 @@ def _oof_member_predictions(
         splits = StratifiedKFold(n_splits=k, shuffle=True, random_state=ctx.seed).split(np.zeros(n), ytr)
     else:
         splits = KFold(n_splits=k, shuffle=True, random_state=ctx.seed).split(np.zeros(n))
+    build_fn = _member_build_fn(model_name, ctx, base)
     for inner_tr, inner_va in splits:
-        model = _fit_with_retry(
-            lambda p, _name=model_name: build_registry_model(_name, p, ctx),
-            params, Xtr[inner_tr], ytr[inner_tr],
-        )
+        model = _fit_with_retry(build_fn, params, Xtr[inner_tr], ytr[inner_tr])
         oof[inner_va] = _member_predict(model, Xtr[inner_va], metric_class).astype(float)
     return oof
 
 
 def _fit_predict_stack(
     spec: dict, Xtr: np.ndarray, ytr: np.ndarray, Xva: np.ndarray,
-    ctx: "PipelineContext", metric_class: str,
+    ctx: "PipelineContext", metric_class: str, base: tuple | None = None,
 ) -> np.ndarray:
     """method="stack" — 멤버 예측을 고정 가중치가 아니라 meta 모델(회귀)로 조합한다
     (decisions.md ADR-036, #231). meta는 항상 회귀 변형으로 생성한다 — 멤버 출력이
@@ -344,15 +373,12 @@ def _fit_predict_stack(
     va_cols: list[np.ndarray] = []
     for member in members:
         model_name = member.get("model")
-        params = member.get("params") or {}
-        oof_cols.append(_oof_member_predictions(model_name, params, Xtr, ytr, ctx, metric_class))
+        params = _member_params(member, base)
+        oof_cols.append(_oof_member_predictions(model_name, params, Xtr, ytr, ctx, metric_class, base=base))
         # meta 학습 입력(OOF)과 달리, 실제 Xva 예측은 멤버를 outer fold의 Xtr 전체로
         # 재적합해서 뽑는다 — 표준 stacking 관례(멤버는 가용 라벨을 전부 활용하고,
         # meta만 inner OOF로 누수를 막는다).
-        full_model = _fit_with_retry(
-            lambda p, _name=model_name: build_registry_model(_name, p, ctx),
-            params, Xtr, ytr,
-        )
+        full_model = _fit_with_retry(_member_build_fn(model_name, ctx, base), params, Xtr, ytr)
         va_cols.append(_member_predict(full_model, Xva, metric_class).astype(float))
 
     oof_matrix = np.column_stack(oof_cols)
@@ -369,7 +395,7 @@ def _fit_predict_stack(
 
 def _fit_predict_ensemble(
     spec: dict, Xtr: np.ndarray, ytr: np.ndarray, Xva: np.ndarray,
-    ctx: "PipelineContext", metric_class: str,
+    ctx: "PipelineContext", metric_class: str, base: tuple | None = None,
 ) -> np.ndarray:
     """Patch.ensemble_spec(ctx)이 선언한 멤버를 harness가 직접 생성·적합·결합한다.
 
@@ -390,7 +416,7 @@ def _fit_predict_ensemble(
     method = spec.get("method") or ("majority_vote" if metric_class == "classification" else "weighted_average")
 
     if method == "stack":
-        return _fit_predict_stack(spec, Xtr, ytr, Xva, ctx, metric_class)
+        return _fit_predict_stack(spec, Xtr, ytr, Xva, ctx, metric_class, base)
 
     weights = spec.get("weights") or [1.0] * len(members)
     if len(weights) != len(members):
@@ -401,11 +427,7 @@ def _fit_predict_ensemble(
     member_preds: list[np.ndarray] = []
     for member in members:
         model_name = member.get("model")
-        params = member.get("params") or {}
-        built = _fit_with_retry(
-            lambda p, _name=model_name: build_registry_model(_name, p, ctx),
-            params, Xtr, ytr,
-        )
+        built = _fit_with_retry(_member_build_fn(model_name, ctx, base), _member_params(member, base), Xtr, ytr)
         member_preds.append(_member_predict(built, Xva, metric_class))
 
     return _combine_predictions(member_preds, method, weights, metric_class)
@@ -451,7 +473,9 @@ def fit_predict(
     if ensemble_spec_dict is _NOT_GIVEN:
         ensemble_spec_dict = pipeline.ensemble_spec(ctx)
     if ensemble_spec_dict is not None:
-        raw_preds = _fit_predict_ensemble(ensemble_spec_dict, Xtr, ytr, Xva, ctx, metric_class)
+        uses_base = any(m.get("model") == _BASE_MEMBER for m in ensemble_spec_dict.get("members") or [])
+        base = _base_member(pipeline, ctx) if uses_base else None
+        raw_preds = _fit_predict_ensemble(ensemble_spec_dict, Xtr, ytr, Xva, ctx, metric_class, base)
         return raw_preds, None
 
     if model_spec_dict is _NOT_GIVEN:

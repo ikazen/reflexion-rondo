@@ -625,12 +625,19 @@ def _retrieval_scores(lessons: list[dict]) -> list[float | None] | None:
     return [l.get("score") for l in lessons] or None
 
 
-def _resource_kill_feedback(error_trace: str, cpu_budget_sec: float) -> str:
+def _resource_kill_feedback(error_trace: str, cpu_budget_sec: float, action_type: str = "") -> str:
     """워치독이 리소스 상한 초과로 강제종료한 에러는 원문(rc=-9 등) 대신 실행
     가능한 지시로 바꿔 재생성 피드백에 넘긴다. 원문은 "이유 모르게 죽었다"로만
     읽혀 재시도가 비슷하게 비싼 코드를 다시 쓰는 낭비를 낳았다(2026-08 실측:
     CPU kill attempt 113건이 예외 없이 이 경로로 재시도했고 전부 같은 자리에서
     다시 실패)."""
+    if error_trace.startswith("cpu budget exceeded") and action_type == "ensemble":
+        # 멤버의 트리 수를 줄이라고 하면 코더가 멤버를 base보다 약하게 만들어 블렌드가 나빠진다(#362, ADR-057).
+        return (
+            f"이 앙상블은 CPU 예산 {cpu_budget_sec:.0f}초를 초과해 종료됐다(코드 버그 아님). 멤버의 n_estimators/"
+            "iterations/max_depth는 줄이지 마라 — 약한 멤버는 블렌드를 더 나쁘게 만든다. 가장 비싼 멤버를 빼 멤버 수를"
+            " 줄이거나, method가 stack이면 weighted_average로 바꿔라."
+        )
     if error_trace.startswith("cpu budget exceeded"):
         return (
             f"이 파이프라인은 CPU 예산 {cpu_budget_sec:.0f}초를 초과해 강제 종료됐다"
@@ -854,7 +861,7 @@ def run_attempt_core(
                 # 초과 등)를 error_trace에 남겨 정적 가드 메시지가 진짜 원인을 가리지
                 # 않게 한다.
                 original_kill_reason = iso.error_trace
-                feedback = _resource_kill_feedback(iso.error_trace, cpu_remaining)
+                feedback = _resource_kill_feedback(iso.error_trace, cpu_remaining, action_type)
                 static_errs: list[str] = []
                 for _regen_i in range(_MAX_CODE_RETRIES + 1):
                     source = generate_code(**gen_kwargs, error_feedback=feedback)
