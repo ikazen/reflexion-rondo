@@ -274,6 +274,15 @@ def test_max_train_rows_regression_uses_plain_sample():
     assert result.height == 200
 
 
+def test_apply_row_cap_false_skips_max_train_rows():
+    """#355: 제출 fit은 CV 비용이 없어 MAX_TRAIN_ROWS 축소 없이 전량으로 학습할 수 있어야 한다. 기본값은 여전히 축소."""
+    comp = _fake_comp(DROP_COLS=[], MAX_TRAIN_ROWS=200, IS_CLASSIFICATION=False, TARGET="y")
+    df = pl.DataFrame({"x": list(range(1000)), "y": [float(i) for i in range(1000)]})
+    with patch("store.train_data.pl.read_csv", return_value=df):
+        assert load_train(comp, apply_row_cap=False).height == 1000
+        assert load_train(comp).height == 200
+
+
 def test_max_train_rows_is_deterministic_across_calls():
     """cross-seed confirm/merge-verify가 같은 cv_score를 재현하려면 같은 표본이어야 한다
     — 고정 seed로 매 호출 동일 결과."""

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -23,11 +24,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bin.submit import (
+    _BAG_SEEDS,
     _bagged_predict,
     _dummy_target_value,
     _load_best_code,
     _load_pipeline,
     _submission_value_col,
+    SUBMIT_FIT_TIMEOUT_SEC,
+    generate_submission_csv,
+    generate_submission_csv_isolated,
+    main,
 )
 
 
@@ -631,3 +637,113 @@ def test_dummy_target_value_works_for_numeric_target() -> None:
     assert result == 10.5
 
 
+
+
+def _generate(monkeypatch, tmp_path, *, full_data: bool, **comp_extra):
+    """generate_submission_csv를 DB/MinIO 없이 돌린다 — load_train과 _bagged_predict 호출 인자를 돌려준다."""
+    from evaluator.harness import BasePipeline
+
+    comp = SimpleNamespace(
+        COMPETITION_ID="playground-series-fake", TARGET="y", METRIC="rmse", IS_CLASSIFICATION=False,
+        DROP_COLS=["id"], **comp_extra,
+    )
+    monkeypatch.setitem(sys.modules, "config.competitions.fake_sub", comp)
+    frames = {
+        "test.csv": pl.DataFrame({"id": [100, 101, 102], "x": [1.0, 2.0, 3.0]}),
+        "sample_submission.csv": pl.DataFrame({"id": [100, 101, 102], "y": [0.0, 0.0, 0.0]}),
+    }
+    train = pl.DataFrame({"x": [float(i) for i in range(40)], "y": [float(i % 7) for i in range(40)]})
+    load_train = MagicMock(return_value=train)
+    bagged = MagicMock(return_value=np.array([1.0, 2.0, 3.0]))
+    monkeypatch.setattr("bin.submit._load_best_code", lambda cid, aid: ("src", 1.5, "attempt-1234", None, None))
+    monkeypatch.setattr("bin.submit._load_pipeline", lambda *a, **k: BasePipeline())
+    monkeypatch.setattr("bin.submit._read_csv", lambda c, name: frames[name])
+    monkeypatch.setattr("store.train_data.load_train", load_train)
+    monkeypatch.setattr("bin.submit._bagged_predict", bagged)
+    monkeypatch.setattr("bin.submit.RUNS_DIR", tmp_path)
+    out, attempt_id, cv = generate_submission_csv("fake_sub", full_data=full_data)
+    return load_train, bagged, out
+
+
+@pytest.mark.parametrize("full_data", [False, True])
+def test_generate_submission_csv_full_data_controls_the_row_cap(monkeypatch, tmp_path, full_data) -> None:
+    """#355: full_data=True만 MAX_TRAIN_ROWS 축소를 끈다. 기본(False)은 attempt 평가와 같은 학습셋."""
+    load_train, _, out = _generate(monkeypatch, tmp_path, full_data=full_data)
+    assert load_train.call_args.kwargs == {"apply_row_cap": not full_data}
+    assert pl.read_csv(out).to_dict(as_series=False) == {"id": [100, 101, 102], "y": [1.0, 2.0, 3.0]}
+
+
+def test_generate_submission_csv_bag_seeds_come_from_the_competition_config(monkeypatch, tmp_path, capsys) -> None:
+    _, bagged, _ = _generate(monkeypatch, tmp_path, full_data=True, SUBMIT_BAG_SEEDS=[7, 8])
+    assert bagged.call_args.kwargs["bag_seeds"] == [7, 8]
+    assert "submission fit: rows=40 full_data=True seeds=2 elapsed=" in capsys.readouterr().out
+
+
+def test_generate_submission_csv_defaults_to_the_five_seed_bag(monkeypatch, tmp_path) -> None:
+    _, bagged, _ = _generate(monkeypatch, tmp_path, full_data=False)
+    assert bagged.call_args.kwargs["bag_seeds"] == _BAG_SEEDS
+
+
+@pytest.mark.parametrize(("argv", "expected"), [
+    (["--competition", "s5e4"], False),
+    (["--competition", "s5e4", "--full-data"], True),
+])
+def test_cli_full_data_flag(monkeypatch, argv, expected) -> None:
+    generate = MagicMock(return_value=(Path("out.csv"), "attempt-1234", 1.5))
+    monkeypatch.setattr("bin.submit.generate_submission_csv", generate)
+    monkeypatch.setattr(sys, "argv", ["bin.submit", *argv])
+    main()
+    assert generate.call_args.kwargs == {"full_data": expected}
+
+
+def _completed(returncode=0, stdout="", stderr=""):
+    return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+_FIT_OUTPUT = (
+    "best attempt: a8e23c79  cv=13.03735\n"
+    "submission fit: rows=797105 full_data=True seeds=1 elapsed=179s peak_rss=1502MB\n"
+    "submission saved: /app/runs/submission_s5e4_20260925_045726.csv\n"
+)
+
+
+@pytest.mark.parametrize(("full_data", "flag_present"), [(True, True), (False, False)])
+def test_isolated_generation_runs_bin_submit_in_a_bounded_subprocess(full_data, flag_present, capsys) -> None:
+    """#355: fit은 promote task 프로세스 안이 아니라 wall 상한을 건 별도 프로세스에서 돈다."""
+    with patch("bin.api._run_in_pgroup", return_value=_completed(stdout=_FIT_OUTPUT)) as run:
+        path = generate_submission_csv_isolated("s5e4", "a8e23c79-full-id", full_data=full_data)
+    cmd = run.call_args.args[0]
+    assert cmd[:3] == [sys.executable, "-m", "bin.submit"]
+    assert cmd[cmd.index("--competition") + 1] == "s5e4"
+    assert cmd[cmd.index("--attempt-id") + 1] == "a8e23c79-full-id"
+    assert ("--full-data" in cmd) is flag_present
+    assert "--submit" not in cmd
+    assert run.call_args.kwargs["timeout"] == SUBMIT_FIT_TIMEOUT_SEC
+    assert path == Path("/app/runs/submission_s5e4_20260925_045726.csv")
+    assert "submission fit: rows=797105" in capsys.readouterr().out
+
+
+def test_isolated_generation_wall_limit_fits_inside_the_promote_task_timeout() -> None:
+    """airflow-stack DAG의 promote execution_timeout(180분)보다 짧아야 promote가 상한에 죽지 않는다."""
+    assert SUBMIT_FIT_TIMEOUT_SEC < 180 * 60
+
+
+def test_isolated_generation_reports_the_stderr_tail_on_failure() -> None:
+    failed = _completed(returncode=1, stderr="x" * 3000 + "ValueError: no confirmed pipeline")
+    with patch("bin.api._run_in_pgroup", return_value=failed):
+        with pytest.raises(RuntimeError, match=r"rc=1.*ValueError: no confirmed pipeline"):
+            generate_submission_csv_isolated("s5e4", "a8e23c79", full_data=False)
+
+
+def test_isolated_generation_requires_the_saved_path_line() -> None:
+    with patch("bin.api._run_in_pgroup", return_value=_completed(stdout="best attempt: a8e23c79\n")):
+        with pytest.raises(RuntimeError, match="no 'submission saved:' line"):
+            generate_submission_csv_isolated("s5e4", "a8e23c79", full_data=False)
+
+
+def test_isolated_generation_propagates_the_wall_timeout() -> None:
+    import subprocess
+
+    with patch("bin.api._run_in_pgroup", side_effect=subprocess.TimeoutExpired(cmd="bin.submit", timeout=9000)):
+        with pytest.raises(subprocess.TimeoutExpired):
+            generate_submission_csv_isolated("s5e4", "a8e23c79", full_data=True)

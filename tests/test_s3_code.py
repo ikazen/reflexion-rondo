@@ -13,7 +13,15 @@ ROOT = Path(__file__).parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from store.s3_code import download_submission_csv, upload_submission_csv
+from unittest.mock import MagicMock, patch
+
+from store import s3_code
+from store.s3_code import (
+    download_submission_csv,
+    mark_submission_csv_timed_out,
+    submission_csv_timed_out,
+    upload_submission_csv,
+)
 
 
 def test_upload_then_download_roundtrips_local_fallback() -> None:
@@ -53,3 +61,28 @@ def test_download_decodes_utf8_regardless_of_content_type_charset() -> None:
     with patch.object(s3_code.requests, "get", return_value=resp):
         assert s3_code.download("s3://bucket/key.py") == source
         assert s3_code.download_best_pipeline("comp-x") == source
+
+
+def test_timeout_marker_is_stored_next_to_the_csv_cache_key() -> None:
+    """#355: 표식은 CSV 캐시와 같은 접두(submissions/{competition_id}/) 아래 `{attempt_id}.timeout`이다."""
+    resp = MagicMock(status_code=200)
+    with patch.object(s3_code.requests, "put", return_value=resp) as put:
+        mark_submission_csv_timed_out("playground-series-s5e4", "attempt-abc")
+    assert put.call_args.args[0].endswith("/kaggle/submissions/playground-series-s5e4/attempt-abc.timeout")
+
+
+def test_timeout_marker_lookup_reflects_the_object_existing() -> None:
+    with patch.object(s3_code.requests, "get", return_value=MagicMock(status_code=200)) as get:
+        assert submission_csv_timed_out("playground-series-s5e4", "attempt-abc") is True
+    assert get.call_args.args[0].endswith("/kaggle/submissions/playground-series-s5e4/attempt-abc.timeout")
+    for status in (404, 403, 500):  # 표식을 확인하지 못한 응답은 모두 "표식 없음"이다(fail-open)
+        with patch.object(s3_code.requests, "get", return_value=MagicMock(status_code=status)):
+            assert submission_csv_timed_out("playground-series-s5e4", "attempt-abc") is False
+
+
+def test_timeout_marker_helpers_are_best_effort() -> None:
+    """MinIO 장애로 표식을 못 읽거나 쓰면 fit을 막지도, promote를 죽이지도 않는다(읽기는 없음으로 취급)."""
+    with patch.object(s3_code.requests, "get", side_effect=ConnectionError("down")):
+        assert submission_csv_timed_out("playground-series-s5e4", "attempt-abc") is False
+    with patch.object(s3_code.requests, "put", side_effect=ConnectionError("down")):
+        mark_submission_csv_timed_out("playground-series-s5e4", "attempt-abc")

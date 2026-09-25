@@ -31,6 +31,13 @@ ACTIVE            = True  # deep tier 재활성 (#332, ADR-051) — s5e2 동결�
 MAX_TRAIN_ROWS = 150_000
 N_SPLITS = 3
 
+# 제출 CSV는 MAX_TRAIN_ROWS 축소 없이 전량(약 79.7만 행)으로 학습한다. 제출 fit에는 CV가 없어 축소할 이유가 없고, LB는 학습 행수를
+# 그대로 따른다: 같은 계열 pipeline의 캡 제출 LB 13.076(백분위 46.7) -> 전량 12.834(65.5) (2026-09-25 A/B, #355, ADR-055).
+SUBMIT_FULL_DATA = True
+# 제출 CSV fit의 seed 수. stack ensemble은 seed마다 멤버당 inner 5-fold + 최종 fit이라, 전량 1-seed가 로컬 CPU 29.5분,
+# 예전 캡 5-seed가 45.3분이었고 promote task에서는 78~125분이 걸렸다. LB 이득은 seed 평균이 아니라 학습 행수에서 나온다.
+SUBMIT_BAG_SEEDS = [42]
+
 EDA_CARD = """competition: playground-series-s5e4 (Podcast Listening Time Prediction)
 task: regression  metric: RMSE  target: Listening_Time_minutes
 rows: ~150000 (MAX_TRAIN_ROWS로 랜덤 샘플링 — 원본 750000행에서 CPU 예산 초과 방지, #340)  features: 10

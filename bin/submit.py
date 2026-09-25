@@ -4,13 +4,17 @@ Usage:
     uv run python -m bin.submit --competition s4e1            # CSV만 생성
     uv run python -m bin.submit --competition s4e1 --submit   # 생성 후 Kaggle 제출
     uv run python -m bin.submit --competition s4e1 --attempt-id <id>  # 특정 attempt 지정
+    uv run python -m bin.submit --competition s5e4 --full-data  # MAX_TRAIN_ROWS 축소 없이 전량으로 학습
 """
 from __future__ import annotations
 
 import argparse
 import importlib
 import os
+import resource
 import subprocess
+import sys
+import time
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
@@ -316,14 +320,14 @@ def _majority_vote(bag_preds: list[np.ndarray]) -> np.ndarray:
 
 
 def generate_submission_csv(
-    competition_slug: str, attempt_id: str | None = None
+    competition_slug: str, attempt_id: str | None = None, full_data: bool = False
 ) -> tuple[Path, str, float]:
-    """best 코드 로드 → 전체 train 5-seed fit → test 예측 → CSV 저장.
+    """best 코드 로드 → train fit(seed 수는 comp.SUBMIT_BAG_SEEDS, 기본 5) → test 예측 → CSV 저장.
 
+    full_data=False면 attempt 평가와 같은 MAX_TRAIN_ROWS 축소 학습셋을 쓰고, True면 축소 없이 전량으로 학습한다(#355).
     (csv_path, attempt_id, cv_score) 반환. CLI(main)와 promote 훅(캐시 생성)
     양쪽에서 재사용 — 로직은 하나만 유지.
     """
-    import sys
     sys.path.insert(0, str(ROOT))
 
     comp = importlib.import_module(f"config.competitions.{competition_slug}")
@@ -368,7 +372,7 @@ def generate_submission_csv(
         is_classification=comp.IS_CLASSIFICATION,
     )
 
-    train = load_train(comp)
+    train = load_train(comp, apply_row_cap=not full_data)
     test  = _read_csv(comp, "test.csv")
 
     sample = _read_csv(comp, "sample_submission.csv")
@@ -408,7 +412,15 @@ def generate_submission_csv(
     from evaluator.metrics import get as get_metric
     _, _, metric_class = get_metric(comp.METRIC)
 
-    raw_preds = _bagged_predict(pipeline, params, X_train_np, y_train, X_test_np, ctx, metric_class)
+    bag_seeds = getattr(comp, "SUBMIT_BAG_SEEDS", _BAG_SEEDS)
+    fit_started = time.monotonic()
+    raw_preds = _bagged_predict(
+        pipeline, params, X_train_np, y_train, X_test_np, ctx, metric_class, bag_seeds=bag_seeds,
+    )
+    print(
+        f"submission fit: rows={len(y_train)} full_data={full_data} seeds={len(bag_seeds)}"
+        f" elapsed={time.monotonic() - fit_started:.0f}s peak_rss={_peak_rss_mb():.0f}MB"
+    )
     preds = pipeline.postprocess_predictions(raw_preds, ctx)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -422,6 +434,43 @@ def generate_submission_csv(
     return out, resolved_attempt_id, cv_score
 
 
+def _peak_rss_mb() -> float:
+    # ru_maxrss는 Linux에서 KB, macOS에서 byte다.
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return peak / (1024 ** 2 if sys.platform == "darwin" else 1024)
+
+
+# promote task execution_timeout(180분) 안에서 끝나도록 제출 fit에 거는 wall 상한. 로컬 16코어에서 전량 1-seed stack이 CPU 29.5분,
+# 캡 5-seed가 CPU 45.3분이었는데 경합하는 1.5 CPU 컨테이너에서는 캡 5-seed가 78~125분 걸렸다(#355).
+SUBMIT_FIT_TIMEOUT_SEC = 150 * 60
+
+
+def generate_submission_csv_isolated(
+    competition_slug: str, attempt_id: str, *, full_data: bool, timeout_sec: float = SUBMIT_FIT_TIMEOUT_SEC,
+) -> Path:
+    """generate_submission_csv를 별도 프로세스에서 wall timeout 안에 실행한다. 초과하면 subprocess.TimeoutExpired.
+
+    in-process fit은 C 확장 안에서 도는 동안 타임아웃을 받지 못해, 초과하면 호출한 promote task가 통째로 죽는다.
+    fit 요약 한 줄(행수/소요/피크 RSS)은 호출한 task 로그로 옮겨 실제 비용을 거기서 볼 수 있게 한다.
+    """
+    from bin.api import _run_in_pgroup, _submit_failure_detail
+
+    cmd = [sys.executable, "-m", "bin.submit", "--competition", competition_slug, "--attempt-id", attempt_id]
+    if full_data:
+        cmd.append("--full-data")
+    result = _run_in_pgroup(cmd, timeout=timeout_sec, cwd=str(ROOT), env=os.environ.copy())
+    if result.returncode != 0:
+        raise RuntimeError(f"bin.submit failed (rc={result.returncode}): {_submit_failure_detail(result)}")
+    lines = result.stdout.splitlines()
+    for line in lines:
+        if line.startswith("submission fit:"):
+            print(line)
+    for line in lines:
+        if "submission saved:" in line:
+            return Path(line.split("submission saved:", 1)[1].strip())
+    raise RuntimeError("bin.submit printed no 'submission saved:' line")
+
+
 def upload_csv_to_kaggle(competition_id: str, csv_path: Path, message: str) -> subprocess.CompletedProcess:
     """생성된 CSV를 Kaggle에 제출. subprocess 결과(returncode/stdout/stderr) 그대로 반환."""
     return subprocess.run(
@@ -432,11 +481,10 @@ def upload_csv_to_kaggle(competition_id: str, csv_path: Path, message: str) -> s
 
 
 def main() -> None:
-    import sys
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--competition", "-c", required=True)
     parser.add_argument("--attempt-id", default=None, help="특정 attempt ID 앞 8자리 (참고용)")
+    parser.add_argument("--full-data", action="store_true", help="MAX_TRAIN_ROWS 축소 없이 전량으로 학습")
     parser.add_argument("--submit", action="store_true", help="Kaggle에 바로 제출")
     parser.add_argument("--message", "-m", default=None, help="제출 메시지")
     args = parser.parse_args()
@@ -444,7 +492,7 @@ def main() -> None:
     sys.path.insert(0, str(ROOT))
     comp = importlib.import_module(f"config.competitions.{args.competition}")
 
-    out, attempt_id, cv_score = generate_submission_csv(args.competition, args.attempt_id)
+    out, attempt_id, cv_score = generate_submission_csv(args.competition, args.attempt_id, full_data=args.full_data)
 
     if args.submit:
         msg = args.message or f"reflexion best cv={cv_score:.5f} attempt={attempt_id[:8]}"

@@ -70,7 +70,7 @@ def _dedup_key_expr(cols: list[str]) -> pl.Expr:
     return pl.concat_str(parts, separator="|")
 
 
-def load_train(comp: object) -> pl.DataFrame:
+def load_train(comp: object, apply_row_cap: bool = True) -> pl.DataFrame:
     """comp(config.competitions.<slug> 모듈)의 train.csv를 로드하고 DROP_COLS를 적용한다.
 
     S3_DATA_PATH가 설정돼 있고 MINIO_ENDPOINT가 있으면 MinIO에서, 아니면
@@ -89,7 +89,8 @@ def load_train(comp: object) -> pl.DataFrame:
 
     comp.MAX_TRAIN_ROWS(opt-in, 기본 없음)가 설정돼 있고 로드된 행 수가 그보다 크면
     고정 seed로 축소한다. 분류(IS_CLASSIFICATION=True)면 클래스 비율을 보존하는
-    층화 샘플링, 아니면 단순 랜덤 샘플. 미설정 대회는 동작 완전 불변.
+    층화 샘플링, 아니면 단순 랜덤 샘플. 미설정 대회는 동작 완전 불변. apply_row_cap=False면 이 축소를
+    건너뛴다 — CV 비용이 없는 제출 fit이 전량으로 학습하기 위한 옵션(#355).
     """
     train = _load_csv(comp, "train.csv").drop(comp.DROP_COLS)
 
@@ -148,7 +149,7 @@ def load_train(comp: object) -> pl.DataFrame:
         train = pl.concat(frames, how="diagonal_relaxed")
 
     max_rows = getattr(comp, "MAX_TRAIN_ROWS", None)
-    if max_rows and train.height > max_rows:
+    if apply_row_cap and max_rows and train.height > max_rows:
         if getattr(comp, "IS_CLASSIFICATION", False):
             train = _stratified_sample(train, comp.TARGET, max_rows, seed=_MAX_TRAIN_ROWS_SEED)
         else:

@@ -41,6 +41,7 @@ cd data/<competition-id> && unzip -q *.zip
 - `EDA_CARD` — feature별 dtype 명시 필수 (pl.String 컬럼 인코딩 방법 포함)
 - `MAX_TRAIN_ROWS` (opt-in, 대형 데이터셋만) — 설정하면 `load_train`이 고정 시드 층화 샘플링으로 상한 적용. attempt-eval과 promote(cross-seed
 confirm)가 동일 데이터를 봐야 `cv_score`가 재현되므로 시드는 코드에 고정돼 있다. s4e7(11.5M행, OOM으로 전량 실패했던 사례)이 1.5M로 설정된 참고 예시.
+- `SUBMIT_FULL_DATA` / `SUBMIT_BAG_SEEDS` (opt-in) — 제출 CSV fit이 `MAX_TRAIN_ROWS` 축소 없이 전량으로 학습(s5e4, ADR-055) / bag seed 목록(기본 5개).
 
 ### 1-3. cold-start 등록
 ```bash
@@ -383,6 +384,17 @@ PATCH /api/v2/dags/reflexion_rondo_tune/dagRuns/<dag_run_id>   {"state": "failed
 `raw.tuned_params`에 `n_trials=0`, `improved=false`, `params={}` 행만 있으면 baseline 게이트가 탐색을 건너뛴 것이다(튜너 baseline이 확정
 pipeline cv와 상대 1e-6 넘게 다름 — 태스크 로그에 `tuner: baseline ... 비교 불가능`). 자유형 `build_model` base(s6e8)에서 정상이며
 advisory(`ctx.tuned_params`)는 생성되지 않는다.
+
+### 4-11. 제출 CSV 재생성과 전량 학습 A/B (#355, ADR-055)
+
+promote task가 대회 best attempt의 제출 CSV를 MinIO(`submissions/<competition_id>/<attempt_id>.csv`)에 캐싱하고, 캐시가 있으면 다시 만들지 않는다.
+`SUBMIT_FULL_DATA` 대회는 전량으로 학습하며 로그의 `submission fit: rows=... elapsed=...s peak_rss=...MB` 한 줄로 실제 소요와 메모리를 볼 수 있다.
+
+- 다시 만들기: 캐시 객체를 지우면 다음 promote가 재생성한다(`curl -X DELETE "$MINIO_ENDPOINT/kaggle/submissions/<competition_id>/<attempt_id>.csv"`).
+  같은 위치의 `<attempt_id>.timeout` 표식(fit이 wall 상한 150분을 넘긴 attempt)이 있으면 promote가 그 attempt를 건너뛰므로 표식도 지운다.
+- 수동 생성: `uv run python -m bin.submit --competition <slug> --attempt-id <id> --full-data`(s5e4 전량 1-seed는 16코어에서 약 3분). 결과 CSV를 캐시 키에
+  올리고 `POST /api/submissions {competition, attempt_id, message}`로 제출하면 LB가 `raw.kaggle_submissions`에 기록된다.
+- 전량 제출과 캡 제출을 섞으면 cv-LB 발산 트립와이어(§4-3)가 한 쌍을 오탐할 수 있다(ADR-055 "체제 경계").
 
 ### 4-3. auto-submit 일시중단 복구
 
