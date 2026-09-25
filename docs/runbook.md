@@ -95,6 +95,10 @@ curl -X PATCH http://localhost:8000/api/queue/<queue_id> \
   -d '{"status": "cancelled"}'
 ```
 
+큐 자동 재보급(`_sweep_queue_refill`, 5분 주기): pending/running이 없을 때만 ACTIVE 대회를 20 cycle로 재큐잉한다. 마지막 attempt로부터
+직전 큐가 `done`이면 30분, `failed`/`cancelled`/이력 없음이면 6시간이 지나야 대상이다(실패하는 대회가 재보급 루프를 도는 것을 막는 안전장치).
+대회를 재보급에서 빼려면 `config/competitions/<slug>.py`의 `ACTIVE = False`.
+
 실행 모드:
 - **airflow 모드 (운영)**: `AIRFLOW_URL` 환경변수가 있으면 Airflow DAG `reflexion_rondo_cycle` 트리거. 1 DAG run = 1 슈퍼사이클 (retrieve →
 attempt_0/1/2 병렬 → promote). retrieve는 default 큐, attempt/promote는 big 큐(순차 실행이라 동시 점유는 없음).
