@@ -108,7 +108,13 @@ def main() -> None:
         _write({"error_trace": f"runner setup failed: {exc}"})
         sys.exit(0)
 
-    from evaluator.harness import BasePipeline, PatchedPipeline, PipelineContext, evaluate_pipeline
+    from evaluator.harness import (
+        BasePipeline,
+        CpuBudgetProjectedError,
+        PatchedPipeline,
+        PipelineContext,
+        evaluate_pipeline,
+    )
 
     try:
         base = (
@@ -150,10 +156,14 @@ def main() -> None:
         best_params=inp.get("best_params"),
         tuned_params=inp.get("tuned_params"),
         prev_best_fold_scores=inp.get("prev_best_fold_scores"),
+        cpu_budget_sec=inp.get("cpu_budget_sec"),
     )
 
     try:
         result = evaluate_pipeline(pipeline, train, ctx, collect_oof=inp.get("collect_oof", False))
+    except CpuBudgetProjectedError as exc:
+        _write({"error_trace": str(exc)})
+        return
     except Exception:
         _write({"error_trace": traceback.format_exc()})
         return

@@ -232,6 +232,40 @@ def test_eval_isolated_cpu_budget_sec_overrides_env_default() -> None:
     assert "limit 30s" in result.error_trace
 
 
+def _input_json_seen_by_runner(**kwargs) -> dict:
+    import json as _json
+
+    import polars as pl
+
+    from runtime.isolate import eval_isolated
+
+    seen: dict = {}
+
+    class _FakeProc(_FakePopen):
+        def _on_init(self, cmd) -> None:
+            tmpdir = Path(cmd[2])
+            seen.update(_json.loads((tmpdir / "input.json").read_text()))
+            (tmpdir / "output.json").write_text(_json.dumps({"cv_score": 0.9, "error_trace": None}))
+
+    train = pl.DataFrame({"x": [1, 2, 3], "y": [0, 1, 0]})
+    with patch("runtime.isolate.subprocess.Popen", side_effect=_FakeProc):
+        eval_isolated(
+            source="class Patch:\n    pass\n", train=train, target_col="y", metric="auc",
+            prev_best=0.85, n_splits=3, seed=42, is_classification=True, **kwargs,
+        )
+    return seen
+
+
+def test_eval_isolated_passes_the_cpu_budget_to_the_runner() -> None:
+    """#361: runner가 fold-1 CPU 투영에 쓸 예산이 input.json으로 넘어간다 — watchdog이 집행하는 값과 같아야 한다."""
+    assert _input_json_seen_by_runner(cpu_budget_sec=1234)["cpu_budget_sec"] == 1234
+
+
+def test_eval_isolated_passes_the_env_default_budget_when_none_is_given() -> None:
+    with patch.dict("os.environ", {"EVAL_CPU_BUDGET_SECS": "777"}):
+        assert _input_json_seen_by_runner()["cpu_budget_sec"] == 777.0
+
+
 def _exits_after(n_polls: int):
     """n_polls번 폴링된 뒤 스스로 종료하는 가짜 subprocess."""
     class _Proc:
