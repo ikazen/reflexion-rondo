@@ -1268,6 +1268,25 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 
 ---
 
+## ADR-056 — CPU 예산은 fold-1 투영으로 조기 집행한다 (#361, ADR-044/052 보완)
+
+- 결정: `evaluate_pipeline`이 fold-1 종료 직후 `투영 = 현재 CPU + fold-1 소모 x (n_splits - 1)`을 계산해 `ctx.cpu_budget_sec x 1.15`(`_CPU_PROJECTION_MARGIN`)를
+  넘으면 `CpuBudgetProjectedError("cpu budget exceeded: projected ...")`로 중단한다. `eval_isolated`가 watchdog이 집행하는 예산 값을 그대로 `input.json`으로
+  넘기고, runner는 이 예외만 traceback 없이 메시지를 `error_trace`에 쓴다(`cycle/run.py`의 kill 재생성 경로와 분석 쿼리가 쓰는 `cpu budget exceeded` 접두 유지).
+  제외: `collect_oof`(merge-verify 등 완전한 점수가 필요), 예산 없음, fold-1 tie 조기 확정(#339, 유효한 결과라 먼저 판정).
+- 근거: s5e4는 attempt CPU 소각의 66%가 kill이었다(09-21 이후 80건, 79.7 CPU-h). kill은 예산 전체를 태우고 산출이 0이며, 예산이 attempt 합계 기준이라
+  재생성할 남은 예산도 없다. 투영 중단은 같은 attempt를 fold-1 비용(n_splits=3이면 약 1/3)에서 끊어 남은 예산으로 재생성할 기회를 남긴다.
+- 정확도(2026-09-25 실측): s5e4 현재 best pipeline을 150k/3-fold로 평가하면 fold별 CPU가 403/421/384초로 fold-1이 나머지 평균의 1.00배였고,
+  fold-1 시점 투영 1,214초가 실제 1,213초와 0.1% 차이였다. 마진 1.15는 fold 간 편차(약 5%)와 fold 밖 후처리를 흡수하고 투영이 15% 넘게 초과할 때만 끊는다.
+- 한계: 예산이 attempt 합계라 최악 총비용은 그대로다. fold-1 자체가 예산을 넘는 폭주는 못 잡는다(watchdog kill의 몫). 투영은 fold 밖 후처리
+  (holdout 평가, permutation importance)를 포함하지 않는다. 마진 안쪽(3600~4140s로 투영)은 끊지 않으므로 실제로 예산을 넘으면 기존대로 kill된다.
+- ADR-052의 재동결 조건(kill 비율 약 12%)은 이미 충족된 상태(28%)다. 동결 대신 이 개입을 먼저 시도하고 배포 후 48h 관측으로 재판정한다:
+  `error_trace like 'cpu budget exceeded: projected%'` 건수, kill(3600s)당 CPU 분포, s5e4 kill 비율(현 28%)과 kill CPU 비중(현 66%). 성공은 kill 비율 15% 이하
+  또는 kill CPU 비중 33% 이하(절반)이고, kill CPU 비중이 50% 이상 그대로면 동결(ADR-045 방식)을 재판단한다.
+- 재고 트리거: 투영 중단된 attempt를 같은 pipeline으로 다시 돌렸을 때 예산 안에 끝나는 오탐이 보이면 마진을 올린다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |
