@@ -275,6 +275,8 @@ def test_ensemble_prompt_offers_the_base_member_and_forbids_weakening_members():
     assert "A member must not be weaker than the model it joins" in _REFLEXION_CONTRACT
     assert "ctx.best_params" in _REFLEXION_CONTRACT and "ctx.tuned_params" in _REFLEXION_CONTRACT
     assert "Prefer weighted_average" in _REFLEXION_CONTRACT
+    # 계약(system)은 "Current Best Pipeline" 절(user 메시지)보다 앞이라 "shown above"라고 가리키면 안 된다.
+    assert "shown above" not in main_example and 'check the "Current Best Pipeline" section' in _REFLEXION_CONTRACT
 
 
 def test_ensemble_prompt_examples_do_not_anchor_on_small_member_params():

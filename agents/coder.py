@@ -139,10 +139,10 @@ class Patch:
   ctx.is_classification. Do NOT write "LGBMClassifier" etc, just the short name.
 - `base` is reserved: it is the current best pipeline's own `build_model` at its tuned params, so the
   blend starts from the model that already scores best. It is available only when the current best
-  pipeline defines `build_model` (its source is shown above); otherwise the attempt fails. Omit
+  pipeline defines `build_model` (check the "Current Best Pipeline" section); otherwise the attempt fails. Omit
   "params" for `base` to keep the tuned values.
 - A member must not be weaker than the model it joins. Do NOT lower `n_estimators`/`iterations`/
-  `max_depth` below what the current best pipeline uses (see the current best pipeline source,
+  `max_depth` below what the current best pipeline uses (see the "Current Best Pipeline" section,
   `ctx.best_params` and `ctx.tuned_params`) to save time or memory — a cheaper member only drags the
   blend down. Start each member from those values and change one thing you can explain.
 - params are passed straight to that model's constructor (same values you'd put in build_model).
