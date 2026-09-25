@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -23,11 +24,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bin.submit import (
+    _BAG_SEEDS,
     _bagged_predict,
     _dummy_target_value,
     _load_best_code,
     _load_pipeline,
     _submission_value_col,
+    generate_submission_csv,
+    main,
 )
 
 
@@ -631,3 +635,60 @@ def test_dummy_target_value_works_for_numeric_target() -> None:
     assert result == 10.5
 
 
+
+
+def _generate(monkeypatch, tmp_path, *, full_data: bool, **comp_extra):
+    """generate_submission_csv를 DB/MinIO 없이 돌린다 — load_train과 _bagged_predict 호출 인자를 돌려준다."""
+    from evaluator.harness import BasePipeline
+
+    comp = SimpleNamespace(
+        COMPETITION_ID="playground-series-fake", TARGET="y", METRIC="rmse", IS_CLASSIFICATION=False,
+        DROP_COLS=["id"], **comp_extra,
+    )
+    monkeypatch.setitem(sys.modules, "config.competitions.fake_sub", comp)
+    frames = {
+        "test.csv": pl.DataFrame({"id": [100, 101, 102], "x": [1.0, 2.0, 3.0]}),
+        "sample_submission.csv": pl.DataFrame({"id": [100, 101, 102], "y": [0.0, 0.0, 0.0]}),
+    }
+    train = pl.DataFrame({"x": [float(i) for i in range(40)], "y": [float(i % 7) for i in range(40)]})
+    load_train = MagicMock(return_value=train)
+    bagged = MagicMock(return_value=np.array([1.0, 2.0, 3.0]))
+    monkeypatch.setattr("bin.submit._load_best_code", lambda cid, aid: ("src", 1.5, "attempt-1234", None, None))
+    monkeypatch.setattr("bin.submit._load_pipeline", lambda *a, **k: BasePipeline())
+    monkeypatch.setattr("bin.submit._read_csv", lambda c, name: frames[name])
+    monkeypatch.setattr("store.train_data.load_train", load_train)
+    monkeypatch.setattr("bin.submit._bagged_predict", bagged)
+    monkeypatch.setattr("bin.submit.RUNS_DIR", tmp_path)
+    out, attempt_id, cv = generate_submission_csv("fake_sub", full_data=full_data)
+    return load_train, bagged, out
+
+
+@pytest.mark.parametrize("full_data", [False, True])
+def test_generate_submission_csv_full_data_controls_the_row_cap(monkeypatch, tmp_path, full_data) -> None:
+    """#355: full_data=True만 MAX_TRAIN_ROWS 축소를 끈다. 기본(False)은 attempt 평가와 같은 학습셋."""
+    load_train, _, out = _generate(monkeypatch, tmp_path, full_data=full_data)
+    assert load_train.call_args.kwargs == {"apply_row_cap": not full_data}
+    assert pl.read_csv(out).to_dict(as_series=False) == {"id": [100, 101, 102], "y": [1.0, 2.0, 3.0]}
+
+
+def test_generate_submission_csv_bag_seeds_come_from_the_competition_config(monkeypatch, tmp_path, capsys) -> None:
+    _, bagged, _ = _generate(monkeypatch, tmp_path, full_data=True, SUBMIT_BAG_SEEDS=[7, 8])
+    assert bagged.call_args.kwargs["bag_seeds"] == [7, 8]
+    assert "submission fit: rows=40 full_data=True seeds=2 elapsed=" in capsys.readouterr().out
+
+
+def test_generate_submission_csv_defaults_to_the_five_seed_bag(monkeypatch, tmp_path) -> None:
+    _, bagged, _ = _generate(monkeypatch, tmp_path, full_data=False)
+    assert bagged.call_args.kwargs["bag_seeds"] == _BAG_SEEDS
+
+
+@pytest.mark.parametrize(("argv", "expected"), [
+    (["--competition", "s5e4"], False),
+    (["--competition", "s5e4", "--full-data"], True),
+])
+def test_cli_full_data_flag(monkeypatch, argv, expected) -> None:
+    generate = MagicMock(return_value=(Path("out.csv"), "attempt-1234", 1.5))
+    monkeypatch.setattr("bin.submit.generate_submission_csv", generate)
+    monkeypatch.setattr(sys, "argv", ["bin.submit", *argv])
+    main()
+    assert generate.call_args.kwargs == {"full_data": expected}

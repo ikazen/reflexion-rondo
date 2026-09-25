@@ -31,6 +31,10 @@ ACTIVE            = True  # deep tier 재활성 (#332, ADR-051) — s5e2 동결�
 MAX_TRAIN_ROWS = 150_000
 N_SPLITS = 3
 
+# 제출 CSV fit의 seed 수. stack ensemble 1 seed가 멤버당 inner 5-fold + 최종 fit이라 5-seed는 1.5 CPU promote task에서
+# 78~125분이 걸려 daemon의 promote 대기(3600s)를 넘겼다(2026-09-21~22 사이클 timeout 4건, #355).
+SUBMIT_BAG_SEEDS = [42]
+
 EDA_CARD = """competition: playground-series-s5e4 (Podcast Listening Time Prediction)
 task: regression  metric: RMSE  target: Listening_Time_minutes
 rows: ~150000 (MAX_TRAIN_ROWS로 랜덤 샘플링 — 원본 750000행에서 CPU 예산 초과 방지, #340)  features: 10
