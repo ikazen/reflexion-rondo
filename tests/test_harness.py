@@ -2238,3 +2238,113 @@ def test_evaluate_pipeline_never_exposes_is_original_to_patch_hooks():
     ctx = _ctx(is_classification=False)
     result = evaluate_pipeline(pipeline, df, ctx)
     assert np.isfinite(result.cv_score)
+
+
+# ensemble 예약어 멤버 "base"(#362, ADR-057) — 현재 pipeline의 build_model을 동결 단일 후보 params로 만든 모델.
+
+class _BaseRidgePatch:
+    """s6e8 확정 pipeline의 형태: 자유형 build_model + 동결 단일 param 후보. 만든 params를 기록한다."""
+
+    action_type = "model_swap"
+
+    def __init__(self) -> None:
+        self.built: list[dict] = []
+
+    def param_candidates(self, ctx):
+        return [{"alpha": 7.0}]
+
+    def build_model(self, params, ctx):
+        from sklearn.linear_model import Ridge
+
+        self.built.append(dict(params))
+        return Ridge(**params)
+
+
+class _EnsemblePatch:
+    action_type = "ensemble"
+
+    def __init__(self, members, method="weighted_average", **extra) -> None:
+        self._spec = {"members": members, "method": method, **extra}
+
+    def ensemble_spec(self, ctx):
+        return self._spec
+
+
+def _reg_arrays(n: int = 90):
+    df = _make_df(n=n, is_classification=False)
+    X = df.select("x0", "x1", "x2").to_numpy()
+    return X[:60], df["y"].to_numpy()[:60], X[60:]
+
+
+def _ensemble_over_base_ridge(members, method="weighted_average", **extra):
+    base_patch = _BaseRidgePatch()
+    pipeline = PatchedPipeline(PatchedPipeline(BasePipeline(), base_patch), _EnsemblePatch(members, method, **extra))
+    return pipeline, base_patch
+
+
+def test_base_member_blends_the_current_pipeline_model_with_a_registry_member():
+    from sklearn.linear_model import Ridge
+
+    Xtr, ytr, Xva = _reg_arrays()
+    pipeline, _ = _ensemble_over_base_ridge(
+        [{"model": "base"}, {"model": "ridge", "params": {"alpha": 0.1}}], weights=[0.25, 0.75],
+    )
+    ctx = _ctx_rmse()
+    preds, fitted = fit_predict(pipeline, {}, ctx, Xtr, ytr, Xva, "regression_error")
+    expected = 0.25 * Ridge(alpha=7.0).fit(Xtr, ytr).predict(Xva) + 0.75 * Ridge(alpha=0.1).fit(Xtr, ytr).predict(Xva)
+    np.testing.assert_allclose(preds, expected)
+    assert fitted is None
+
+
+def test_base_member_defaults_to_the_frozen_single_candidate_and_explicit_params_override():
+    Xtr, ytr, Xva = _reg_arrays()
+    pipeline, base_patch = _ensemble_over_base_ridge([{"model": "base"}, {"model": "ridge"}])
+    fit_predict(pipeline, {}, _ctx_rmse(), Xtr, ytr, Xva, "regression_error")
+    assert base_patch.built == [{"alpha": 7.0}]
+
+    pipeline, base_patch = _ensemble_over_base_ridge([{"model": "base", "params": {"alpha": 3.0}}, {"model": "ridge"}])
+    fit_predict(pipeline, {}, _ctx_rmse(), Xtr, ytr, Xva, "regression_error")
+    assert base_patch.built == [{"alpha": 3.0}]
+
+
+def test_base_member_uses_the_first_param_candidate_when_the_pool_is_not_frozen():
+    Xtr, ytr, Xva = _reg_arrays()
+    pipeline, base_patch = _ensemble_over_base_ridge([{"model": "base"}, {"model": "ridge"}])
+    base_patch.param_candidates = lambda ctx: [{"alpha": 2.0}, {"alpha": 9.0}]
+    fit_predict(pipeline, {}, _ctx_rmse(), Xtr, ytr, Xva, "regression_error")
+    assert base_patch.built == [{"alpha": 2.0}]
+
+
+def test_base_member_in_a_stack_is_refit_per_inner_fold_and_once_on_the_full_fold():
+    Xtr, ytr, Xva = _reg_arrays()
+    pipeline, base_patch = _ensemble_over_base_ridge(
+        [{"model": "base"}, {"model": "ridge"}], method="stack", meta={"model": "ridge", "params": {"alpha": 1.0}},
+    )
+    preds, _ = fit_predict(pipeline, {}, _ctx_rmse(), Xtr, ytr, Xva, "regression_error")
+    assert len(base_patch.built) == 6  # inner 5-fold OOF + 최종 fit
+    assert preds.shape == (len(Xva),)
+
+
+def test_base_member_requires_a_pipeline_that_defines_build_model():
+    """체인의 어떤 patch도 build_model을 정의하지 않으면 BasePipeline의 트리비얼 기본 모델로 귀결되므로 "현재 best 모델"이 아니다."""
+    Xtr, ytr, Xva = _reg_arrays()
+    pipeline = PatchedPipeline(BasePipeline(), _EnsemblePatch([{"model": "base"}, {"model": "ridge"}]))
+    with pytest.raises(ValueError, match="member 'base' needs the current best pipeline to define build_model"):
+        fit_predict(pipeline, {}, _ctx_rmse(), Xtr, ytr, Xva, "regression_error")
+
+
+def test_unknown_member_names_still_fail_and_base_is_not_looked_up_in_the_registry():
+    Xtr, ytr, Xva = _reg_arrays()
+    pipeline, _ = _ensemble_over_base_ridge([{"model": "base"}, {"model": "not_a_model"}])
+    with pytest.raises(Exception, match="not_a_model"):
+        fit_predict(pipeline, {}, _ctx_rmse(), Xtr, ytr, Xva, "regression_error")
+
+
+def test_evaluate_pipeline_scores_an_ensemble_that_contains_the_base_member():
+    rng = np.random.default_rng(1)  # 잡음이 없으면 선형 타깃을 Ridge가 완벽히 맞혀 스케일 누수 가드가 걸린다
+    x = rng.standard_normal((150, 3))
+    df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": 2 * x[:, 0] + 2 * rng.standard_normal(150)})
+    pipeline, base_patch = _ensemble_over_base_ridge([{"model": "base"}, {"model": "ridge", "params": {"alpha": 0.1}}])
+    result = evaluate_pipeline(pipeline, df, _ctx_rmse())
+    assert np.isfinite(result.cv_score)
+    assert len(base_patch.built) == 3  # fold마다 1회

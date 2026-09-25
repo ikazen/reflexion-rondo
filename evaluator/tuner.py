@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import optuna
 
-from evaluator.harness import PipelineContext, evaluate_pipeline
+from evaluator.harness import _BASE_MEMBER, PipelineContext, evaluate_pipeline
 from evaluator.metrics import get as get_metric
 from evaluator.models import registry_key_for_class
 from evaluator.search_spaces import get_search_space
@@ -91,6 +91,16 @@ class _EnsembleMemberTrialPipeline:
 
     def model_spec(self, ctx):
         return None
+
+    # 예약어 멤버 "base"(#362)가 트라이얼에서도 confirmed pipeline과 같은 모델로 풀리도록 위임한다.
+    def build_model(self, params, ctx):
+        return self._base.build_model(params, ctx)
+
+    def param_candidates(self, ctx):
+        return self._base.param_candidates(ctx)
+
+    def _chain_defines(self, hook_name):
+        return self._base._chain_defines(hook_name)
 
 
 def _remaining_budget(timeout_sec: float | None, started_at: float) -> float | None:
@@ -207,6 +217,10 @@ def tune_ensemble_member(
     if not (0 <= member_index < len(members)):
         raise ValueError(f"tune_ensemble_member: member_index={member_index} out of range (0..{len(members) - 1})")
     model_name = members[member_index]["model"]
+    if model_name == _BASE_MEMBER:
+        raise ValueError(
+            f"tune_ensemble_member: member {member_index} is {_BASE_MEMBER!r} — the pipeline's own model has no search space"
+        )
     # 이 멤버가 confirmed ensemble_spec에서 이미 쓰던 params — base_spec에서 바로
     # 확보되니(외부 인자 불필요) 그대로 seed로 등록한다(#331).
     seed_params = members[member_index].get("params") or None
@@ -397,17 +411,20 @@ def tune_confirmed_pipeline(
     """
     ensemble_spec = pipeline.ensemble_spec(ctx)
     if ensemble_spec is not None:
-        n_members = len(ensemble_spec.get("members") or [])
+        members = ensemble_spec.get("members") or []
+        tunable = [i for i, m in enumerate(members) if m.get("model") != _BASE_MEMBER]
+        if members and not tunable:
+            raise ValueError(f"tune_confirmed_pipeline: every ensemble member is {_BASE_MEMBER!r} — nothing to tune")
         started_at = time.monotonic()
         results: list[TunerResult] = []
-        for i in range(n_members):
+        for pos, i in enumerate(tunable):
             member_timeout = None
             if timeout_sec is not None:
                 remaining = timeout_sec - (time.monotonic() - started_at)
                 if remaining <= 0:
-                    _LOG.warning("tune_confirmed_pipeline: 예산 소진 — 멤버 %d..%d 튜닝 생략", i, n_members - 1)
+                    _LOG.warning("tune_confirmed_pipeline: 예산 소진 — 멤버 %s 튜닝 생략", tunable[pos:])
                     break
-                member_timeout = remaining / (n_members - i)
+                member_timeout = remaining / (len(tunable) - pos)
             results.append(tune_ensemble_member(
                 pipeline, train, ctx, i, n_trials=n_trials, timeout_sec=member_timeout,
                 expected_baseline_cv=expected_baseline_cv,

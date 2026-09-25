@@ -122,26 +122,35 @@ models itself:
 class Patch:
     action_type = "ensemble"
     changed_stages = ["ensemble_spec"]
-    rationale = "blend lgbm and xgboost"
+    rationale = "blend the current best model with a catboost member"
 
     def ensemble_spec(self, ctx) -> dict:
         return {
             "members": [
-                {"model": "lgbm", "params": {"n_estimators": 300, "learning_rate": 0.05}},
-                {"model": "xgboost", "params": {"max_depth": 6}},
+                {"model": "base"},       # the current best pipeline's own model, exactly as scored today
+                {"model": "catboost"},   # registry defaults; add "params" only for a reason you can state
             ],
             "method": "weighted_average",   # or "majority_vote" for discrete-label metrics, or "stack"
             "weights": [0.6, 0.4],          # optional — omit for equal weights (ignored by "stack")
         }
 ```
-- Allowed model names: lgbm, xgboost, catboost, hgb, random_forest, extra_trees, ridge,
+- Allowed model names: base, lgbm, xgboost, catboost, hgb, random_forest, extra_trees, ridge,
   elastic_net — the harness picks the classifier or regressor variant automatically from
   ctx.is_classification. Do NOT write "LGBMClassifier" etc, just the short name.
+- `base` is reserved: it is the current best pipeline's own `build_model` at its tuned params, so the
+  blend starts from the model that already scores best. It is available only when the current best
+  pipeline defines `build_model` (check the "Current Best Pipeline" section); otherwise the attempt fails. Omit
+  "params" for `base` to keep the tuned values.
+- A member must not be weaker than the model it joins. Do NOT lower `n_estimators`/`iterations`/
+  `max_depth` below what the current best pipeline uses (see the "Current Best Pipeline" section,
+  `ctx.best_params` and `ctx.tuned_params`) to save time or memory — a cheaper member only drags the
+  blend down. Start each member from those values and change one thing you can explain.
 - params are passed straight to that model's constructor (same values you'd put in build_model).
 - method: "weighted_average" for regression or probability-based metrics (auc/logloss), "majority_vote"
   for discrete-label metrics (accuracy/f1/qwk/balanced_accuracy), or "stack" for regression/
   probability-based metrics only (see below). If omitted, the harness picks weighted_average or
-  majority_vote from the metric.
+  majority_vote from the metric. Prefer weighted_average: "stack" refits every member six times per
+  fold, so it costs several times more CPU with the same members.
 - If you implement ensemble_spec, do NOT also implement build_model — ensemble_spec replaces it.
   You may still implement preprocess/feature_transform/postprocess_predictions alongside it.
 - This is strongly preferred over a hand-written ensemble wrapper class. Wrapper classes have
@@ -160,8 +169,8 @@ hand-picking `weights`:
 def ensemble_spec(self, ctx) -> dict:
     return {
         "members": [
-            {"model": "lgbm", "params": {"n_estimators": 300}},
-            {"model": "xgboost", "params": {"max_depth": 6}},
+            {"model": "base"},
+            {"model": "xgboost"},
         ],
         "method": "stack",
         "meta": {"model": "ridge", "params": {"alpha": 1.0}},   # required for "stack"
