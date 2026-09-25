@@ -1106,6 +1106,81 @@ def test_collect_oof_disables_early_exit():
 
 
 
+# fold-1 CPU 투영 조기 중단(#361, ADR-056). 가짜 CPU 시계 [루프 시작 시점, fold-1 종료 시점]을 넣는다 —
+# n_splits=3이면 투영 = X + (X - 0) * 2 = 3X. 예산 3000s, 마진 1.15면 임계는 3450s(X = 1150).
+
+def _cpu_clock(monkeypatch, *readings: float) -> None:
+    values = iter(readings)
+    monkeypatch.setattr("evaluator.harness._cpu_seconds", lambda: next(values))
+
+
+def _projection_ctx(budget: float | None = 3000.0) -> PipelineContext:
+    return PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True, cpu_budget_sec=budget,
+    )
+
+
+def test_fold1_cpu_projection_over_budget_aborts_with_kill_style_message(monkeypatch):
+    from evaluator.harness import CpuBudgetProjectedError
+
+    _cpu_clock(monkeypatch, 0.0, 1200.0)
+    with pytest.raises(CpuBudgetProjectedError) as exc:
+        evaluate_pipeline(BasePipeline(), _make_df(), _projection_ctx())
+    # watchdog kill과 같은 접두여야 cycle/run.py의 재생성 경로(_resource_kill_feedback)와 분석 쿼리가 그대로 동작한다.
+    assert str(exc.value) == "cpu budget exceeded: projected 3600s CPU after fold 1 (limit 3000s)"
+
+
+def test_fold1_cpu_projection_within_margin_runs_all_folds(monkeypatch):
+    _cpu_clock(monkeypatch, 0.0, 1100.0)
+    result = evaluate_pipeline(BasePipeline(), _make_df(), _projection_ctx())
+    assert len(result.fold_scores) == 3
+
+
+def test_fold1_cpu_projection_threshold_sits_at_budget_times_margin(monkeypatch):
+    """임계는 예산 * 1.15 = 3450s다. 정확한 동치는 부동소수점 표현에 걸려 양쪽 근처 값으로 확인한다."""
+    from evaluator.harness import CpuBudgetProjectedError
+
+    _cpu_clock(monkeypatch, 0.0, 1149.0)  # 투영 3447s
+    assert len(evaluate_pipeline(BasePipeline(), _make_df(), _projection_ctx()).fold_scores) == 3
+    _cpu_clock(monkeypatch, 0.0, 1151.0)  # 투영 3453s
+    with pytest.raises(CpuBudgetProjectedError):
+        evaluate_pipeline(BasePipeline(), _make_df(), _projection_ctx())
+
+
+def test_fold1_cpu_projection_counts_cpu_spent_before_the_fold_loop(monkeypatch):
+    """루프 시작 전에 이미 쓴 CPU(import, preselect 등)는 한 번만 더해진다 — 투영 = 현재 + fold-1 소모 * 남은 fold 수."""
+    from evaluator.harness import CpuBudgetProjectedError
+
+    _cpu_clock(monkeypatch, 2000.0, 2500.0)  # fold-1 500s, 현재 2500s -> 투영 2500 + 500 * 2 = 3500s
+    with pytest.raises(CpuBudgetProjectedError, match="projected 3500s"):
+        evaluate_pipeline(BasePipeline(), _make_df(), _projection_ctx())
+
+
+def test_cpu_projection_is_off_without_a_budget(monkeypatch):
+    _cpu_clock(monkeypatch, 0.0)  # 두 번째 조회가 일어나면 StopIteration으로 실패한다
+    assert len(evaluate_pipeline(BasePipeline(), _make_df(), _projection_ctx(budget=None)).fold_scores) == 3
+
+
+def test_cpu_projection_is_off_for_collect_oof(monkeypatch):
+    """collect_oof(merge-verify 등)는 완전한 점수가 필요해 투영으로 끊지 않는다."""
+    _cpu_clock(monkeypatch, 0.0)
+    result = evaluate_pipeline(BasePipeline(), _make_df(), _projection_ctx(), collect_oof=True)
+    assert result.oof_preds is not None
+
+
+def test_noop_tie_early_exit_wins_over_cpu_projection(monkeypatch):
+    """tie는 유효한 결과라 CPU 투영보다 먼저 판정한다(tie 조기 확정은 예산을 아끼는 정상 종료)."""
+    df = _make_df()
+    baseline = evaluate_pipeline(BasePipeline(), df, _ctx())
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True, cpu_budget_sec=3000.0,
+        prev_best=baseline.cv_score, prev_best_fold_scores=baseline.fold_scores,
+    )
+    _cpu_clock(monkeypatch, 0.0)
+    assert evaluate_pipeline(BasePipeline(), df, ctx).noop_early_exit is True
+
+
+
 def test_split_audit_holdout_deterministic():
     """같은 입력 → 항상 같은 분리 (고정 seed)."""
     df = _make_df(n=200)

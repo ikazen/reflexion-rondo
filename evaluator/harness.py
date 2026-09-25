@@ -5,6 +5,7 @@ runtime/isolate.py가 이 모듈을 별도 subprocess에서 호출해 격리 실
 from __future__ import annotations
 
 import inspect
+import os
 import warnings
 from dataclasses import dataclass, field
 
@@ -45,6 +46,8 @@ _EARLY_STOPPING_KEYS = frozenset({
 # (예: postprocess_predictions의 잘못된 역변환)는 못 잡는다 — 이 비율 가드가 그
 # 결과 기반 2차 방어선(decisions.md ADR-015/ADR-025).
 _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO = 10.0
+# fold-1의 CPU 소모로 전체를 투영해 예산의 이 배수를 넘으면 나머지 fold를 돌지 않고 중단한다(#361, ADR-056).
+_CPU_PROJECTION_MARGIN = 1.15
 
 
 def is_significant_gain(
@@ -522,6 +525,19 @@ class PipelineContext:
     # 단위로 같으면 patch가 유효 계산을 못 바꿨다는 뜻이라 나머지 fold를 건너뛴다.
     # None이면(baseline 없음/길이 불일치) 조기 중단을 하지 않는다.
     prev_best_fold_scores: list[float] | None = None
+    # 이 eval에 허용된 CPU 초(#361). fold-1 소모로 투영한 전체가 이걸 넘으면 중단한다. None이면 투영하지 않는다.
+    cpu_budget_sec: float | None = None
+
+
+class CpuBudgetProjectedError(RuntimeError):
+    """fold-1 CPU 소모로 투영한 전체가 예산을 넘어 평가를 중단한다. 메시지는 watchdog kill과 같은 접두("cpu budget
+    exceeded")로 시작해 재생성 경로(cycle/run.py:_resource_kill_feedback)와 분석 쿼리가 그대로 동작한다."""
+
+
+def _cpu_seconds() -> float:
+    # runtime/isolate.py watchdog이 /proc/<pid>/stat에서 읽는 utime+stime+cutime+cstime과 같은 척도다.
+    t = os.times()
+    return t[0] + t[1] + t[2] + t[3]
 
 
 class BasePipeline:
@@ -887,6 +903,7 @@ def evaluate_pipeline(
         else None
     )
 
+    cpu_at_loop_start = _cpu_seconds()
     for fold_idx, (tr_idx, va_idx) in enumerate(_make_folds(y, ctx, is_original=is_original)):
         tr = train[list(tr_idx)]
         va = train[list(va_idx)]
@@ -956,6 +973,16 @@ def evaluate_pipeline(
                 model_type=model_type,
                 noop_early_exit=True,
             )
+
+        if fold_idx == 0 and not collect_oof and ctx.cpu_budget_sec and ctx.n_splits > 1:
+            # fold-1이 쓴 CPU로 나머지 fold 비용을 투영한다(#361). kill은 예산 전체를 태우고 산출 0이지만, 여기서
+            # 멈추면 남은 예산으로 재생성할 기회가 남는다. collect_oof(merge-verify 등)는 완전한 점수가 필요해 제외.
+            cpu_now = _cpu_seconds()
+            projected = cpu_now + (cpu_now - cpu_at_loop_start) * (ctx.n_splits - 1)
+            if projected > ctx.cpu_budget_sec * _CPU_PROJECTION_MARGIN:
+                raise CpuBudgetProjectedError(
+                    f"cpu budget exceeded: projected {projected:.0f}s CPU after fold 1 (limit {ctx.cpu_budget_sec:.0f}s)"
+                )
 
         if metric_class == "regression_error":
             baseline_pred = np.full_like(yva_raw, fill_value=float(np.mean(ytr_raw)), dtype=float)

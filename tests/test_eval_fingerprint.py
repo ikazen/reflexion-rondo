@@ -28,6 +28,7 @@ _NUMERIC_EXEMPT = {
         "_LEAK_PERFECT_HIGH": "누수 판정 임계값 — 점수가 아니라 에러 여부를 바꾼다",
         "_LEAK_PERFECT_LOW": "누수 판정 임계값 — 점수가 아니라 에러 여부를 바꾼다",
         "_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO": "비현실 점수 판정 임계값 — 점수가 아니라 에러 여부를 바꾼다",
+        "_CPU_PROJECTION_MARGIN": "CPU 예산 투영 중단 임계값 — 완료된 평가의 점수가 아니라 중단 여부(에러)만 바꾼다",
     },
     "store/train_data.py": {
         "_TWIN_ABORT_FRAC": "twin 중복 비율 초과 시 중단 임계값 — 표본이 아니라 에러 여부를 바꾼다",

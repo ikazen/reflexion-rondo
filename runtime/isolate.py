@@ -156,6 +156,10 @@ def eval_isolated(
 ) -> IsolatedResult:
     with tempfile.TemporaryDirectory(prefix="rondo-eval-") as tmpdir:
         ws = Path(tmpdir)
+        cpu_budget = (
+            cpu_budget_sec if cpu_budget_sec is not None
+            else float(os.environ.get("EVAL_CPU_BUDGET_SECS", str(DEFAULT_CPU_BUDGET_SECS)))
+        )
         (ws / "source.py").write_text(source)
         train.write_parquet(ws / "train.parquet")
         (ws / "input.json").write_text(json.dumps({
@@ -170,6 +174,7 @@ def eval_isolated(
             "tuned_params": tuned_params,
             "collect_oof": collect_oof,
             "prev_best_fold_scores": prev_best_fold_scores,
+            "cpu_budget_sec": cpu_budget,
         }))
         if best_source:
             (ws / "best_pipeline.py").write_text(best_source)
@@ -185,10 +190,6 @@ def eval_isolated(
         env["HOME"] = tmpdir  # catboost_info 등 홈 쓰기를 tmpdir로 격리
 
         rss_limit = int(os.environ.get("EVAL_RSS_LIMIT_BYTES", str(_DEFAULT_RSS_LIMIT_BYTES)))
-        cpu_budget = (
-            cpu_budget_sec if cpu_budget_sec is not None
-            else float(os.environ.get("EVAL_CPU_BUDGET_SECS", str(DEFAULT_CPU_BUDGET_SECS)))
-        )
         wall_timeout = timeout_sec if timeout_sec is not None else max(DEFAULT_TIMEOUT, cpu_budget)
         stdout_path = ws / "_stdout.log"
         stderr_path = ws / "_stderr.log"
