@@ -115,7 +115,7 @@ def main() -> None:
     try:
         results = tune_confirmed_pipeline(
             pipeline, train, ctx, n_trials=args.n_trials, timeout_sec=args.timeout_sec,
-            pipeline_source=source,
+            pipeline_source=source, expected_baseline_cv=confirmed_cv,
         )
     except ValueError as exc:
         print(f"[tune_pipeline] {exc}", file=sys.stderr)
