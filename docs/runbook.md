@@ -396,6 +396,31 @@ promote task가 대회 best attempt의 제출 CSV를 MinIO(`submissions/<competi
   올리고 `POST /api/submissions {competition, attempt_id, message}`로 제출하면 LB가 `raw.kaggle_submissions`에 기록된다.
 - 전량 제출과 캡 제출을 섞으면 cv-LB 발산 트립와이어(§4-3)가 한 쌍을 오탐할 수 있다(ADR-055 "체제 경계").
 
+### 4-12. 탐색 체제 변경이 최고 cv의 순위를 바꿀 때(#373, ADR-058)
+
+`load_train` 설정(§4-5) 변경 중에서도 **행수 캡처럼 patch 순위 자체를 뒤집는** 변경은 일반 remeasure만으로 끝나지 않는다. `_prev_best`
+(유효 행 중 cv 최고값)와 `_baseline_source_guard`/`load_base_snapshot`(유효 행 중 run_ts 최신값)은 정상 운영에서는 항상 같은 행을
+가리키지만(승격은 직전 최고보다 나은 것만 통과하므로), 과거 이력을 새 체제로 재정렬하면 최고 cv 행이 최신 행이 아니게 될 수 있다 —
+이 상태로 두면 daemon이 계속 최신(그러나 이제는 더 나쁜) 행을 base로 다음 attempt를 만들면서 게이트는 더 높은 과거 cv와 비교해
+사실상 승격이 정체된다.
+
+순서(반드시 이 순서로 — remeasure를 먼저 하면 안 된다):
+
+1. 새 체제로 어느 valid 행이 최고가 되는지 로컬에서 먼저 확인한다(대상 대회의 `raw.pipelines`에서 `invalid_reason is null and
+   materialized_code is not null`인 행 전부를 새 `load_train` 설정으로 재평가 — 배포 전 임시 스크립트로 충분, DB 반영 없음).
+2. 새 최고 행보다 run_ts가 뒤이면서 새 체제에서는 더 나쁜 valid 행을 전부 무효화한다(`UPDATE raw.pipelines SET invalid_reason = '...'
+   WHERE pipeline_id = ...` — ADR-039 방식대로 이력은 보존, 삭제 아님). daemon 재시작이 전제 조건이 아니므로 해당 대회 큐가 없는
+   시점에 실행한다(§4-9와 동일 주의).
+3. `bin.establish_baseline --remeasure --competition <competition-id> --dry-run` 후 반영 — 남은 valid 행 전부의 cv를 새 체제로 갱신,
+   `train_fingerprint` 갱신.
+4. MinIO blob을 새 최고 행 기준으로 맞춘다: `bin.rebuild_best_pipeline --competition <competition-id> --dry-run`의 결과 sha가 그 행의
+   `materialized_sha256`과 같으면 그대로 반영한다(§4-6). **다르면(과거 materialize 알고리즘이 그 사이 바뀌었을 수 있다) 전체 재생 대신
+   그 행의 `materialized_code`를 직접 MinIO에 업로드한다** — 이미 완전한 자기완결 스냅샷이라 재생보다 안전하다.
+5. `freeze_base --dry-run`으로 그 행의 param 후보를 단일값으로 동결해도 cv가 비트 일치하는지 확인 후 반영(§4-9, preselect 비용 제거).
+6. 오래된 `raw.tuned_params`(옛 체제 기준 advisory)는 정리하거나 그대로 둬도 무해하다 — `_latest_tuned_params`가 `improved=True`
+   가 하나도 없으면 advisory를 안 내보내므로, 새 체제에서 재확인되기 전까지는 자연히 무시된다.
+7. 무효화 단계에서 큐가 `failed`로 끝났다면 idle 재보급의 6시간 규칙(#363)을 기다리지 않고 `POST /api/queue`로 직접 재큐잉한다.
+
 ### 4-3. auto-submit 일시중단 복구
 
 cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_paused_reason`이 채워지고 해당 대회의 자동 제출이 멈춘다(decisions.md ADR-026). 발동 조건은

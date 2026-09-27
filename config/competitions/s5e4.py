@@ -22,13 +22,19 @@ ACTIVE            = True  # deep tier 재활성 (#332, ADR-051) — s5e2 동결�
 # 2026-09 재활성 1일 실측(#340, ADR-052): attempt 70%가 CPU 예산(3600s) kill, fleet
 # CPU의 65%(89h 중 57.5h)를 이 대회 하나가 소각. ADR-044(예산 3600→10800 상향)는 이미
 # s5e4에서 실패로 결론났다(킬 비율 그대로, 소각량만 3배) — 남은 개입 축은 예산이 아니라
-# attempt 단가다. MAX_TRAIN_ROWS 500k→150k + N_SPLITS 5(기본)→3으로 1회 eval 비용을
-# 줄인다. 데이터/fold 구조가 바뀌므로 배포 후 bin/establish_baseline.py --remeasure
-# 필수(train_fingerprint 가드가 재측정 전까지 attempt를 막는다).
+# attempt 단가라고 보고 MAX_TRAIN_ROWS 500k→150k(N_SPLITS 5(기본)→3)로 줄였다.
 #
-# 2026-08 처리량 진단(#135): 당시 최근 7일 rc=-9(OOM SIGKILL) 140/450건(31%) — 500k행
-# 자체가 이미 무거웠다는 선행 신호였다.
-MAX_TRAIN_ROWS = 150_000
+# 개정(#373, ADR-058): 그 축소가 cv를 전량 LB와 역상관으로 만들었다 — 150k/3-fold에서
+# 데이터가 적어 저용량(적은 트리·강한 정규화) 모델이 이기는데, 전량 79.7만행에서는
+# 반대로 고용량 모델이 이긴다(실측: LB 최고 12.5966 pipeline이 150k에서는 꼴찌,
+# 500k에서는 1위). 6일간 승격된 pipeline은 150k cv를 계속 올렸지만 500k(≈전량 근사)
+# 기준으로는 오히려 내려갔다. 단가 축소보다 순위 정합이 우선이라 500k로 되돌린다.
+# N_SPLITS=3은 유지(순위 역전은 행수 문제였지 fold 수 문제가 아니었다 — 500k/3-fold도
+# LB 순위와 일치했다). 데이터/fold 구조가 바뀌므로 배포 후 bin/establish_baseline.py
+# --remeasure 필수(train_fingerprint 가드가 재측정 전까지 attempt를 막는다). 500k도
+# 이미 무거운 행수였다(2026-08 처리량 진단 #135: 당시 rc=-9 OOM 140/450건 31%) — RSS
+# 워치독(4GiB)과 attempt 실패율을 배포 후 별도로 관측한다(재고 트리거는 ADR-058).
+MAX_TRAIN_ROWS = 500_000
 N_SPLITS = 3
 
 # 제출 CSV는 MAX_TRAIN_ROWS 축소 없이 전량(약 79.7만 행)으로 학습한다. 제출 fit에는 CV가 없어 축소할 이유가 없고, LB는 학습 행수를
@@ -40,7 +46,7 @@ SUBMIT_BAG_SEEDS = [42]
 
 EDA_CARD = """competition: playground-series-s5e4 (Podcast Listening Time Prediction)
 task: regression  metric: RMSE  target: Listening_Time_minutes
-rows: ~150000 (MAX_TRAIN_ROWS로 랜덤 샘플링 — 원본 750000행에서 CPU 예산 초과 방지, #340)  features: 10
+rows: ~500000 (MAX_TRAIN_ROWS로 랜덤 샘플링 — 원본 750000행에서 CPU 단가 절충, #373/ADR-058)  features: 10
 target range: 0.0 - 119.97  mean: 45.44  nunique: 42807 (범위 좁고 skew 약함 — raw scale RMSE
   학습이 기본)
 결측: Episode_Length_minutes 11.6%, Guest_Popularity_percentage 19.5%, Number_of_Ads <0.1%
