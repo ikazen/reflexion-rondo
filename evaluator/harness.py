@@ -551,6 +551,10 @@ class PipelineContext:
     prev_best_fold_scores: list[float] | None = None
     # 이 eval에 허용된 CPU 초(#361). fold-1 소모로 투영한 전체가 이걸 넘으면 중단한다. None이면 투영하지 않는다.
     cpu_budget_sec: float | None = None
+    # 최근 attempt들의 fold_scores(#376) — fold-1이 이 중 하나와 비트 단위로 같으면 나머지 fold를
+    # 그 attempt의 값으로 채운다. #339(확정 base와의 tie)와 달리 base가 아닌 임의의 과거 attempt와도
+    # 매칭해 반복 재생산(같은 params로 수렴하는 서로 다른 patch 등)의 fold 계산을 회수한다.
+    known_fold1_scores: list[list[float]] | None = None
 
 
 class CpuBudgetProjectedError(RuntimeError):
@@ -992,7 +996,21 @@ def evaluate_pipeline(
                 noop_early_exit=True,
             )
 
-        if fold_idx == 0 and not collect_oof and ctx.cpu_budget_sec and ctx.n_splits > 1:
+        if fold_idx == 0 and not collect_oof and ctx.known_fold1_scores:
+            # 위 #339 체크가 이미 확정 base와의 tie를 처리하고 return했으므로 여기 도달했다는 것 자체가
+            # base와는 안 겹친다는 뜻이다 — base가 아닌 임의의 과거 attempt와 매칭해 재계산을 더 회수한다.
+            # 매칭되면 fold_scores를 그 attempt의 전체 값으로 통째로 교체하고 fold 루프 자체를 끝낸다 —
+            # 안 그러면 다음 fold_idx가 이미 꽉 찬 리스트에 또 append해 길이가 깨진다.
+            fold1_cache_hit = False
+            for cached in ctx.known_fold1_scores:
+                if len(cached) == ctx.n_splits and cached[0] == fold_scores[0]:
+                    fold_scores = list(cached)
+                    fold1_cache_hit = True
+                    break
+            if fold1_cache_hit:
+                break
+
+        if fold_idx == 0 and not collect_oof and ctx.cpu_budget_sec and ctx.n_splits > 1 and len(fold_scores) == 1:
             # fold-1이 쓴 CPU로 나머지 fold 비용을 투영한다(#361). kill은 예산 전체를 태우고 산출 0이지만, 여기서
             # 멈추면 남은 예산으로 재생성할 기회가 남는다. collect_oof(merge-verify 등)는 완전한 점수가 필요해 제외.
             cpu_now = _cpu_seconds()

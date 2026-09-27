@@ -266,6 +266,16 @@ def test_eval_isolated_passes_the_env_default_budget_when_none_is_given() -> Non
         assert _input_json_seen_by_runner()["cpu_budget_sec"] == 777.0
 
 
+def test_eval_isolated_passes_known_fold1_scores_to_the_runner() -> None:
+    """#376: fold-1 행동 지문 캐시가 runner의 input.json으로 넘어가야 한다."""
+    cache = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+    assert _input_json_seen_by_runner(known_fold1_scores=cache)["known_fold1_scores"] == cache
+
+
+def test_eval_isolated_defaults_known_fold1_scores_to_none() -> None:
+    assert _input_json_seen_by_runner()["known_fold1_scores"] is None
+
+
 def _exits_after(n_polls: int):
     """n_polls번 폴링된 뒤 스스로 종료하는 가짜 subprocess."""
     class _Proc:

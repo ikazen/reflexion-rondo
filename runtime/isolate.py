@@ -153,6 +153,7 @@ def eval_isolated(
     holdout_data: pl.DataFrame | None = None,
     cpu_budget_sec: float | None = None,
     prev_best_fold_scores: list[float] | None = None,
+    known_fold1_scores: list[list[float]] | None = None,
 ) -> IsolatedResult:
     with tempfile.TemporaryDirectory(prefix="rondo-eval-") as tmpdir:
         ws = Path(tmpdir)
@@ -175,6 +176,7 @@ def eval_isolated(
             "collect_oof": collect_oof,
             "prev_best_fold_scores": prev_best_fold_scores,
             "cpu_budget_sec": cpu_budget,
+            "known_fold1_scores": known_fold1_scores,
         }))
         if best_source:
             (ws / "best_pipeline.py").write_text(best_source)

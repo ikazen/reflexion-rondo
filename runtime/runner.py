@@ -157,6 +157,7 @@ def main() -> None:
         tuned_params=inp.get("tuned_params"),
         prev_best_fold_scores=inp.get("prev_best_fold_scores"),
         cpu_budget_sec=inp.get("cpu_budget_sec"),
+        known_fold1_scores=inp.get("known_fold1_scores"),
     )
 
     try:
