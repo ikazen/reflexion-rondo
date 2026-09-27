@@ -8,9 +8,14 @@ import pytest
 from config.settings import ACTION_TYPES
 from cycle.action_optimizer import (
     _BANDIT_DECAY,
+    _DEAD_ACTION_MEAN_THRESHOLD,
+    _DEAD_ACTION_MIN_OBSERVED,
+    _DEAD_ACTION_REEXPLORE_EVERY,
     _HALF_SUCCESS,
     _NEUTRAL_INCREMENT,
     _NOOP_TIE_PENALTY,
+    _is_dead_action,
+    _reexplore_window_open,
     assign_super_cycle_actions,
     get_action_prior,
     update_bandit,
@@ -21,6 +26,17 @@ def _conn(rows: list[tuple] | None = None) -> MagicMock:
     mock = MagicMock()
     mock.execute.return_value.fetchall.return_value = rows or []
     return mock
+
+
+def _conn_with_dead_action(action: str, total_attempts: int) -> MagicMock:
+    """1번째 execute=bandit 행(해당 액션만 죽음), 2번째 execute=competition 전체 attempt 수."""
+    conn = MagicMock()
+    bandit_result = MagicMock()
+    bandit_result.fetchall.return_value = [(action, 1.0, 20.0)]  # mean=1/21≈0.048 < 0.1, observed=18>=5
+    count_result = MagicMock()
+    count_result.fetchone.return_value = (total_attempts,)
+    conn.execute.side_effect = [bandit_result, count_result]
+    return conn
 
 
 
@@ -81,6 +97,109 @@ def test_assign_seed_makes_deterministic():
     r1 = assign_super_cycle_actions(_conn(rows=rows), "s4e1", n_attempts=3, seed=42)
     r2 = assign_super_cycle_actions(_conn(rows=rows), "s4e1", n_attempts=3, seed=42)
     assert r1 == r2
+
+
+# 죽은 액션 배제 + 주기적 재탐색(#375)
+
+@pytest.mark.parametrize(("alpha", "beta", "expected"), [
+    (1.0, 20.0, True),    # mean=0.048<0.1, observed=19>=5 -> dead
+    (1.0, 3.0, False),    # mean=0.25(문턱 위) -> 관측과 무관하게 dead 아님
+    (0.05, 9.55, True),   # 인위적 값(정상 갱신으로는 거의 안 나오지만 함수 자체의 경계는 확인) mean=0.005<0.1, observed=8.55>=5 -> dead
+    (0.05, 0.45, False),  # mean=0.1(문턱 정확히 미만 아님) 전에, observed=-0.5<5 -> dead 아님(둘 다 불충족)
+    (1.0, 1.0, False),    # 순수 prior(관측 0) -> dead 아님
+])
+def test_is_dead_action_boundary(alpha, beta, expected):
+    assert _is_dead_action(alpha, beta) is expected
+
+
+# 죽은 액션이 정확히 1개일 때 n_attempts를 len(ACTION_TYPES)-1로 두면 eligible 후보 수가
+# n_attempts와 정확히 같아져(부족분을 못 채워 폴백이 개입할 여지도, 남는 후보라 랭킹 운이
+# 끼어들 여지도 없이) 배제 여부만 결정적으로 드러난다.
+_N_ATTEMPTS_ONE_DEAD = len(ACTION_TYPES) - 1
+
+
+def test_dead_action_is_excluded_when_mean_is_low_and_observed_enough():
+    conn = _conn_with_dead_action("hyperparam_search", total_attempts=50)
+    result = assign_super_cycle_actions(conn, "s6e8", n_attempts=_N_ATTEMPTS_ONE_DEAD, seed=42)
+    assert "hyperparam_search" not in result
+    assert len(result) == _N_ATTEMPTS_ONE_DEAD
+
+
+@pytest.mark.parametrize("total_attempts", [0, 1, 99, 103, 199])
+def test_dead_action_excluded_outside_the_reexplore_window(total_attempts):
+    conn = _conn_with_dead_action("hyperparam_search", total_attempts=total_attempts)
+    result = assign_super_cycle_actions(conn, "s6e8", n_attempts=_N_ATTEMPTS_ONE_DEAD, seed=42)
+    assert "hyperparam_search" not in result
+
+
+def _rng_favoring(action: str):
+    """action의 Thompson 표본만 압도적으로 높게 강제한다 — 배제되지 않는 한 반드시 뽑히도록
+    랭킹 운을 제거하고 필터 자체의 동작만 본다."""
+    class _FakeRng:
+        def beta(self, a, b):
+            return 0.99 if (a, b) == (1.0, 20.0) else 0.01
+    return lambda seed=None: _FakeRng()
+
+
+@pytest.mark.parametrize("total_attempts", [100, 200])  # n_attempts=1이라 창 폭도 1 — total % 100 == 0인 정확한 그 틱
+def test_dead_action_reincluded_inside_the_reexplore_window(monkeypatch, total_attempts):
+    """재탐색 창이 열리면 죽은 액션도 다시 후보가 된다 — Thompson 표본을 모의로 압도적으로
+    강제해(n_attempts=1) 랭킹 운이 아니라 배제 자체의 해제를 확인한다."""
+    monkeypatch.setattr("cycle.action_optimizer.np.random.default_rng", _rng_favoring("hyperparam_search"))
+    conn = _conn_with_dead_action("hyperparam_search", total_attempts=total_attempts)
+    result = assign_super_cycle_actions(conn, "s6e8", n_attempts=1, seed=42)
+    assert result == ["hyperparam_search"]
+
+
+@pytest.mark.parametrize("total_attempts", [1, 99, 101, 103, 199, 201])
+def test_dead_action_excluded_outside_the_reexplore_window_even_with_a_favorable_draw(monkeypatch, total_attempts):
+    """창이 닫혀 있으면 표본이 압도적으로 높아도(모의) 배제된다."""
+    monkeypatch.setattr("cycle.action_optimizer.np.random.default_rng", _rng_favoring("hyperparam_search"))
+    conn = _conn_with_dead_action("hyperparam_search", total_attempts=total_attempts)
+    result = assign_super_cycle_actions(conn, "s6e8", n_attempts=1, seed=42)
+    assert result != ["hyperparam_search"]
+
+
+def test_reexplore_window_query_is_skipped_when_nothing_is_dead():
+    """죽은 액션이 없으면 count 쿼리 자체를 안 던진다 — 매 배정마다 불필요한 쿼리를 늘리지 않는다."""
+    conn = _conn(rows=[])
+    assign_super_cycle_actions(conn, "s4e1", n_attempts=3, seed=42)
+    assert conn.execute.call_count == 1
+
+
+def test_reexplore_window_count_query_is_scoped_to_the_competition():
+    conn = _conn_with_dead_action("hyperparam_search", total_attempts=50)
+    assign_super_cycle_actions(conn, "s6e8", n_attempts=1, seed=42)
+    count_call = conn.execute.call_args_list[1]
+    assert "competition_id" in count_call.args[0]
+    assert count_call.args[1] == ["s6e8"]
+
+
+def test_reexplore_constants_keep_a_full_window_within_the_period():
+    assert _DEAD_ACTION_REEXPLORE_EVERY > 3  # n_attempts(기본 3) 창이 다음 배수 전에 끝나야 한다
+
+
+@pytest.mark.parametrize(("total", "n_attempts", "expected"), [
+    (0, 3, True), (2, 3, True), (3, 3, False), (99, 3, False),
+    (100, 3, True), (102, 3, True), (103, 3, False),
+    (200, 4, True), (203, 4, True), (204, 4, False),
+])
+def test_reexplore_window_open_boundaries(total, n_attempts, expected):
+    """_DEAD_ACTION_REEXPLORE_EVERY 값 자체와 경계 비교 연산자를 Thompson 샘플링과 분리해서 확인한다."""
+    assert _reexplore_window_open(total, n_attempts) is expected
+
+
+def test_dead_action_is_filtered_out_even_when_its_raw_draw_would_rank_first(monkeypatch):
+    """(1.0, 20.0)의 Thompson 표본이 우연히 1등이어도(모의로 강제) 배제 필터가 걸러야 한다 —
+    랭킹이 우연히 정답과 같아지는 경우를 배제하고 필터 자체의 존재를 증명한다."""
+    class _FakeRng:
+        def beta(self, a, b):
+            return 0.99 if (a, b) == (1.0, 20.0) else 0.01
+
+    monkeypatch.setattr("cycle.action_optimizer.np.random.default_rng", lambda seed=None: _FakeRng())
+    conn = _conn_with_dead_action("hyperparam_search", total_attempts=50)
+    result = assign_super_cycle_actions(conn, "s6e8", n_attempts=1, seed=42)
+    assert result == ["feature_engineering"]  # 나머지 4개가 동점(0.01)일 때 ACTION_TYPES 선언 순서상 첫 번째
 
 
 
