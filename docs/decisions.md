@@ -1397,6 +1397,27 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 
 ---
 
+## ADR-061 — fold-1이 임의의 과거 attempt와 일치해도 나머지 fold를 재사용한다 (#376, #339 확장)
+
+- 결정: `evaluator/harness.py:evaluate_pipeline`이 #339(확정 base와의 fold-1 tie) 체크 다음으로, `ctx.known_fold1_scores`(최근 attempt의
+  fold_scores 목록)에서 fold-1이 비트 단위로 일치하는 항목을 찾으면 `fold_scores`를 그 항목 전체로 교체하고 fold 루프를 끝낸다.
+  이후 cv_score/cv_fold_var/label/gain_vs_best/is_noop_tie는 이 fold_scores로 기존 공식 그대로 계산한다 — 과거 attempt의 라벨을
+  그대로 복사하지 않고, 현재 `ctx.prev_best` 기준으로 다시 판정한다(재사용 attempt가 마침 승격돼 prev_best가 바뀌었으면 다른 라벨이
+  나올 수 있다, 의도된 동작). `collect_oof=True`(merge-verify 등)와 길이가 `ctx.n_splits`와 다른 항목(노브 변경 이전 체제의 이력)은
+  제외한다. `cycle/run.py:_recent_fold1_cache`가 attempt당 1회, 최근 200개 attempt의 fold_scores를 fold-1 값으로 중복 제거해 조회한다.
+- 근거: #339는 fold-1이 **확정 base**의 fold-1과 일치할 때만 잡는다. 46시간 실측에서 같은 competition·같은 cv_score로 수렴한
+  attempt가 s5e4 90건(8.7 CPU-h), s6e8 89건(28.8 CPU-h)이었다 — 대부분 서로 다른 patch가 base가 아닌 **다른 과거 attempt**와
+  똑같은 계산으로 수렴한 경우(예: hyperparam_search 33건이 cv 13.2140456으로 동일)라 #339가 못 잡는다. fold-1 이후 재계산 몫만
+  추정하면 회수 가능분은 fleet CPU의 약 8% — hyperparam_search류의 tie는 fold-1 이전 preselect 비용이 더 커서(#375로 별도 완화)
+  이 캐시의 순수 효과는 그보다 작다.
+  캐시 자체는 fold-1 자기 것부터 반드시 실행돼야 검사할 값이 생기므로(#339와 동일 제약), 회수 대상은 항상 "fold 2..N"뿐이다.
+- 시계 선택: 최근 200개로 자른다 — 재생산 몰림은 시간적으로 가깝게 일어나고(짧은 시간에 같은 액션이 반복 배정), 대회가 오래될수록
+  전체 이력을 다 캐시하면 쿼리/payload 비용만 늘어난다.
+- 한계: fold-1 값이 일치해야 하므로(#339와 동일한 결정성 전제 — `_make_folds`가 seed/n_splits로 결정적) 여전히 "완전히 같은
+  계산"만 잡는다. 근사적으로 비슷한(그러나 비트 단위로는 다른) 계산은 회수하지 못한다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |
