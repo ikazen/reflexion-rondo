@@ -74,6 +74,28 @@ def update_bandit(
     )
 
 
+# 사후 평균이 낮고 관측이 충분히 쌓인 액션은 배정에서 뺀다(#375) — Thompson 표본이 상위
+# n_attempts를 뽑는 구조라 posterior mean이 0.08 안팎이어도 매 사이클 15%가량 배정돼 CPU를
+# 태운다(s6e8 hyperparam_search 46h 29/29 tie 실측). observed는 decay(_BANDIT_DECAY)가 걸린
+# 값이라 절대 관측 횟수의 근사일 뿐이고 상한이 있다(초당 최대 증가폭 1.0을 decay 0.95로 나눈
+# 20 근방) — "판정을 신뢰할 만큼은 쌓였는지"용 문턱으로만 쓴다.
+_DEAD_ACTION_MEAN_THRESHOLD = 0.1
+_DEAD_ACTION_MIN_OBSERVED = 5.0
+# 완전히 배제하면 회복 기회가 없다 — 대회 전체 attempt 수(이 action 자신의 배제로 멈추지
+# 않는, 항상 진행하는 시계) 기준 매 100건마다 n_attempts틱만큼 죽은 액션도 정상 후보로
+# 되돌려 재탐색시킨다.
+_DEAD_ACTION_REEXPLORE_EVERY = 100
+
+
+def _is_dead_action(alpha: float, beta: float) -> bool:
+    observed = (alpha - 1.0) + (beta - 1.0)
+    return observed >= _DEAD_ACTION_MIN_OBSERVED and alpha / (alpha + beta) < _DEAD_ACTION_MEAN_THRESHOLD
+
+
+def _reexplore_window_open(total_attempts: int, n_attempts: int) -> bool:
+    return total_attempts % _DEAD_ACTION_REEXPLORE_EVERY < n_attempts
+
+
 def assign_super_cycle_actions(
     conn: PgConn,
     competition_id: str,
@@ -101,7 +123,23 @@ def assign_super_cycle_actions(
         for action in ACTION_TYPES
     }
     ranked = sorted(scores, key=scores.__getitem__, reverse=True)
-    return ranked[:n_attempts]
+
+    dead = {a for a in ACTION_TYPES if _is_dead_action(*bandit.get(a, (1.0, 1.0)))}
+    if dead:
+        total = conn.execute(
+            "SELECT count(*) FROM raw.attempts WHERE competition_id = %s",
+            [competition_id],
+        ).fetchone()[0]
+        if _reexplore_window_open(total, n_attempts):
+            dead = set()
+
+    eligible = [a for a in ranked if a not in dead]
+    picked = eligible[:n_attempts]
+    if len(picked) < n_attempts:
+        # dead가 n_attempts를 채울 후보 자체를 모자라게 만드는 극단적 경우의 폴백 —
+        # 원래 랭킹에서 부족분을 채운다(정상 동작에서는 도달하지 않음, ACTION_TYPES=5/n_attempts=3).
+        picked += [a for a in ranked if a not in picked][: n_attempts - len(picked)]
+    return picked
 
 
 def get_action_prior(

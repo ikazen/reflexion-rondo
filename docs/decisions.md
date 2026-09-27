@@ -1373,6 +1373,30 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 
 ---
 
+## ADR-060 — 사후 평균이 낮은 액션은 배정에서 빼되 100 사이클마다 재탐색한다 (#375)
+
+- 결정: `cycle/action_optimizer.py:assign_super_cycle_actions`가 Thompson 랭킹을 매기기 전, 사후 평균(`alpha/(alpha+beta)`)이
+  `_DEAD_ACTION_MEAN_THRESHOLD`(0.1) 미만이고 관측(`(alpha-1)+(beta-1)`)이 `_DEAD_ACTION_MIN_OBSERVED`(5) 이상인 액션을 "죽은 액션"으로
+  분류해 배정 후보에서 뺀다. 완전히 막으면 회복 기회가 없으므로 대회 전체 attempt 수(`raw.attempts` count, 이 액션 자신의 배제로는
+  멈추지 않는 시계)가 `_DEAD_ACTION_REEXPLORE_EVERY`(100)의 배수를 지난 직후 `n_attempts`틱 동안은 죽은 액션도 정상 후보로 되돌린다.
+  배제 후 후보가 `n_attempts`에 못 미치면(현재 설정 `ACTION_TYPES=5`/`n_attempts=3`에서는 도달하지 않는 극단적 경우) 원래 랭킹에서
+  부족분을 채운다.
+- 근거: s6e8 hyperparam_search는 46시간 동안 29/29 attempt가 base와 정확히 tie(fold-1 조기 중단이 걸려도 preselect 비용은 그대로,
+  평균 1,223 CPU-s)였고 하드킬 11건이 더해져 약 21 CPU-h(s6e8 CPU의 19%)를 썼다. 같은 기간 사후 평균은 hyperparam_search 0.082,
+  model_swap 0.048로 사실상 죽은 액션이었다. `assign_super_cycle_actions`가 5개 액션 전체에 Thompson 표본을 뽑아 상위 3개를 배정하는
+  구조라, 사후 평균이 낮은 액션도 표본 변동으로 15%가량 계속 배정됐다.
+- 재탐색 주기의 시계로 "이 액션 자신의 attempt 수"가 아니라 "대회 전체 attempt 수"를 쓰는 이유: 액션이 배제되면 그 액션 자신의
+  attempt는 더 이상 안 늘어나므로, 자기 자신의 카운트를 시계로 쓰면 배제된 순간 카운트가 멈춰 재탐색 창이 영원히 안 열린다.
+  대회 전체 카운트는 다른 액션이 계속 도는 한 항상 전진한다.
+- 관측(`alpha+beta-2`)은 `_BANDIT_DECAY`(0.95)가 걸린 값이라 절대 관측 횟수의 근사일 뿐이고, 매 갱신 최대 증가폭(1.0)을 decay로
+  나눈 약 20 근방에서 상한이 생긴다 — "판정을 신뢰할 만큼 쌓였는지"를 보는 문턱으로만 쓰고, 정확한 카운트가 필요한 재탐색 주기는
+  별도로 `raw.attempts` 카운트 쿼리를 쓴다(죽은 액션이 없으면 이 쿼리 자체를 안 던진다).
+- 한계: `_DEAD_ACTION_MIN_OBSERVED`(5)는 정상적인 밴딧 갱신 동역학(decay 0.95, 매 갱신 최대 증가폭 1.0)에서는 사후 평균이 0.1 밑으로
+  내려가는 시점(약 10회 연속 실패 후)이면 이미 관측이 8 이상이라 사실상 항상 충족된다 — 이 문턱은 정상 경로보다는 수동 개입 등으로
+  비정상적인 alpha/beta가 들어오는 경우에 대한 방어선이다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |
