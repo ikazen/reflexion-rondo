@@ -45,3 +45,16 @@ def test_without_a_budget_the_runner_evaluates_normally(tmp_path) -> None:
     out = _run_runner(tmp_path)
     assert out["error_trace"] is None
     assert out["cv_score"] is not None
+
+
+def test_runner_reuses_a_cached_fold1_match(tmp_path) -> None:
+    """#376: input.json의 known_fold1_scores가 실제 서브프로세스 실행에서도 fold 재계산을 대체한다.
+    먼저 캐시 없이 한 번 돌려 진짜 fold-1 점수를 얻고, fold 2+ 값만 가짜 sentinel로 바꿔 캐시로
+    준다 — 결정적 seed라 "그냥 다시 계산해도 같은 값"이 나오는 걸 배제하고, 캐시가 실제로
+    fold 2+ 재계산을 건너뛰었는지 증명한다."""
+    real = _run_runner(tmp_path)
+    assert real["error_trace"] is None
+    poisoned = [real["fold_scores"][0], 0.123456789, 0.987654321]
+    cached = _run_runner(tmp_path, known_fold1_scores=[poisoned])
+    assert cached["fold_scores"] == poisoned
+    assert cached["cv_score"] == sum(poisoned) / len(poisoned)

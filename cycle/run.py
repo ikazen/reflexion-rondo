@@ -363,6 +363,34 @@ def _prev_best_fold_scores(conn: PgConn, competition_id: str) -> list[float] | N
     return val if isinstance(val, list) else json.loads(val)
 
 
+_FOLD1_CACHE_LIMIT = 200  # 최근 N개 attempt만 본다 — 재생산 몰림은 대부분 최근 이력에서 잡히고,
+# 대회가 오래될수록 커지는 쿼리/payload 비용을 이 상한으로 막는다.
+
+
+def _recent_fold1_cache(conn: PgConn, competition_id: str, n_splits: int) -> list[list[float]] | None:
+    """최근 attempt의 fold_scores 중 이번 대회의 fold 구조(n_splits)와 맞는 것만, fold-1 값으로 중복
+    제거해 돌려준다(#376) — fold-1이 일치하면 나머지 fold를 재계산하지 않고 그대로 재사용한다.
+    #339(확정 base와의 tie)와 달리 base가 아닌 임의의 과거 attempt와도 매칭해, 서로 다른 patch가
+    같은 params/로직으로 수렴하는 반복 재생산의 fold 계산을 회수한다."""
+    rows = conn.execute(
+        """
+        select fold_scores from raw.attempts
+        where competition_id = %s and fold_scores is not null and jsonb_array_length(fold_scores) = %s
+        order by run_ts desc limit %s
+        """,
+        [competition_id, n_splits, _FOLD1_CACHE_LIMIT],
+    ).fetchall()
+    seen_fold1: set[float] = set()
+    cache: list[list[float]] = []
+    for (val,) in rows:
+        scores = val if isinstance(val, list) else json.loads(val)
+        if not scores or scores[0] in seen_fold1:
+            continue
+        seen_fold1.add(scores[0])
+        cache.append(scores)
+    return cache or None
+
+
 def establish_bootstrap_baseline(
     conn: PgConn,
     competition_id: str,
@@ -763,6 +791,8 @@ def run_attempt_core(
     # is_significant_gain(아래)과 eval_isolated의 fold-1 조기 중단(#339) 양쪽이
     # 같은 baseline fold_scores를 쓰므로 attempt당 1회만 조회해 재사용한다.
     prev_best_fold_scores = _prev_best_fold_scores(conn, config.competition_id)
+    # #376 — attempt당 1회만 조회, 두 eval 회차(재시도 포함)가 같은 캐시를 공유한다.
+    known_fold1_scores = _recent_fold1_cache(conn, config.competition_id, config.n_splits)
 
     if not error_trace:
         # CPU 예산은 eval 회차가 아니라 attempt 전체 기준으로 집행한다 — 과거엔
@@ -795,6 +825,7 @@ def run_attempt_core(
                 tuned_params=_latest_tuned_params(conn, config.competition_id),
                 cpu_budget_sec=cpu_remaining,
                 prev_best_fold_scores=prev_best_fold_scores,
+                known_fold1_scores=known_fold1_scores,
             )
             peak_rss_bytes = iso.peak_rss_bytes
             peak_cpu_sec = iso.peak_cpu_sec

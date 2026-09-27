@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from cycle.run import _prev_best, _prev_best_fold_scores, _prev_best_params
+from cycle.run import _prev_best, _prev_best_fold_scores, _prev_best_params, _recent_fold1_cache
 
 
 def _conn_seq(*results) -> MagicMock:
@@ -159,3 +159,43 @@ def test_prev_best_fold_scores_prefers_pipelines_column():
     _prev_best_fold_scores(conn, "s4e1")
     sql: str = conn.execute.call_args_list[0][0][0]
     assert "coalesce(p.fold_scores, a.fold_scores)" in sql
+
+
+# _recent_fold1_cache (#376) — fold-1 행동 지문 캐시용 최근 attempt fold_scores 조회.
+
+def _conn_fetchall(rows: list[tuple]) -> MagicMock:
+    mock = MagicMock()
+    mock.execute.return_value.fetchall.return_value = rows
+    return mock
+
+
+def test_recent_fold1_cache_returns_fold_scores_lists():
+    conn = _conn_fetchall([([0.1, 0.2, 0.3],), ([0.4, 0.5, 0.6],)])
+    result = _recent_fold1_cache(conn, "s4e1", n_splits=3)
+    assert result == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+
+
+def test_recent_fold1_cache_deduplicates_by_fold1_value_keeping_the_first():
+    """order by run_ts desc이므로 먼저 오는 게 더 최근 — 중복 fold-1은 최신 것만 남긴다."""
+    conn = _conn_fetchall([([0.1, 0.2, 0.3],), ([0.1, 0.9, 0.9],), ([0.4, 0.5, 0.6],)])
+    result = _recent_fold1_cache(conn, "s4e1", n_splits=3)
+    assert result == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+
+
+def test_recent_fold1_cache_parses_json_string_rows():
+    """psycopg가 jsonb를 문자열로 돌려주는 환경 대응 — raw.pipelines.fold_scores와 동일 패턴."""
+    conn = _conn_fetchall([("[0.1, 0.2, 0.3]",)])
+    assert _recent_fold1_cache(conn, "s4e1", n_splits=3) == [[0.1, 0.2, 0.3]]
+
+
+def test_recent_fold1_cache_empty_returns_none():
+    conn = _conn_fetchall([])
+    assert _recent_fold1_cache(conn, "s4e1", n_splits=3) is None
+
+
+def test_recent_fold1_cache_query_scopes_by_competition_and_n_splits():
+    conn = _conn_fetchall([])
+    _recent_fold1_cache(conn, "s4e1", n_splits=5)
+    sql, params = conn.execute.call_args.args
+    assert "competition_id" in sql and "jsonb_array_length" in sql
+    assert params == ["s4e1", 5, 200]

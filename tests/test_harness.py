@@ -8,6 +8,7 @@ import numpy as np
 import polars as pl
 
 from config.settings import LABEL_Z
+import evaluator.harness as harness_module
 from evaluator.harness import (
     BasePipeline, EvalResult, PatchedPipeline, PipelineContext,
     evaluate_pipeline, preselect_params, is_significant_gain,
@@ -1103,6 +1104,111 @@ def test_collect_oof_disables_early_exit():
     assert result.oof_preds is not None
     assert result.fold_scores is not None
     assert len(result.fold_scores) == 3
+
+
+# fold-1 행동 지문 캐시(#376) — #339(확정 base와의 tie)와 달리 base가 아닌 임의의 과거
+# attempt의 fold_scores와도 매칭해 재계산을 회수한다.
+
+def test_fold1_cache_hit_reuses_a_non_base_historical_fold_scores(monkeypatch):
+    """확정 base와는 무관한 과거 attempt의 fold-1과 일치하면 그 attempt의 fold_scores를 그대로 쓴다."""
+    df = _make_df()
+    other_run = evaluate_pipeline(BasePipeline(), df, PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+    ))
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+        prev_best=0.5,  # #339이 안 걸리게 base fold-1과는 다른 임의 prev_best
+        known_fold1_scores=[other_run.fold_scores],
+    )
+    calls = []
+    orig_fit_predict = harness_module.fit_predict
+    def counting_fit_predict(*a, **k):
+        calls.append(1)
+        return orig_fit_predict(*a, **k)
+    monkeypatch.setattr(harness_module, "fit_predict", counting_fit_predict)
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+    assert result.fold_scores == other_run.fold_scores
+    assert result.cv_score == other_run.cv_score
+    assert len(calls) == 1  # fold-1만 실제로 fit — 나머지는 캐시로 대체
+
+
+def test_fold1_cache_miss_runs_all_folds_normally():
+    df = _make_df()
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+        known_fold1_scores=[[0.123456, 0.234567, 0.345678]],  # fold-1과 안 맞는 임의값
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+    assert len(result.fold_scores) == 3
+    assert result.fold_scores[0] not in (0.123456,)
+
+
+def test_fold1_cache_wrong_length_entry_is_ignored(monkeypatch):
+    """n_splits가 바뀐 옛 체제의 fold_scores(길이 다름)는 매칭 대상에서 제외하고 3-fold를 전부 실제로 돈다 —
+    값이 우연히 같아질 수 있어(결정적 seed) fit 호출 횟수로 "진짜 재계산했는지"를 확인한다."""
+    df = _make_df()
+    other_run = evaluate_pipeline(BasePipeline(), df, PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+    ))
+    wrong_length = other_run.fold_scores + [0.5]  # n_splits=4인 것처럼 위장
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+        known_fold1_scores=[wrong_length],
+    )
+    calls = []
+    orig_fit_predict = harness_module.fit_predict
+    def counting_fit_predict(*a, **k):
+        calls.append(1)
+        return orig_fit_predict(*a, **k)
+    monkeypatch.setattr(harness_module, "fit_predict", counting_fit_predict)
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+    assert len(result.fold_scores) == 3
+    assert len(calls) == 3  # 캐시가 안 먹혀 3-fold 전부 실제로 fit
+
+
+def test_fold1_cache_is_skipped_for_collect_oof():
+    df = _make_df()
+    other_run = evaluate_pipeline(BasePipeline(), df, PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+    ))
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+        known_fold1_scores=[other_run.fold_scores],
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx, collect_oof=True)
+    assert result.oof_preds is not None
+    assert len(result.fold_scores) == 3
+
+
+def test_base_tie_takes_priority_over_fold1_cache():
+    """#339(확정 base와의 tie)가 fold-1 캐시보다 먼저 체크된다 — 둘 다 매칭 가능해도 조기 중단(#339) 경로로 간다."""
+    df = _make_df()
+    baseline = evaluate_pipeline(BasePipeline(), df, _ctx())
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+        prev_best=baseline.cv_score, prev_best_fold_scores=baseline.fold_scores,
+        known_fold1_scores=[baseline.fold_scores],
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+    assert result.noop_early_exit is True  # #339 전용 필드 — fold1 캐시 경로였다면 False
+    assert result.fold_scores is None      # #339은 SNR 오염 방지로 None을 채운다
+
+
+def test_fold1_cache_result_can_still_be_a_jump_or_regression():
+    """캐시로 채운 fold_scores도 label/gain은 현재 ctx.prev_best 기준으로 정상 계산된다 —
+    과거 attempt 자신의 라벨을 그대로 복사하지 않는다."""
+    df = _make_df()
+    other_run = evaluate_pipeline(BasePipeline(), df, PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+    ))
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+        prev_best=0.01,  # 아주 낮게 잡아 jump가 나오도록
+        known_fold1_scores=[other_run.fold_scores],
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+    assert result.label == "jump"
+    assert result.gain_vs_best is not None and result.gain_vs_best > 0
 
 
 

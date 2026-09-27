@@ -77,6 +77,17 @@ def test_prev_best_fold_scores_passed_to_eval_isolated():
     assert mock_eval.call_args_list[0].kwargs["prev_best_fold_scores"] == [0.88, 0.89, 0.90]
 
 
+def test_recent_fold1_cache_passed_to_eval_isolated(monkeypatch):
+    """#376: attempt당 1회 조회한 fold-1 캐시가 두 eval 회차 모두에 같은 값으로 전달된다."""
+    ok = IsolatedResult(
+        cv_score=0.9, cv_fold_var=0.001, fold_scores=[0.89, 0.9, 0.91],
+        label="neutral", gain_vs_best=0.01, error_trace=None, peak_cpu_sec=120.0,
+    )
+    monkeypatch.setattr("cycle.run._recent_fold1_cache", lambda conn, cid, n_splits: [[0.1, 0.2, 0.3]])
+    _data, _mock_insert, mock_eval, _ = _run(eval_side_effect=[ok])
+    assert mock_eval.call_args_list[0].kwargs["known_fold1_scores"] == [[0.1, 0.2, 0.3]]
+
+
 def test_retry_on_noop_early_exit_when_budget_remains():
     """fold-1 조기 tie + 예산 잔여 → 다른 후보로 1회 재시도하고, 성공하면 그
     결과를 채택한다."""
