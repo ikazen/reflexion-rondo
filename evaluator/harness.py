@@ -602,6 +602,18 @@ class BasePipeline:
         return None
 
 
+# ensemble_spec/model_spec 상속 억제 규칙(#374, ADR-059) — 한쪽 훅을 patch가 직접 정의하면
+# 단일 모델 의도로 보고 반대쪽을 상속하지 않는다(모델 선택이 patch의 실제 변경인데 base
+# ensemble/model_spec이 그대로 상속되면 그 변경이 한 번도 안 불리고 base와 동일한 결과만
+# 재현한다, #239/#226). cycle/materialize.py가 병합본을 만들 때도 이 표를 그대로 써야
+# attempt 시점 평가와 승격 후 재평가(merge-verify)가 같은 모델을 채점한다 — 어긋나면
+# patch의 효과가 병합본에서 조용히 사라진다(#374, merged가 base 그대로 재현됨).
+_HOOK_SUPPRESSORS: dict[str, frozenset[str]] = {
+    "ensemble_spec": frozenset({"build_model", "param_candidates", "model_spec"}),
+    "model_spec": frozenset({"build_model", "param_candidates", "ensemble_spec"}),
+}
+
+
 def _union_feature_columns(base_df: pl.DataFrame, patch_df: pl.DataFrame) -> pl.DataFrame:
     """feature_transform 합성(#232, ADR-037) — 컬럼 단위 합집합, 동명 컬럼은 patch가 이긴다.
     base_df/patch_df는 같은 train/valid에서 각자 독립적으로 파생됐으므로 행 수·순서가
@@ -694,17 +706,7 @@ class PatchedPipeline:
         fn = getattr(self.patch, "ensemble_spec", None)
         if fn:
             return fn(ctx)
-        # build_model/param_candidates/model_spec을 직접 정의하는 patch(model_swap/
-        # hyperparam_search가 주로 이런 훅을 씀)는 단일모델 의도가 명확하다 — base의
-        # ensemble_spec을 그대로 상속하면 evaluate_pipeline/holdout/제출이 전부 ensemble 분기로 빠져 patch의
-        # 실제 변경이 한 번도 호출되지 않고 base와 완전히 동일한 cv_score만 재현한다.
-        # 확정 best가 ensemble인 대회는 이 action_type들이 영구 무력화되는 셈이었다
-        # (#239, #226이 base ensemble_spec 복원을 고치면서 새로 노출됨 — 그 전엔 base가
-        # 애초에 ensemble_spec을 못 가져와 이 문제 자체가 없었다). feature_engineering/
-        # preprocessing처럼 모델 관련 훅을 안 건드리는 patch는 반대로 상속돼야 한다 —
-        # "이 feature가 ensemble에도 통하는지"가 그 attempt의 질문이므로, 아래 else로
-        # 정상 위임.
-        if hasattr(self.patch, "build_model") or hasattr(self.patch, "param_candidates") or hasattr(self.patch, "model_spec"):
+        if any(hasattr(self.patch, h) for h in _HOOK_SUPPRESSORS["ensemble_spec"]):
             return None
         return self.base.ensemble_spec(ctx)
 
@@ -712,15 +714,7 @@ class PatchedPipeline:
         fn = getattr(self.patch, "model_spec", None)
         if fn:
             return fn(ctx)
-        # build_model/ensemble_spec/param_candidates를 직접 정의하는 patch는 model_spec
-        # 상속을 원치 않는다는 의도가 명확하다 — 위 ensemble_spec 상속 억제와 대칭인 이유:
-        # base가 model_spec을 갖고 있는데 patch가 build_model로 완전히 다른 모델을 쓰려
-        # 하면, model_spec을 그대로 상속시켜 fit_predict가 model_spec 경로로 빠지는 순간
-        # patch.build_model이 한 번도 안 불린다. param_candidates(hyperparam_search)도
-        # 마찬가지 — model_spec이 상속되면 preselect_params가 하이퍼파라미터 탐색 자체를
-        # 건너뛰어(빈 dict 반환) patch.param_candidates가 한 번도 안 불린다(#239와 동일
-        # 클래스의 버그).
-        if hasattr(self.patch, "build_model") or hasattr(self.patch, "ensemble_spec") or hasattr(self.patch, "param_candidates"):
+        if any(hasattr(self.patch, h) for h in _HOOK_SUPPRESSORS["model_spec"]):
             return None
         return self.base.model_spec(ctx)
 

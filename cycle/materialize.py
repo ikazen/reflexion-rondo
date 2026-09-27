@@ -2,8 +2,9 @@
 
 patch가 새로 정의한 hook은 보존하고, base에만 있는 hook도 보존한다. 양쪽이 같은 합성 가능 훅(_COMPOSABLE_HOOKS)을 다르게 정의하면
 완전 교체 대신 base 실행 후 patch를 적용하는 wrapper를 합성한다(ADR-037, #232, patch가 override로 명시하면 완전 교체). 그 외 훅
-(build_model 등)은 여전히 patch가 이긴다. 승격 소스에 `Patch.frozen_params`가 있으면 param_candidates를 그 값 하나로 동결한다(ADR-054).
-병합 결과는 undefined-name/optional-dependency 가드로 검증한다.
+(build_model 등)은 여전히 patch가 이긴다. patch가 단일 모델 의도 훅을 정의하면 evaluator.harness의 상속 억제 규칙과 동일하게
+base의 ensemble_spec/model_spec을 병합본에서 제거한다(#374, ADR-059). 승격 소스에 `Patch.frozen_params`가 있으면 param_candidates를
+그 값 하나로 동결한다(ADR-054). 병합 결과는 undefined-name/optional-dependency 가드로 검증한다.
 """
 from __future__ import annotations
 
@@ -14,6 +15,8 @@ import logging
 import re
 import textwrap
 from typing import TYPE_CHECKING
+
+from evaluator.harness import _HOOK_SUPPRESSORS
 
 if TYPE_CHECKING:
     from store.db import PgConn
@@ -294,6 +297,13 @@ def materialize_best_pipeline(base_source: str | None, patch_source: str) -> str
         merged_members[name] = wrapper
         if name in _COMPOSE_HELPER_IMPORTS:
             extra_compose_imports.add(_COMPOSE_HELPER_IMPORTS[name])
+
+    # patch(이번 라운드 원본, 병합 전)가 단일 모델 의도 훅을 정의하면 그 반대쪽(ensemble_spec/model_spec)이
+    # base에만 있어도 병합본에서 지운다 — evaluator.harness.PatchedPipeline과 정확히 같은 판정(#374).
+    patch_member_names = set(patch_members)
+    for hook, suppressors in _HOOK_SUPPRESSORS.items():
+        if hook not in patch_member_names and patch_member_names & suppressors:
+            merged_members.pop(hook, None)
 
     # 합성 루프 뒤에 적용해야 한다 — 앞이면 위에서 만든 합성 wrapper가 동결본을 덮어쓴다.
     frozen_params = _extract_frozen_params(patch_source)
