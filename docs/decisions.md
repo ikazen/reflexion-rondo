@@ -1348,6 +1348,31 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 
 ---
 
+## ADR-059 — materialize 병합본은 harness와 같은 ensemble_spec/model_spec 상속 억제 규칙을 쓴다 (#374)
+
+- 결정: `cycle/materialize.py:materialize_best_pipeline`이 병합 후, 이번 라운드 patch가 `build_model`/`param_candidates`/`model_spec`
+  중 하나라도 직접 정의하고 스스로 `ensemble_spec`을 정의하지 않았으면 base의 `ensemble_spec`을 병합본에서 제거한다. 대칭으로 patch가
+  `build_model`/`param_candidates`/`ensemble_spec` 중 하나라도 정의하고 스스로 `model_spec`을 정의하지 않았으면 base의 `model_spec`을
+  제거한다. 판정표는 `evaluator/harness.py:_HOOK_SUPPRESSORS`(모듈 상수) 하나를 `PatchedPipeline.ensemble_spec`/`model_spec`과 materialize
+  양쪽이 그대로 참조한다 — 규칙을 두 곳에 따로 적으면 다시 어긋날 수 있어서다.
+- 근거: `PatchedPipeline.ensemble_spec`/`model_spec`(#239, #226)은 patch가 모델 관련 훅을 직접 정의하면 "단일 모델 의도"로 보고
+  base의 반대쪽 스펙을 상속하지 않는다 — 안 그러면 patch의 실제 변경이 fit_predict에서 한 번도 안 불리고 base와 완전히 같은 결과만
+  재현한다. `materialize_best_pipeline`은 이 규칙을 몰라 base의 `ensemble_spec`/`model_spec`을 그대로 병합본에 남겼다. 확정 base가
+  ensemble(stack)인 대회에서 model_swap/hyperparam_search patch가 attempt 시점에는 정상 평가되는데(cv 변화 있음) 승격 시 merge-verify가
+  병합본을 재평가하면 base 그대로의 cv가 나와 항상 거부됐다 — 이 action_type들이 그 대회에서 구조적으로 승격 불가능했다.
+- 실측(2026-09-26 s5e4, ADR-058과 같은 조사): 유일한 유의 후보(hyperparam_search, gain +0.0098)가 이 이유로 거부됐다. 재현: attempt
+  시점 cv 13.027570287, 기존 병합본 cv 13.037347200(=base), base의 `ensemble_spec`을 뺀 병합본 cv 13.027570287(attempt 시점과 비트 일치).
+  46시간 동안 s5e4 attempt의 55%(model_swap+hyperparam_search 160건)가 이 계열이었다.
+- 배포 전 감사(읽기 전용, 전체 대회 이력 재생): 저장된 확정 pipeline 중 base 재구성이 정확히 검증되는 36건(수정을 끈 상태로 재계산한
+  결과가 저장된 `materialized_code`와 바이트 단위로 일치하는 행만 신뢰)에서, 이번 수정을 켜도 산출이 하나도 바뀌지 않았다 — 과거에
+  merge-verify를 통과한 승격 중 이 버그의 영향을 받은 행은 없다(버그가 있었으면 merge-verify 자체가 거부했을 것이므로 당연한 결과이지만
+  직접 확인했다). 재구성이 안 되는 나머지 27건은 부트스트랩/백필/params 동결 등 다른 경로를 거친 것이라 이 감사의 대상이 아니다.
+- 한계: `param_candidates`는 합성 가능 훅이라 patch가 그것만 정의해도 병합 후 `param_candidates`는 base+patch 합집합으로 남는다(정상
+  동작, 억제 대상이 아님) — 억제되는 것은 `ensemble_spec`/`model_spec`뿐이다. 이 규칙은 patch의 원본(병합 전) 훅 정의만 보고 판정하며,
+  병합 도중 합성된 wrapper 이름(`_param_candidates_prev` 등)은 판정에 관여하지 않는다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |
