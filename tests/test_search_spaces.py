@@ -1,6 +1,7 @@
 """evaluator.search_spaces — MODEL_REGISTRY와의 커버리지 및 실제 생성자 호환성 검증."""
 from __future__ import annotations
 
+import numpy as np
 import optuna
 import pytest
 
@@ -35,3 +36,25 @@ def test_search_space_params_construct_registry_model(model_name, is_classificat
     params = get_search_space(model_name)(trial, is_classification)
     model = build_registry_model(model_name, params, _ctx(is_classification))
     assert model is not None
+
+
+def test_lgbm_search_space_bagging_freq_makes_subsample_effective():
+    """#393: LightGBM은 bagging_freq=0(기본값)이면 subsample 값과 무관하게 bagging이
+    비활성화돼 이 탐색 차원이 죽어있었다. 탐색공간 출력에 bagging_freq가 포함돼야
+    subsample을 바꿨을 때 실제 예측도 달라진다(수정 전엔 동일했음)."""
+    study = optuna.create_study()
+    trial = study.ask()
+    params = get_search_space("lgbm")(trial, is_classification=False)
+    assert params.get("bagging_freq") == 1
+
+    rng = np.random.default_rng(0)
+    n = 300
+    X = rng.standard_normal((n, 5))
+    y = X[:, 0] * 2.0 + X[:, 1] - X[:, 2] + rng.standard_normal(n) * 0.5
+    ctx = _ctx(is_classification=False)
+
+    low = build_registry_model("lgbm", {**params, "subsample": 0.5, "n_estimators": 50}, ctx)
+    high = build_registry_model("lgbm", {**params, "subsample": 1.0, "n_estimators": 50}, ctx)
+    low.fit(X, y)
+    high.fit(X, y)
+    assert not np.allclose(low.predict(X), high.predict(X))
