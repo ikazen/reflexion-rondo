@@ -30,6 +30,9 @@ def _lgbm_space(trial: "optuna.Trial", is_classification: bool) -> dict:
         # catboost의 verbose=False와 동일한 이유 — 수백 trial 동안 매 iteration 로그가
         # 쌓이면 Airflow task 로그가 압도적으로 커진다.
         "verbosity": -1,
+        # LightGBM은 bagging_freq=0(기본값)이면 subsample 값과 무관하게 bagging 자체가
+        # 비활성화된다(#393) — 이 값 없이는 위 subsample 탐색이 죽은 차원이었다.
+        "bagging_freq": 1,
     }
 
 
