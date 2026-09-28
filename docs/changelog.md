@@ -1,5 +1,35 @@
 # 변경 이력
 
+## v1.6.28 — 외부 리뷰 검증 반영 (Milestone "외부 리뷰 검증 반영 2026-09", 2026-09-28)
+
+2026-09-23 외부 리뷰가 남긴 이슈 9건(#387~395) 중 트레이드오프 없이 바로 적용 가능한 6건 + 별개 잔여 이슈
+1건(#356)을 한 세션에 배치로 적용·배포. 나머지 3건(#390/#391/#394)은 각자 설계 대안이 필요하고 현재 활성
+대회엔 당장 위험이 없어 의도적으로 보류(Milestone은 열어둠).
+
+- #387(ADR-059 개정): `evaluator/harness.py:_HOOK_SUPPRESSORS`에서 `param_candidates`를 억제 신호에서 뺀다.
+  `param_candidates`만 정의한 patch(hyperparam_search)는 "모델을 바꾼다"는 신호가 아닌데도 예전엔
+  `ensemble_spec`/`model_spec`을 둘 다 잃고 `BasePipeline`의 트리비얼 `build_model`(params 무시)로 떨어져,
+  서로 다른 후보를 넣어도 항상 같은(그리고 틀린) 모델을 채점했다. `build_model`/`ensemble_spec`/`model_spec`
+  끼리의 진짜 모델-선택 억제는 그대로 유지. `#239`가 반대 의도로 작성한 기존 테스트 4개를 반전.
+- #392: Optuna 튜너 `_to_result`가 `study.best_params`(suggest된 키만) 대신 `trial.set_user_attr`로 남긴
+  전체 params를 쓴다 — `elastic_net` search space의 `penalty`/`solver`/`max_iter` 같은 고정값이 결과에서
+  누락돼 재구성 시 다른 모델이 되던 문제.
+- #393: LightGBM 탐색공간에 `bagging_freq=1` 추가 — `bagging_freq=0`(기본값)이면 `subsample`이 죽은
+  파라미터였다.
+- #356 잔여: fold-1 조기 중단(noop_early_exit) attempt의 `cv_fold_var`를 `0.0` 대신 `NULL`로 저장하고
+  `noop_early_exit` 컬럼을 추가해 직접 쿼리 가능하게 한다. 부수적으로 `is_significant_gain(cv_fold_var=None)`이
+  크래시 대신 False를 반환하게 시그니처를 넓혔다(`bin/api.py`의 무가드 호출부 대비).
+- #388: attempt 평가가 채우는 `ctx.best_params`/`tuned_params`를 confirm(cross-seed+holdout)/merge-verify/
+  submit 경로 전체(5곳 — `cycle/promotion.py` 3함수, `bin/run_promote_task.py` merge-verify, `bin/submit.py`
+  제출 fit + bagging, 원 PR이 놓친 직접모드 `run_attempt_core` 경로까지 추가 발견해 보완)에 일관되게 전달한다.
+- #389: holdout 평가 실패(`runtime/runner.py`가 예외를 조용히 삼킴)와 train90 로드 실패
+  (`bin/run_promote_task.py`가 "검증 통과"와 같은 분기로 취급)가 각각 미검증 승격을 허용하던 구멍을 막는다.
+  `IsolatedResult`/`ConfirmResult`에 `holdout_error`/`holdout_measurement_failed` 필드 추가 — 측정 실패는
+  `_rejected_by_error`와 동일하게 memo에 캐시하지 않는다.
+- #395: `was_promoted`가 confirm 게이트 이전에 무조건 `True`로 심겼다가 confirm이 거부해도 안 되돌아가던
+  것을 고친다 — `cycle/stagnation.py`의 "최근 실제 승격" 판단 오염 가능성 제거.
+- 회귀망: 7개 PR 전체에 걸쳐 회귀 테스트 추가/반전. 최종 전체 스위트 1033 passed.
+
 ## v1.6.27 — 낭비 제거: 죽은 액션 배제 + fold-1 행동 지문 캐시 (Milestone "탐색 체제 재정렬과 깔때기 복구 2026-09", 2026-09-27)
 
 - #375(ADR-060): `assign_super_cycle_actions`가 사후 평균이 낮고(`< 0.1`) 관측이 충분한(`>= 30`) 액션을 Thompson 표본 배정에서 제외한다.
