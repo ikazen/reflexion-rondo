@@ -300,6 +300,8 @@ def confirm_and_measure(
     candidate_fold_scores: list[float] | None = None,
     cpu_budget_sec: float | None = None,
     conn=None,
+    best_params: dict | None = None,
+    tuned_params: dict | None = None,
 ) -> ConfirmResult:
     """Cross-seed paired 재현 확인 + audit holdout 1회 측정·게이트.
 
@@ -325,6 +327,15 @@ def confirm_and_measure(
     run_attempt_core의 attempt-time 가드가 못 잡는 경로(예: establish_baseline이
     과거 raw.attempts 후보를 재확인하는 콜드스타트/소급 확립)의 방어선. cache가
     있으면 거부를 memo에 남겨 재확인을 반복하지 않는다.
+
+    best_params/tuned_params(#388)는 그대로 아래 모든 eval_isolated 호출(baseline cv,
+    cross-seed candidate, holdout candidate/baseline)에 일관되게 전달된다 — attempt
+    평가(cycle/run.py)가 이미 채우는 것과 같은 값이어야 ctx.best_params/tuned_params를
+    읽는 patch가 confirm/holdout/merge-verify에서 attempt와 다른 모델을 만들지 않는다.
+    호출부가 매번 같은 조회 함수(_prev_best_params/_latest_tuned_params)를 다시 불러
+    넘기면 되고, 캐시 키(_eval_context_key)에는 포함하지 않는다 — 승격 직후에만 바뀌는
+    값이라 캐시 TTL 동안 사실상 불변이고, 키에 넣으면 매번 새 해시가 돼 캐시 히트율만
+    떨어진다.
     """
     ctx_key: tuple | None = None
     if cache is not None and competition_id is not None:
@@ -365,6 +376,8 @@ def confirm_and_measure(
         ctx_key=ctx_key,
         competition_id=competition_id,
         cpu_budget_sec=cpu_budget_sec,
+        best_params=best_params,
+        tuned_params=tuned_params,
     )
 
     # cross-seed가 candidate eval 에러로 거부했으면 holdout도 같은 후보를 평가하는
@@ -390,6 +403,8 @@ def confirm_and_measure(
             is_classification=is_classification,
             action_type=action_type,
             cpu_budget_sec=cpu_budget_sec,
+            best_params=best_params,
+            tuned_params=tuned_params,
         )
         if holdout_score is not None:
             baseline_holdout_score = cache.get_baseline(ctx_key, "holdout", seed) if ctx_key is not None else None
@@ -406,6 +421,8 @@ def confirm_and_measure(
                     is_classification=is_classification,
                     action_type=action_type,
                     cpu_budget_sec=cpu_budget_sec,
+                    best_params=best_params,
+                    tuned_params=tuned_params,
                 )
                 if baseline_holdout_score is not None and ctx_key is not None:
                     cache.put_baseline(ctx_key, "holdout", seed, competition_id, baseline_holdout_score)
@@ -455,6 +472,8 @@ def _baseline_cv(
     ctx_key: tuple | None = None,
     competition_id: str | None = None,
     cpu_budget_sec: float | None = None,
+    best_params: dict | None = None,
+    tuned_params: dict | None = None,
 ) -> tuple[float | None, str | None]:
     """best pipeline(또는 BasePipeline)을 seed 고정으로 단독 평가해 (cv_score, error) 반환.
 
@@ -482,6 +501,8 @@ def _baseline_cv(
         action_type=action_type,
         best_source=None,
         cpu_budget_sec=cpu_budget_sec,
+        best_params=best_params,
+        tuned_params=tuned_params,
     )
     if res.error_trace or res.cv_score is None:
         _LOG.warning("baseline eval failed seed=%d err=%s", seed, bool(res.error_trace))
@@ -508,6 +529,8 @@ def _cross_seed_confirm(
     ctx_key: tuple | None = None,
     competition_id: str | None = None,
     cpu_budget_sec: float | None = None,
+    best_params: dict | None = None,
+    tuned_params: dict | None = None,
 ) -> tuple[bool, dict]:
     if not confirm_seeds:
         return True, {}
@@ -528,6 +551,8 @@ def _cross_seed_confirm(
             ctx_key=ctx_key,
             competition_id=competition_id,
             cpu_budget_sec=cpu_budget_sec,
+            best_params=best_params,
+            tuned_params=tuned_params,
         )
         if base_cv is None:
             _LOG.warning("cross-seed=%d baseline eval 실패 → 승격 취소: %s", cseed, base_err)
@@ -551,6 +576,8 @@ def _cross_seed_confirm(
             action_type=action_type,
             best_source=best_source,
             cpu_budget_sec=cpu_budget_sec,
+            best_params=best_params,
+            tuned_params=tuned_params,
         )
 
         seed_gains[str(cseed)] = {
@@ -587,6 +614,8 @@ def _measure_holdout(
     is_classification: bool,
     action_type: str,
     cpu_budget_sec: float | None = None,
+    best_params: dict | None = None,
+    tuned_params: dict | None = None,
 ) -> float | None:
     result = eval_isolated(
         source=source,
@@ -601,6 +630,8 @@ def _measure_holdout(
         best_source=best_source,
         holdout_data=holdout10,
         cpu_budget_sec=cpu_budget_sec,
+        best_params=best_params,
+        tuned_params=tuned_params,
     )
     if result.holdout_score is not None:
         _LOG.info("holdout_score=%.6f", result.holdout_score)

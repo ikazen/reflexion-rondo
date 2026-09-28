@@ -189,6 +189,30 @@ def test_cpu_budget_sec_propagates_to_all_eval_paths():
     assert all(c == 3600.0 for c in calls), calls
 
 
+def test_best_params_and_tuned_params_propagate_to_all_eval_paths():
+    """#388: attempt 평가(cycle/run.py)가 채우는 ctx.best_params/tuned_params가 confirm의
+    baseline/candidate cross-seed eval과 holdout(candidate+baseline) eval 전체(4경로)에
+    같은 값으로 전달돼야 한다 — 안 그러면 이 값을 읽는 patch가 attempt 시점과 confirm
+    시점에 다른 모델을 만들 수 있다."""
+    bp = {"alpha": 1.0}
+    tp = {"entries": [{"model": "ridge", "params": {"alpha": 2.0}}]}
+    calls: list[tuple] = []
+
+    def _se(*args, **kwargs):
+        calls.append((kwargs.get("best_params"), kwargs.get("tuned_params")))
+        if kwargs.get("holdout_data") is not None:
+            return _ok_with_holdout(holdout_score=0.82)
+        return _baseline() if kwargs.get("best_source") is None else _ok()
+
+    with patch("cycle.promotion.eval_isolated", side_effect=_se):
+        confirm_and_measure(
+            **_COMMON, holdout10=_df(), confirm_seeds=[7],
+            best_params=bp, tuned_params=tp,
+        )
+    assert len(calls) == 4, calls  # baseline cv, candidate cv, holdout candidate, holdout baseline
+    assert all(c == (bp, tp) for c in calls), calls
+
+
 def test_holdout_none_no_holdout_score():
     """holdout10=None → holdout_score=None. 1 seed → eval_isolated 2회(baseline+candidate)."""
     with patch("cycle.promotion.eval_isolated", side_effect=_paired_side_effect()) as mock_eval:
