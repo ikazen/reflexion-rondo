@@ -261,6 +261,34 @@ def test_tune_single_model_unknown_registry_name_fails_fast():
         tune_single_model(pipeline, df, ctx, "not_a_real_model", n_trials=3)
 
 
+class _ElasticNetModelSpecPatch:
+    action_type = "model_swap"
+
+    def model_spec(self, ctx):
+        # baseline eval(트리얼과 무관, tune_single_model이 seed_params 없이 이 patch를 직접
+        # 평가)도 정상적으로 elastic-net이 걸리려면 penalty/solver를 여기서도 명시해야
+        # 한다 — search_spaces.py의 _elastic_net_space 자체 docstring과 같은 이유.
+        return {
+            "model": "elastic_net",
+            "params": {"C": 1.0, "l1_ratio": 0.5, "penalty": "elasticnet", "solver": "saga", "max_iter": 2000},
+        }
+
+
+def test_tune_single_model_best_params_includes_fixed_search_space_keys():
+    """#392: elastic_net search space는 penalty="elasticnet"/solver="saga"/max_iter=2000을
+    suggest 없이 고정값으로 넣는다 — study.best_params(optuna 자신의 suggest 기록)만 쓰면 이
+    키들이 빠져, 나중에 best_params로 모델을 재구성하면 sklearn 기본값(penalty="l2",
+    solver="lbfgs")으로 완전히 다른 모델이 된다."""
+    pipeline = PatchedPipeline(BasePipeline(), _ElasticNetModelSpecPatch())
+    ctx = _ctx()
+    df = _make_df()
+    result = tune_single_model(pipeline, df, ctx, "elastic_net", n_trials=3)
+    assert result.best_params.get("penalty") == "elasticnet"
+    assert result.best_params.get("solver") == "saga"
+    assert result.best_params.get("max_iter") == 2000
+    assert "C" in result.best_params and "l1_ratio" in result.best_params
+
+
 def test_to_result_falls_back_to_baseline_when_no_trials_completed():
     """study.optimize(catch=(Exception,))는 개별 trial 실패를 흡수해 FAIL 상태로
     남긴다 — 전부 실패해도 크래시 대신 baseline으로 안전하게 폴백해야 한다."""
