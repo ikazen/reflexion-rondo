@@ -189,6 +189,10 @@ def tune_single_model(
 
     def objective(trial: "optuna.Trial") -> float:
         params = space_fn(trial, ctx.is_classification)
+        # search space 함수가 suggest 없이 고정값으로 넣은 키(예: elastic_net의
+        # penalty/solver/max_iter)는 study.best_params에 안 남는다(#392) — trial이 실제로
+        # 평가에 쓴 전체 dict를 따로 보관해 _to_result가 거기서 꺼내게 한다.
+        trial.set_user_attr("full_params", params)
         trial_pipeline = _SingleModelTrialPipeline(pipeline, model_name, params)
         return evaluate_pipeline(trial_pipeline, train, ctx).cv_score
 
@@ -232,6 +236,7 @@ def tune_ensemble_member(
 
     def objective(trial: "optuna.Trial") -> float:
         params = space_fn(trial, ctx.is_classification)
+        trial.set_user_attr("full_params", params)  # #392, 위 tune_single_model.objective와 동일 이유
         trial_pipeline = _EnsembleMemberTrialPipeline(pipeline, base_spec, member_index, params)
         return evaluate_pipeline(trial_pipeline, train, ctx).cv_score
 
@@ -254,10 +259,15 @@ def _to_result(
             best_cv_score=baseline_cv, baseline_cv_score=baseline_cv,
             n_trials=len(completed), improved=False,
         )
+    # study.best_params는 optuna 자신이 trial.suggest_*로 등록한 키만 기록한다 — search space
+    # 함수가 고정값으로 직접 넣은 키(suggest 없이)는 여기 안 남는다(#392, elastic_net의
+    # penalty="elasticnet"/solver="saga"/max_iter=2000 실사례). objective가 trial.set_user_attr로
+    # 남긴 실제 평가 dict를 우선 쓴다 — 없으면(과거 study/외부 objective 등) best_params로 폴백.
+    best_params = study.best_trial.user_attrs.get("full_params", study.best_params)
     return TunerResult(
         model_name=model_name,
         member_index=member_index,
-        best_params=study.best_params,
+        best_params=best_params,
         best_cv_score=study.best_value,
         baseline_cv_score=baseline_cv,
         n_trials=len(completed),
