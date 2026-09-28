@@ -612,9 +612,18 @@ class BasePipeline:
 # 재현한다, #239/#226). cycle/materialize.py가 병합본을 만들 때도 이 표를 그대로 써야
 # attempt 시점 평가와 승격 후 재평가(merge-verify)가 같은 모델을 채점한다 — 어긋나면
 # patch의 효과가 병합본에서 조용히 사라진다(#374, merged가 base 그대로 재현됨).
+#
+# param_candidates는 여기 없다(#387) — "이 모델의 파라미터 후보를 늘린다"는 의도지
+# "모델을 바꾼다"는 신호가 아니다. 예전엔 같이 억제해서 hyperparam_search patch가
+# 선언형 base 위에서 ensemble_spec/model_spec을 둘 다 잃고 BasePipeline의 트리비얼
+# build_model(params를 아예 안 씀)로 떨어져, 후보가 달라도 항상 같은(그리고 틀린)
+# 모델을 채점했다. 이제 param_candidates만 정의한 patch는 base의 ensemble_spec/
+# model_spec을 그대로 상속해 preselect_params가 빈 dict를 반환하고(그 스펙 자체엔
+# 이 patch의 param_candidates를 흘려보낼 슬롯이 없다) 실제로는 base와 동일한 정당한
+# neutral 결과를 낸다 — "탐색이 안 먹힘"이 "엉뚱한 모델을 채점함"보다 안전한 실패.
 _HOOK_SUPPRESSORS: dict[str, frozenset[str]] = {
-    "ensemble_spec": frozenset({"build_model", "param_candidates", "model_spec"}),
-    "model_spec": frozenset({"build_model", "param_candidates", "ensemble_spec"}),
+    "ensemble_spec": frozenset({"build_model", "model_spec"}),
+    "model_spec": frozenset({"build_model", "ensemble_spec"}),
 }
 
 

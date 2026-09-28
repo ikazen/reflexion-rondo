@@ -1737,10 +1737,13 @@ def test_ensemble_spec_not_inherited_when_patch_defines_build_model():
     assert pipeline.ensemble_spec(_reg_ctx()) is None
 
 
-def test_ensemble_spec_not_inherited_when_patch_defines_param_candidates():
+def test_ensemble_spec_inherited_when_patch_defines_only_param_candidates():
+    """#387 (ADR-059 개정): param_candidates만 정의하는 건 "파라미터 후보를 늘린다"는
+    뜻이지 "모델을 바꾼다"는 신호가 아니다 — ensemble_spec을 상속해야 preselect_params/
+    fit_predict가 base의 실제 모델을 그대로 쓴다(엉뚱한 BasePipeline 폴백 대신)."""
     base_with_spec = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
     pipeline = PatchedPipeline(base_with_spec, _HyperparamSearchPatch())
-    assert pipeline.ensemble_spec(_reg_ctx()) is None
+    assert pipeline.ensemble_spec(_reg_ctx()) is not None
 
 
 def test_model_swap_on_ensemble_base_actually_invokes_new_build_model():
@@ -1762,7 +1765,10 @@ def test_model_swap_on_ensemble_base_actually_invokes_new_build_model():
     assert patch.called, "model_swap patch의 build_model이 호출되지 않음 — ensemble_spec 상속 문제 재발"
 
 
-def test_hyperparam_search_on_ensemble_base_actually_invokes_param_candidates():
+def test_hyperparam_search_on_ensemble_base_skips_param_candidates():
+    """#387: ensemble_spec을 상속한 뒤로는 preselect_params가 "선언형 spec 있음" 가드에
+    걸려 param_candidates를 아예 안 부른다 — 그 spec의 params는 고정이라 이 patch가
+    추가한 후보를 흘려보낼 슬롯 자체가 없다(탐색할 게 없다는 뜻이지 버그가 아니다)."""
     base_with_spec = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
     patch = _HyperparamSearchPatch()
     pipeline = PatchedPipeline(base_with_spec, patch)
@@ -1771,7 +1777,28 @@ def test_hyperparam_search_on_ensemble_base_actually_invokes_param_candidates():
     ctx = _reg_ctx()
     preselect_params(pipeline, df, ctx)
 
-    assert patch.called, "hyperparam_search patch의 param_candidates가 호출되지 않음 — ensemble_spec 상속 문제 재발"
+    assert not patch.called, "param_candidates가 호출됨 — ensemble_spec이 상속 안 됐거나 preselect 가드 회귀"
+
+
+def test_evaluate_pipeline_uses_base_ensemble_when_patch_defines_only_param_candidates():
+    """#387 핵심 회귀 테스트: declarative base + param_candidates-only patch로 평가한
+    cv_score가 base 자신을 그대로 평가한 cv_score와 일치해야 한다 — BasePipeline의
+    트리비얼 build_model(params 무시)로 조용히 떨어져 엉뚱한 모델을 채점하면 안 된다.
+
+    metric="accuracy"(metric_class="classification", majority_vote + .predict()) 사용 — auc는
+    _EnsembleSpecPatch의 "ridge" 멤버가 classification에서 RidgeClassifier로 풀려 predict_proba가
+    없고, mae/rmse 등 regression_error는 ridge/random_forest ensemble이 clean 합성 타깃에 과하게
+    잘 맞아 이 parity 확인과 무관한 스케일 누수 가드(#97)를 오탐한다 — 둘 다 이 테스트의 목적이
+    아니라서 두 문제 다 없는 조합을 쓴다."""
+    base_with_spec = PatchedPipeline(BasePipeline(), _EnsembleSpecPatch())
+    pipeline = PatchedPipeline(base_with_spec, _HyperparamSearchPatch())
+
+    df = _make_df(is_classification=True, n=150)
+    ctx = PipelineContext(target_col="y", metric="accuracy", n_splits=3, seed=42, is_classification=True)
+    base_result = evaluate_pipeline(base_with_spec, df, ctx)
+    patched_result = evaluate_pipeline(pipeline, df, ctx)
+
+    assert patched_result.cv_score == base_result.cv_score
 
 
 # model_spec — 선언형 단일 모델 (ADR-034, #229)
@@ -1817,16 +1844,18 @@ def test_model_spec_not_inherited_when_patch_defines_ensemble_spec():
     assert pipeline.model_spec(_reg_ctx()) is None
 
 
-def test_model_spec_not_inherited_when_patch_defines_param_candidates():
-    """base가 model_spec을 가진 상태에서 hyperparam_search patch를 얹으면 상속을
-    끊어야 한다 — 안 그러면 preselect_params가 model_spec을 보고 탐색 자체를
-    건너뛰어(빈 dict) patch.param_candidates가 한 번도 안 불린다."""
+def test_model_spec_inherited_when_patch_defines_only_param_candidates():
+    """#387 (ADR-059 개정): param_candidates만 정의하는 건 모델 선택 신호가 아니다 —
+    base의 model_spec을 상속해야 fit_predict가 레지스트리 모델을 그대로 쓴다(엉뚱한
+    BasePipeline 폴백 대신)."""
     base_with_spec = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
     pipeline = PatchedPipeline(base_with_spec, _HyperparamSearchPatch())
-    assert pipeline.model_spec(_reg_ctx()) is None
+    assert pipeline.model_spec(_reg_ctx()) is not None
 
 
-def test_hyperparam_search_on_model_spec_base_actually_invokes_param_candidates():
+def test_hyperparam_search_on_model_spec_base_skips_param_candidates():
+    """#387: model_spec을 상속한 뒤로는 preselect_params가 param_candidates를 안 부른다
+    — model_spec의 params는 고정이라 이 patch의 후보를 흘려보낼 슬롯이 없다."""
     base_with_spec = PatchedPipeline(BasePipeline(), _ModelSpecPatch())
     patch = _HyperparamSearchPatch()
     pipeline = PatchedPipeline(base_with_spec, patch)
@@ -1835,7 +1864,7 @@ def test_hyperparam_search_on_model_spec_base_actually_invokes_param_candidates(
     ctx = _reg_ctx()
     preselect_params(pipeline, df, ctx)
 
-    assert patch.called, "hyperparam_search patch의 param_candidates가 호출되지 않음 — model_spec 상속 문제"
+    assert not patch.called, "param_candidates가 호출됨 — model_spec이 상속 안 됐거나 preselect 가드 회귀"
 
 
 def test_ensemble_spec_not_inherited_when_patch_defines_model_spec():

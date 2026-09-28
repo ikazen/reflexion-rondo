@@ -112,7 +112,9 @@ _PATCH_NEW_ENSEMBLE = textwrap.dedent("""
 
 @pytest.mark.parametrize(("base_source", "patch_source", "expected"), [
     # (base 정의, patch 정의) -> (attempt-time과 merge 결과가 반드시 같아야 하는 (ensemble_none, model_none))
-    (_BASE_ENSEMBLE_WITH_STALE_BUILD_MODEL, _PATCH_PARAM_CANDIDATES_ONLY, (True, True)),
+    # param_candidates만 정의하는 patch는 모델 선택 신호가 아니라 억제 대상에서 빠졌다(#387) —
+    # base의 ensemble_spec을 그대로 상속하므로 ensemble_none=False.
+    (_BASE_ENSEMBLE_WITH_STALE_BUILD_MODEL, _PATCH_PARAM_CANDIDATES_ONLY, (False, True)),
     (_BASE_MODEL_SPEC, _PATCH_BUILD_MODEL_ONLY, (True, True)),
     (_BASE_ENSEMBLE_WITH_STALE_BUILD_MODEL, _PATCH_FEATURE_TRANSFORM_ONLY, (False, True)),
     (_BASE_ENSEMBLE_WITH_STALE_BUILD_MODEL, _PATCH_NEW_ENSEMBLE, (False, True)),
@@ -153,10 +155,21 @@ def test_merge_cv_is_bit_identical_to_attempt_time(base_source, patch_source):
 
 
 def test_suppressed_hook_is_absent_from_the_merged_source_text():
-    """제거는 조용한 예외 처리가 아니라 실제로 병합 소스에서 훅이 사라져야 한다 — 남아있으면 재로드 시 되살아난다."""
-    merged = materialize_best_pipeline(_BASE_ENSEMBLE_WITH_STALE_BUILD_MODEL, _PATCH_PARAM_CANDIDATES_ONLY)
+    """제거는 조용한 예외 처리가 아니라 실제로 병합 소스에서 훅이 사라져야 한다 — 남아있으면 재로드 시 되살아난다.
+
+    build_model만 정의하는 patch가 진짜 억제 신호다(#387 이후 param_candidates는 아님, 아래 별도 테스트)."""
+    merged = materialize_best_pipeline(_BASE_ENSEMBLE_WITH_STALE_BUILD_MODEL, _PATCH_BUILD_MODEL_ONLY)
     assert "def ensemble_spec" not in merged
     assert "def build_model" in merged  # patch의 단일 모델 의도가 쓰는 build_model은 그대로 남아야 한다
+
+
+def test_param_candidates_only_hook_survives_in_the_merged_source_text():
+    """#387: param_candidates만 정의하는 patch는 base의 ensemble_spec을 억제하지 않으므로
+    병합 소스에도 그대로 남아야 한다 — 죽은 build_model(예전 model_swap 잔재)도 patch가
+    안 건드렸으니 그대로 남는다."""
+    merged = materialize_best_pipeline(_BASE_ENSEMBLE_WITH_STALE_BUILD_MODEL, _PATCH_PARAM_CANDIDATES_ONLY)
+    assert "def ensemble_spec" in merged
+    assert "def build_model" in merged
 
 
 def test_none_base_has_nothing_to_suppress():
