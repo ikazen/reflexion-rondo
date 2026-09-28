@@ -74,6 +74,12 @@ def test_is_significant_gain_none_is_false():
     assert not is_significant_gain(None, 0.01)
 
 
+def test_is_significant_gain_none_fold_var_is_false_not_crash():
+    """#356: noop_early_exit(fold-1 조기 중단) attempt는 cv_fold_var가 None이다 — 판정
+    근거가 없다는 뜻으로 False를 반환해야지 `None ** 0.5`로 죽으면 안 된다."""
+    assert not is_significant_gain(0.5, None)
+
+
 def test_is_significant_gain_above_threshold():
     # gain > LABEL_Z * sqrt(fold_var) => True
     fold_var = 0.04  # fold_std = 0.2

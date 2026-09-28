@@ -52,7 +52,7 @@ _CPU_PROJECTION_MARGIN = 1.15
 
 def is_significant_gain(
     gain_vs_best: float | None,
-    cv_fold_var: float,
+    cv_fold_var: float | None,
     candidate_fold_scores: list[float] | None = None,
     baseline_fold_scores: list[float] | None = None,
     metric_sign: int = 1,
@@ -64,7 +64,10 @@ def is_significant_gain(
     delta 분산이 절대 분산보다 훨씬 작아 더 민감) — LABEL_Z를 그대로 임계값으로 재사용.
 
     baseline 캐시가 없거나(콜드스타트) fold 수가 안 맞으면 기존 절대-gain 방식
-    (gain_vs_best > LABEL_Z * sqrt(cv_fold_var))으로 폴백한다.
+    (gain_vs_best > LABEL_Z * sqrt(cv_fold_var))으로 폴백한다. cv_fold_var가
+    None이면(#356, fold-1 조기 중단 attempt처럼 harness가 애초에 분산을 계산 안 한
+    경우) 이 폴백조차 판정 근거가 없다는 뜻이라 False — 호출부가 매번 0.0으로
+    방어하지 않아도 되게 여기서 한 번에 막는다.
     """
     if (
         candidate_fold_scores
@@ -85,7 +88,7 @@ def is_significant_gain(
         t_stat = mean_delta / (std_delta / (n ** 0.5))
         return t_stat > LABEL_Z
 
-    if gain_vs_best is None:
+    if gain_vs_best is None or cv_fold_var is None:
         return False
     return gain_vs_best > LABEL_Z * (cv_fold_var ** 0.5)
 
