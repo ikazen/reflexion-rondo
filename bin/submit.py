@@ -99,6 +99,20 @@ def _load_best_code(
     return source.strip(), cv_score, aid, pipeline_sha256, None
 
 
+def _load_context_params(competition_id: str) -> tuple[dict | None, dict | None]:
+    """제출 fit의 PipelineContext에 채울 (best_params, tuned_params) — attempt 평가
+    (cycle/run.py)와 같은 조회 함수를 쓴다(#388). advisory 필드라 조회 실패해도 제출
+    자체를 막을 이유는 없지만, `_load_best_code`가 이미 이 함수 훨씬 앞에서 같은 DB에
+    무조건 연결하므로 이 호출이 새로운 가용성 실패 모드를 추가하진 않는다."""
+    from cycle.run import _latest_tuned_params, _prev_best_params
+    from store.db import connect as _connect
+    conn = _connect(apply_schema=False)
+    try:
+        return _prev_best_params(conn, competition_id), _latest_tuned_params(conn, competition_id)
+    finally:
+        conn.close()
+
+
 def _read_csv(comp: object, name: str) -> pl.DataFrame:
     s3 = getattr(comp, "S3_DATA_PATH", None)
     if s3 and _MINIO_ENDPOINT:
@@ -294,6 +308,7 @@ def _bagged_predict(
                 prev_best=ctx.prev_best,
                 action_type=ctx.action_type,
                 best_params=ctx.best_params,
+                tuned_params=ctx.tuned_params,  # #388 — 누락돼 있었다(best_params만 물려받음)
             )
             raw_preds, _ = fit_predict(
                 pipeline, params, bag_ctx, X_train_np, y_train, X_test_np, metric_class,
@@ -368,12 +383,19 @@ def generate_submission_csv(
         comp.COMPETITION_ID, extra_source=source, expected_sha256=pipeline_sha256,
         attempt_only=bool(attempt_id), base_source=base_source,
     )
+    # attempt 평가(cycle/run.py)와 같은 advisory 컨텍스트를 제출 fit에도 채운다(#388) —
+    # 이전엔 늘 비어 있어 ctx.best_params/tuned_params를 읽는 patch가 제출에서 조용히
+    # 다른(더 나쁜) params로 폴백할 수 있었다. attempt_id 지정 여부와 무관하게 채운다
+    # (자동 선택/수동 지정 둘 다 "현재 확정 best/튜닝 결과"를 advisory로 주는 게 맞다).
+    submit_best_params, submit_tuned_params = _load_context_params(comp.COMPETITION_ID)
     ctx = PipelineContext(
         target_col=comp.TARGET,
         metric=comp.METRIC,
         n_splits=5,
         seed=42,
         is_classification=comp.IS_CLASSIFICATION,
+        best_params=submit_best_params,
+        tuned_params=submit_tuned_params,
     )
 
     train = load_train(comp, apply_row_cap=not full_data)

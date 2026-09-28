@@ -600,6 +600,36 @@ def test_bagged_predict_strips_seed_from_model_spec_params() -> None:
     assert not np.allclose(preds_seed_1, preds_seed_2)
 
 
+def test_bagged_predict_forwards_tuned_params_to_bag_ctx() -> None:
+    """#388: bag_ctx가 ctx.best_params는 물려받으면서 ctx.tuned_params는 누락했었다 —
+    ctx가 실제로 채워지면(위 submit.py의 _load_context_params) 이 누락이 그대로
+    제출 fit에서 조용히 tuned_params를 잃는 결과로 이어졌다."""
+    from evaluator.harness import PipelineContext
+
+    ctx = PipelineContext(
+        target_col="y", metric="rmse", n_splits=5, seed=42, is_classification=False,
+        tuned_params={"entries": [{"model": "ridge", "params": {"alpha": 9.0}}]},
+    )
+    pipeline = MagicMock()
+    pipeline.ensemble_spec.return_value = None
+    pipeline.model_spec.return_value = {"model": "ridge", "params": {"alpha": 1.0}}
+    rng = np.random.default_rng(0)
+    X_train = rng.standard_normal((20, 3))
+    y_train = rng.standard_normal(20)
+    X_test = rng.standard_normal((5, 3))
+
+    seen_tuned_params = []
+
+    def _fake_fit_predict(pipeline, params, bag_ctx, Xtr, ytr, Xva, metric_class, **kwargs):
+        seen_tuned_params.append(bag_ctx.tuned_params)
+        return np.zeros(len(Xva)), None
+
+    with patch("evaluator.harness.fit_predict", side_effect=_fake_fit_predict):
+        _bagged_predict(pipeline, {}, X_train, y_train, X_test, ctx, "regression_error", bag_seeds=[1, 2])
+
+    assert seen_tuned_params == [ctx.tuned_params, ctx.tuned_params]
+
+
 def test_bagged_predict_strips_seed_from_ensemble_member_params() -> None:
     """#307과 동일 버그, ensemble_spec 멤버 params 경로."""
     ctx = _bagging_reg_ctx()
@@ -667,6 +697,7 @@ def _generate(monkeypatch, tmp_path, *, full_data: bool, **comp_extra):
     load_train = MagicMock(return_value=train)
     bagged = MagicMock(return_value=np.array([1.0, 2.0, 3.0]))
     monkeypatch.setattr("bin.submit._load_best_code", lambda cid, aid: ("src", 1.5, "attempt-1234", None, None))
+    monkeypatch.setattr("bin.submit._load_context_params", lambda cid: (None, None))
     monkeypatch.setattr("bin.submit._load_pipeline", lambda *a, **k: BasePipeline())
     monkeypatch.setattr("bin.submit._read_csv", lambda c, name: frames[name])
     monkeypatch.setattr("store.train_data.load_train", load_train)
