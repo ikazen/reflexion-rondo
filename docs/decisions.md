@@ -1307,6 +1307,12 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 - 한계: `base`는 단일 후보 params를 쓴다(후보가 여럿인 옛 pool이면 첫 번째). stack은 멤버당 fold마다 6회 fit이라 base 멤버가 무거운 대회(s6e8 base 5-fold CPU 약 1,155초/16코어)에선
   예산을 넘기기 쉬워 프롬프트가 weighted_average를 권한다. 이 실험은 s6e8 ensemble 레버의 상한이 작을 수 있음을 전제로 한다(기본값 catboost 0.5도 -0.0006).
 - 판정 기준(배포 후 24~48h, s6e8): ensemble attempt의 gain 분포. 성공은 최소 1건이 gain >= -0.0002(현 최대 -0.0026)이거나 양의 gain. 전부 -0.001 이하이면 s6e8 동결(ADR-045 방식)을 재판단한다.
+- 결론(2026-09-27 실측, #377): 위 판정 기준을 튜닝된 멤버로 재검증했다. 확정 base(cv 0.966210, oof-auc 0.966210)에 Optuna 6-trial로
+  튜닝한 catboost/lgbm의 OOF를 붙여 최적 가중 블렌드 상한을 쟀다 — tuned_catboost oof-auc 0.961622(자체 튜닝도 base 대비 improved=False),
+  tuned_lgbm oof-auc 0.963082(마찬가지 improved=False), 최적 가중치는 (base, catboost, lgbm) = (0.9, 0.1, 0.0), 블렌드 auc 0.966255,
+  base 대비 delta +0.000045. 기준(+0.0002) 미달이라 s6e8 ensemble 실험은 여기서 종료한다. "약한 멤버가 원인"이라는 최초 진단(2026-09-24)과
+  달리, 6-trial 튜닝조차 base 수준에 못 미치는 멤버를 만들어냈다 — 튜닝 예산을 20-trial로 늘려도 이 격차(base 0.9662 대 tuned 0.961~0.963)가
+  뒤집힐 가능성은 낮다고 판단한다. `ctx.tuned_params` 제공은 구현하지 않는다. 관련: #377 close.
 
 ---
 
