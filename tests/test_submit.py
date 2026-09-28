@@ -86,6 +86,17 @@ def test_auto_select_query_excludes_invalid_reason() -> None:
     assert "invalid_reason" in sql.lower()
 
 
+def test_auto_select_query_excludes_unverifiable_origin() -> None:
+    """#382: #254 백필이 재현 불가로 판정한 행(materialized_origin='unverifiable:*')은 invalid_reason이
+    NULL이어도 후보에서 빠져야 한다 — 안 그러면 옛 체제의 stale cv 행이 뽑혀 MinIO best_pipeline.py와
+    다른(재구성 불가능한) 예측을 제출한다. cycle/run.py:_prev_best와 동일 필터(#254/ADR-039)."""
+    conn = _conn_with(("code text", 0.91, "attempt-123", "abc123sha"))
+    with patch("store.db.connect", return_value=conn):
+        _load_best_code("s4e1", None)
+    sql = conn.execute.call_args.args[0]
+    assert "unverifiable" in sql
+
+
 def test_explicit_attempt_id_still_uses_attempts_and_s3() -> None:
     """--attempt-id 지정 시 기존처럼 raw.attempts + S3 다운로드 경로를 그대로 쓴다."""
     import datetime

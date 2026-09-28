@@ -45,7 +45,10 @@ def _load_best_code(
     소스로 쓴다. _load_pipeline()이 실제 제출하는 모델도 confirmed 소스에서 materialize된
     것이므로, 리포팅되는 cv_score/attempt_id도 같은 소스여야 한다. raw.attempts all-time
     max는 미확정 attempt를 가리킬 수 있어 리포팅 불일치를 낳았다. run_ts는 이 경로에선
-    불필요(None) — MinIO best_pipeline.py가 이미 그 시점의 base를 담고 있다.
+    불필요(None) — MinIO best_pipeline.py가 이미 그 시점의 base를 담고 있다. #254 백필이
+    재현 불가로 판정한 행(materialized_origin='unverifiable:*')은 제외한다(cycle/run.py:
+    _prev_best와 동일 필터, #382) — 안 그러면 옛 체제의 stale cv로 뽑힌 행의 raw p.code
+    (materialize 전 단일 patch)를 그대로 exec해 MinIO best_pipeline.py와 다른 예측이 나간다.
     pipeline_sha256은 MinIO best_pipeline.py 무결성 검증용 신뢰 해시(raw.pipelines,
     materialize 시점 기록).
     """
@@ -80,6 +83,7 @@ def _load_best_code(
         where p.competition_id = %s
           and p.cv_score is not null
           and p.invalid_reason is null
+          and coalesce(p.materialized_origin, '') not like 'unverifiable:%%'
         order by c.metric_sign * p.cv_score desc
         limit 1
         """,
