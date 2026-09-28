@@ -94,6 +94,10 @@ class IsolatedResult:
     error_trace: str | None
     feature_importance: dict | None = None
     holdout_score: float | None = None
+    # holdout이 요청됐는데(holdout_data 지정) 평가 자체가 실패했을 때만 채워진다(#389).
+    # error_trace(CV 성공/실패)와 별개 — CV는 성공했는데 holdout만 실패할 수 있어서
+    # confirm_and_measure가 "홀드아웃 정보 없음"과 "측정해서 통과"를 구분하려면 필요하다.
+    holdout_error: str | None = None
     is_noop_tie: bool = False
     selected_params: dict | None = None
     oof_preds: list[float] | None = None
@@ -283,6 +287,7 @@ def eval_isolated(
             error_trace=None,
             feature_importance=out.get("feature_importance"),
             holdout_score=out.get("holdout_score"),
+            holdout_error=out.get("holdout_error"),
             is_noop_tie=out.get("is_noop_tie", False),
             selected_params=out.get("selected_params"),
             oof_preds=out.get("oof_preds"),

@@ -170,13 +170,18 @@ def main() -> None:
         return
 
     holdout_score = None
+    holdout_error = None
     holdout_path = WS / "holdout.parquet"
     if holdout_path.exists():
         try:
             holdout = pl.read_parquet(holdout_path)
             holdout_score = _eval_holdout(pipeline, train, holdout, ctx)
         except Exception:
-            pass  # holdout 실패는 무시 — CV 결과는 유효
+            # CV 결과는 유효하니 attempt 자체는 계속 진행하지만(#389), holdout 실패를
+            # 조용히 삼키면 안 된다 — 최상위 error_trace는 CV 성공/실패만 나타내므로
+            # 별도 필드로 남겨야 confirm_and_measure가 "정보 없음"과 "측정해서 통과"를
+            # 구분해 홀드아웃이 필수인 경로에서 미검증 승격을 막을 수 있다.
+            holdout_error = traceback.format_exc()
 
     _write({
         "cv_score": result.cv_score,
@@ -191,6 +196,7 @@ def main() -> None:
         "oof_preds": result.oof_preds,
         "error_trace": None,
         "holdout_score": holdout_score,
+        "holdout_error": holdout_error,
         "model_type": result.model_type,
         "noop_early_exit": result.noop_early_exit,
     })

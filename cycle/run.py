@@ -1021,6 +1021,11 @@ def run_attempt_core(
     # 참조된다 — 블록을 안 타는 경우(defer_promotion/미유의/에러) None으로 초기화.
     confirm: ConfirmResult | None = None
     if not defer_promotion and _significant and not error_trace:
+        # attempt 평가(위 eval_isolated 호출)와 같은 조회 함수를 다시 불러 같은 시점의
+        # 값을 얻는다(#388 — 이 직접모드 호출부는 원래 PR에서 놓쳤다) — confirm과 아래
+        # merge_eval이 이 값을 공유해야 attempt-time cv와 어긋나지 않는다.
+        confirm_best_params = _prev_best_params(conn, config.competition_id)
+        confirm_tuned_params = _latest_tuned_params(conn, config.competition_id)
         confirm = confirm_and_measure(
             source=source,
             best_source=prev_code,
@@ -1039,6 +1044,8 @@ def run_attempt_core(
             candidate_fold_scores=fold_scores,
             cpu_budget_sec=config.cpu_budget_secs,
             conn=conn,
+            best_params=confirm_best_params,
+            tuned_params=confirm_tuned_params,
         )
         if confirm.holdout_score is not None:
             conn.execute(
@@ -1083,6 +1090,8 @@ def run_attempt_core(
                     is_classification=config.is_classification,
                     collect_oof=True,
                     cpu_budget_sec=config.cpu_budget_secs,
+                    best_params=confirm_best_params,
+                    tuned_params=confirm_tuned_params,
                 )
                 if not merge_eval.error_trace and merge_eval.cv_score is not None:
                     merge_oof_preds = merge_eval.oof_preds

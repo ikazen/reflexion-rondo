@@ -648,3 +648,18 @@ def test_confirm_none_skips_bandit_correction() -> None:
             update_bandit_mock=update_bandit_mock,
         )
     assert update_bandit_mock.call_count == 0
+
+
+def test_train_load_failure_skips_promotion() -> None:
+    """#389 원인 2: train90 로드 실패(confirm=None)는 이전엔 "검증 통과"와 같은 분기로
+    묶여 미검증 승격이 허용됐다 — 이제 검증 불가 자체가 승격을 막는다(재시도 가능한
+    실패로 자연히 끝남, 다음 promote task가 train 로드를 다시 시도)."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    with patch("store.train_data.load_train", side_effect=RuntimeError("no data")):
+        conn = _run_promote_with_mocks(
+            SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
+            reflect_mock,
+            confirm_mock,
+        )
+    assert conn.insert_pipeline_mock.call_count == 0

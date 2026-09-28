@@ -254,7 +254,11 @@ def main() -> None:
                 confirm = None
                 bandit_label = winner_row[3]
 
-            if train90 is None or (confirm is not None and confirm.confirmed):
+            # train90 is None(train 로드 실패)은 confirm 자체가 스킵돼 confirm=None이고,
+            # 이제 그 경우 승격도 스킵한다(#389) — "검증 불가"를 "검증 통과"와 같은 분기로
+            # 묶어 미검증 승격을 허용하던 이전 동작을 제거했다. 재시도 가능한 작업 실패로
+            # 자연히 끝난다(다음 promote task가 train 로드를 다시 시도).
+            if confirm is not None and confirm.confirmed:
                 fp_row = conn.execute(
                     "select fingerprint from raw.competitions where competition_id = %s",
                     [competition_id],
