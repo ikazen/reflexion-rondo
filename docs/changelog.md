@@ -1,5 +1,46 @@
 # 변경 이력
 
+## v1.6.27 — 낭비 제거: 죽은 액션 배제 + fold-1 행동 지문 캐시 (Milestone "탐색 체제 재정렬과 깔때기 복구 2026-09", 2026-09-27)
+
+- #375(ADR-060): `assign_super_cycle_actions`가 사후 평균이 낮고(`< 0.1`) 관측이 충분한(`>= 30`) 액션을 Thompson 표본 배정에서 제외한다.
+  100 사이클마다 1회 재탐색 창을 열어 완전히 죽은 채 고정되지 않게 한다. s6e8 hyperparam_search/model_swap이 46시간 동안 29/29 base와
+  tie였는데도(평균 1,223 CPU-s) 상위 3개 배정 구조 때문에 계속 뽑히던 낭비(약 21 CPU-h/46h)를 겨냥한다.
+- #376(ADR-061): `evaluate_pipeline`의 #339 fold-1 tie 조기 종료를 확정 base뿐 아니라 최근 attempt 이력(`known_fold1_scores`, 최대 200개,
+  `n_splits` 일치)과도 매칭하도록 확장한다. 매칭되면 나머지 fold를 다시 돌리지 않고 그 attempt의 fold 점수를 그대로 재사용한다. CPU 투영
+  조건에도 `len(fold_scores) == 1`을 추가해 캐시 히트로 채워진 배열을 다시 투영 대상으로 오인하지 않게 했다.
+- 회귀망: `tests/test_action_optimizer.py`(23 -> 56 테스트, 결정적 draw 몽키패치로 dead-action 필터가 실제로 동작함을 증명), `tests/test_harness.py`
+  fold1 캐시 6종(`fit_predict` 호출 카운트로 fold-skip을 검증), `tests/test_isolate.py`/`tests/test_runner_cpu_projection.py`/`tests/test_run_prev_best.py`
+  전파 테스트. 전체 스위트 1022 passed.
+
+## 태그 없음 — bin/submit.py 자동 선택 무결성 필터 (#382, 2026-09-27)
+
+`_load_best_code`의 CLI 자동 선택(`--attempt-id` 미지정) 쿼리에 `materialized_origin not like 'unverifiable:%'` 필터를 추가한다.
+`cycle/run.py:_prev_best`, `bin/api.py:_SUBMITTABLE_FILTER_SQL`(#270)에는 이미 있던 필터가 CLI 경로에만 빠져 있어, s5e4 LB 수확
+과정에서 확정 best(53d7e262) 대신 #254 백필의 재현 불가 판정 행(f8dab7aa)을 골라 MinIO 무결성 검증 실패로 이어졌다(안전장치는
+정상 동작). daemon 핫루프가 쓰지 않는 CLI 전용 경로라 이미지 재빌드/배포는 다음 정기 배포로 미룬다 — `main` 반영만으로 로컬
+`uv run` 실행에는 바로 적용된다.
+
+## v1.6.26 — 탐색 체제 재정렬 + merge 정합 (Milestone "탐색 체제 재정렬과 깔때기 복구 2026-09", 2026-09-27)
+
+목표 점검 3라운드. v1.6.24/25 배포 46시간 실측에서 인프라 낭비는 대부분 걷혔지만 LB는 그대로였다. 원인은 탐색이 LB와 역상관인 지표를
+올리고 있었다는 것과(F1) 승격 깔때기 자체가 구조적으로 막혀 있었다는 것(F2).
+
+- #373(ADR-058, ADR-052 개정): `MAX_TRAIN_ROWS`를 150,000에서 500,000으로 되돌린다(`N_SPLITS=3` 유지). 로컬 16코어 재측정으로 150k/3-fold의
+  cv 순위가 전량(약 79.7만행) LB 순위의 정확한 역순임을 확인했다(역대 최고 LB pipeline c0712227이 150k에서 꼴찌, 500k에서 1위). ADR-052(v1.6.20)
+  이후 승격된 스택 4건은 cv@150k 기준 계속 좋아졌지만 cv@500k 기준으로는 역행했다 — fleet이 6일간 LB와 역상관인 지표를 최적화한 것.
+  배포 후 운영(runbook §4-12): `_prev_best`(cv 최고)와 `_baseline_source_guard`(run_ts 최신)가 과거 이력 재정렬로 갈라져, 500k 기준 최고인
+  53d7e262(08-01) 이후 승격된 4개 행을 `invalid_reason='regime_superseded:...'`로 무효화 → `establish_baseline --remeasure`로 잔여 유효 행
+  재측정 → MinIO `best_pipeline.py`를 53d7e262의 저장 `materialized_code`로 직접 재구성(replay가 materialize 알고리즘 drift로 어긋나 폴백) →
+  `freeze_base`는 float 비결정성(delta 1.726e-06, 허용오차 1e-06 초과)으로 반영 보류(안전장치 정상 동작) 순서로 실행했다. 실측 LB 12.68956
+  (백분위 74.1%, 이전 캡 체제 12.5966~13.11대 대비 큰 개선이나 역대 최고 12.5966은 아직 못 넘음).
+- #374(ADR-059): `evaluator/harness.py:PatchedPipeline`의 `ensemble_spec`/`model_spec` 상속 억제 규칙(patch가 단일 모델 의도 훅을 정의하면
+  base의 반대쪽 spec을 상속하지 않음)을 `cycle/materialize.py` 병합본도 따르게 한다. 두 곳이 어긋나면 attempt 시점 평가와 merge-verify가
+  다른 모델을 채점해 model_swap/hyperparam_search patch의 실제 효과가 병합본에서 조용히 사라지고, ensemble base인 대회에서는 이 두 action
+  타입이 구조적으로 승격 불가능이었다(s5e4 46시간 attempt의 55%). 로컬 재현: attempt 시점 13.027570287, 구 병합본 13.037347200(=base 그대로),
+  수정 후 병합본 13.027570287(비트 일치). 규칙은 `_HOOK_SUPPRESSORS` 상수로 harness/materialize가 공유한다. 배포 전 감사: 저장된 전체 이력
+  replay 시 `materialized_sha256`이 바뀐 행 0/36(F2 조합은 애초에 저장될 수 없었어야 하므로 예상대로).
+- 신규: `tests/test_materialize_parity.py`(base 훅 x patch 훅 조합 억제 매트릭스, 작은 데이터에서 cv 비트 일치 검증).
+
 ## v1.6.25 — fold-1 CPU 투영 조기 중단 + ensemble base 멤버 (Milestone "LB 레버 복구와 낭비 제거 2026-09", 2026-09-25)
 
 - #361(ADR-056): `evaluate_pipeline`이 fold-1 종료 직후 `현재 CPU + fold-1 소모 x (n_splits - 1)`로 전체를 투영해 attempt 예산의 1.15배를 넘으면
