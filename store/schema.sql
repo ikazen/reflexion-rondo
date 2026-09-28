@@ -85,6 +85,11 @@ ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS peak_rss_bytes bigint;
 -- peak_rss_bytes와 동일한 계약(GH #159).
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS peak_cpu_sec double precision;
 
+-- fold-1 비트 단위 tie로 나머지 fold를 건너뛰었는지(#339/#376, evaluator/harness.py:EvalResult.
+-- noop_early_exit). 이전엔 fold_scores IS NULL AND cv_fold_var = 0 프록시로만 추론 가능했다 —
+-- 직접 쿼리 가능하게 컬럼으로 영속화한다(#356 잔여). forward-only, backfill 불가.
+ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS noop_early_exit boolean;
+
 -- 아래 ALTER TABLE raw.pipelines 문들보다 먼저 나와야 한다(#113/#243) — 완전히 빈
 -- DB에 처음 스키마를 적용할 때 ALTER가 CREATE보다 앞서면 "relation raw.pipelines
 -- does not exist"로 부트스트랩이 실패한다. 라이브 프로덕션 DB는 테이블이 항상 이미

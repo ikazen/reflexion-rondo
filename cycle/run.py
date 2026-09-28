@@ -788,6 +788,10 @@ def run_attempt_core(
     peak_rss_bytes: int | None = None
     peak_cpu_sec: float | None = None
     model_type: str | None = None
+    # cv_fold_var(위)는 is_significant_gain/reflect 등 기존 소비처를 위해 0.0-폴백을 유지한다 —
+    # harness가 noop_early_exit에서 의도한 None(#356)은 이 별도 변수로만 DB에 그대로 전달한다.
+    noop_early_exit = False
+    cv_fold_var_stored: float | None = None
     # is_significant_gain(아래)과 eval_isolated의 fold-1 조기 중단(#339) 양쪽이
     # 같은 baseline fold_scores를 쓰므로 attempt당 1회만 조회해 재사용한다.
     prev_best_fold_scores = _prev_best_fold_scores(conn, config.competition_id)
@@ -833,6 +837,7 @@ def run_attempt_core(
             if not iso.error_trace:
                 cv_score = iso.cv_score
                 cv_fold_var = iso.cv_fold_var or 0.0
+                cv_fold_var_stored = iso.cv_fold_var
                 label = iso.label or "regression"
                 gain_vs_best = iso.gain_vs_best
                 gain_vs_best_relative = iso.gain_vs_best_relative
@@ -841,6 +846,7 @@ def run_attempt_core(
                 fold_scores = iso.fold_scores
                 selected_params = iso.selected_params
                 model_type = iso.model_type
+                noop_early_exit = iso.noop_early_exit
                 gain_str = f"{gain_vs_best:+.6f}" if gain_vs_best is not None else "N/A"
                 _LOG.info(
                     "eval ok in %.1fs cv=%.6f fold_var=%.6f gain=%s label=%s",
@@ -974,7 +980,11 @@ def run_attempt_core(
         "retrieval_scores": _retrieval_scores(lessons),
         "retrieved_ids":    [l["reflection_id"] for l in lessons] or None,
         "cv_score":         cv_score,
-        "cv_fold_var":      cv_fold_var,
+        # noop_early_exit(fold-1 tie 조기 중단, #339/#376)일 때 harness는 None을 의도한다
+        # (1-fold만 계산해 5-fold 분산을 못 만듦) — cv_fold_var(위 0.0-폴백 버전)는
+        # is_significant_gain/reflect 등 기존 소비처용이고, DB엔 이 None-보존 버전을
+        # 그대로 저장한다(#356). 0.0을 심으면 "분산이 실제로 0"과 구분이 안 된다.
+        "cv_fold_var":      cv_fold_var_stored,
         "label":            label,
         "gain_vs_best":     gain_vs_best,
         "gain_vs_best_relative": gain_vs_best_relative,
@@ -990,6 +1000,7 @@ def run_attempt_core(
         "fold_scores":      json.dumps(fold_scores) if fold_scores is not None else None,
         "params":           json.dumps(selected_params) if selected_params else None,
         "model_type":       model_type,
+        "noop_early_exit":  noop_early_exit,
     }
     if super_cycle_id is not None:
         row["super_cycle_id"] = super_cycle_id

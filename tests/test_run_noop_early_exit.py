@@ -131,20 +131,25 @@ def test_noop_early_exit_retry_also_ties_is_accepted():
     assert data.is_noop_tie is True
     assert data.cv_score == 0.9
     row = mock_insert.call_args[0][1]
-    assert row["cv_fold_var"] == 0.0  # None → or 0.0 (기존 error-attempt 관례와 동일)
+    # #356: DB엔 harness가 의도한 None을 그대로 저장한다 — "분산 0"과 "계산 안 함"을
+    # 구분해야 competition_snr 뷰가 이 행을 안전하게 걸러낸다. is_significant_gain 등
+    # 내부 계산용 cv_fold_var(0.0-폴백)와는 별개 경로(cv_fold_var_stored).
+    assert row["cv_fold_var"] is None
+    assert row["noop_early_exit"] is True
     assert row["fold_scores"] is None
 
 
 def test_no_retry_when_cpu_budget_exhausted():
     """1회차가 예산을 전부 태우고 tie였으면 재시도 없이 그대로 채택한다."""
     generate_code_mock = MagicMock(return_value="source")
-    data, _mock_insert, mock_eval, _ = _run(
+    data, mock_insert, mock_eval, _ = _run(
         eval_side_effect=[_noop_tie(peak_cpu_sec=DEFAULT_CPU_BUDGET_SECS)],
         generate_code_mock=generate_code_mock,
     )
     assert mock_eval.call_count == 1
     assert generate_code_mock.call_count == 1  # 재생성 없음
     assert data.is_noop_tie is True
+    assert mock_insert.call_args[0][1]["noop_early_exit"] is True  # #356
 
 
 def test_retry_static_validation_exhausted_keeps_tie_result():
