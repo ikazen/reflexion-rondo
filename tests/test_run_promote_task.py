@@ -355,10 +355,48 @@ def test_winner_selection_tolerates_fewer_than_three_attempts(monkeypatch) -> No
         (s, p) for s, p in zip(conn.executed, conn.executed_params)
         if "UPDATE raw.attempts SET was_promoted" in s
     ]
-    assert len(update_calls) == 2
-    winners = {p[1]: p[0] for _, p in update_calls}
+    # 3번째는 confirm 거부 시 되돌리는 UPDATE(#395, 파라미터화 안 된 리터럴 SQL이라 attempt_id만 있음).
+    assert len(update_calls) == 3
+    per_attempt = [(s, p) for s, p in update_calls if len(p) == 2]
+    winners = {p[1]: p[0] for _, p in per_attempt}
     assert winners["w0000000"] is True
     assert winners["l1111111"] is False
+    revert_calls = [(s, p) for s, p in update_calls if len(p) == 1]
+    assert revert_calls == [("UPDATE raw.attempts SET was_promoted = false WHERE attempt_id = %s", ["w0000000"])]
+
+
+def test_was_promoted_reverted_when_confirm_rejects() -> None:
+    """#395: was_promoted가 confirm 게이트보다 먼저(gain 최고 attempt에) True로 심기는데,
+    confirm이 거부하면 되돌려야 한다 — 안 그러면 cycle/stagnation.py의 "최근 실제 승격"
+    판단(where was_promoted = true)이 실제로는 버려진 attempt를 승격으로 오판한다."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=False, holdout_score=None, seed_gains=None, holdout_regressed=False),
+        reflect_mock,
+        confirm_mock,
+    )
+    revert_calls = [
+        p for s, p in zip(conn.executed, conn.executed_params)
+        if s == "UPDATE raw.attempts SET was_promoted = false WHERE attempt_id = %s"
+    ]
+    assert revert_calls == [[_ATTEMPT_ROWS[0][0]]]
+
+
+def test_was_promoted_not_reverted_when_confirm_accepts() -> None:
+    """confirmed=True면 되돌릴 게 없다 — revert UPDATE가 안 나가야 한다."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    confirm_mock = MagicMock()
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
+        reflect_mock,
+        confirm_mock,
+    )
+    revert_calls = [
+        s for s in conn.executed
+        if s == "UPDATE raw.attempts SET was_promoted = false WHERE attempt_id = %s"
+    ]
+    assert revert_calls == []
 
 
 

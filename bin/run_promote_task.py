@@ -232,9 +232,21 @@ def main() -> None:
                         [_json.dumps(confirm.seed_gains), winner_row[0]],
                     )
                 if not confirm.confirmed:
-                    reason = "holdout 악화" if confirm.holdout_regressed else "cross-seed 미확인"
+                    reason = (
+                        "holdout 악화" if confirm.holdout_regressed
+                        else "holdout 측정 실패" if getattr(confirm, "holdout_measurement_failed", False)
+                        else "cross-seed 미확인"
+                    )
                     print(f"[run_promote_task] {reason} — 승격 스킵 winner={winner_row[0][:8]}")
                     # 승격만 스킵 — 아래 promotion 가드(confirm.confirmed)가 막고, reflect 루프는 계속 실행
+                    # was_promoted는 gate(#203) 이전에 gain 최고 attempt로 무조건 True가 심겨 있었다
+                    # (아래 for 루프, UPDATE ... i == winner_idx) — confirm이 거부하면 되돌린다(#395).
+                    # 안 그러면 cycle/stagnation.py의 "최근 실제 승격" 판단(where was_promoted = true)이
+                    # confirm에서 버려진 attempt를 실제 승격으로 오판한다.
+                    conn.execute(
+                        "UPDATE raw.attempts SET was_promoted = false WHERE attempt_id = %s",
+                        [winner_row[0]],
+                    )
 
                 # bandit 보상을 confirm 결과와 연동 — cycle/run.py의 attempt-생성
                 # 시점 update_bandit(defer_promotion=True라 여기선 원본 label로
