@@ -45,6 +45,10 @@ class ConfirmResult:
     # confirmed는 이미 이 값을 반영해 AND 결합돼 있다 — 별도 필드로 노출하는 건
     # 승격 거부 사유(cross-seed 미재현 vs holdout 악화)를 로그/DB에서 구분하기 위함.
     holdout_regressed: bool = False
+    # holdout10이 주어졌는데 candidate/baseline 중 하나라도 holdout 평가 자체가
+    # 실패했는지(#389) — confirmed는 이미 반영돼 있다. holdout_regressed와 구분해야
+    # "악화돼서 거부"와 "측정을 못 해서 거부"를 로그/DB에서 구분할 수 있다.
+    holdout_measurement_failed: bool = False
 
 
 # confirm 게이트 캐시 (raw.confirm_memo / raw.baseline_eval_cache)
@@ -390,8 +394,12 @@ def confirm_and_measure(
 
     holdout_score: float | None = None
     holdout_regressed = False
+    # holdout10이 주어졌다는 건 이 게이트에서 holdout이 필수라는 뜻이다 — 평가 자체가
+    # 실패(candidate/baseline 어느 쪽이든)하면 "정보 없음"이지 "악화 아님"이 아니다.
+    # _rejected_by_error와 같은 원칙: 일시적 실패를 확정 거부로 memo에 굳히지 않는다(#389).
+    holdout_measurement_failed = False
     if holdout10 is not None and not cross_seed_errored:
-        holdout_score = _measure_holdout(
+        holdout_score, holdout_errored = _measure_holdout(
             source=source,
             best_source=best_source,
             train90=train90,
@@ -406,10 +414,12 @@ def confirm_and_measure(
             best_params=best_params,
             tuned_params=tuned_params,
         )
-        if holdout_score is not None:
+        if holdout_errored:
+            holdout_measurement_failed = True
+        else:
             baseline_holdout_score = cache.get_baseline(ctx_key, "holdout", seed) if ctx_key is not None else None
             if baseline_holdout_score is None:
-                baseline_holdout_score = _measure_holdout(
+                baseline_holdout_score, baseline_errored = _measure_holdout(
                     source=best_source if best_source else _NOOP_PATCH,
                     best_source=None,
                     train90=train90,
@@ -424,9 +434,11 @@ def confirm_and_measure(
                     best_params=best_params,
                     tuned_params=tuned_params,
                 )
-                if baseline_holdout_score is not None and ctx_key is not None:
+                if baseline_errored:
+                    holdout_measurement_failed = True
+                elif baseline_holdout_score is not None and ctx_key is not None:
                     cache.put_baseline(ctx_key, "holdout", seed, competition_id, baseline_holdout_score)
-            if baseline_holdout_score is not None:
+            if not holdout_measurement_failed and baseline_holdout_score is not None:
                 _, metric_sign, _ = get_metric(metric)
                 holdout_regressed = (
                     metric_sign * holdout_score < metric_sign * baseline_holdout_score
@@ -438,17 +450,19 @@ def confirm_and_measure(
                     )
 
     result = ConfirmResult(
-        confirmed=confirmed and not holdout_regressed,
+        confirmed=confirmed and not holdout_regressed and not holdout_measurement_failed,
         holdout_score=holdout_score,
         seed_gains=seed_gains if seed_gains else None,
         holdout_regressed=holdout_regressed,
+        holdout_measurement_failed=holdout_measurement_failed,
     )
 
     # negative-only: 확정 승격은 캐시하지 않고(같은 코드가 재현될 일이 없다),
-    # 에러 기반 거부도 캐시하지 않는다(cross_seed_errored 정의부 주석 참고).
+    # 에러 기반 거부도 캐시하지 않는다(cross_seed_errored 정의부 주석 참고 — holdout
+    # 평가 실패도 #389로 같은 원칙 적용).
     if (
         ctx_key is not None and candidate_cv is not None
-        and not result.confirmed and not cross_seed_errored
+        and not result.confirmed and not cross_seed_errored and not holdout_measurement_failed
     ):
         cache.put_memo(ctx_key, candidate_cv, candidate_fold_scores, confirm_seeds, competition_id, result)
 
@@ -616,7 +630,10 @@ def _measure_holdout(
     cpu_budget_sec: float | None = None,
     best_params: dict | None = None,
     tuned_params: dict | None = None,
-) -> float | None:
+) -> tuple[float | None, bool]:
+    """(holdout_score, errored) 반환. errored=True는 CV 자체가 실패했거나(error_trace) holdout
+    평가만 따로 실패했다는(holdout_error) 뜻 — 둘 다 "측정해서 통과"와 구분해야 한다(#389).
+    호출부는 errored일 때 holdout_score(항상 None)를 "악화 아님"으로 오해하면 안 된다."""
     result = eval_isolated(
         source=source,
         train=train90,
@@ -633,6 +650,12 @@ def _measure_holdout(
         best_params=best_params,
         tuned_params=tuned_params,
     )
-    if result.holdout_score is not None:
+    errored = bool(result.error_trace) or bool(result.holdout_error) or result.holdout_score is None
+    if not errored:
         _LOG.info("holdout_score=%.6f", result.holdout_score)
-    return result.holdout_score
+    else:
+        _LOG.warning(
+            "holdout 평가 실패 — cv_error=%s holdout_error=%s",
+            bool(result.error_trace), bool(result.holdout_error),
+        )
+    return result.holdout_score, errored

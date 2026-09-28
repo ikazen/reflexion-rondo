@@ -320,9 +320,11 @@ def test_holdout_regressed_respects_metric_sign():
     assert result.confirmed is False
 
 
-def test_baseline_holdout_eval_error_does_not_block():
-    """baseline holdout eval이 실패하면(에러) 비교 근거가 없으므로 막지 않는다 —
-    정보 없음과 악화 확인은 다르다."""
+def test_baseline_holdout_eval_error_blocks_promotion():
+    """#389: baseline holdout eval이 실패하면(에러) 비교 근거가 없다 — "정보 없음"을
+    "악화 아님"으로 오독해 승격을 허용하면 안 된다(원래 동작). holdout10이 주어졌다는
+    건 이 경로에서 holdout이 필수라는 뜻이라, 측정 실패 자체가 거부 사유다 — 단
+    holdout_regressed(악화 확인)와는 구분한다."""
     def _se(*args, **kwargs):
         if kwargs.get("holdout_data") is not None:
             if kwargs.get("best_source") is None:
@@ -334,8 +336,34 @@ def test_baseline_holdout_eval_error_does_not_block():
 
     with patch("cycle.promotion.eval_isolated", side_effect=_se):
         result = confirm_and_measure(**_COMMON, holdout10=_df(), confirm_seeds=[7])
+    assert result.holdout_regressed is False  # 악화 확인이 아니라 측정 실패
+    assert result.holdout_measurement_failed is True
+    assert result.confirmed is False
+
+
+def test_candidate_holdout_eval_error_blocks_promotion():
+    """#389: candidate 자신의 holdout eval이 실패해도(runner.py의 _eval_holdout 예외,
+    원 재현 사례) baseline holdout eval은 아예 안 부른다(비교 대상 없음) — 정보 없음을
+    승격 허용으로 이어지게 두면 안 된다."""
+    baseline_holdout_called = False
+
+    def _se(*args, **kwargs):
+        nonlocal baseline_holdout_called
+        if kwargs.get("holdout_data") is not None:
+            if kwargs.get("best_source") is None:
+                baseline_holdout_called = True
+                return _ok_with_holdout(holdout_score=0.5)
+            return _err()  # candidate holdout eval 실패
+        if kwargs.get("best_source") is None:
+            return _baseline()
+        return _ok()
+
+    with patch("cycle.promotion.eval_isolated", side_effect=_se):
+        result = confirm_and_measure(**_COMMON, holdout10=_df(), confirm_seeds=[7])
     assert result.holdout_regressed is False
-    assert result.confirmed is True
+    assert result.holdout_measurement_failed is True
+    assert result.confirmed is False
+    assert not baseline_holdout_called  # candidate 실패 시점에 즉시 중단, baseline은 낭비하지 않음
 
 
 def test_holdout_baseline_uses_best_source_or_noop_patch():
