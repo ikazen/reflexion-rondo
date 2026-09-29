@@ -27,7 +27,8 @@ _NUMERIC_EXEMPT = {
         "_PI_TOP_N": "permutation importance 전용이라 cv_score에 영향 없음",
         "_LEAK_PERFECT_HIGH": "누수 판정 임계값 — 점수가 아니라 에러 여부를 바꾼다",
         "_LEAK_PERFECT_LOW": "누수 판정 임계값 — 점수가 아니라 에러 여부를 바꾼다",
-        "_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO": "비현실 점수 판정 임계값 — 점수가 아니라 에러 여부를 바꾼다",
+        "_REGRESSION_LEAK_BASELINE_RATIO": "비현실 점수 판정 임계값 — 점수가 아니라 에러 여부를 바꾼다",
+        "_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO": "degenerate 예측의 gain 저장값 하한 배수 — cv_score와 label 판정은 클립 전 값이라 불변",
         "_CPU_PROJECTION_MARGIN": "CPU 예산 투영 중단 임계값 — 완료된 평가의 점수가 아니라 중단 여부(에러)만 바꾼다",
     },
     "store/train_data.py": {

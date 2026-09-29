@@ -583,6 +583,36 @@ def test_regression_phantom_guard_does_not_trip_on_honest_score():
     assert np.isfinite(result.cv_score)
 
 
+class _LinearModelPatch:
+    action_type = "model_swap"
+
+    def build_model(self, params, ctx):
+        from sklearn.linear_model import LinearRegression
+        return LinearRegression()
+
+
+def _make_df_near_deterministic(noise_std: float, n: int = 600) -> pl.DataFrame:
+    """타깃이 피처의 거의 결정적 선형 함수 — trivial baseline RMSE는 약 3.6이다."""
+    rng = np.random.default_rng(11)
+    x = rng.standard_normal((n, 3))
+    y = 3.0 * x[:, 0] + 2.0 * x[:, 1] + rng.standard_normal(n) * noise_std
+    return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y})
+
+
+def test_regression_ratio_guard_allows_legit_strong_fit():
+    """정상 모델이 baseline 대비 10배를 넘는 문제가 있다(#394, s5e5 bootstrap 16~17배) — raise하지 않는다."""
+    df = _make_df_near_deterministic(noise_std=0.1)
+    result = evaluate_pipeline(PatchedPipeline(BasePipeline(), _LinearModelPatch()), df, _ctx_rmse())
+    assert result.cv_score < 0.2  # baseline(약 3.6)의 18배 이상 좋다 — 10배 컷이었다면 raise됐을 구간
+
+
+def test_regression_ratio_guard_raises_beyond_leak_ratio():
+    """baseline 대비 100배를 넘는 비현실 점수(스케일 붕괴 수준)는 여전히 raise한다."""
+    df = _make_df_near_deterministic(noise_std=0.005)
+    with pytest.raises(ValueError, match=r"suspected scale leakage.*threshold=100\.0x"):
+        evaluate_pipeline(PatchedPipeline(BasePipeline(), _LinearModelPatch()), df, _ctx_rmse())
+
+
 # rmse degenerate 예측(모델이 완전히 빗나간 상수를 반환하는 등)은 raise 가드(위)에
 # 걸리지 않으면서도 gain_vs_best를 비정상적으로 큰 음수로 만든다. 이 값이 그대로
 # reflection_impact에 흘러가면 전역 z-score(memory/retriever.py._global_gain_stats)를
