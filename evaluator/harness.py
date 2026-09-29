@@ -977,6 +977,10 @@ def evaluate_pipeline(
             )
         preds = pipeline.postprocess_predictions(raw_preds, ctx)
         fold_scores.append(float(fn(yva_raw, preds)))
+        # fold-1 캐시 히트(아래)가 루프를 끊어도 baseline_cv가 남도록 조기 종료 검사보다 먼저 계산한다(#406).
+        if metric_class == "regression_error":
+            baseline_pred = np.full_like(yva_raw, fill_value=float(np.mean(ytr_raw)), dtype=float)
+            baseline_fold_scores.append(float(fn(yva_raw, baseline_pred)))
 
         # fold-1 비트 단위 tie 조기 중단(#339) — 폴드 분할이 ctx.seed/ctx.n_splits로
         # 결정적이므로(_make_folds), patch가 유효 계산을 못 바꾸면 fold-1 점수부터
@@ -1035,9 +1039,6 @@ def evaluate_pipeline(
                     f"cpu budget exceeded: projected {projected:.0f}s CPU after fold 1 (limit {ctx.cpu_budget_sec:.0f}s)"
                 )
 
-        if metric_class == "regression_error":
-            baseline_pred = np.full_like(yva_raw, fill_value=float(np.mean(ytr_raw)), dtype=float)
-            baseline_fold_scores.append(float(fn(yva_raw, baseline_pred)))
         if oof is not None:
             oof[va_idx] = preds
 

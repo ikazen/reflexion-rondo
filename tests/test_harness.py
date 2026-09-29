@@ -1247,6 +1247,40 @@ def test_fold1_cache_result_can_still_be_a_jump_or_regression():
     assert result.gain_vs_best is not None and result.gain_vs_best > 0
 
 
+def _rmse_ctx(**kwargs) -> PipelineContext:
+    return PipelineContext(
+        target_col="y", metric="rmse", n_splits=3, seed=42, is_classification=False, **kwargs,
+    )
+
+
+def test_fold1_cache_hit_keeps_regression_relative_gain_normalized():
+    """#406: 캐시 히트가 fold 루프를 끊어도 회귀 baseline이 계산돼 relative gain이 baseline_cv로 정규화된다."""
+    df = _make_df_positive_target()
+    full = evaluate_pipeline(BasePipeline(), df, _rmse_ctx())
+    reference = evaluate_pipeline(BasePipeline(), df, _rmse_ctx(prev_best=100.0))
+    hit = evaluate_pipeline(BasePipeline(), df, _rmse_ctx(prev_best=100.0, known_fold1_scores=[full.fold_scores]))
+
+    assert hit.fold_scores == full.fold_scores
+    assert hit.gain_vs_best == pytest.approx(reference.gain_vs_best)
+    assert hit.gain_vs_best_relative != hit.gain_vs_best
+    assert hit.gain_vs_best_relative == pytest.approx(reference.gain_vs_best_relative, rel=0.1)
+
+
+def test_fold1_cache_hit_still_applies_the_regression_leak_guard(monkeypatch):
+    """#406: 캐시 히트 경로가 baseline_cv 없이 누수 비율 가드를 건너뛰던 것을 막는다."""
+    rng = np.random.default_rng(11)
+    x = rng.standard_normal((600, 3))
+    y = 3.0 * x[:, 0] + 2.0 * x[:, 1] + rng.standard_normal(600) * 0.005
+    df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y})
+    pipeline = PatchedPipeline(BasePipeline(), _LinearModelPatch())
+
+    with monkeypatch.context() as m:
+        m.setattr(harness_module, "_REGRESSION_LEAK_BASELINE_RATIO", 1e9)
+        full = evaluate_pipeline(pipeline, df, _rmse_ctx())
+
+    with pytest.raises(ValueError, match="suspected scale leakage"):
+        evaluate_pipeline(pipeline, df, _rmse_ctx(prev_best=1.0, known_fold1_scores=[full.fold_scores]))
+
 
 # fold-1 CPU 투영 조기 중단(#361, ADR-056). 가짜 CPU 시계 [루프 시작 시점, fold-1 종료 시점]을 넣는다 —
 # n_splits=3이면 투영 = X + (X - 0) * 2 = 3X. 예산 3000s, 마진 1.15면 임계는 3450s(X = 1150).
