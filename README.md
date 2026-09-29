@@ -26,7 +26,7 @@
 
 - **multiclass는 binary_proba metric(auc/logloss) 사용 불가** — 평가 하네스가 `predict_proba[:, 1]`로 2-클래스를 가정하므로 깨진다. multiclass는
 classification 계열 metric만 쓴다.
-- regression은 CV score가 mean-baseline 대비 10배 이상 좋으면 target 누수로 간주해 reject한다.
+- regression은 CV score가 mean-baseline 대비 100배 이상 좋으면 스케일/target 누수로 간주해 reject한다.
 - classification 계열 metric은 OOF를 수집하지 않는다(discrete label이라 float 배열에 못 담음).
 - `rmsle`는 예측값을 0 이상으로 clip한다.
 
