@@ -139,6 +139,27 @@ def test_noop_early_exit_retry_also_ties_is_accepted():
     assert row["fold_scores"] is None
 
 
+def test_regen_error_after_noop_tie_leaves_no_round1_result():
+    """#405: 1회차 fold-1 tie 뒤 재생성 후보가 에러나면 저장 행은 다른 에러 행처럼 점수가 비어 있어야 한다."""
+    failed = IsolatedResult(
+        cv_score=None, cv_fold_var=None, fold_scores=None, label=None,
+        gain_vs_best=None, error_trace="Traceback: boom", peak_cpu_sec=30.0,
+    )
+    data, mock_insert, mock_eval, _ = _run(eval_side_effect=[_noop_tie(peak_cpu_sec=50.0), failed])
+
+    assert mock_eval.call_count == 2
+    row = mock_insert.call_args[0][1]
+    assert row["label"] == "error"
+    assert row["error_trace"] == "Traceback: boom"
+    assert row["cv_score"] is None
+    assert row["gain_vs_best"] is None
+    assert row["gain_vs_best_relative"] is None
+    assert row["cv_fold_var"] is None
+    assert row["fold_scores"] is None
+    assert row["noop_early_exit"] is False
+    assert data.cv_score is None
+
+
 def test_no_retry_when_cpu_budget_exhausted():
     """1회차가 예산을 전부 태우고 tie였으면 재시도 없이 그대로 채택한다."""
     generate_code_mock = MagicMock(return_value="source")

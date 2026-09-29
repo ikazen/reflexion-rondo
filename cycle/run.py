@@ -922,6 +922,11 @@ def run_attempt_core(
                     break
             else:
                 error_trace = iso.error_trace
+                # 1회차 tie 결과는 지금 저장될 (에러난) 재생성 코드의 것이 아니다 — 에러 행에 점수를 남기지 않는다(#405).
+                cv_score, cv_fold_var, cv_fold_var_stored = None, 0.0, None
+                gain_vs_best = gain_vs_best_relative = None
+                fold_scores = selected_params = model_type = feature_importance = None
+                is_noop_tie = noop_early_exit = False
 
     if not error_trace and cv_score is not None:
         ceiling_reason = leaderboard_ceiling_violation(
