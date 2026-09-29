@@ -44,8 +44,8 @@ _EARLY_STOPPING_KEYS = frozenset({
 # 이 배수 이상 좋으면 스케일/타깃 누수로 간주해 raise한다. _check_preprocess_target_leak은
 # "훅이 target 컬럼을 읽었는가"만 보는 메커니즘 검사라 다른 경로의 스케일 누수
 # (예: postprocess_predictions의 잘못된 역변환)는 못 잡는다 — 이 비율 가드가 그
-# 결과 기반 2차 방어선(decisions.md ADR-015/ADR-025). 10배는 정상 모델(s5e5 bootstrap
-# 16~17배)을 막아 100배로 되돌렸다(#394) — 그 아래 구간은 holdout·리더보드 가드가 맡는다.
+# 결과 기반 2차 방어선(decisions.md ADR-015/ADR-025). 정상 모델도 baseline 대비 16~17배가 나오는
+# 대회가 있어(s5e5 bootstrap) 그 아래 구간의 누수는 이 가드가 아니라 holdout·리더보드 가드가 맡는다(#394).
 _REGRESSION_LEAK_BASELINE_RATIO = 100.0
 # baseline보다 이 배수 이상 나쁜 degenerate 예측의 gain_vs_best 저장값 하한(위 raise 문턱과 별개, ADR-015).
 _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO = 10.0
@@ -940,8 +940,8 @@ def evaluate_pipeline(
         else None
     )
 
-    # fold-1 스칼라 일치로 나머지 fold를 건너뛰는 지름길(#339/#376). 이산 라벨 지표(accuracy 등)는 fold-1 점수가
-    # 우연히 같은 경우가 많아(s4e11 실측 85%) 이 가정이 성립하지 않는다(#390).
+    # fold-1 스칼라 일치로 나머지 fold를 건너뛰는 지름길(#339/#376)은 이산 라벨 지표(accuracy 등)에선 쓰지 않는다 —
+    # fold-1 점수가 우연히 같은 경우가 많아 "fold-1이 같으면 나머지도 같다"는 전제가 성립하지 않는다(#390, ADR-061).
     fold1_shortcut_ok = not collect_oof and metric_class != "classification"
     cpu_at_loop_start = _cpu_seconds()
     for fold_idx, (tr_idx, va_idx) in enumerate(_make_folds(y, ctx, is_original=is_original)):
@@ -981,6 +981,7 @@ def evaluate_pipeline(
         preds = pipeline.postprocess_predictions(raw_preds, ctx)
         fold_scores.append(float(fn(yva_raw, preds)))
         # fold-1 캐시 히트(아래)가 루프를 끊어도 baseline_cv가 남도록 조기 종료 검사보다 먼저 계산한다(#406).
+        # 캐시 히트 경로의 baseline_fold_scores는 fold-1 값 하나뿐이다.
         if metric_class == "regression_error":
             baseline_pred = np.full_like(yva_raw, fill_value=float(np.mean(ytr_raw)), dtype=float)
             baseline_fold_scores.append(float(fn(yva_raw, baseline_pred)))

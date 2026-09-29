@@ -922,7 +922,8 @@ def run_attempt_core(
                     break
             else:
                 error_trace = iso.error_trace
-                # 1회차 tie 결과는 지금 저장될 (에러난) 재생성 코드의 것이 아니다 — 에러 행에 점수를 남기지 않는다(#405).
+                # 1회차 tie 결과는 지금 저장될 (에러난) 재생성 코드의 것이 아니다(#405). 세계 1위 가드로 격리된 행은
+                # cv_score를 남기므로 초기화는 이 분기에만 둔다.
                 cv_score, cv_fold_var, cv_fold_var_stored = None, 0.0, None
                 gain_vs_best = gain_vs_best_relative = None
                 fold_scores = selected_params = model_type = feature_importance = None

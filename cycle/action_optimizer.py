@@ -104,7 +104,6 @@ def assign_super_cycle_actions(
 ) -> list[str]:
     """bandit Thompson sample 1회로 전체 action을 순위 매기고 top-n을 배정한다.
 
-    같은 사이클 안에서 일관된 선호 순서를 유지하면서 다양성을 보장한다.
     seed=None(기본)이면 매 사이클 새 엔트로피 → 탐색. 테스트에서만 고정.
     """
     rows = conn.execute(
@@ -136,8 +135,8 @@ def assign_super_cycle_actions(
     eligible = [a for a in ranked if a not in dead]
     picked = eligible[:n_attempts]
     if len(picked) < n_attempts:
-        # dead가 3개 이상이면(s6e8 실측, #404) 후보가 n_attempts에 모자란다 — dead로 채우면 배제한 의미가 사라지므로
-        # 살아 있는 액션을 반복 배정하고, 하나도 없을 때만 원래 랭킹에서 채운다.
+        # dead가 3개 이상이면 후보가 n_attempts에 모자란다 — dead로 채우면 배제한 의미가 사라지므로 살아 있는 액션을
+        # 반복 배정하고, 하나도 없을 때만 원래 랭킹에서 채운다(#404, ADR-060).
         pool = eligible or ranked
         picked = [pool[i % len(pool)] for i in range(n_attempts)]
     return picked
