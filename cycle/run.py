@@ -924,7 +924,9 @@ def run_attempt_core(
                 error_trace = iso.error_trace
 
     if not error_trace and cv_score is not None:
-        ceiling_reason = leaderboard_ceiling_violation(conn, config.competition_id, cv_score)
+        ceiling_reason = leaderboard_ceiling_violation(
+            conn, config.competition_id, cv_score, fold_scores=fold_scores,
+        )
         if ceiling_reason is not None:
             error_trace = ceiling_reason
             _LOG.warning("%s — attempt 격리(promotion 이전 단계, #288)", ceiling_reason)

@@ -14,6 +14,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
+import statistics
 from dataclasses import dataclass, field
 from types import ModuleType
 
@@ -140,13 +142,27 @@ def _rounded_signature(cv: float, fold_scores: list[float] | None) -> tuple:
     return (round(cv, 9), tuple(round(f, 9) for f in (fold_scores or [])))
 
 
-def leaderboard_ceiling_violation(conn, competition_id: str, cv_score: float) -> str | None:
-    """cv_score가 이 대회 리더보드 스냅샷(raw.leaderboard_snapshot)의 세계 1위 점수를
-    metric_sign 방향으로 넘으면 사유 문자열, 아니면 None(스냅샷 없음 포함 — 판정 불가).
+# 리더보드가 포화된 대회는 1위와 상위 10%의 격차가 fold 표준오차와 비슷해(s5e10 1.0배, s4e11 1.6배) 정상 모델도
+# 노이즈만으로 cv가 세계 1위를 넘을 수 있다 — 그 이내의 초과는 격리하지 않는다(#391, ADR-046).
+_CEILING_SE_MULTIPLE = 3.0
 
-    CV가 test 정확도의 불편추정치라면 세계 1위를 넘는 건 산술적으로 불가능하다 —
-    데이터 오염(#228 twin 중복 실사고: cv가 0.968까지 부풀려짐, 세계 1위는 0.94488)의
-    cv-LB 발산 트립와이어(연속 delta 기반, 11일 지연)보다 훨씬 싸고 즉각적인 신호다(#288).
+
+def _fold_standard_error(fold_scores: list[float] | None) -> float:
+    if not fold_scores or len(fold_scores) < 2:
+        return 0.0
+    return statistics.stdev(fold_scores) / math.sqrt(len(fold_scores))
+
+
+def leaderboard_ceiling_violation(
+    conn, competition_id: str, cv_score: float, fold_scores: list[float] | None = None,
+) -> str | None:
+    """cv_score가 이 대회 리더보드 스냅샷(raw.leaderboard_snapshot)의 세계 1위 점수를 metric_sign 방향으로
+    fold 표준오차의 _CEILING_SE_MULTIPLE배보다 크게 넘으면 사유 문자열, 아니면 None(스냅샷 없음 포함 — 판정
+    불가). fold_scores가 없으면 여유 0으로 엄격하게 판정한다.
+
+    세계 1위 초과가 불가능해서가 아니라 사전확률과 비용의 비대칭 때문에 하드 격리한다 — 오염(#228 twin 중복
+    실사고: cv 0.968, 세계 1위 0.94488)이 통과하면 팬텀 base로 12일 정체했고 cross-seed·holdout은 같은 데이터라
+    못 잡는다(#288).
     """
     row = conn.execute(
         """
@@ -164,9 +180,13 @@ def leaderboard_ceiling_violation(conn, competition_id: str, cv_score: float) ->
         return None
     metric_sign = row[1]
     world_best = max(scores) if metric_sign > 0 else min(scores)
-    if metric_sign * cv_score <= metric_sign * world_best:
+    margin = _CEILING_SE_MULTIPLE * _fold_standard_error(fold_scores)
+    if metric_sign * (cv_score - world_best) <= margin:
         return None
-    return f"cv_exceeds_world_best: cv={cv_score:.6f} > world_best={world_best:.6f} (metric_sign={metric_sign})"
+    return (
+        f"cv_exceeds_world_best: cv={cv_score:.6f} > world_best={world_best:.6f} "
+        f"(metric_sign={metric_sign}, margin={margin:.6f})"
+    )
 
 
 def _rejected_by_error(seed_gains: dict) -> bool:
@@ -358,7 +378,9 @@ def confirm_and_measure(
                 return memo
 
     if conn is not None and competition_id is not None and candidate_cv is not None:
-        ceiling_reason = leaderboard_ceiling_violation(conn, competition_id, candidate_cv)
+        ceiling_reason = leaderboard_ceiling_violation(
+            conn, competition_id, candidate_cv, fold_scores=candidate_fold_scores,
+        )
         if ceiling_reason is not None:
             _LOG.warning("%s — confirm 거부(promotion gate, #288), cross-seed eval 스킵", ceiling_reason)
             result = ConfirmResult(confirmed=False, holdout_score=None, seed_gains=None, holdout_regressed=False)

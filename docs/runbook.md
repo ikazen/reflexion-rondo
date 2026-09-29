@@ -299,7 +299,7 @@ uv run python -m bin.rebuild_best_pipeline --competition <competition-id>       
 
 이 계열 오염(cv_score가 비현실적으로 부풀려짐)은 이제 `cycle/promotion.py:
 leaderboard_ceiling_violation`(#288, ADR-046)이 attempt 시점·confirm 게이트 양쪽에서
-자동 격리한다 — cv_score가 `raw.leaderboard_snapshot` 세계 1위를 넘으면 즉시 거부.
+자동 격리한다 — cv_score가 `raw.leaderboard_snapshot` 세계 1위를 fold 표준오차의 3배보다 크게 넘으면 즉시 거부(#391).
 아래 소급 정리 절차는 이 가드가 배포되기 전 이미 쌓인 오염 이력을 치울 때만 필요하다.
 
 Kaggle Playground 합성 대회는 원본(original.csv) 실데이터를 train.csv에 이미 일부/전부

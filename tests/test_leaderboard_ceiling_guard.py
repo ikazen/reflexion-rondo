@@ -1,10 +1,9 @@
-"""불가능 점수(cv > 세계 1위 LB) 즉시 격리 가드 (#288).
+"""세계 1위 초과 점수(cv > 세계 1위 LB + 노이즈 여유) 즉시 격리 가드 (#288, #391).
 
-CV가 test 정확도의 불편추정치라면 리더보드 스냅샷(raw.leaderboard_snapshot)의 세계
-1위 점수를 넘는 건 산술적으로 불가능하다 — s4e11 twin 중복(#228/#287) 실사고를
-훨씬 싸고 빠르게 잡는 신호다. 두 지점에서 쓰인다: (1) run_attempt_core가 attempt
-평가 직후 label='error'로 즉시 격리, (2) cycle/promotion.confirm_and_measure가
-confirm 게이트에서 동일 검사로 확정을 막는다(1이 놓친 경우의 방어선).
+세계 1위 초과가 불가능해서가 아니라 오염(s4e11 twin 중복 #228/#287 실사고)의 사전확률과 비용의 비대칭 때문에
+하드 격리한다. 포화 리더보드에서 정상 모델이 노이즈만으로 넘는 경우를 위해 fold 표준오차의 3배까지는 통과시킨다.
+두 지점에서 쓰인다: (1) run_attempt_core가 attempt 평가 직후 label='error'로 즉시 격리, (2) cycle/promotion.
+confirm_and_measure가 confirm 게이트에서 동일 검사로 확정을 막는다(1이 놓친 경우의 방어선).
 """
 from __future__ import annotations
 
@@ -62,6 +61,50 @@ def test_ceiling_violation_none_when_scores_empty():
     assert leaderboard_ceiling_violation(conn, "playground-series-s4e11", 0.99) is None
 
 
+# --- 노이즈 여유(#391): fold 표준오차의 3배까지는 세계 1위를 넘어도 통과 ---
+# 아래 fold_scores의 표준오차는 약 0.0006 -> 여유 약 0.0018.
+_NOISY_FOLDS = [0.9440, 0.9455, 0.9460]
+
+
+def test_ceiling_violation_tolerates_overshoot_within_noise_margin():
+    """포화 리더보드의 정상 모델은 노이즈만으로 세계 1위를 넘을 수 있다."""
+    conn = _snapshot_conn([0.90, 0.94488], metric_sign=1)
+    assert leaderboard_ceiling_violation(conn, "playground-series-s5e10", 0.94517, fold_scores=_NOISY_FOLDS) is None
+
+
+def test_ceiling_violation_flags_overshoot_beyond_noise_margin():
+    conn = _snapshot_conn([0.90, 0.94488], metric_sign=1)
+    reason = leaderboard_ceiling_violation(conn, "playground-series-s5e10", 0.9500, fold_scores=_NOISY_FOLDS)
+    assert reason is not None
+    assert reason.startswith("cv_exceeds_world_best")
+    assert "margin=0.0018" in reason
+
+
+def test_ceiling_violation_still_flags_the_twin_contamination_incident():
+    """#287 실사고(cv 0.968, 세계 1위 0.94488)는 여유(약 0.0017)의 십수 배라 여전히 격리된다."""
+    conn = _snapshot_conn([0.90, 0.92, 0.94488], metric_sign=1)
+    reason = leaderboard_ceiling_violation(
+        conn, "playground-series-s4e11", 0.96789, fold_scores=[0.967, 0.968, 0.969],
+    )
+    assert reason is not None
+
+
+def test_ceiling_violation_margin_applies_in_the_metric_sign_direction():
+    """rmse(metric_sign=-1)는 낮을수록 좋다 — 여유도 낮은 쪽(세계 1위 아래)으로 준다."""
+    conn = _snapshot_conn([11.5, 12.0, 13.0], metric_sign=-1)
+    folds = [11.30, 11.45, 11.60]  # 표준오차 약 0.087 -> 여유 약 0.26
+    assert leaderboard_ceiling_violation(conn, "playground-series-s5e4", 11.45, fold_scores=folds) is None
+    assert leaderboard_ceiling_violation(conn, "playground-series-s5e4", 11.0, fold_scores=folds) is not None
+
+
+def test_ceiling_violation_margin_is_zero_without_two_or_more_folds():
+    """fold_scores가 없거나 1개면 표준오차를 못 구하므로 여유 0 — 기존과 같이 엄격하다."""
+    conn = _snapshot_conn([0.90, 0.94488], metric_sign=1)
+    assert leaderboard_ceiling_violation(conn, "playground-series-s5e10", 0.94517) is not None
+    assert leaderboard_ceiling_violation(conn, "playground-series-s5e10", 0.94517, fold_scores=[0.94517]) is not None
+    assert leaderboard_ceiling_violation(conn, "playground-series-s5e10", 0.94517, fold_scores=[]) is not None
+
+
 # --- confirm_and_measure 게이트 (두 번째 방어선) ---
 
 def test_confirm_and_measure_rejects_ceiling_violation_without_cross_seed_eval():
@@ -93,6 +136,37 @@ def test_confirm_and_measure_rejects_ceiling_violation_without_cross_seed_eval()
     mock_cross_seed.assert_not_called()
     assert result.confirmed is False
     cache.put_memo.assert_called_once()
+
+
+def test_confirm_and_measure_passes_fold_scores_so_noise_margin_applies():
+    """confirm 경로도 candidate_fold_scores로 여유를 계산한다 — 여유 이내 초과는 cross-seed까지 간다."""
+    cache = MagicMock()
+    cache.get_memo.return_value = None
+    conn = _snapshot_conn([0.90, 0.94488], metric_sign=1)
+
+    with patch("cycle.promotion._cross_seed_confirm", return_value=(True, {})) as mock_cross_seed:
+        from cycle.promotion import confirm_and_measure
+
+        result = confirm_and_measure(
+            source="class Patch:\n    pass\n",
+            best_source=None,
+            train90=pl.DataFrame({"x": [1, 2], "y": [0, 1]}),
+            holdout10=None,
+            target_col="y",
+            metric="accuracy",
+            n_splits=5,
+            seed=42,
+            is_classification=True,
+            confirm_seeds=[7, 101, 137],
+            cache=cache,
+            competition_id="playground-series-s5e10",
+            candidate_cv=0.94517,
+            candidate_fold_scores=_NOISY_FOLDS,
+            conn=conn,
+        )
+
+    mock_cross_seed.assert_called_once()
+    assert result.confirmed is True
 
 
 def test_confirm_and_measure_ignores_ceiling_check_when_conn_not_given():
@@ -248,5 +322,6 @@ def test_run_attempt_core_untouched_when_within_ceiling():
         )
 
     mock_ceiling.assert_called_once()
+    assert mock_ceiling.call_args.kwargs["fold_scores"] == [0.929, 0.930, 0.931]
     assert data.label == "neutral"
     assert mock_insert.call_args[0][1]["label"] == "neutral"
