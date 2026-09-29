@@ -41,10 +41,13 @@ _EARLY_STOPPING_KEYS = frozenset({
     "n_iter_no_change", "callbacks", "od_wait", "od_type", "validation_fraction",
 })
 # 회귀 error 메트릭(rmse/mae/rmsle)이 trivial baseline(train 타깃 평균 예측)보다
-# 이 배수 이상 좋으면 스케일/타깃 누수로 간주한다. _check_preprocess_target_leak은
+# 이 배수 이상 좋으면 스케일/타깃 누수로 간주해 raise한다. _check_preprocess_target_leak은
 # "훅이 target 컬럼을 읽었는가"만 보는 메커니즘 검사라 다른 경로의 스케일 누수
 # (예: postprocess_predictions의 잘못된 역변환)는 못 잡는다 — 이 비율 가드가 그
-# 결과 기반 2차 방어선(decisions.md ADR-015/ADR-025).
+# 결과 기반 2차 방어선(decisions.md ADR-015/ADR-025). 10배는 정상 모델(s5e5 bootstrap
+# 16~17배)을 막아 100배로 되돌렸다(#394) — 그 아래 구간은 holdout·리더보드 가드가 맡는다.
+_REGRESSION_LEAK_BASELINE_RATIO = 100.0
+# baseline보다 이 배수 이상 나쁜 degenerate 예측의 gain_vs_best 저장값 하한(위 raise 문턱과 별개, ADR-015).
 _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO = 10.0
 # fold-1의 CPU 소모로 전체를 투영해 예산의 이 배수를 넘으면 나머지 fold를 돌지 않고 중단한다(#361, ADR-056).
 _CPU_PROJECTION_MARGIN = 1.15
@@ -1070,16 +1073,16 @@ def evaluate_pipeline(
             raise ValueError(f"suspected target leakage: perfect cv_score={cv_score:.2e} (threshold={_LEAK_PERFECT_LOW})")
 
     # "구현 불가 수준"의 회귀 점수 방어 가드 — trivial mean-baseline 대비
-    # _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO 배 이상 좋으면 스케일/타깃 누수로 간주.
+    # _REGRESSION_LEAK_BASELINE_RATIO 배 이상 좋으면 스케일/타깃 누수로 간주.
     # metric_sign<0(rmse/mae/rmsle 전부 해당)인 regression_error 메트릭에만 적용.
     baseline_cv: float | None = None
     if metric_class == "regression_error" and metric_sign < 0 and baseline_fold_scores:
         baseline_cv = float(np.mean(baseline_fold_scores))
-        if cv_score > 0 and baseline_cv / cv_score > _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO:
+        if cv_score > 0 and baseline_cv / cv_score > _REGRESSION_LEAK_BASELINE_RATIO:
             raise ValueError(
                 f"suspected scale leakage: cv_score={cv_score:.6f} is "
                 f"{baseline_cv / cv_score:.1f}x better than trivial mean-baseline={baseline_cv:.6f} "
-                f"(threshold={_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO}x)"
+                f"(threshold={_REGRESSION_LEAK_BASELINE_RATIO}x)"
             )
 
     is_noop_tie = False

@@ -313,8 +313,8 @@ attempt도 전부 neutral로 남는 문제가 있었다. `bin/run_promote_task.p
 - `prev_best_cv`가 없으면(첫 attempt) label = `neutral`, gain = null.
 - 실패 attempt(`error_trace` 존재)는 label = `error`, gain = null. 정적 검증 실패 외에도 세 가지 결정적 누수 가드가 `ValueError`로 error를 유발한다:
 (1) 완벽점수 가드 — `cv_score`가 임계(`_LEAK_PERFECT_HIGH=0.9999`/`_LEAK_PERFECT_LOW=1e-9`)를 넘으면 target leakage 의심, (2) 회귀
-trivial-baseline 비율 가드(issue #4) — `regression_error` 메트릭에서 train-fold 타깃 평균만 예측하는 baseline보다 10배 이상
-좋으면(`_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO`, 2026-08 100→10 하향) 스케일/타깃 누수 의심, (3) preprocess 타깃 누수
+trivial-baseline 비율 가드(issue #4) — `regression_error` 메트릭에서 train-fold 타깃 평균만 예측하는 baseline보다 100배 이상
+좋으면(`_REGRESSION_LEAK_BASELINE_RATIO`, #97에서 10으로 하향했다가 #394에서 100 복원) 스케일/타깃 누수 의심, (3) preprocess 타깃 누수
 가드(`_check_preprocess_target_leak`) — fold0에서 `preprocess`를 실제 valid와 마스킹된 valid 양쪽으로 실행해 결과가 다르면(=valid 타깃을 직접 읽음) 확정
 error. 정적 AST 가드(`evaluator/contract.py:_preprocess_reads_valid_target`)가 코드 생성 단계에서 1차로 걸러내지만 우회 가능해, (3)의 런타임 동등성 검사가
 본체다(decisions.md ADR-025).

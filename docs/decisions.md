@@ -136,6 +136,14 @@ delta로 유지, DB에 저장되는 값만 스케일 폭주 차단). `_global_ga
 - **[2026-08 #97 amend]**: `_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO`를 100 → 10으로 하향. s5e5가 이 가드보다 먼저
 `_check_preprocess_target_leak`(ADR-024)에 잡혔어야 할 preprocess 누수였는데도 100배 문턱을 통과해(실측 gain 44배) 승격까지 갔던 사례가 계기 — 이 비율은
 preprocess 누수 검사가 못 잡는 결과 기반 2차 방어선이라 문턱을 낮춰도 정상 개선을 오탐할 여지가 적다고 판단.
+- **[2026-09-29 #394 amend]**: raise 문턱을 10 → 100으로 되돌리고 gain 하한 클립 배수(10)와 상수를 분리했다
+(`_REGRESSION_LEAK_BASELINE_RATIO` / `_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO`). #97 amend의 "정상 개선을 오탐할 여지가 적다"는 판단이 실측과
+어긋났다 — 10배 문턱은 지금까지 s5e5에서만 114건 발동했고 그 구간(cv 0.0594~0.0728, baseline 1.0256, 14~17배)은 같은 대회 07-05 bootstrap
+초기 모델(cv 0.0611~0.0635, 16~17배)과 겹친다. 10~100배에서 이 비율은 누수와 정상 모델을 구분하지 못한다(LB로 확정할 표본은 없다: s5e5 제출
+2건의 LB는 모두 2.636). #97이 문턱을 내린 계기(44배 누수)는 이후 `_check_preprocess_target_leak`(fold-0 동치, 본체)이 직접 잡으므로 좁게 유지할
+이유가 없다. 남은 방어선은 holdout(dummy target 추론), 리더보드 세계 1위 가드(ADR-046), 완벽점수 가드다. 트레이드오프: preprocess 훅 밖 경로의
+10~100배 스케일 누수는 attempt 시점에 안 잡히고 승격 게이트(holdout)에서 잡힌다. 대회별 override는 만들지 않았다 — `eval_isolated` 호출부
+10곳 전부에 같은 값을 배선해야 하고(#388 유형의 누락 위험) 필요를 뒷받침하는 사례가 없다.
 - **[2026-07-22 #58 amend]**: 위 가드(클립)로도 `reflection_impact` 전역 z-score 오염(mean=-4.22, std=139.19 실측)이 해소되지 않음을 확인 — 클립은
 극단값만 완화할 뿐 metric 스케일 자체(rmse 원시 단위 vs auc 0~1)를 정규화하지 않아 근본 해결이 아니었다. `gain_vs_best_relative` 컬럼(regression_error는
 `gain_vs_best/baseline_cv` 상대값, 나머지는 패스스루) 신설로 전역 통계를 metric 스케일 상대화로 교체하고, `reflection_impact` 뷰가 이 컬럼만 집계하도록 재정의(값이 없는
