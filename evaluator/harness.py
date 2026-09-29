@@ -940,6 +940,9 @@ def evaluate_pipeline(
         else None
     )
 
+    # fold-1 스칼라 일치로 나머지 fold를 건너뛰는 지름길(#339/#376). 이산 라벨 지표(accuracy 등)는 fold-1 점수가
+    # 우연히 같은 경우가 많아(s4e11 실측 85%) 이 가정이 성립하지 않는다(#390).
+    fold1_shortcut_ok = not collect_oof and metric_class != "classification"
     cpu_at_loop_start = _cpu_seconds()
     for fold_idx, (tr_idx, va_idx) in enumerate(_make_folds(y, ctx, is_original=is_original)):
         tr = train[list(tr_idx)]
@@ -989,7 +992,7 @@ def evaluate_pipeline(
         # 통째로 아낀다. collect_oof=True(merge-verify 등)는 전체 fold가 필요해 제외.
         if (
             fold_idx == 0
-            and not collect_oof
+            and fold1_shortcut_ok
             and ctx.prev_best is not None
             and ctx.prev_best_fold_scores is not None
             and len(ctx.prev_best_fold_scores) == ctx.n_splits
@@ -1015,7 +1018,7 @@ def evaluate_pipeline(
                 noop_early_exit=True,
             )
 
-        if fold_idx == 0 and not collect_oof and ctx.known_fold1_scores:
+        if fold_idx == 0 and fold1_shortcut_ok and ctx.known_fold1_scores:
             # 위 #339 체크가 이미 확정 base와의 tie를 처리하고 return했으므로 여기 도달했다는 것 자체가
             # base와는 안 겹친다는 뜻이다 — base가 아닌 임의의 과거 attempt와 매칭해 재계산을 더 회수한다.
             # 매칭되면 fold_scores를 그 attempt의 전체 값으로 통째로 교체하고 fold 루프 자체를 끝낸다 —

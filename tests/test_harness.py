@@ -1247,6 +1247,64 @@ def test_fold1_cache_result_can_still_be_a_jump_or_regression():
     assert result.gain_vs_best is not None and result.gain_vs_best > 0
 
 
+def _accuracy_ctx(**kwargs) -> PipelineContext:
+    return PipelineContext(
+        target_col="y", metric="accuracy", n_splits=3, seed=42, is_classification=True, **kwargs,
+    )
+
+
+def _count_fit_predict(monkeypatch) -> list[int]:
+    calls: list[int] = []
+    orig_fit_predict = harness_module.fit_predict
+
+    def counting_fit_predict(*a, **k):
+        calls.append(1)
+        return orig_fit_predict(*a, **k)
+
+    monkeypatch.setattr(harness_module, "fit_predict", counting_fit_predict)
+    return calls
+
+
+def test_discrete_label_metric_disables_the_base_tie_early_exit(monkeypatch):
+    """#390: accuracy 계열은 fold-1 점수가 우연히 같은 경우가 많아 조기 중단하지 않고 전체 fold를 돈다."""
+    df = _make_df(n=300)
+    baseline = evaluate_pipeline(BasePipeline(), df, _accuracy_ctx())
+    calls = _count_fit_predict(monkeypatch)
+    ctx = _accuracy_ctx(prev_best=baseline.cv_score, prev_best_fold_scores=baseline.fold_scores)
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+
+    assert len(calls) == 3
+    assert result.noop_early_exit is False
+    assert result.fold_scores == baseline.fold_scores
+    assert result.is_noop_tie is True  # 전체 fold를 돌고 난 뒤의 tie 판정은 그대로 동작한다
+
+
+def test_discrete_label_metric_disables_the_fold1_cache(monkeypatch):
+    df = _make_df(n=300)
+    other = evaluate_pipeline(BasePipeline(), df, _accuracy_ctx())
+    calls = _count_fit_predict(monkeypatch)
+    ctx = _accuracy_ctx(prev_best=0.5, known_fold1_scores=[other.fold_scores])
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+
+    assert len(calls) == 3
+    assert result.fold_scores == other.fold_scores  # 같은 계산이라 값은 같지만 캐시가 아니라 실제로 돌았다
+
+
+def test_continuous_metric_keeps_the_fold1_shortcuts(monkeypatch):
+    """연속 출력 지표(auc)는 지름길이 그대로 동작한다 — 게이트가 classification에만 걸리는지 확인."""
+    df = _make_df(n=300)
+    baseline = evaluate_pipeline(BasePipeline(), df, _ctx())
+    calls = _count_fit_predict(monkeypatch)
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+        prev_best=baseline.cv_score, prev_best_fold_scores=baseline.fold_scores,
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+
+    assert len(calls) == 1
+    assert result.noop_early_exit is True
+
+
 def _rmse_ctx(**kwargs) -> PipelineContext:
     return PipelineContext(
         target_col="y", metric="rmse", n_splits=3, seed=42, is_classification=False, **kwargs,
