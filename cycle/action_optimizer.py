@@ -136,9 +136,10 @@ def assign_super_cycle_actions(
     eligible = [a for a in ranked if a not in dead]
     picked = eligible[:n_attempts]
     if len(picked) < n_attempts:
-        # dead가 n_attempts를 채울 후보 자체를 모자라게 만드는 극단적 경우의 폴백 —
-        # 원래 랭킹에서 부족분을 채운다(정상 동작에서는 도달하지 않음, ACTION_TYPES=5/n_attempts=3).
-        picked += [a for a in ranked if a not in picked][: n_attempts - len(picked)]
+        # dead가 3개 이상이면(s6e8 실측, #404) 후보가 n_attempts에 모자란다 — dead로 채우면 배제한 의미가 사라지므로
+        # 살아 있는 액션을 반복 배정하고, 하나도 없을 때만 원래 랭킹에서 채운다.
+        pool = eligible or ranked
+        picked = [pool[i % len(pool)] for i in range(n_attempts)]
     return picked
 
 

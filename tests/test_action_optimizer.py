@@ -40,6 +40,17 @@ def _conn_with_dead_action(action: str, total_attempts: int) -> MagicMock:
 
 
 
+def _conn_with_dead_actions(actions: list[str], total_attempts: int) -> MagicMock:
+    """_conn_with_dead_action의 복수 버전 — 여러 액션이 동시에 죽은 상태."""
+    conn = MagicMock()
+    bandit_result = MagicMock()
+    bandit_result.fetchall.return_value = [(a, 1.0, 20.0) for a in actions]
+    count_result = MagicMock()
+    count_result.fetchone.return_value = (total_attempts,)
+    conn.execute.side_effect = [bandit_result, count_result]
+    return conn
+
+
 def test_assign_returns_n_attempts():
     conn = _conn()
     result = assign_super_cycle_actions(conn, "s4e1", n_attempts=3)
@@ -130,6 +141,39 @@ def test_dead_action_excluded_outside_the_reexplore_window(total_attempts):
     conn = _conn_with_dead_action("hyperparam_search", total_attempts=total_attempts)
     result = assign_super_cycle_actions(conn, "s6e8", n_attempts=_N_ATTEMPTS_ONE_DEAD, seed=42)
     assert "hyperparam_search" not in result
+
+
+# 죽은 액션이 3개 이상이면 살아 있는 후보가 n_attempts(3)에 모자란다(#404, s6e8 실측).
+_THREE_DEAD = ["ensemble", "hyperparam_search", "model_swap"]
+
+
+def test_shortfall_is_filled_with_live_actions_not_dead_ones():
+    conn = _conn_with_dead_actions(_THREE_DEAD, total_attempts=50)
+    result = assign_super_cycle_actions(conn, "s6e8", n_attempts=3, seed=42)
+    assert len(result) == 3
+    assert not set(result) & set(_THREE_DEAD)
+    assert set(result) == {"feature_engineering", "preprocessing"}
+
+
+def test_shortfall_repeats_the_best_ranked_live_action():
+    conn = _conn_with_dead_actions(_THREE_DEAD, total_attempts=50)
+    result = assign_super_cycle_actions(conn, "s6e8", n_attempts=3, seed=42)
+    assert result[0] != result[1]
+    assert result[2] == result[0]
+
+
+def test_all_dead_falls_back_to_the_original_ranking():
+    """살아 있는 후보가 하나도 없으면 배정 자체를 못 하는 것보다 낫도록 원래 랭킹에서 채운다."""
+    conn = _conn_with_dead_actions(list(ACTION_TYPES), total_attempts=50)
+    result = assign_super_cycle_actions(conn, "s6e8", n_attempts=3, seed=42)
+    assert len(result) == 3
+    assert len(set(result)) == 3
+
+
+def test_reexplore_window_restores_dead_actions_even_when_three_are_dead():
+    conn = _conn_with_dead_actions(_THREE_DEAD, total_attempts=100)
+    result = assign_super_cycle_actions(conn, "s6e8", n_attempts=3, seed=42)
+    assert len(set(result)) == 3
 
 
 def _rng_favoring(action: str):
