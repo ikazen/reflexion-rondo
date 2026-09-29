@@ -142,8 +142,8 @@ def _rounded_signature(cv: float, fold_scores: list[float] | None) -> tuple:
     return (round(cv, 9), tuple(round(f, 9) for f in (fold_scores or [])))
 
 
-# 리더보드가 포화된 대회는 1위와 상위 10%의 격차가 fold 표준오차와 비슷해(s5e10 1.0배, s4e11 1.6배) 정상 모델도
-# 노이즈만으로 cv가 세계 1위를 넘을 수 있다 — 그 이내의 초과는 격리하지 않는다(#391, ADR-046).
+# 포화된 리더보드에서는 정상 모델도 노이즈만으로 cv가 세계 1위를 넘을 수 있어, fold 표준오차의 이 배수
+# 이내의 초과는 격리하지 않는다(#391, ADR-046).
 _CEILING_SE_MULTIPLE = 3.0
 
 
@@ -158,11 +158,7 @@ def leaderboard_ceiling_violation(
 ) -> str | None:
     """cv_score가 이 대회 리더보드 스냅샷(raw.leaderboard_snapshot)의 세계 1위 점수를 metric_sign 방향으로
     fold 표준오차의 _CEILING_SE_MULTIPLE배보다 크게 넘으면 사유 문자열, 아니면 None(스냅샷 없음 포함 — 판정
-    불가). fold_scores가 없으면 여유 0으로 엄격하게 판정한다.
-
-    세계 1위 초과가 불가능해서가 아니라 사전확률과 비용의 비대칭 때문에 하드 격리한다 — 오염(#228 twin 중복
-    실사고: cv 0.968, 세계 1위 0.94488)이 통과하면 팬텀 base로 12일 정체했고 cross-seed·holdout은 같은 데이터라
-    못 잡는다(#288).
+    불가). fold_scores가 없으면 여유 0으로 엄격하게 판정한다. 하드 격리하는 근거는 ADR-046.
     """
     row = conn.execute(
         """

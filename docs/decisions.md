@@ -1420,13 +1420,14 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 - 한계: `_DEAD_ACTION_MIN_OBSERVED`(5)는 정상적인 밴딧 갱신 동역학(decay 0.95, 매 갱신 최대 증가폭 1.0)에서는 사후 평균이 0.1 밑으로
   내려가는 시점(약 10회 연속 실패 후)이면 이미 관측이 8 이상이라 사실상 항상 충족된다 — 이 문턱은 정상 경로보다는 수동 개입 등으로
   비정상적인 alpha/beta가 들어오는 경우에 대한 방어선이다.
-- **[2026-09-29 #404 amend]**: 위 "도달하지 않는 극단적 경우"는 틀렸다 — s6e8은 5개 중 3개(ensemble 0.083, hyperparam_search 0.089,
-  model_swap 0.047)가 동시에 dead가 돼 매 사이클 도달했고, 원래 랭킹에서 채우는 폴백이 3번째 슬롯을 dead 액션으로 되채웠다(최신 super-cycle
-  `[feature_engineering, preprocessing, hyperparam_search]`, 최근 5시간 s6e8 attempt 30건 중 10건·CPU 22%가 이 세 액션이고 hyperparam_search
-  5건은 전부 base와 tie). 폴백을 바꿨다: 후보가 모자라면 살아 있는 액션을 Thompson 순위 순으로 순환해 반복 배정하고(예:
-  `[preprocessing, feature_engineering, preprocessing]`), 살아 있는 후보가 하나도 없을 때만 원래 랭킹에서 채운다. 재탐색 창은 그대로다. 한계:
-  슬롯이 살아 있는 액션으로 옮겨갈 뿐이라 CPU 절감이 아니라 정보 수확률 개선이다(feature_engineering은 attempt당 CPU가 preprocessing의 약 3배).
-  s6e8이 정체 상태(v1.6.26 이후 122 attempt 중 jump 0)라 기대 효과는 작다.
+- **[2026-09-29 #404 amend]**: 위 "도달하지 않는 극단적 경우"는 틀렸다 — s6e8은 5개 중 3개(ensemble 0.083,
+  hyperparam_search 0.089, model_swap 0.047)가 동시에 dead가 돼 매 사이클 도달했고, 원래 랭킹에서 채우는 폴백이 3번째
+  슬롯을 dead 액션으로 되채웠다(최신 super-cycle `[feature_engineering, preprocessing, hyperparam_search]`, 최근 5시간
+  s6e8 attempt 30건 중 10건·CPU 22%가 이 세 액션이고 hyperparam_search 5건은 전부 base와 tie). 폴백을 바꿨다: 후보가
+  모자라면 살아 있는 액션을 Thompson 순위 순으로 순환해 반복 배정하고(예: `[preprocessing, feature_engineering,
+  preprocessing]`), 살아 있는 후보가 하나도 없을 때만 원래 랭킹에서 채운다. 재탐색 창은 그대로다. 한계: 슬롯이 살아
+  있는 액션으로 옮겨갈 뿐이라 CPU 절감이 아니라 정보 수확률 개선이다(feature_engineering은 attempt당 CPU가 preprocessing의
+  약 3배). s6e8이 정체 상태(v1.6.26 이후 122 attempt 중 jump 0)라 기대 효과는 작다.
 
 ---
 
