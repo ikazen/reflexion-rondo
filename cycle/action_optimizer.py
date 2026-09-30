@@ -37,6 +37,24 @@ _BANDIT_DECAY = 0.95
 _SCOPE_LOCAL = "local"
 
 
+def bandit_deltas(
+    label: str | None,
+    gain_vs_best: float | None,
+    error_trace: str | None,
+    is_noop_tie: bool = False,
+) -> tuple[float, float]:
+    """(alpha 증가분, beta 증가분). update_bandit과 bin/api.py의 posterior 리플레이가 같은 표를 쓴다."""
+    if error_trace is not None or label == "regression":
+        return 0.0, 1.0
+    if is_noop_tie:
+        return 0.0, _NOOP_TIE_PENALTY
+    if label == "jump":
+        return 1.0, 0.0
+    if gain_vs_best is not None and gain_vs_best > 0:
+        return _HALF_SUCCESS, _NEUTRAL_INCREMENT
+    return _NEUTRAL_INCREMENT, _NEUTRAL_INCREMENT
+
+
 def update_bandit(
     conn: PgConn,
     competition_id: str,
@@ -49,16 +67,7 @@ def update_bandit(
     if action_type not in ACTION_TYPES:
         return
 
-    if error_trace is not None or label == "regression":
-        da, db = 0.0, 1.0
-    elif is_noop_tie:
-        da, db = 0.0, _NOOP_TIE_PENALTY
-    elif label == "jump":
-        da, db = 1.0, 0.0
-    elif gain_vs_best is not None and gain_vs_best > 0:
-        da, db = _HALF_SUCCESS, _NEUTRAL_INCREMENT
-    else:
-        da, db = _NEUTRAL_INCREMENT, _NEUTRAL_INCREMENT
+    da, db = bandit_deltas(label, gain_vs_best, error_trace, is_noop_tie)
 
     conn.execute(
         """
@@ -66,11 +75,11 @@ def update_bandit(
         VALUES (%s, %s, %s, 1.0 + %s, 1.0 + %s, now())
         ON CONFLICT (scope, scope_key, action_type)
         DO UPDATE SET
-            alpha      = 1.0 + (raw.action_bandit.alpha - 1.0) * 0.95 + %s,
-            beta       = 1.0 + (raw.action_bandit.beta  - 1.0) * 0.95 + %s,
+            alpha      = 1.0 + (raw.action_bandit.alpha - 1.0) * %s + %s,
+            beta       = 1.0 + (raw.action_bandit.beta  - 1.0) * %s + %s,
             updated_at = now()
         """,
-        [_SCOPE_LOCAL, competition_id, action_type, da, db, da, db],
+        [_SCOPE_LOCAL, competition_id, action_type, da, db, _BANDIT_DECAY, da, _BANDIT_DECAY, db],
     )
 
 
@@ -147,9 +156,9 @@ def get_action_prior(
     competition_id: str,
     seed: int | None = None,
 ) -> dict[str, float]:
-    """Thompson 샘플 1회씩 → posterior_mean 반환 (advise용, 높을수록 추천).
+    """action별 Beta posterior에서 Thompson 표본을 1회씩 뽑아 반환한다 (advise용, 높을수록 추천).
 
-    DB에 데이터 없으면 균일 Beta(1,1) → 모든 action 동등.
+    posterior mean이 아니라 표본이라 호출마다 값이 달라진다. DB에 데이터 없으면 균일 Beta(1,1) → 모든 action 동등.
     반환값은 LLM Strategist 프롬프트에 텍스트로 주입되며, 최종 결정은 LLM(advisory).
     """
     rows = conn.execute(
