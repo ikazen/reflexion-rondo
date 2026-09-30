@@ -15,7 +15,8 @@ DROP_COLS         = ["id"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s5e8/data/"
 EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
-ACTIVE            = False  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
+ACTIVE            = True  # deep tier 재활성 (#422, ADR-064) — s6e8 동결로 빈 슬롯 교체. 재활성 전에 baseline을
+# `bin.establish_baseline --remeasure`로 현재 평가 의미에 맞춰 다시 잰다(휴면 중 평가 의미가 바뀌었다).
 
 EDA_CARD = """competition: playground-series-s5e8 (Bank Dataset — Term Deposit Subscription)
 task: binary classification  metric: AUC  target: y
