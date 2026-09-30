@@ -1045,6 +1045,25 @@ def test_exact_tie_with_prev_best_is_noop_tie():
     assert result.is_noop_tie is True
 
 
+@pytest.mark.parametrize(
+    ("offset", "is_tie"),
+    [(5e-7, True), (-5e-7, True), (2e-6, False), (-2e-6, False)],
+)
+def test_prev_best_within_float_noise_is_noop_tie(offset, is_tie):
+    """같은 pipeline도 멀티스레드 축약 때문에 프로세스마다 cv가 1e-7~2e-6 어긋난다(ADR-062).
+    비트 일치가 아니라 재현 노이즈 안이면 no-op tie다(#449). fold-1 조기 중단은 아니라 5-fold를 다 돈다."""
+    df = _make_df()
+    baseline = evaluate_pipeline(BasePipeline(), df, _ctx())
+    ctx_with_prev = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42,
+        is_classification=True, prev_best=baseline.cv_score + offset,
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx_with_prev)
+    assert result.is_noop_tie is is_tie
+    assert result.noop_early_exit is False
+    assert result.gain_vs_best == pytest.approx(-offset, abs=1e-12)
+
+
 def test_different_prev_best_is_not_noop_tie():
     """cv_score가 prev_best와 다르면 is_noop_tie=False."""
     df = _make_df()

@@ -18,7 +18,7 @@ from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit, KFo
 _AUDIT_SEED = 2025  # 고정 seed — 대회·재시작과 무관하게 항상 동일 holdout 분리
 
 from config.settings import LABEL_Z
-from evaluator.metrics import get as get_metric
+from evaluator.metrics import float_noise_tolerance, get as get_metric
 from evaluator.models import build_registry_model, construct_with_kwarg_retry, resolve_model_class
 
 _PI_REPEATS = 3
@@ -1109,11 +1109,12 @@ def evaluate_pipeline(
         label = "neutral"
         gain_vs_best = None
     else:
-        # 정확히 동일한 cv_score(부동소수 16자리까지 일치)는 정상적 확률적 학습으로는
+        # prev_best와 재현 노이즈(ADR-062) 안에서 같은 cv_score는 정상적 확률적 학습으로는
         # 사실상 불가능 — patch hook이 base로 위임/무시되어 유효 계산이 안 바뀐 신호다
         # (hyperparam_search의 build_model params 무시, feature_engineering의
-        # 기존 base와 동일한 재발명 등 action_type 무관하게 발생).
-        is_noop_tie = cv_score == ctx.prev_best
+        # 기존 base와 동일한 재발명 등 action_type 무관하게 발생). 같은 계산도 멀티스레드
+        # 축약 때문에 프로세스마다 1e-7~2e-6 어긋나 비트 일치만 보면 놓친다(#449).
+        is_noop_tie = abs(cv_score - ctx.prev_best) <= float_noise_tolerance(ctx.prev_best)
         delta = metric_sign * (cv_score - ctx.prev_best)
         gain_vs_best = delta
         # degenerate 회귀 cv_score의 극단적 gain_vs_best가 reflection_impact 전역
