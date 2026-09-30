@@ -347,9 +347,17 @@ def main() -> None:
                             upload_best_pipeline(competition_id, materialized, strict=True)
                     except BestPipelineUploadError as exc:
                         # 업로드가 트랜잭션 안이라 insert도 롤백됐다(#419) — DB와 blob이 어긋나지 않는다.
+                        merge_ok = False
                         print(f"[run_promote_task] best pipeline 업로드 실패 — 승격 롤백 winner={winner_row[0][:8]}: {exc}")
                     else:
                         print(f"[run_promote_task] best pipeline materialized for {competition_id}")
+                if not merge_ok:
+                    # confirm 거부와 같은 이유로 되돌린다(#395, #426) — pipeline이 없는데 was_promoted가 True로 남으면
+                    # cycle/stagnation.py가 기각된 jump를 실제 승격으로 세어 정체 신호가 늦게 켜진다.
+                    conn.execute(
+                        "UPDATE raw.attempts SET was_promoted = false WHERE attempt_id = %s",
+                        [winner_row[0]],
+                    )
 
     # auto-submit(매일 06:00)이 제출하는 건 이번 super-cycle의 확정 승격 winner가 아니라
     # 대회 전역 best attempt(bin/api.py:_best_attempt와 동일 기준)다 — 확정 승격 여부와
