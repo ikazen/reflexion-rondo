@@ -421,6 +421,22 @@ promote task가 대회 best attempt의 제출 CSV를 MinIO(`submissions/<competi
    가 하나도 없으면 advisory를 안 내보내므로, 새 체제에서 재확인되기 전까지는 자연히 무시된다.
 7. 무효화 단계에서 큐가 `failed`로 끝났다면 idle 재보급의 6시간 규칙(#363)을 기다리지 않고 `POST /api/queue`로 직접 재큐잉한다.
 
+### 4-13. deep tier 교체 — 정체 대회 동결과 휴면 대회 재활성(#422, ADR-064)
+
+`ACTIVE`(대회 config)는 daemon의 큐 **리필**만 막는다. 이미 큐에 있는 항목은 멈추지 않고, 휴면 대회는 설정만 켜면 옛 baseline·옛 밴딧으로 바로 돈다. 순서:
+
+1. 후보 표: 스냅샷이 없는 대회는 `POST /api/leaderboard/refresh`(`{"competition": "<competition-id>"}`, 외부 Kaggle 호출)로 받은 뒤 `competition_snr` 뷰의
+   SNR과 LB-p90 격차(fold 표준편차 배수), 과거 attempt/jump, 동결 사유(config 주석과 ADR)를 한 표로 본다. 선정 규칙과 표 형식은 ADR-064.
+2. config PR: 동결 대회 `ACTIVE = False`, 재활성 대회 `ACTIVE = True` + ADR. 이미지에 들어가므로 배포 대상이다.
+3. **컷오버 전에** 재활성 대회의 baseline을 다시 잰다 — 휴면 중 평가 의미가 바뀌었다(§4-8). `docker exec -d deploy-rondo-daemon-1 sh -c
+   'uv run --no-sync python -m bin.establish_baseline --remeasure --competition <competition-id> > /tmp/remeasure.log 2>&1'`로 분리 실행하고
+   `docker top`으로 진행을 본다(valid 행마다 20~40분). 컷오버가 같은 컨테이너의 exec를 죽이므로 끝난 뒤에 컷오버한다.
+4. 재활성 대회의 밴딧이 휴면 시절 낮은 CPU 예산의 kill 벌점으로 전 액션 dead(평균 0.05, observed 20)인지 확인하고, 그렇다면 리셋한다:
+   `DELETE FROM raw.action_bandit WHERE scope = 'local' AND scope_key = '<competition-id>'`(daemon 컨테이너 exec, 대회 큐가 없을 때).
+5. 컷오버 직전에 동결 대회의 pending/running 큐를 `PATCH /api/queue/{id}`(`{"status": "cancelled"}`)로 취소한다. running은 사이클 경계에서 멈춘다.
+   구 daemon은 아직 그 대회를 리필하므로 컷오버 뒤에 다시 큐를 확인해 새로 생긴 항목을 취소한다.
+6. 컷오버 뒤: `/api/heartbeat`의 `current_competition`, 재활성 대회 첫 사이클의 fingerprint 가드 통과, 첫 슈퍼사이클 액션 배정이 dead 액션 없이 나뉘는지 확인한다.
+
 ### 4-3. auto-submit 일시중단 복구
 
 cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_paused_reason`이 채워지고 해당 대회의 자동 제출이 멈춘다(decisions.md ADR-026). 발동 조건은
