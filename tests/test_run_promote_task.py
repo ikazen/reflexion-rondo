@@ -16,6 +16,8 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+from store.s3_code import BestPipelineUploadError
+
 ROOT = Path(__file__).parent.parent
 
 
@@ -157,6 +159,7 @@ class _Conn:
     def __init__(self):
         self.executed: list[str] = []
         self.executed_params: list[object] = []
+        self.rolled_back = False
 
     def execute(self, sql, params=None):
         s = " ".join(sql.split())
@@ -174,7 +177,11 @@ class _Conn:
 
     @contextlib.contextmanager
     def transaction(self):
-        yield
+        try:
+            yield
+        except BaseException:
+            self.rolled_back = True
+            raise
 
     def close(self):
         pass
@@ -183,7 +190,7 @@ class _Conn:
 def _run_promote_with_mocks(
     confirm_result, reflect_mock, confirm_mock, eval_isolated_mock=None, generate_csv_mock=None,
     best_attempt_mock=None, download_submission_csv_mock=None, update_bandit_mock=None,
-    comp_attrs=None, timed_out_marker=False,
+    comp_attrs=None, timed_out_marker=False, upload_side_effect=None,
 ) -> "_Conn":
     """모든 외부 의존을 mock 처리하고 run_promote_task.main()을 1회 실행. 사용된 conn을 반환.
 
@@ -197,7 +204,7 @@ def _run_promote_with_mocks(
     wall 상한을 넘겼다는 표식이 있는 상태.
     best_attempt_mock 미지정 시 winner_attempt_id를 전역 best로 반환(대부분 테스트는 승격
     winner == 전역 best로 가정). download_submission_csv_mock 미지정 시 캐시 미스(None).
-    update_bandit_mock 미지정 시 새 MagicMock.
+    update_bandit_mock 미지정 시 새 MagicMock. upload_side_effect는 best_pipeline 업로드 mock의 side_effect(MinIO 장애 재현).
     """
     fake_df = MagicMock(name="train_df")
     fake_df.drop.return_value = fake_df
@@ -233,7 +240,9 @@ def _run_promote_with_mocks(
             insert_pipeline_mock = stack.enter_context(patch("store.db.insert_pipeline"))
             stack.enter_context(patch("store.s3_code.download", return_value="def f():\n    return 1\n"))
             stack.enter_context(patch("store.s3_code.download_best_pipeline", return_value=None))
-            upload_best_pipeline_mock = stack.enter_context(patch("store.s3_code.upload_best_pipeline"))
+            upload_best_pipeline_mock = stack.enter_context(
+                patch("store.s3_code.upload_best_pipeline", side_effect=upload_side_effect)
+            )
             stack.enter_context(patch("bin.submit.generate_submission_csv_isolated", generate_csv_mock))
             upload_submission_csv_mock = stack.enter_context(patch("store.s3_code.upload_submission_csv"))
             mark_timed_out_mock = stack.enter_context(patch("store.s3_code.mark_submission_csv_timed_out"))
@@ -471,6 +480,34 @@ def test_merge_verify_mismatched_cv_blocks_promotion() -> None:
     )
     assert conn.insert_pipeline_mock.call_count == 0
     assert conn.upload_best_pipeline_mock.call_count == 0
+
+
+def test_best_pipeline_upload_is_strict_and_inside_the_insert_transaction() -> None:
+    """#419: 업로드가 insert와 같은 트랜잭션 안에서 strict로 불려야 실패가 insert를 롤백한다."""
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
+        MagicMock(return_value=SimpleNamespace(reflection_id="rid")),
+        MagicMock(),
+    )
+    assert conn.upload_best_pipeline_mock.call_args.kwargs["strict"] is True
+    assert conn.rolled_back is False
+
+
+def test_upload_failure_rolls_back_the_promotion_and_the_task_continues(capsys) -> None:
+    """MinIO 업로드 실패를 삼키면 DB만 새 sha가 돼 _baseline_source_guard가 대회를 정지시킨다(#419).
+    실패는 트랜잭션을 롤백시키고 승격만 스킵한다 — reflect 등 나머지 단계는 계속 실행된다."""
+    reflect_mock = MagicMock(return_value=SimpleNamespace(reflection_id="rid"))
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
+        reflect_mock,
+        MagicMock(),
+        upload_side_effect=BestPipelineUploadError("minio down"),
+    )
+    assert conn.rolled_back is True
+    assert reflect_mock.call_count == 3
+    out = capsys.readouterr().out
+    assert "업로드 실패 — 승격 롤백" in out
+    assert "best pipeline materialized" not in out
 
 
 @pytest.mark.parametrize(

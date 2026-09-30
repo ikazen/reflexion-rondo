@@ -50,7 +50,7 @@ def main() -> None:
     from memory.retriever import EmbeddingUnavailableError
     from runtime.isolate import eval_isolated
     from store.s3_code import download as _code_download
-    from store.s3_code import download_best_pipeline, upload_best_pipeline
+    from store.s3_code import BestPipelineUploadError, download_best_pipeline, upload_best_pipeline
     from store.train_data import load_train
     from cycle.run import (
         _CODE_HEADER_SEP,
@@ -329,22 +329,27 @@ def main() -> None:
                             merge_oof_preds = merge_eval.oof_preds
 
                 if merge_ok:
-                    with conn.transaction():
-                        insert_pipeline(
-                            conn,
-                            pipeline_id=str(_uuid.uuid4()),
-                            attempt_id=winner_row[0],
-                            competition_id=competition_id,
-                            fingerprint_snapshot=fp_dict,
-                            code=promoted_source,
-                            cv_score=winner_row[2],
-                            gain_vs_best=winner_gain,
-                            pipeline_sha256=pipeline_sha256,
-                            oof_preds=merge_oof_preds,
-                            materialized_code=materialized,
-                        )
-                    upload_best_pipeline(competition_id, materialized)
-                    print(f"[run_promote_task] best pipeline materialized for {competition_id}")
+                    try:
+                        with conn.transaction():
+                            insert_pipeline(
+                                conn,
+                                pipeline_id=str(_uuid.uuid4()),
+                                attempt_id=winner_row[0],
+                                competition_id=competition_id,
+                                fingerprint_snapshot=fp_dict,
+                                code=promoted_source,
+                                cv_score=winner_row[2],
+                                gain_vs_best=winner_gain,
+                                pipeline_sha256=pipeline_sha256,
+                                oof_preds=merge_oof_preds,
+                                materialized_code=materialized,
+                            )
+                            upload_best_pipeline(competition_id, materialized, strict=True)
+                    except BestPipelineUploadError as exc:
+                        # 업로드가 트랜잭션 안이라 insert도 롤백됐다(#419) — DB와 blob이 어긋나지 않는다.
+                        print(f"[run_promote_task] best pipeline 업로드 실패 — 승격 롤백 winner={winner_row[0][:8]}: {exc}")
+                    else:
+                        print(f"[run_promote_task] best pipeline materialized for {competition_id}")
 
     # auto-submit(매일 06:00)이 제출하는 건 이번 super-cycle의 확정 승격 winner가 아니라
     # 대회 전역 best attempt(bin/api.py:_best_attempt와 동일 기준)다 — 확정 승격 여부와

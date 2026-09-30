@@ -56,8 +56,16 @@ def download(uri: str) -> str | None:
 _BEST_KEY = "best_pipeline.py"
 
 
-def upload_best_pipeline(competition_id: str, content: str) -> str:
-    """Materialized best pipeline 저장 → URI 반환."""
+class BestPipelineUploadError(RuntimeError):
+    pass
+
+
+def upload_best_pipeline(competition_id: str, content: str, strict: bool = False) -> str:
+    """Materialized best pipeline 저장 → URI 반환.
+
+    DB에 새 sha를 기록하는 쓰기 경로는 strict=True로 부른다 — MinIO 실패를 로컬 폴백으로 삼키면 DB는 새 sha인데 blob은
+    옛 내용이라 _baseline_source_guard가 대회를 정지시킨다(#419). 폴백은 MinIO 없이 도는 로컬 개발용이다.
+    """
     key = f"{competition_id}/{_BEST_KEY}"
     try:
         resp = requests.put(
@@ -68,8 +76,9 @@ def upload_best_pipeline(competition_id: str, content: str) -> str:
         )
         resp.raise_for_status()
         return f"s3://{_BUCKET}/{key}"
-    except Exception:
-        pass
+    except Exception as exc:
+        if strict:
+            raise BestPipelineUploadError(f"best_pipeline upload failed for {competition_id}: {exc}") from exc
     local_dir = Path(__file__).parent.parent / "runs" / "best"
     local_dir.mkdir(parents=True, exist_ok=True)
     path = local_dir / f"{competition_id}_best_pipeline.py"

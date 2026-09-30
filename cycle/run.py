@@ -45,6 +45,7 @@ from store.db import PgConn, insert_attempt, insert_pipeline
 from store.s3_code import download as _code_download
 from store.s3_code import download_best_pipeline as _best_pipeline_download
 from store.s3_code import upload as _code_upload
+from store.s3_code import BestPipelineUploadError
 from store.s3_code import upload_best_pipeline as _best_pipeline_upload
 
 _CODE_HEADER_SEP = "# " + "-" * 60  # 저장 헤더와 본문 경계 — _best_code가 이 줄로 헤더를 떼낸다
@@ -508,7 +509,7 @@ def establish_bootstrap_baseline(
             " where competition_id = %s and train_fingerprint is null",
             [train_data_fingerprint(train90), competition_id],
         )
-    _best_pipeline_upload(competition_id, materialized)
+        _best_pipeline_upload(competition_id, materialized, strict=True)
     _LOG.info(
         "bootstrap baseline 확립 — competition=%s cv=%.6f attempt=%s",
         competition_id, cv_score, attempt_id[:8],
@@ -1106,22 +1107,26 @@ def run_attempt_core(
             except Exception as exc:
                 _LOG.warning("merge-verify OOF 수집 실패(무시하고 계속): %s", exc)
 
-            with conn.transaction():
-                insert_pipeline(
-                    conn,
-                    pipeline_id=str(uuid.uuid4()),
-                    attempt_id=attempt_id,
-                    competition_id=config.competition_id,
-                    fingerprint_snapshot=fp_dict,
-                    code=promoted_source,
-                    cv_score=cv_score,
-                    gain_vs_best=gain_vs_best,
-                    pipeline_sha256=pipeline_sha256,
-                    oof_preds=merge_oof_preds,
-                    materialized_code=materialized,
-                )
-            _best_pipeline_upload(config.competition_id, materialized)
-            _LOG.info("best pipeline materialized (gain=%+.5f)", gain_vs_best)
+            try:
+                with conn.transaction():
+                    insert_pipeline(
+                        conn,
+                        pipeline_id=str(uuid.uuid4()),
+                        attempt_id=attempt_id,
+                        competition_id=config.competition_id,
+                        fingerprint_snapshot=fp_dict,
+                        code=promoted_source,
+                        cv_score=cv_score,
+                        gain_vs_best=gain_vs_best,
+                        pipeline_sha256=pipeline_sha256,
+                        oof_preds=merge_oof_preds,
+                        materialized_code=materialized,
+                    )
+                    _best_pipeline_upload(config.competition_id, materialized, strict=True)
+            except BestPipelineUploadError as exc:
+                _LOG.warning("best pipeline 업로드 실패 — 승격 롤백: %s", exc)
+            else:
+                _LOG.info("best pipeline materialized (gain=%+.5f)", gain_vs_best)
         else:
             reason = "holdout 악화" if confirm.holdout_regressed else "cross-seed 미확인"
             _LOG.info("%s — 승격 스킵 (gain=%+.5f)", reason, gain_vs_best)

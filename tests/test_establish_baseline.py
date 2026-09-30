@@ -92,7 +92,7 @@ def test_first_candidate_confirmed_promotes_and_stops():
     assert result == "attempt-1"
     assert mock_confirm.call_count == 1  # 두 번째 후보는 시도하지 않음
     mock_insert.assert_called_once()
-    mock_upload.assert_called_once_with("playground-series-s5e7", "materialized")
+    mock_upload.assert_called_once_with("playground-series-s5e7", "materialized", strict=True)
 
 
 def test_first_candidate_fails_falls_back_to_second():

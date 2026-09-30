@@ -74,7 +74,7 @@ def test_confirmed_promotes_and_returns_true():
     assert mock_insert.call_args.kwargs["cv_score"] == 0.9
     assert mock_insert.call_args.kwargs["gain_vs_best"] is None
     assert mock_insert.call_args.kwargs["materialized_code"] == "materialized code"
-    mock_upload.assert_called_once_with("s4e1", "materialized code")
+    mock_upload.assert_called_once_with("s4e1", "materialized code", strict=True)
 
 
 def test_confirm_and_measure_called_with_best_source_none():

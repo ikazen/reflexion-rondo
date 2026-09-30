@@ -156,7 +156,7 @@ def _promote(conn, comp: object, attempt_id: str, cv_score: float, source: str, 
             oof_preds=merge_oof_preds,
             materialized_code=materialized,
         )
-    upload_best_pipeline(competition_id, materialized)
+        upload_best_pipeline(competition_id, materialized, strict=True)
 
 
 def _valid_confirmed_pipelines(conn, competition_id: str) -> list[tuple[str, str, float]]:
