@@ -139,13 +139,13 @@ def _read_cpu_seconds(pid: int) -> float | None:
         return None
 
 
+# [last_progress] stage=fold_done fold=1/3 cpu=1650
 KILL_PROGRESS_PREFIX = "[last_progress] "
 
 
 def _with_last_progress(reason: str, ws: Path) -> str:
-    """워치독 kill 사유 아래에 runner가 남긴 마지막 진행 줄을 붙인다(#421). 첫 줄은 그대로라 `startswith("cpu budget exceeded")`
-    분기(cycle/run.py:_resource_kill_feedback)와 기존 분석 쿼리가 유지되고, 시그니처 정규화는 이 줄을 무시한다
-    (cycle/error_pitfalls.py). 진행 줄이 없으면 evaluate_pipeline 진입 전(소스 로드/데이터 준비)에 죽은 것이다."""
+    """첫 줄은 기존 kill 메시지 그대로여야 한다 — `startswith("cpu budget exceeded")` 분기(cycle/run.py:_resource_kill_feedback)와 분석 쿼리가
+    의존하고, 시그니처 정규화(cycle/error_pitfalls.py)는 진행 줄을 무시한다. `none`이면 evaluate_pipeline 진입 전에 죽은 것이다."""
     try:
         lines = (ws / "_progress.log").read_text().splitlines()
     except OSError:

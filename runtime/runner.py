@@ -21,6 +21,7 @@ def _write(payload: dict) -> None:
 
 
 def _progress(line: str) -> None:
+    # 줄마다 열고 닫는다 — 워치독이 SIGKILL하면 열린 핸들의 버퍼에 남은 줄이 유실된다.
     with open(WS / "_progress.log", "a") as f:
         f.write(line + "\n")
 

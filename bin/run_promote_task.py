@@ -285,8 +285,6 @@ def main() -> None:
 
                 # merge-verify — 병합본을 실제로 1회 평가해 winner 자신의 cv_score와
                 # 어긋나지 않는지 확인(정적 AST 검증만으로는 병합 손상을 못 잡음).
-                # train90 없으면(train 로드 실패) 확인 불가 — 기존 confirm/holdout 스킵과
-                # 같은 원칙으로 검증을 건너뛰고 진행(보수적으로 막지 않음, 기존 동작 유지).
                 merge_ok = True
                 merge_oof_preds = None
                 if train90 is not None:
@@ -344,16 +342,16 @@ def main() -> None:
                                 oof_preds=merge_oof_preds,
                                 materialized_code=materialized,
                             )
+                            # 트랜잭션 안에서 부른다 — 업로드 실패가 insert를 롤백해야 DB와 blob이 어긋나지 않는다.
                             upload_best_pipeline(competition_id, materialized, strict=True)
                     except BestPipelineUploadError as exc:
-                        # 업로드가 트랜잭션 안이라 insert도 롤백됐다(#419) — DB와 blob이 어긋나지 않는다.
                         merge_ok = False
                         print(f"[run_promote_task] best pipeline 업로드 실패 — 승격 롤백 winner={winner_row[0][:8]}: {exc}")
                     else:
                         print(f"[run_promote_task] best pipeline materialized for {competition_id}")
                 if not merge_ok:
-                    # confirm 거부와 같은 이유로 되돌린다(#395, #426) — pipeline이 없는데 was_promoted가 True로 남으면
-                    # cycle/stagnation.py가 기각된 jump를 실제 승격으로 세어 정체 신호가 늦게 켜진다.
+                    # confirm 거부 때와 같은 이유로 되돌린다 — pipeline이 없는데 was_promoted가 True로 남으면
+                    # cycle/stagnation.py가 기각된 jump를 승격으로 세어 정체 신호가 늦게 켜진다.
                     conn.execute(
                         "UPDATE raw.attempts SET was_promoted = false WHERE attempt_id = %s",
                         [winner_row[0]],

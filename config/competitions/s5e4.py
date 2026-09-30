@@ -37,9 +37,7 @@ ACTIVE            = True  # deep tier 재활성 (#332, ADR-051) — s5e2 동결�
 MAX_TRAIN_ROWS = 500_000
 N_SPLITS = 3
 
-# attempt 평가 전용 CPU 예산(#421, ADR-063). 500k 체제 3일 실측에서 성공 attempt는 CPU 4천초 미만에 끝나고(jump 3건은 948/1316/2080s)
-# 예산 3600s에 걸린 kill이 CPU의 80%를 태웠다. 성공 분포의 상단(2400s 초과는 91건 중 4건, jump 0)에서 자른다. confirm/holdout/merge-verify는
-# 승격 후보의 재평가라 이 값을 쓰지 않고 기본 3600s를 유지한다. 48h 관측에서 잘려나간 성공에 jump가 있으면 이 줄을 지운다(3600 복원).
+# attempt 평가에만 적용한다. confirm/holdout/merge-verify는 승격 후보의 재평가라 기본 3600s를 유지한다. 근거와 복원 조건은 ADR-063.
 ATTEMPT_CPU_BUDGET_SECS = 2400
 
 # 제출 CSV는 MAX_TRAIN_ROWS 축소 없이 전량(약 79.7만 행)으로 학습한다. 제출 fit에는 CV가 없어 축소할 이유가 없고, LB는 학습 행수를

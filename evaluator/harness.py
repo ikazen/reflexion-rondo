@@ -562,8 +562,7 @@ class PipelineContext:
     # 그 attempt의 값으로 채운다. #339(확정 base와의 tie)와 달리 base가 아닌 임의의 과거 attempt와도
     # 매칭해 반복 재생산(같은 params로 수렴하는 서로 다른 patch 등)의 fold 계산을 회수한다.
     known_fold1_scores: list[list[float]] | None = None
-    # 평가 진행 상황을 한 줄씩 받는 콜백(#421) — runner가 워크스페이스 파일에 append하도록 넣는다. 워치독이 CPU/메모리 kill 시 마지막
-    # 줄을 error_trace에 붙여 kill이 preselect / fold-1 / fold 2 이후 중 어디서 났는지 남긴다. None이면 아무 것도 하지 않는다.
+    # runner가 워크스페이스 파일에 append하는 콜백 — 워치독이 kill 사유에 마지막 줄을 붙여 kill 위치를 남긴다(ADR-063).
     progress: Callable[[str], None] | None = None
 
 

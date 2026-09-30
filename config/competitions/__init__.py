@@ -41,7 +41,5 @@ def active_competition_ids() -> set[str]:
 
 
 def attempt_cpu_budget_secs(comp: object) -> float | None:
-    """attempt 평가 전용 CPU 예산. 대회가 ATTEMPT_CPU_BUDGET_SECS를 두면 그 값, 아니면 공용 CPU_BUDGET_SECS, 둘 다 없으면 None(기본값).
-
-    confirm/holdout/merge-verify는 승격 후보를 재평가하므로 attempt 예산으로 자르지 않고 CPU_BUDGET_SECS를 그대로 쓴다(ADR-063)."""
+    """confirm/holdout/merge-verify는 승격 후보를 재평가하므로 이 예산으로 자르지 않고 CPU_BUDGET_SECS를 그대로 쓴다(ADR-063)."""
     return getattr(comp, "ATTEMPT_CPU_BUDGET_SECS", getattr(comp, "CPU_BUDGET_SECS", None))
