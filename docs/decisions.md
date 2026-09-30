@@ -1517,6 +1517,14 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
   더 일찍 끊는다. `collect_oof`와 `n_splits == 1`은 제외하고 마진은 harness의 `_CPU_PROJECTION_MARGIN`을 그대로 쓴다. s5e4 예산 2400s에서 데드라인은 약 920 CPU-s로
   성공 최대 fold-1(약 450s)의 2배 위이고, 4시간 창 기준 절감은 25건 x (2400 - 920)s = 약 10.3 CPU-h(kill 소각의 61%)다. 확인 지표: kill당 평균 CPU(2241s -> 약 920s 이하),
   `projected ... during fold 1` 건수, 성공률과 jump 유지. 재고: 잘린 attempt에 jump가 있거나 성공률이 뚜렷이 떨어지면 마진을 올린다. 남은 kill(fold-2 이후)은 그대로 예산이 집행한다.
+- **[2026-09-30 #448 후속]**: v1.6.31 라이브 뒤 s5e8(동결 이후 34 attempt, 08:03Z~12:22Z)에서 워치독 kill 11건이 CPU 8.67h(평균 2836s)로 s5e8 CPU의 약 65%였다. 이번에는
+  fold-1이 아니라 대부분 `fold_done fold=2~4/5`에서 예산 직전에 죽었다(`fold_done fold=4/5 cpu=3550`에서 kill 등). fold당 비용이 약 800~1050s로 fold-1이 이후 fold보다 싸서
+  fold-1 투영(마진 1.15)을 통과했기 때문이다. 워치독 투영을 모든 fold로 일반화했다: 투영 = 마지막 완료 fold의 종료 CPU + 남은 fold 수 x max(진행 중 fold의 소모, 완료 fold의 평균),
+  한도는 예산 x `_CPU_PROJECTION_MARGIN`(1.15)이다. 완료 fold가 없으면(k=0) 위 #444 규칙과 같은 식이다. `cv_done`이 있거나 모든 fold가 끝났으면 투영하지 않고 `collect_oof`와
+  `n_splits < 2`는 제외한다. 하네스는 fold-1 tie 지름길로 일찍 끝날 때도 `cv_done`을 남겨 이어지는 holdout 평가를 다음 fold로 오인하지 않게 했다. 예상 효과: 후반 fold kill 6건 이상이
+  kill 시점 3600s -> 약 1800~2000s로 당겨진다(건당 약 1800 CPU-s, 4.5h 창에서 s5e8 CPU의 약 20%). 확인: s5e8 워치독 kill 수와 kill당 CPU(기준 11건 / 평균 2836s),
+  `projected ... during fold 2~5` 건수, 성공률과 jump 유지. 재고: 성공률이 뚜렷이 떨어지거나 잘린 attempt에 jump가 있으면 마진을 올린다. 마진 안쪽(총 3600~4140s로 투영)의 near-miss는
+  여전히 끊지 않는다.
 
 ---
 

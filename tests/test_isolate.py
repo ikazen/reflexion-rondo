@@ -261,7 +261,9 @@ def test_memory_watchdog_kill_also_reports_the_last_progress_line() -> None:
     assert result.error_trace.endswith("\n[last_progress] stage=preselect_done cpu=70")
 
 
-def _fold1_run(progress_lines: list[str] | None, cpu: float, *, collect_oof: bool = False, budget: float = 900.0):
+def _fold1_run(
+    progress_lines: list[str] | None, cpu: float, *, collect_oof: bool = False, budget: float = 900.0, n_splits: int = 3,
+):
     """워치독이 한 번 폴링하는 시점에 CPU가 cpu이고 runner가 progress_lines를 남긴 상태를 재현한다."""
     import json as _json
 
@@ -281,7 +283,7 @@ def _fold1_run(progress_lines: list[str] | None, cpu: float, *, collect_oof: boo
          patch("runtime.isolate._read_cpu_seconds", return_value=cpu):
         return eval_isolated(
             source="class Patch:\n    pass\n", train=train, target_col="y", metric="auc",
-            prev_best=0.85, n_splits=3, seed=42, is_classification=True, collect_oof=collect_oof,
+            prev_best=0.85, n_splits=n_splits, seed=42, is_classification=True, collect_oof=collect_oof,
             cpu_budget_sec=budget,
         )
 
@@ -322,11 +324,48 @@ def test_fold1_projection_skips_collect_oof_evaluations() -> None:
 
 @pytest.mark.parametrize(
     "progress_lines",
-    [None, ["stage=eval_start cpu=1"], _IN_FOLD1 + ["stage=fold_done fold=1/3 cpu=600"], _IN_FOLD1 + ["stage=cv_done cpu=700"]],
+    [None, ["stage=eval_start cpu=1"], _IN_FOLD1 + ["stage=cv_done cpu=700"]],
 )
-def test_fold1_projection_only_applies_while_fold1_is_running(progress_lines) -> None:
-    """preselect 중(eval_start)이거나 fold-1이 이미 끝난 뒤, 진행 기록이 없을 때는 일반 예산(900s)만 적용된다."""
+def test_projection_only_applies_while_the_cv_loop_runs(progress_lines) -> None:
+    """preselect 중(eval_start)이거나 CV가 끝난 뒤(cv_done), 진행 기록이 없을 때는 일반 예산(900s)만 적용된다."""
     assert _fold1_run(progress_lines, cpu=800.0).error_trace is None
+
+
+_FIVE_FOLDS = dict(budget=3600.0, n_splits=5)  # 한도 = 3600 x 1.15 = 4140
+
+
+def test_rolling_projection_kills_when_the_completed_folds_imply_an_overrun() -> None:
+    """fold-1이 이후 fold보다 싸서 fold-1 투영을 통과해도, 완료 fold 평균으로 어림한 총비용이 한도를 넘으면 그 시점에 끊는다(#448).
+    투영 = 마지막 fold 종료 CPU + 남은 fold 수 x max(진행 중 fold 소모, 완료 fold 평균) = 1801 + 3 x 900 = 4501."""
+    lines = ["stage=preselect_done cpu=1", "stage=fold_done fold=1/5 cpu=901", "stage=fold_done fold=2/5 cpu=1801"]
+    result = _fold1_run(lines, cpu=1850.0, **_FIVE_FOLDS)
+
+    first, second = result.error_trace.split("\n")
+    assert first == "cpu budget exceeded: projected 4501s CPU during fold 3 (limit 3600s)"
+    assert second == "[last_progress] stage=fold_done fold=2/5 cpu=1801"
+
+
+def test_rolling_projection_lets_a_run_within_the_margin_finish() -> None:
+    lines = ["stage=preselect_done cpu=1", "stage=fold_done fold=1/5 cpu=701", "stage=fold_done fold=2/5 cpu=1401"]
+    assert _fold1_run(lines, cpu=1450.0, **_FIVE_FOLDS).error_trace is None  # 1401 + 3 x 700 = 3501 <= 4140
+
+
+def test_rolling_projection_kills_a_runaway_fold_after_a_cheap_fold_1() -> None:
+    """fold-1은 257s인데 fold-2가 1300s째 안 끝나는 폭주(s5e8 feature_engineering) — 진행 중 fold의 소모가 평균보다 크면 그 값으로 어림한다."""
+    lines = ["stage=preselect_done cpu=1", "stage=fold_done fold=1/5 cpu=257"]
+    result = _fold1_run(lines, cpu=1300.0, **_FIVE_FOLDS)
+
+    assert result.error_trace.startswith("cpu budget exceeded: projected 4429s CPU during fold 2 (limit 3600s)")
+
+
+def test_rolling_projection_stops_after_the_last_fold() -> None:
+    lines = ["stage=preselect_done cpu=1"] + [f"stage=fold_done fold={k}/5 cpu={k * 700}" for k in range(1, 6)]
+    assert _fold1_run(lines, cpu=3550.0, **_FIVE_FOLDS).error_trace is None  # holdout 등 CV 이후 단계는 투영하지 않는다
+
+
+def test_rolling_projection_skips_collect_oof_evaluations() -> None:
+    lines = ["stage=preselect_done cpu=1", "stage=fold_done fold=1/5 cpu=901", "stage=fold_done fold=2/5 cpu=1801"]
+    assert _fold1_run(lines, cpu=1850.0, collect_oof=True, **_FIVE_FOLDS).error_trace is None
 
 
 def test_eval_isolated_cpu_budget_sec_overrides_env_default() -> None:
