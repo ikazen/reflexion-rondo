@@ -1,5 +1,33 @@
 # 변경 이력
 
+## v1.6.30 — v1.6.29 점검 후속: 파싱·merge-verify·업로드 결함, s5e4 CPU 소각, s6e8 정체 (Milestone "v1.6.29 점검 후속 2026-09-30", 2026-09-30)
+
+v1.6.29 배포 12시간 실측에서 어제 수정 6건(#404 dead 폴백, #405 에러 행 점수 잔존, #406 캐시 히트 relative gain, #356/#387 tie 조기 종료)은 의도대로
+동작했다(s6e8 super-cycle 18개 전부 dead 3종 제외, `label='error' and cv_score is not null` 0건, s5e4 relative/raw 비율 0.03685). 같은 점검에서 결함 4건과
+운영 낭비 2건이 나왔다.
+
+- #417: Strategist 응답 파싱 실패로 attempt task의 3.4%(약 174건 중 6건)가 사라지던 것을 고친다. 응답 선두 `{"` 유실 3건, 유효 JSON 뒤 잔여 텍스트 3건이었다.
+  첫 JSON 객체만 취하고 파싱 실패·빈 응답은 3회 재시도한다(Reflector와 동일).
+- #418: merge-verify 허용오차 1e-6이 rmse 12.8에서 float 노이즈(2e-6)로 정당한 jump(`72f96533`, gain +0.0314, cross-seed 2/2, holdout 개선)를 기각했다.
+  `max(1e-6, 1e-6 * |cv|)`로 metric 스케일에 비례시킨다(ADR-062). 14일 promote 로그 1007건의 merge-verify 실패 3건은 평가 에러 1, 실제 병합 손상 1(상대 7.5e-4), 노이즈 1이다.
+- #419: MinIO 업로드 실패를 로컬 폴백으로 삼켜 DB만 새 sha가 되고 대회가 정지될 수 있던 것을 고친다. 승격 2경로, bootstrap, `establish_baseline`, `rebuild_best_pipeline`이
+  insert와 같은 트랜잭션 안에서 strict로 업로드하고 실패하면 롤백한다.
+- #426: #395가 confirm 거부에만 적용한 `was_promoted` 되돌리기를 merge-verify 실패와 업로드 롤백까지 넓힌다. 기각된 jump가 승격으로 집계돼 정체 신호가 늦게 켜지던 것이다.
+- #420: 밴딧 리플레이(`/api/bandit/*`)가 no-op tie 분기를 몰라 라이브 posterior와 발산하던 것을 고친다. 델타 표(`bandit_deltas`)와 decay 상수를 공유하고
+  죽은 상수 `_BANDIT_DECAY`가 SQL 파라미터가 됐다(#357 항목).
+- #421: s5e4 500k 체제 3일(173 attempt)에서 CPU 예산 kill 76건이 CPU의 80%(70.6/88.8h)를 소각해 ADR-056/058의 재판단 기준을 넘었다. kill 사유 아래에 마지막 평가 진행
+  위치(`[last_progress] stage=... fold=k/n`)를 남기고 s5e4 attempt 예산만 2400s로 낮춘다(ADR-063). what-if로 kill 소각 -20.0h, 잘리는 성공 4/91건에 jump 0이다.
+  48h 뒤 재고 기준과 다음 개입 후보(fold-1 데드라인 vs 투영 마진)는 ADR-063에 있다.
+- #422: s6e8을 동결하고(마지막 확정 09-11 이후 19일 1,732 attempt / 884 CPU-h에 jump 0, 최대 gain 5.5e-5) s5e8로 교체한다(ADR-064). 후보 선정을 위해 리더보드 스냅샷 17개를
+  새로 받았고 선정 표는 ADR에 있다. `ACTIVE`는 큐 리필만 막으므로 컷오버 뒤 진행 중인 s6e8 큐는 API로 취소해야 한다.
+- 스키마 변경 없음. 회귀망: 신규 테스트 54개(수정을 되돌리면 실패하는 것 확인), 전체 스위트 1105 passed.
+- 이슈 정리: #11, #85, #208, #234, #285, #304, #308, #309, #357을 근거와 함께 종료하고 Milestone 7개(#3, #5, #13, #14, #15, #17, #18)를 닫았다. #208은 worker-vm 30일 실측
+  (MemAvailable 최저 6.09GB, OOM kill 0)으로, #285/#308/#309는 재개 조건을 코멘트에 남기고 닫았다.
+- 미조치: s5e10의 유효 pipeline `b6ef7f78`(cv 0.0215, 세계 1위 0.0554의 약 2.6배)은 누수 의심인데 격리되지 않았다. 같은 chain의 2건은 이미 격리됐다. 휴면 대회(SNR 1.1)라
+  재활성 전에 `bin/quarantine_leaks`가 필요하다.
+
+---
+
 ## v1.6.29 — 보류 3건 실측 후 처리 + 배포 점검 결함 3건 (Milestone "외부 리뷰 검증 반영 2026-09" 종료, "v1.6.28 점검 후속 2026-09", 2026-09-29)
 
 v1.6.28 배포 점검에서 #387/#356은 프로덕션 실측으로 확인했다(s6e8 hyperparam_search 14건 중 13건이 base와 비트 일치 tie,
