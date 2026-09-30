@@ -435,7 +435,9 @@ promote task가 대회 best attempt의 제출 CSV를 MinIO(`submissions/<competi
    `DELETE FROM raw.action_bandit WHERE scope = 'local' AND scope_key = '<competition-id>'`(daemon 컨테이너 exec, 대회 큐가 없을 때).
 5. 컷오버 직전에 동결 대회의 pending/running 큐를 `PATCH /api/queue/{id}`(`{"status": "cancelled"}`)로 취소한다. running은 사이클 경계에서 멈춘다.
    구 daemon은 아직 그 대회를 리필하므로 컷오버 뒤에 다시 큐를 확인해 새로 생긴 항목을 취소한다.
-6. 컷오버 뒤: `/api/heartbeat`의 `current_competition`, 재활성 대회 첫 사이클의 fingerprint 가드 통과, 첫 슈퍼사이클 액션 배정이 dead 액션 없이 나뉘는지 확인한다.
+6. 컷오버 뒤: 큐 리필(`_sweep_queue_refill`)은 pending/running 항목이 하나도 없을 때만 돌므로 진행 중인 큐가 있으면 재활성 대회는 한참 큐에 안 들어온다 —
+   `POST /api/queue`(`{"competition": "<slug>", "stage": "reflexion", "n_cycles": 20}`)로 직접 넣는다. 리스(5사이클)가 끝나면 라운드로빈으로 돌아온다.
+7. `/api/heartbeat`의 `current_competition`, 재활성 대회 첫 사이클의 fingerprint 가드 통과, 첫 슈퍼사이클 액션 배정이 dead 액션 없이 나뉘는지 확인한다.
 
 ### 4-3. auto-submit 일시중단 복구
 
