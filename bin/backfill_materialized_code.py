@@ -84,7 +84,7 @@ def _drift_probe(comp: object, chain: list[ChainRow], train90, cpu_budget) -> bo
     재현되면 cv tier가 이 대회에서 신뢰 가능(True), 안 되면 학습 데이터가 이동한 것
     (False), 프로브할 행이 없거나 eval이 죽으면 None. None/False면 cv tier는 못 쓴다.
     """
-    from cycle.promotion import merge_verify_tolerance
+    from evaluator.metrics import float_noise_tolerance
     probe = next((r for r in reversed(chain) if r.materialized_code and r.cv_score is not None), None)
     if probe is None:
         return None
@@ -95,7 +95,7 @@ def _drift_probe(comp: object, chain: list[ChainRow], train90, cpu_budget) -> bo
     if res.error_trace or res.cv_score is None:
         print(f"  drift probe: eval 실패 ({res.error_trace}) — cv tier 비활성")
         return None
-    ok = abs(res.cv_score - probe.cv_score) <= merge_verify_tolerance(probe.cv_score)
+    ok = abs(res.cv_score - probe.cv_score) <= float_noise_tolerance(probe.cv_score)
     print(f"  drift probe: {probe.pipeline_id[:8]} 기록 cv {probe.cv_score} vs 재평가 {res.cv_score} "
           f"→ {'비교 가능' if ok else '데이터 이동됨'}")
     return ok
@@ -108,8 +108,8 @@ def _verdict_for_row(
 ) -> tuple[Verdict, tuple[float, list[float] | None] | None]:
     """한 행의 verdict + (다음 층에 물려줄 prev_eval). prev_eval은 (cv, fold_scores)."""
     from cycle.materialize import replay_best_pipeline
-    from cycle.promotion import merge_verify_tolerance
     from evaluator.harness import is_significant_gain
+    from evaluator.metrics import float_noise_tolerance
 
     metric_sign = getattr(comp, "METRIC_SIGN", 1)
 
@@ -165,7 +165,7 @@ def _verdict_for_row(
     # tier cv — 데이터 비교 가능 + 기록 cv 재현. 허용오차(절대/상대 1e-6)가 극도로 빡빡한 건
     # 의도적이다: ADR-037 합성 변경이 이 행 훅에 무영향이면(예: build_model만 정의) 재생이
     # 사실상 동일해 이 안에 들고, 영향이 있었으면 벗어나 chain tier/격리로 내려간다.
-    if comparable and row.cv_score is not None and abs(res.cv_score - row.cv_score) <= merge_verify_tolerance(row.cv_score):
+    if comparable and row.cv_score is not None and abs(res.cv_score - row.cv_score) <= float_noise_tolerance(row.cv_score):
         return Verdict("backfill:cv", candidate, res.cv_score, None,
                        f"재평가 cv {res.cv_score} ≈ 기록 {row.cv_score}"), this_eval
 
