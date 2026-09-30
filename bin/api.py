@@ -106,7 +106,8 @@ def _replay_bandit_timeline(conn: PgConn, competition_id: str) -> list[dict]:
     for step, (run_ts, action_type, label, gain, err) in enumerate(rows, start=1):
         if action_type not in ACTION_TYPES:
             continue
-        da, db = bandit_deltas(label, gain, err)
+        # no-op tie(#330)는 저장된 컬럼이 없다 — 하네스가 cv가 prev_best와 비트 단위로 같을 때만 tie로 보므로 gain이 정확히 0이다.
+        da, db = bandit_deltas(label, gain, err, is_noop_tie=gain is not None and gain == 0.0)
         if action_type not in state:
             alpha, beta = 1.0 + da, 1.0 + db
         else:
