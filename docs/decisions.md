@@ -691,8 +691,8 @@ submit.py의 MinIO 대조용)를 분리해 `load_base_snapshot`의 손상 가드
 `coalesce(materialized_sha256, pipeline_sha256)`으로 유지한다. verdict는 `materialized_origin`
 컬럼에 기록: `backfill:{minio,sha,cv,chain}` / `unverifiable:{train_drift,eval_error,...}`.
 - 행동 재현 판정: (a) `backfill:cv` — 대회의 최신 스냅샷 행을 오늘 데이터로 재평가해 기록 cv를
-재현하면(drift probe 통과) cv tier 활성, 재생 결과 cv가 `MERGE_VERIFY_TOLERANCE`(promote
-merge-verify와 공유) 안. (b) `backfill:chain`(`--allow-chain`) — 데이터가 이동해 기록 cv 비교
+재현하면(drift probe 통과) cv tier 활성, 재생 결과 cv가 `merge_verify_tolerance()`(promote
+merge-verify와 공유, ADR-062) 안. (b) `backfill:chain`(`--allow-chain`) — 데이터가 이동해 기록 cv 비교
 자체가 불가한 대회에서, 재생본이 직전 검증층 대비 `is_significant_gain`로 유의한 회귀가 아니면
 수용. bit-identical보다 약한 보장("동작하고 아래층 대비 회귀 없음")이나 `materialized_origin`에
 남아 감사 가능하다.
@@ -1461,6 +1461,20 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
   `prev_best_fold_scores`/`known_fold1_scores` 없이 처음부터 재평가하고, 지름길 입력은 `cycle/run.py:run_attempt_core`만 넘긴다. 남는 한계:
   연속 지표에서도 매칭의 약 8~12%는 나머지 fold가 다르며, 그 영향은 승격되지 않는 attempt의 점수·라벨 오차(대부분 노이즈 수준, 드물게 1e-4대)에
   머문다. #406은 같은 캐시 히트 경로에서 회귀 baseline 점수가 빠져 `gain_vs_best_relative`가 정규화되지 않던 결함을 고쳤다.
+
+---
+
+## ADR-062 — merge-verify 허용오차는 metric 스케일을 따른다 (#418)
+
+- 결정: `cycle/promotion.py`의 절대 상수 `MERGE_VERIFY_TOLERANCE = 1e-6`을 `merge_verify_tolerance(cv) = max(1e-6, 1e-6 * |cv|)`로 바꾼다.
+  promote merge-verify(`bin/run_promote_task.py`), `bin/freeze_base.py`, 백필의 drift probe와 cv tier(`bin/backfill_materialized_code.py`)가 같은 함수를
+  쓴다. auc(약 0.97)는 1e-6 그대로이고 rmse 12.8은 1.28e-5다.
+- 근거: 2026-09-29 s5e4 ensemble winner `72f96533`(gain +0.0314, cross-seed +0.0209/+0.0320, holdout 12.706 < baseline 12.763)이 merge-verify
+  delta 2e-6 > 1e-6으로 기각됐다. 상대로는 1.6e-7이라 float 노이즈이고, LightGBM 멀티스레드 축약은 프로세스 간 비트 재현이 안 된다(`freeze_base`에서도
+  1.7e-6이 관측됐다). 14일 promote 로그 1007건의 merge-verify 실패 3건은 평가 에러(09-21), 실제 병합 손상(09-26, delta 9.8e-3 = 상대 7.5e-4, ADR-059로
+  해소), 이 노이즈 1건이다. 실제 손상 신호와 새 허용오차(상대 1e-6) 사이에 750배 여유가 있다. 80분 뒤 다른 ensemble이 승격돼 실손실은 없었지만 우연이다.
+- 한계: 값이 0에 가까운 metric(s5e10 rmse 0.02)은 절대 하한 1e-6이 그대로 적용돼 상대로는 더 느슨하다. 그 스케일의 손상 신호(상대 7.5e-4 = 절대 1.6e-5)는
+  여전히 하한을 넘으므로 잡힌다. 재고 트리거: 노이즈 수준 delta로 기각되는 merge-verify가 다시 나오면 상대항을 키우기 전에 delta 분포부터 확인한다.
 
 ---
 

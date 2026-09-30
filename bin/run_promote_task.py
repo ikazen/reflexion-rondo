@@ -45,7 +45,7 @@ def main() -> None:
     from config.settings import PROMOTE_CONFIRM_SEEDS
     from cycle.action_optimizer import update_bandit
     from cycle.materialize import materialize_best_pipeline, with_frozen_params
-    from cycle.promotion import MERGE_VERIFY_TOLERANCE, PromotionCache, confirm_and_measure, effective_label
+    from cycle.promotion import PromotionCache, confirm_and_measure, effective_label, merge_verify_tolerance
     from evaluator.harness import is_significant_gain, split_audit_holdout
     from memory.retriever import EmbeddingUnavailableError
     from runtime.isolate import eval_isolated
@@ -301,7 +301,7 @@ def main() -> None:
                         is_classification=is_classification,
                         collect_oof=True,  # 이 1회 eval에 얹어 OOF 확보(추가 비용 없음)
                         cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
-                        # winner의 attempt-time eval과 같은 값이어야 MERGE_VERIFY_TOLERANCE
+                        # winner의 attempt-time eval과 같은 값이어야 merge-verify 허용오차
                         # 비교가 의미 있다(#388) — 위 confirm 호출과 같은 시점에 조회한 값 재사용.
                         best_params=promote_best_params,
                         tuned_params=promote_tuned_params,
@@ -317,12 +317,13 @@ def main() -> None:
                         )
                     else:
                         merge_delta = abs(merge_eval.cv_score - winner_row[2])
-                        if merge_delta > MERGE_VERIFY_TOLERANCE:
+                        merge_tolerance = merge_verify_tolerance(winner_row[2])
+                        if merge_delta > merge_tolerance:
                             merge_ok = False
                             print(
                                 f"[run_promote_task] merge-verify 실패 — 승격 스킵: "
                                 f"merged_cv={merge_eval.cv_score:.6f} winner_cv={winner_row[2]:.6f} "
-                                f"delta={merge_delta:.6f} (tolerance={MERGE_VERIFY_TOLERANCE})"
+                                f"delta={merge_delta:.3e} (tolerance={merge_tolerance:.3e})"
                             )
                         else:
                             merge_oof_preds = merge_eval.oof_preds

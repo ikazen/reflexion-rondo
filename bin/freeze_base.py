@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 
 from bin.establish_baseline import _competition_id_to_slug
 from cycle.materialize import materialize_best_pipeline, with_frozen_params
-from cycle.promotion import MERGE_VERIFY_TOLERANCE
+from cycle.promotion import merge_verify_tolerance
 from evaluator.harness import split_audit_holdout
 from runtime.isolate import eval_isolated
 from store.db import PgConn, connect
@@ -85,9 +85,10 @@ def freeze_latest(conn: PgConn, comp: ModuleType, dry_run: bool) -> bool:
         print(f"  {comp.COMPETITION_ID}: 동결본 평가 실패 — 중단\n{result.error_trace}")
         return False
     delta = abs(result.cv_score - stored_cv)
+    tolerance = merge_verify_tolerance(stored_cv)
     print(f"  {comp.COMPETITION_ID} pipeline={pipeline_id[:8]}: stored cv {stored_cv!r} / frozen cv "
-          f"{result.cv_score!r} / delta {delta:.3e} (tolerance {MERGE_VERIFY_TOLERANCE})")
-    if delta > MERGE_VERIFY_TOLERANCE:
+          f"{result.cv_score!r} / delta {delta:.3e} (tolerance {tolerance:.3e})")
+    if delta > tolerance:
         print("  동결본이 저장된 cv를 재현하지 못함 — 반영하지 않는다")
         return False
     if dry_run:

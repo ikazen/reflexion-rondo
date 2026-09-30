@@ -34,8 +34,15 @@ _NOOP_PATCH = "class Patch:\n    pass\n"
 # 병합본(materialize_best_pipeline 산출물) cv_score가 winner 자신의 기록된
 # cv_score와 크게 다르면 병합 손상 신호 — 같은 seed·fold라 결정적 재현이면 거의
 # bit-identical해야 한다. 부동소수 연산차만 허용하는 엄격한 허용오차. bin/run_promote_task.py
-# (merge-verify)와 bin/backfill_materialized_code.py(#254 cv tier)가 공유한다.
-MERGE_VERIFY_TOLERANCE = 1e-6
+# (merge-verify), bin/freeze_base.py, bin/backfill_materialized_code.py(#254 cv tier)가 공유한다.
+# LightGBM 멀티스레드 축약은 프로세스 간 비트 재현이 안 돼 rmse 12.8에서 2e-6 차이가 관측됐으므로(#418, ADR-062)
+# 절대값만으로는 큰 스케일 metric에서 정당한 승격을 기각한다 — 상대항을 함께 둔다.
+_MERGE_VERIFY_ABS_TOLERANCE = 1e-6
+_MERGE_VERIFY_REL_TOLERANCE = 1e-6
+
+
+def merge_verify_tolerance(cv_score: float) -> float:
+    return max(_MERGE_VERIFY_ABS_TOLERANCE, _MERGE_VERIFY_REL_TOLERANCE * abs(cv_score))
 
 
 @dataclass(frozen=True, slots=True)
