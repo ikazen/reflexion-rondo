@@ -1,5 +1,25 @@
 # 변경 이력
 
+## v1.6.32 — 워치독 fold별 재투영, near-tie 판정, 위생 (Milestone "v1.6.32 후속 2026-09-30", 2026-09-30)
+
+v1.6.30/31 라이브 9시간 실측(2026-09-30 12:33Z)에서 남은 낭비 두 곳과 위생 두 건을 한 묶음으로 처리했다. 후보 9개 중 실측 근거가 있는 것만 골랐다.
+
+- #448: 워치독 투영을 fold-1 전용에서 모든 fold로 일반화한다(ADR-063 후속). s5e8 동결 이후 34 attempt에서 워치독 kill 11건이 CPU 8.67h(평균 2836s)로
+  s5e8 CPU의 약 65%였고 대부분 `fold_done fold=2~4/5`에서 예산 직전에 죽었다. fold-1이 이후 fold보다 싸면 fold-1 투영(마진 1.15)을 통과한 뒤 다시 계산하지 않기 때문이다.
+  이제 폴링마다 `Y + (n_splits - k) x max(진행 중 fold의 소모, 완료 fold 평균)`을 재계산해 예산 x 1.15를 넘으면 끊는다(추정 절감: 4.5h 창에서 s5e8 CPU의 약 20%).
+  fold-1 tie 지름길이 일찍 끝날 때도 `cv_done`을 남겨 그 뒤 holdout 평가를 다음 fold로 오인하지 않는다.
+- #449: no-op tie 판정을 비트 일치에서 재현 노이즈 안 일치로 넓힌다(ADR-065). s5e4 hyperparam_search 10일 204건 중 near-tie 21건(정확 tie 5건)이 neutral이나
+  half-success로 세어져 그 액션이 밴딧 dead 문턱을 0.1003으로 넘어 슈퍼사이클을 독점했다. 새 판정으로 리플레이하면 평균 0.061로 5개 전부 dead가 되고 랭킹 폴백(#404)이
+  배정을 다양화한다. 허용오차 함수는 `evaluator/metrics.py:float_noise_tolerance`로 옮겼다(구 `cycle/promotion.py:merge_verify_tolerance`, 동작 동일).
+- #450: 위생. s5e10의 유일한 valid pipeline `b6ef7f78`(ensemble, rmse cv 0.0215 < 세계 1위 0.0554)을 `cv_exceeds_world_best`로 격리했다
+  (누수 스캐너는 clean, 행 보존). valid 행이 0개가 됐고 휴면 대회라 즉시 영향은 없다. #39 본문을 실제 상태로 갱신했다
+  (후보 14개 온보딩 완료, 남은 것은 metric 미구현 5개).
+- 스키마 변경 없음. `bin/api.py`가 바뀌어 daemon도 컷오버한다(task 이미지는 즉시 라이브). 테스트 1113 -> 1130 passed.
+- 확인 지표(ADR-063 amend, ADR-065): s5e8 워치독 kill 수와 kill당 CPU(기준 11건 / 평균 2836s), `projected ... during fold 2~5` 건수, 성공률과 jump 유지,
+  s5e4/s5e8 hyperparam_search tie 비율, 밴딧 dead 집합, 슈퍼사이클 액션 배정의 다양화.
+
+---
+
 ## v1.6.31 — fold-1 진행 중 CPU 투영으로 폭주 조기 종료 (#444, ADR-063 후속, 2026-09-30)
 
 v1.6.30 task 이미지 라이브 4시간 실측(s5e4 36 attempt)에서 kill 위치 계측(#421)이 답을 줬다. 워치독 kill 25건이 전부 fold-1 진행 중이었고 fold-2 이후는 0건이었다.

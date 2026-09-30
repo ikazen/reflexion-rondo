@@ -431,16 +431,21 @@ promote task가 대회 best attempt의 제출 CSV를 MinIO(`submissions/<competi
 3. **컷오버 전에** 재활성 대회의 baseline을 다시 잰다 — 휴면 중 평가 의미가 바뀌었다(§4-8). `docker exec -d deploy-rondo-daemon-1 sh -c
    'uv run --no-sync python -m bin.establish_baseline --remeasure --competition <competition-id> > /tmp/remeasure.log 2>&1'`로 분리 실행하고
    `docker top`으로 진행을 본다(valid 행마다 20~40분). 컷오버가 같은 컨테이너의 exec를 죽이므로 끝난 뒤에 컷오버한다.
-4. base가 param 후보를 누적한 채 휴면했다면(hyperparam_search 여러 라운드) 모든 attempt가 preselect 비용을 먼저 낸다 — s5e8은 재활성 첫 두 사이클에서 attempt 6건 중
+4. 남아 있는 valid pipeline의 cv가 리더보드 1위를 넘는지 본다(`raw.leaderboard_snapshot.scores`의 최고값, rmse처럼 metric_sign이 음수면 최저값).
+   넘으면 누수/오염이라 재활성 전에 격리한다. `bin.quarantine_leaks --dry-run`이 flagged=0이어도 스캐너가 못 보는 경로가 있다 — s5e10 `b6ef7f78`
+   (ensemble, rmse cv 0.0215, 1위 0.0554)은 같은 chain의 선행 두 행이 이미 `target_leak_preprocess`로 격리됐는데 스캐너는 clean이었다(#450).
+   daemon 컨테이너 exec 단발 스크립트로 대상 행을 먼저 출력하고 정확히 1행일 때만 `invalid_reason = 'cv_exceeds_world_best: ...'`를 채운다
+   (행은 지우지 않는다, 되돌리려면 NULL). valid 행이 0개가 되면 §4-2로 baseline을 다시 확립한다.
+5. base가 param 후보를 누적한 채 휴면했다면(hyperparam_search 여러 라운드) 모든 attempt가 preselect 비용을 먼저 낸다 — s5e8은 재활성 첫 두 사이클에서 attempt 6건 중
    4건이 preselect 1150~3540 CPU-s로 예산에 걸려 죽었다. 사이클이 없는 동안(큐를 취소하고 실행 중 dagRun이 끝난 뒤) §4-9 `freeze_base`로 동결한다. 동결본 cv가 저장 cv와
    비트 일치할 때만 반영된다(s5e8: delta 0, 약 11분). 반영 뒤 `blob sha == 레지스트리 sha`를 확인한다.
-5. 재활성 대회의 밴딧이 휴면 시절 낮은 CPU 예산의 kill 벌점으로 전 액션 dead(평균 0.05, observed 20)인지 확인하고, 그렇다면 리셋한다:
+6. 재활성 대회의 밴딧이 휴면 시절 낮은 CPU 예산의 kill 벌점으로 전 액션 dead(평균 0.05, observed 20)인지 확인하고, 그렇다면 리셋한다:
    `DELETE FROM raw.action_bandit WHERE scope = 'local' AND scope_key = '<competition-id>'`(daemon 컨테이너 exec, 대회 큐가 없을 때).
-6. 컷오버 직전에 동결 대회의 pending/running 큐를 `PATCH /api/queue/{id}`(`{"status": "cancelled"}`)로 취소한다. running은 사이클 경계에서 멈춘다.
+7. 컷오버 직전에 동결 대회의 pending/running 큐를 `PATCH /api/queue/{id}`(`{"status": "cancelled"}`)로 취소한다. running은 사이클 경계에서 멈춘다.
    구 daemon은 아직 그 대회를 리필하므로 컷오버 뒤에 다시 큐를 확인해 새로 생긴 항목을 취소한다.
-7. 컷오버 뒤: 큐 리필(`_sweep_queue_refill`)은 pending/running 항목이 하나도 없을 때만 돌므로 진행 중인 큐가 있으면 재활성 대회는 한참 큐에 안 들어온다 —
+8. 컷오버 뒤: 큐 리필(`_sweep_queue_refill`)은 pending/running 항목이 하나도 없을 때만 돌므로 진행 중인 큐가 있으면 재활성 대회는 한참 큐에 안 들어온다 —
    `POST /api/queue`(`{"competition": "<slug>", "stage": "reflexion", "n_cycles": 20}`)로 직접 넣는다. 리스(5사이클)가 끝나면 라운드로빈으로 돌아온다.
-8. `/api/heartbeat`의 `current_competition`, 재활성 대회 첫 사이클의 fingerprint 가드 통과, 첫 슈퍼사이클 액션 배정이 dead 액션 없이 나뉘고 attempt의 `[last_progress]`에서
+9. `/api/heartbeat`의 `current_competition`, 재활성 대회 첫 사이클의 fingerprint 가드 통과, 첫 슈퍼사이클 액션 배정이 dead 액션 없이 나뉘고 attempt의 `[last_progress]`에서
    `preselect_done`의 cpu가 수백 초 안쪽인지(동결 확인) 본다.
 
 ### 4-3. auto-submit 일시중단 복구
@@ -514,6 +519,10 @@ curl http://rondo-api.internal/api/lessons     # 교훈 목록
 - CPU/메모리 kill 위치(ADR-063, #421 이후 행만): `error_trace` 둘째 줄의 `[last_progress]`로 어느 단계에서 죽었는지 본다.
   `none`(아래 쿼리에서는 stage NULL)은 evaluate_pipeline 진입 전, `eval_start`는 preselect 중, `preselect_done`은 fold-1 내부,
   `fold_done fold=k/n`은 fold k+1 내부(또는 후처리), `cv_done`은 CV 이후(holdout 등)다.
+- 투영 kill(ADR-056/063): `error_trace`가 `cpu budget exceeded: projected {P}s CPU during fold {k} (limit ...)`이면 워치독이 완료 fold 평균
+  (k=1이면 그 fold의 진행분)으로 총 CPU가 예산 x 1.15를 넘는다고 보고 끊은 것이다. 예산에 실제로 닿은 kill은
+  `cpu budget exceeded: {cpu}s CPU used (limit ...)`다. 재투영(#448) 뒤에는 뒤쪽 형태(예산 직전)가 줄고 앞쪽 형태가 fold 2~5에서 나타나야 한다.
+- no-op tie(ADR-065): 저장 컬럼이 없어 `gain_vs_best`로 재구성한다. tie는 `abs(gain) <= max(1e-6, 1e-6 * abs(cv))`이고 정확 일치는 gain이 0이다.
 
 ```sql
 select substring(error_trace from '\[last_progress\] stage=(\S+)( fold=\d+/\d+)?') as stage,
@@ -523,6 +532,17 @@ from raw.attempts
 where competition_id = 'playground-series-s5e4' and error_trace like 'cpu budget exceeded%'
   and error_trace like '%[last_progress]%' and run_ts >= '2026-09-30'
 group by 1, 2 order by n desc;
+```
+
+```sql
+select action_type,
+       count(*) filter (where gain_vs_best = 0) as exact_tie,
+       count(*) filter (where gain_vs_best <> 0 and abs(gain_vs_best) <= greatest(1e-6, 1e-6 * abs(cv_score))) as near_tie,
+       count(*) as n
+from raw.attempts
+where competition_id = 'playground-series-s5e4' and stage = 'reflexion' and error_trace is null
+  and gain_vs_best is not null and run_ts >= now() - interval '24 hours'
+group by 1 order by 1;
 ```
 
 ## 9. 교훈 위생 (메타 루프)

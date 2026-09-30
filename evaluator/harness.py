@@ -1000,6 +1000,8 @@ def evaluate_pipeline(
         # confirmed baseline과 완전히 동일하다. 이 신호를 5-fold를 전부 돌고 나서
         # (is_noop_tie, 아래) 확인하던 걸 여기서 조기에 잡아 나머지 fold 계산을
         # 통째로 아낀다. collect_oof=True(merge-verify 등)는 전체 fold가 필요해 제외.
+        # 아래 is_noop_tie와 달리 허용오차를 두지 않는다 — 연속 지표에서도 fold-1이 정확히 같고 나머지 fold가 다른 경우가
+        # 8~12%라 근사로 넓히면 서로 다른 계산의 점수를 건너뛴다(ADR-061).
         if (
             fold_idx == 0
             and fold1_shortcut_ok
@@ -1013,6 +1015,7 @@ def evaluate_pipeline(
             # 분산 추정에 직접 평균낸다(ADR-047). 1-fold짜리 값을 채워 넣으면 그
             # 평균이 0/1-fold 쪽으로 오염돼 포트폴리오 판단(ADR-051 등)의 근거
             # 지표가 깨진다 — None은 뷰의 `is not null` 필터로 자연히 제외된다.
+            # 조기 반환도 CV 종료를 알린다 — 안 그러면 워치독이 이후 holdout 평가를 다음 fold 진행으로 보고 투영 kill한다(#448).
             if ctx.progress:
                 ctx.progress(f"stage=cv_done cpu={_cpu_seconds():.0f}")
             return EvalResult(
