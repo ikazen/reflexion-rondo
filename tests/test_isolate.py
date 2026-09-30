@@ -25,6 +25,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 ROOT = Path(__file__).parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -257,6 +259,74 @@ def test_memory_watchdog_kill_also_reports_the_last_progress_line() -> None:
 
     assert result.error_trace.startswith("memory watchdog:")
     assert result.error_trace.endswith("\n[last_progress] stage=preselect_done cpu=70")
+
+
+def _fold1_run(progress_lines: list[str] | None, cpu: float, *, collect_oof: bool = False, budget: float = 900.0):
+    """워치독이 한 번 폴링하는 시점에 CPU가 cpu이고 runner가 progress_lines를 남긴 상태를 재현한다."""
+    import json as _json
+
+    import polars as pl
+
+    from runtime.isolate import eval_isolated
+
+    class _FakeProc(_FakePopen):
+        def _on_init(self, cmd) -> None:
+            tmpdir = Path(cmd[2])
+            if progress_lines is not None:
+                (tmpdir / "_progress.log").write_text("\n".join(progress_lines) + "\n")
+            (tmpdir / "output.json").write_text(_json.dumps({"cv_score": 0.9, "error_trace": None}))
+
+    train = pl.DataFrame({"x": [1, 2, 3], "y": [0, 1, 0]})
+    with patch("runtime.isolate.subprocess.Popen", side_effect=_FakeProc), \
+         patch("runtime.isolate._read_cpu_seconds", return_value=cpu):
+        return eval_isolated(
+            source="class Patch:\n    pass\n", train=train, target_col="y", metric="auc",
+            prev_best=0.85, n_splits=3, seed=42, is_classification=True, collect_oof=collect_oof,
+            cpu_budget_sec=budget,
+        )
+
+
+_IN_FOLD1 = ["stage=eval_start cpu=1", "stage=preselect_done cpu=100"]
+
+
+def test_fold1_projection_kills_a_runaway_before_fold1_ends() -> None:
+    """#444: fold-1 한 번이 예산 전체를 쓰는 폭주는 fold-1 종료 후 투영(ADR-056)에 닿지 못한다.
+    투영 = 루프 시작 CPU + n_splits x (지금 - 루프 시작 CPU) = 100 + 3 x 400 = 1300 > 900 x 1.15."""
+    result = _fold1_run(_IN_FOLD1, cpu=500.0)
+
+    first, second = result.error_trace.split("\n")
+    assert first == "cpu budget exceeded: projected 1300s CPU during fold 1 (limit 900s)"
+    assert second == "[last_progress] stage=preselect_done cpu=100"
+    assert result.peak_cpu_sec == 500.0
+
+
+def test_fold1_projection_boundary_follows_the_harness_margin() -> None:
+    from evaluator.harness import _CPU_PROJECTION_MARGIN
+
+    at_limit = 100.0 + (900.0 * _CPU_PROJECTION_MARGIN - 100.0) / 3
+    assert _fold1_run(_IN_FOLD1, cpu=at_limit - 1).error_trace is None
+    assert "projected" in _fold1_run(_IN_FOLD1, cpu=at_limit + 1).error_trace
+
+
+def test_fold1_projection_lets_a_run_within_budget_finish() -> None:
+    result = _fold1_run(_IN_FOLD1, cpu=300.0)
+
+    assert result.error_trace is None
+    assert result.cv_score == 0.9
+
+
+def test_fold1_projection_skips_collect_oof_evaluations() -> None:
+    """merge-verify 등은 완전한 점수가 필요해 harness의 투영과 같이 제외한다 — 예산(900s) 안이면 끝까지 돈다."""
+    assert _fold1_run(_IN_FOLD1, cpu=500.0, collect_oof=True).error_trace is None
+
+
+@pytest.mark.parametrize(
+    "progress_lines",
+    [None, ["stage=eval_start cpu=1"], _IN_FOLD1 + ["stage=fold_done fold=1/3 cpu=600"], _IN_FOLD1 + ["stage=cv_done cpu=700"]],
+)
+def test_fold1_projection_only_applies_while_fold1_is_running(progress_lines) -> None:
+    """preselect 중(eval_start)이거나 fold-1이 이미 끝난 뒤, 진행 기록이 없을 때는 일반 예산(900s)만 적용된다."""
+    assert _fold1_run(progress_lines, cpu=800.0).error_trace is None
 
 
 def test_eval_isolated_cpu_budget_sec_overrides_env_default() -> None:

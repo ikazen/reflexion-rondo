@@ -1509,6 +1509,14 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 - 재고 트리거(배포 48h 후): (a) 잘린 attempt에 jump가 있었거나 성공률이 뚜렷이 떨어지면 3600s로 복원한다. (b) `last_progress` 분포로 다음 개입을 고른다 —
   `eval_start`/`preselect_done` 위주(fold-1 진입 전 또는 fold-1 내부 폭주)면 fold-1 데드라인 규칙(루프 시작 CPU + 남은 예산 / n_splits x 1.15를 넘으면 종료),
   `fold_done fold=1/n` 이후 위주면 투영 마진 1.15 조정. (c) 성공 판정은 s5e4 총 CPU 약 -20%와 CPU-h당 jump 유지다.
+- **[2026-09-30 #444 후속]**: v1.6.30 라이브 4시간(s5e4 36 attempt)의 kill 위치는 워치독 kill 25건이 전부 `stage=preselect_done`(fold-1 진행 중, s5e4 base는
+  선언형 ensemble이라 preselect가 즉시 끝난다), fold-1 투영 중단 2건, fold-2 이후 0건이었다. 같은 창에서 kill 27건이 CPU 16.8h(평균 2241s), 성공 7건이 1.6h(평균 806s,
+  최대 1354s)였다. fold-1 하나가 예산 전체를 쓰는 폭주는 fold-1이 끝난 뒤에만 계산되는 ADR-056 투영에 닿지 못하므로 (b)의 fold-1 데드라인을 48h를 기다리지 않고 넣었다:
+  워치독(`runtime/isolate.py`)이 fold-1 진행 중(마지막 진행 줄이 `preselect_done`) 폴링마다 같은 투영식(루프 시작 CPU + n_splits x (지금 - 루프 시작 CPU))이
+  `예산 x 마진`을 넘는지 보고 즉시 끊는다. 새 오탐이 없는 이유: CPU는 늘기만 하므로 fold-1 종료 뒤의 투영은 지금의 투영 이상이라, ADR-056이 거부했을 attempt만
+  더 일찍 끊는다. `collect_oof`와 `n_splits == 1`은 제외하고 마진은 harness의 `_CPU_PROJECTION_MARGIN`을 그대로 쓴다. s5e4 예산 2400s에서 데드라인은 약 920 CPU-s로
+  성공 최대 fold-1(약 450s)의 2배 위이고, 4시간 창 기준 절감은 25건 x (2400 - 920)s = 약 10.3 CPU-h(kill 소각의 61%)다. 확인 지표: kill당 평균 CPU(2241s -> 약 920s 이하),
+  `projected ... during fold 1` 건수, 성공률과 jump 유지. 재고: 잘린 attempt에 jump가 있거나 성공률이 뚜렷이 떨어지면 마진을 올린다. 남은 kill(fold-2 이후)은 그대로 예산이 집행한다.
 
 ---
 
