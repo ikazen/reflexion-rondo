@@ -107,6 +107,8 @@ CAP_SYS_ADMIN 없으면(로컬 mac 등) 조용히 스킵하고 allowlist+rlimit+
 - 리소스 워치독(ADR-028): 부모(`isolate.py`)의 2초 폴링 루프가 RSS와 CPU 시간을 직접 감시해 상한 초과 시 원인이 명시된 error_trace로 선제 kill한다.
 `RLIMIT_CPU`는 폴링이 놓쳤을 때만 발동하는 soft<hard 백스톱(rc=-24)일 뿐, 주 집행 수단이 아니다 — soft==hard로 걸면 커널이 SIGXCPU 없이 곧장 SIGKILL(rc=-9)을
 보내 OOM killer 사망과 구분이 안 됐던 과거 실패를 반복하지 않도록 이 구분을 유지할 것.
+kill 사유 아래에는 runner가 `_progress.log`에 남긴 마지막 진행 줄(`[last_progress] stage=... fold=k/n cpu=...`)이 붙어
+kill 위치(preselect / fold-1 / fold 2 이후)를 남긴다(ADR-063).
 - subprocess 환경변수는 allowlist 필터링 (`OMP_NUM_THREADS` 등 포함, BON-104).
 - `OMP_NUM_THREADS=2` / `OPENBLAS_NUM_THREADS=2` / `MKL_NUM_THREADS=2` — worker-vm 2코어에서 CPU 포화 방지.
 

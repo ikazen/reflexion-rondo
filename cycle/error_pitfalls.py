@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
+from runtime.isolate import KILL_PROGRESS_PREFIX
 from store.db import PgConn
 
 _SYNTAX_ERRORS = {"SyntaxError", "IndentationError", "TabError"}
@@ -56,7 +57,7 @@ def normalize_error(trace: str) -> str | None:
     last_nonblank: str | None = None
     for line in reversed(trace.splitlines()):
         line = line.strip()
-        if not line:
+        if not line or line.startswith(KILL_PROGRESS_PREFIX):
             continue
         if last_nonblank is None:
             last_nonblank = line

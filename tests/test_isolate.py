@@ -211,6 +211,54 @@ def test_eval_isolated_kills_on_cpu_budget_exceeded() -> None:
     assert result.peak_cpu_sec == over_budget
 
 
+def _kill_result(*, progress_lines: list[str] | None, reason: str = "cpu"):
+    """워치독 kill을 재현한다. progress_lines가 있으면 runner가 남긴 것처럼 _progress.log를 미리 채운다."""
+    import polars as pl
+
+    from runtime.isolate import eval_isolated
+
+    class _FakeProc(_FakePopen):
+        def _on_init(self, cmd) -> None:
+            if progress_lines is not None:
+                (Path(cmd[2]) / "_progress.log").write_text("\n".join(progress_lines) + "\n")
+
+    train = pl.DataFrame({"x": [1, 2, 3], "y": [0, 1, 0]})
+    patches = [patch("runtime.isolate.subprocess.Popen", side_effect=_FakeProc)]
+    if reason == "cpu":
+        patches.append(patch("runtime.isolate._read_cpu_seconds", return_value=950.0))
+    else:
+        patches.append(patch("runtime.isolate._read_rss_bytes", return_value=5 * 1024 ** 3))
+    with patches[0], patches[1]:
+        return eval_isolated(
+            source="class Patch:\n    pass\n", train=train, target_col="y", metric="auc",
+            prev_best=0.85, n_splits=3, seed=42, is_classification=True, cpu_budget_sec=900,
+        )
+
+
+def test_kill_appends_the_last_progress_line_below_the_unchanged_message() -> None:
+    """#421: 첫 줄은 기존 kill 메시지 그대로(startswith 분기 유지)이고 둘째 줄이 마지막 진행 위치다."""
+    result = _kill_result(progress_lines=[
+        "stage=eval_start cpu=1", "stage=preselect_done cpu=800", "stage=fold_done fold=1/3 cpu=1650",
+    ])
+
+    first, second = result.error_trace.split("\n")
+    assert first == "cpu budget exceeded: 950s CPU used (limit 900s)"
+    assert second == "[last_progress] stage=fold_done fold=1/3 cpu=1650"
+
+
+def test_kill_before_the_evaluation_started_reports_none() -> None:
+    result = _kill_result(progress_lines=None)
+
+    assert result.error_trace.endswith("\n[last_progress] none")
+
+
+def test_memory_watchdog_kill_also_reports_the_last_progress_line() -> None:
+    result = _kill_result(progress_lines=["stage=preselect_done cpu=70"], reason="memory")
+
+    assert result.error_trace.startswith("memory watchdog:")
+    assert result.error_trace.endswith("\n[last_progress] stage=preselect_done cpu=70")
+
+
 def test_eval_isolated_cpu_budget_sec_overrides_env_default() -> None:
     """호출자가 넘긴 cpu_budget_sec이 EVAL_CPU_BUDGET_SECS 기본값보다 우선한다 —
     cycle/run.py가 attempt 단위로 남은 예산을 재시도마다 다르게 넘기기 위함."""

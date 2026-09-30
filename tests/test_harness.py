@@ -2611,3 +2611,34 @@ def test_evaluate_pipeline_scores_an_ensemble_that_contains_the_base_member():
     result = evaluate_pipeline(pipeline, df, _ctx_rmse())
     assert np.isfinite(result.cv_score)
     assert len(base_patch.built) == 3  # fold마다 1회
+
+
+def test_progress_reports_each_stage_in_order():
+    """#421: 워치독이 kill 시 마지막 줄을 남기려면 preselect 이후 fold마다, 그리고 CV 종료를 줄로 보고해야 한다."""
+    lines: list[str] = []
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True, progress=lines.append,
+    )
+    evaluate_pipeline(BasePipeline(), _make_df(), ctx)
+
+    assert [line.split()[0] for line in lines] == [
+        "stage=eval_start", "stage=preselect_done",
+        "stage=fold_done", "stage=fold_done", "stage=fold_done", "stage=cv_done",
+    ]
+    assert [line.split()[1] for line in lines if "fold_done" in line] == ["fold=1/3", "fold=2/3", "fold=3/3"]
+    assert all(line.split()[-1].startswith("cpu=") for line in lines)
+
+
+def test_progress_stops_at_the_fold_where_the_evaluation_is_cut_short():
+    """fold-1 CPU 투영 중단은 fold=1/3 줄까지만 남긴다 — kill 위치 분석이 이 줄로 fold 경계를 읽는다."""
+    from evaluator.harness import CpuBudgetProjectedError
+
+    lines: list[str] = []
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+        cpu_budget_sec=0.001, progress=lines.append,
+    )
+    with pytest.raises(CpuBudgetProjectedError):
+        evaluate_pipeline(BasePipeline(), _make_df(), ctx)
+
+    assert lines[-1].startswith("stage=fold_done fold=1/3")
