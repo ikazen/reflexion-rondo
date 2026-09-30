@@ -98,3 +98,66 @@ def test_action_type_passthrough() -> None:
 def test_action_catalog_does_not_advertise_uninstalled_tabpfn() -> None:
     """tabpfn은 pyproject.toml에 없어 model_swap→tabpfn은 100% ModuleNotFoundError."""
     assert "tabpfn" not in _ACTION_CATALOG.lower()
+
+
+def _raw_response(text: str) -> MagicMock:
+    msg = MagicMock()
+    msg.message.content = text
+    return msg
+
+
+_GOOD = '{"hypothesis": "try target encoding", "action_type": "feature_engineering", "reflection_ids": []}'
+
+
+def _run(responses: list[MagicMock]) -> tuple[StrategyDecision, MagicMock]:
+    with patch("agents.strategist._client") as mock_client:
+        mock_client.return_value.chat.side_effect = responses
+        result = strategize(eda_card="x", lessons=[], stage="reflexion")
+    return result, mock_client.return_value.chat
+
+
+@pytest.mark.parametrize("text", [_GOOD[2:], _GOOD[1:]])
+def test_recovers_response_that_lost_the_leading_brace(text: str) -> None:
+    result, chat = _run([_raw_response(text)])
+
+    assert result.hypothesis == "try target encoding"
+    assert result.action_type == "feature_engineering"
+    assert chat.call_count == 1
+
+
+@pytest.mark.parametrize("tail", ['\n{"extra": 1}', "\nHope this helps!", '\n\n{"hypothesis": "second"}'])
+def test_ignores_data_after_the_first_object(tail: str) -> None:
+    result, chat = _run([_raw_response(_GOOD + tail)])
+
+    assert result.hypothesis == "try target encoding"
+    assert chat.call_count == 1
+
+
+def test_accepts_a_fenced_response() -> None:
+    result, _ = _run([_raw_response(f"```json\n{_GOOD}\n```")])
+
+    assert result.action_type == "feature_engineering"
+
+
+@pytest.mark.parametrize("bad", ["I cannot comply", "", '{"action_type": "model_swap"}', '{"hypothesis": "  "}', "[1, 2]"])
+def test_retries_an_unusable_response(bad: str) -> None:
+    result, chat = _run([_raw_response(bad), _raw_response(_GOOD)])
+
+    assert result.action_type == "feature_engineering"
+    assert chat.call_count == 2
+
+
+def test_raises_after_exhausting_the_parse_retries() -> None:
+    with patch("agents.strategist._client") as mock_client:
+        mock_client.return_value.chat.side_effect = [_raw_response("nope")] * 3
+        with pytest.raises(ValueError, match="Strategist JSON parse failed"):
+            strategize(eda_card="x", lessons=[], stage="reflexion")
+
+    assert mock_client.return_value.chat.call_count == 3
+
+
+def test_empty_responses_keep_their_own_error_after_retries() -> None:
+    with patch("agents.strategist._client") as mock_client:
+        mock_client.return_value.chat.side_effect = [_raw_response("")] * 3
+        with pytest.raises(ValueError, match="empty response"):
+            strategize(eda_card="x", lessons=[], stage="reflexion")

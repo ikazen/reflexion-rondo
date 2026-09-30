@@ -4,7 +4,10 @@ bandit posterior는 advise-only(get_action_prior) — 최종 결정은 LLM이 �
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -47,6 +50,8 @@ _OUTPUT_SCHEMA: dict = {
     },
     "required": ["hypothesis", "action_type", "reflection_ids"],
 }
+
+_PARSE_RETRIES = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +113,23 @@ def _format_action_prior(prior: dict[str, float]) -> str:
     return "\n".join(lines)
 
 
+def _parse_decision(content: str) -> dict:
+    """구조화 출력 모드에서도 응답 선두 `{"`가 유실되거나 JSON 객체 뒤에 잔여 텍스트가 붙는 경우가 있다
+    (2026-09 실측 attempt task의 3.4%). 첫 객체만 취하고, 그래도 안 되면 호출측이 재시도한다."""
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
+    if m:
+        content = m.group(1)
+    content = content.strip()
+    if content.startswith('hypothesis"'):
+        content = '{"' + content
+    elif content.startswith('"hypothesis"'):
+        content = "{" + content
+    data, _ = json.JSONDecoder().raw_decode(content)
+    if not isinstance(data, dict) or not isinstance(data.get("hypothesis"), str) or not data["hypothesis"].strip():
+        raise ValueError("response is not an object with a non-empty hypothesis")
+    return data
+
+
 def strategize(
     eda_card: str,
     lessons: list[dict],
@@ -159,33 +181,32 @@ Only include IDs from the list above — omit any that did not influence your re
 Respond with ONLY a JSON object using exactly these keys:
 {{"hypothesis": "...", "action_type": "<one of: {action_types_str}>", "reflection_ids": []}}"""
 
-    import json
-    import re
-    import time
-
     _LOG.info("model=%s n_lessons=%d stage=%s forced=%s temp=%.2f",
               settings.MODEL_STRATEGIST, len(lessons), stage, forced_action_type or "-",
               settings.LLM_TEMPERATURE)
     _t0 = time.monotonic()
-    resp = chat_with_retry(
-        _client,
-        model=settings.MODEL_STRATEGIST,
-        messages=[{"role": "user", "content": user_prompt}],
-        format=_OUTPUT_SCHEMA,
-        options=settings.llm_options(),
-    )
+    last_err: ValueError | None = None
+    for attempt in range(_PARSE_RETRIES):
+        resp = chat_with_retry(
+            _client,
+            model=settings.MODEL_STRATEGIST,
+            messages=[{"role": "user", "content": user_prompt}],
+            format=_OUTPUT_SCHEMA,
+            options=settings.llm_options(),
+        )
+        content = resp.message.content.strip()
+        if not content:
+            last_err = ValueError("Strategist returned empty response")
+        else:
+            try:
+                data = _parse_decision(content)
+                break
+            except ValueError as e:
+                last_err = ValueError(f"Strategist JSON parse failed: {e}\nraw: {content[:300]}")
+        _LOG.warning("attempt %d/%d: %s", attempt + 1, _PARSE_RETRIES, last_err)
+    else:
+        raise last_err
     _LOG.info("done in %.1fs", time.monotonic() - _t0)
-
-    content = resp.message.content.strip()
-    if not content:
-        raise ValueError("Strategist returned empty response")
-    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
-    if m:
-        content = m.group(1).strip()
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Strategist JSON parse failed: {e}\nraw: {content[:300]}") from e
 
     if forced_action_type:
         data["action_type"] = forced_action_type
