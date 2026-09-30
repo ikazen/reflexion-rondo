@@ -856,7 +856,7 @@ def run_attempt_core(
                 )
                 if is_noop_tie:
                     _LOG.warning(
-                        "no-op tie: cv_score exactly matches prev_best "
+                        "no-op tie: cv_score matches prev_best within float noise "
                         "(action=%s)%s — patch made no effective change",
                         action_type, " [fold-1 조기 중단]" if iso.noop_early_exit else "",
                     )

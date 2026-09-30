@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from sklearn.metrics import root_mean_squared_error
 
-from evaluator.metrics import get, _REGISTRY
+from evaluator.metrics import float_noise_tolerance, get, _REGISTRY
 
 _Y_CLS = np.array([0, 0, 1, 1, 1])
 _P_PROBA = np.array([0.1, 0.3, 0.6, 0.7, 0.9])
@@ -69,3 +69,10 @@ def test_transfer_metric_class_keys_covered():
     from memory.transfer import _METRIC_CLASS
     missing = set(_METRIC_CLASS) - set(_REGISTRY)
     assert not missing, f"transfer._METRIC_CLASS has keys missing from metrics._REGISTRY: {missing}"
+
+
+def test_float_noise_tolerance_has_an_absolute_floor_and_a_relative_term() -> None:
+    assert float_noise_tolerance(0.0) == 1e-6
+    assert float_noise_tolerance(0.966) == 1e-6
+    assert float_noise_tolerance(12.8178) == pytest.approx(1.28178e-5)
+    assert float_noise_tolerance(-12.8178) == pytest.approx(1.28178e-5)

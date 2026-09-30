@@ -111,7 +111,7 @@ def _format_context(ctx: AttemptContext) -> str:
     gain_text = f"{ctx.gain_vs_best:+.5f}" if ctx.gain_vs_best is not None else "N/A (first attempt)"
     error_text = _tail_error(ctx.error_trace) if ctx.error_trace else "none"
     noop_note = (
-        "\n- NOTE: cv_score is bit-for-bit identical to prev_best. The patch made no "
+        "\n- NOTE: cv_score matches prev_best to within floating-point noise. The patch made no "
         "effective change to the evaluated pipeline (e.g. a hook fell back to the base "
         "pipeline, or reimplemented logic already present in it). Explain WHY this "
         "action_type/hypothesis likely had no effect here, so the strategist avoids "

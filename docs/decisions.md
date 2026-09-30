@@ -1569,6 +1569,29 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 
 ---
 
+## ADR-065 — no-op tie는 비트 일치가 아니라 재현 노이즈 안의 일치로 판정한다 (#449, ADR-062 확장)
+
+- 결정: ADR-062의 허용오차를 `evaluator/metrics.py:float_noise_tolerance(cv) = max(1e-6, 1e-6 * |cv|)`로 옮기고(`merge_verify_tolerance`의 새 이름,
+  merge-verify / `freeze_base` / 백필이 같은 함수를 쓴다) 하네스의 tie 판정에도 쓴다:
+  `is_noop_tie = abs(cv_score - prev_best) <= float_noise_tolerance(prev_best)`.
+  fold-1 조기 중단(`noop_early_exit`)은 fold 점수 정확 일치를 유지한다(근사 일치를 세대 간에 재사용하는 위험은 ADR-061). `bin/api.py`의 밴딧 리플레이는
+  저장된 `gain_vs_best`와 `cv_score`로 같은 판정을 복원한다(허용폭을 prev_best 대신 cv로 재도 상대 1e-6이라 차이가 없다). 라벨, `gain_vs_best`, 승격 게이트는 그대로다.
+  바뀌는 것은 tie 벌점(밴딧 β+0.3)과 반사의 no-op 교훈이 near-tie에도 적용된다는 점뿐이다.
+- 근거: 같은 계산도 LightGBM 멀티스레드 축약이 프로세스 간 비트 재현이 안 돼 cv가 1e-7 ~ 2e-6 어긋난다(ADR-062). 2026-09-30 실측: s5e4 hyperparam_search 최근 10일
+  204건 중 정확 tie 5건, near-tie(0 < |gain| <= 허용폭) 21건이고 같은 gain -1.611e-07이 09-27 이후 11번 반복된다(결정적 재현 노이즈). s6e8 preprocessing은 328건 중
+  정확 tie 10, near-tie 2건이다. 07:52Z 이후 s5e4 슈퍼사이클은 전부 hyperparam_search 3개였다 — 라이브 밴딧에서 5개 액션의 평균이 모두 0.093 ~ 0.100인데
+  hyperparam_search만 0.1003으로 dead 문턱(0.1, ADR-060)을 넘어 살아 있고 나머지 4개는 dead라 배정에서 빠졌다. near-tie는 neutral(α+0.1, β+0.1)이나 양수 노이즈
+  (+6.4e-7)라면 half-success(α+0.5)로 세어져 그 액션을 문턱 위에 붙잡는다. s5e4 attempt 이력을 새 판정으로 리플레이하면 hyperparam_search 평균이 0.061(옛 판정
+  0.098, 라이브 0.100 — 리플레이가 라이브와 0.002 어긋난다)로 내려가 5개 전부 dead가 되고, `assign_super_cycle_actions`가 랭킹 폴백(#404)으로 Thompson 순위 상위를
+  배정한다. 하락폭(-0.037)이 문턱 차이(0.0003)의 100배 이상이라 리플레이 오차로 뒤집히지 않는다.
+- 한계와 위험: 허용폭(rmse 12.8에서 1.28e-5, auc 1e-6)은 관심 gain(>= 1e-4)의 1/100 이하지만, 허용폭 안의 정당한 소폭 개선도 tie로 묶여 half-success를 잃는다.
+  전부 dead인 상태는 다양화일 뿐 탐색이 나아졌다는 뜻이 아니다 — s5e4의 5개 액션이 모두 평균 0.09 안팎이라는 것 자체가 정체 신호다. dead 문턱 근처의 액션은 attempt
+  한두 건 차이로 살고 죽으며 이 ADR은 문턱을 바꾸지 않는다.
+- 재고 트리거: 배포 후 s5e4/s5e8 hyperparam_search의 tie 비율, 밴딧 dead 집합, 슈퍼사이클 액션 배정의 다양화, no-op 교훈 생성을 본다. 허용폭 위(1e-5 ~ 1e-4)의
+  정상 소폭 개선이 tie로 묶이는 사례가 나오면 허용폭을 재검토한다. 5개 전부 dead가 길게 이어지는 대회는 ADR-064 방식의 동결 검토 대상이다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |

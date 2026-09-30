@@ -322,8 +322,8 @@ error. 정적 AST 가드(`evaluator/contract.py:_preprocess_reads_valid_target`)
 승격 게이트는 label 계산과 별개다. 후보는 cross-seed paired 재현(seed만 바꾼 CV, seed 불변 누수엔 장님) + audit holdout(dummy target으로 실제 추론 조건 재현,
 현재 best 대비 악화면 `holdout_regressed=True`) 양쪽을 통과해야 `raw.pipelines`에 승격된다(`cycle/promotion.py:confirm_and_measure`,
 decisions.md ADR-024). holdout은 예전엔 기록만 됐지만 지금은 `confirmed = confirmed and not holdout_regressed`로 차단 게이트다.
-- `is_noop_tie`(BON-239): `cv_score`가 직전 best와 부동소수 완전 일치하면 patch hook이 base pipeline으로 위임돼 유효 변경이 없었다는 신호. label 자체를
-바꾸진 않고 attempt에 플래그로 남는다.
+- `is_noop_tie`(BON-239, ADR-065): `cv_score`가 직전 best와 재현 노이즈(`max(1e-6, 1e-6 x |cv|)`) 안에서 일치하면 patch hook이 base pipeline으로 위임돼 유효 변경이
+없었다는 신호. label 자체를 바꾸진 않고 attempt에 플래그로 남는다.
 
 Reflector는 이 숫자를 보고 **왜 그런 결과가 나왔는지**(교훈 본문)만 쓴다. 정성 판정은 `reflector_label`로 분리.
 

@@ -13,8 +13,8 @@ Global/Cluster 티어는 대회 누적 후 승격 예정.
                                             promotion과 동일 기준의 유의미 이득)
   gain_vs_best > 0 (non-jump) → α += 0.5  (half-success, 유의미 미달 양수 이득)
   regression 또는 error_trace → β += 1.0
-  is_noop_tie                 → β += 0.3  (cv_score가 prev_best와 완전 동일 —
-                                            patch가 유효 계산을 안 바꿨다는 확정
+  is_noop_tie                 → β += 0.3  (cv_score가 prev_best와 재현 노이즈 안에서
+                                            동일 — patch가 유효 계산을 안 바꿨다는
                                             신호. 실패보다 약하지만 neutral과는
                                             구분 — #330, neutral로 묻히면 밴딧이
                                             무효과 액션을 계속 선호하게 된다)

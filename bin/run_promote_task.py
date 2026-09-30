@@ -45,7 +45,8 @@ def main() -> None:
     from config.settings import PROMOTE_CONFIRM_SEEDS
     from cycle.action_optimizer import update_bandit
     from cycle.materialize import materialize_best_pipeline, with_frozen_params
-    from cycle.promotion import PromotionCache, confirm_and_measure, effective_label, merge_verify_tolerance
+    from cycle.promotion import PromotionCache, confirm_and_measure, effective_label
+    from evaluator.metrics import float_noise_tolerance
     from evaluator.harness import is_significant_gain, split_audit_holdout
     from memory.retriever import EmbeddingUnavailableError
     from runtime.isolate import eval_isolated
@@ -315,7 +316,7 @@ def main() -> None:
                         )
                     else:
                         merge_delta = abs(merge_eval.cv_score - winner_row[2])
-                        merge_tolerance = merge_verify_tolerance(winner_row[2])
+                        merge_tolerance = float_noise_tolerance(winner_row[2])
                         if merge_delta > merge_tolerance:
                             merge_ok = False
                             print(

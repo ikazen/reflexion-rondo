@@ -40,6 +40,7 @@ from config.settings import ACTION_TYPES, SUBMISSIONS_PER_DAY
 from cycle.action_optimizer import _BANDIT_DECAY, bandit_deltas
 from cycle.stagnation import detect_stagnation
 from evaluator.harness import is_significant_gain
+from evaluator.metrics import float_noise_tolerance
 from memory.transfer import _fp_distance
 from runtime.isolate import DEFAULT_CPU_BUDGET_SECS
 from store.db import PgConn
@@ -94,7 +95,7 @@ def _replay_bandit_timeline(conn: PgConn, competition_id: str) -> list[dict]:
     라이브 action_bandit_posterior 대체재로 쓰지 말 것."""
     rows = conn.execute(
         """
-        select run_ts, action_type, label, gain_vs_best, error_trace
+        select run_ts, action_type, label, gain_vs_best, error_trace, cv_score
         from raw.attempts
         where competition_id = %s and stage = 'reflexion' and action_type is not null
         order by run_ts
@@ -103,11 +104,12 @@ def _replay_bandit_timeline(conn: PgConn, competition_id: str) -> list[dict]:
     ).fetchall()
     state: dict[str, tuple[float, float]] = {}
     timeline: list[dict] = []
-    for step, (run_ts, action_type, label, gain, err) in enumerate(rows, start=1):
+    for step, (run_ts, action_type, label, gain, err, cv) in enumerate(rows, start=1):
         if action_type not in ACTION_TYPES:
             continue
-        # no-op tie는 저장된 컬럼이 없다. 하네스는 cv가 prev_best와 비트 단위로 같을 때만 tie로 보므로 그 attempt의 gain은 정확히 0이다.
-        da, db = bandit_deltas(label, gain, err, is_noop_tie=gain is not None and gain == 0.0)
+        # no-op tie는 저장된 컬럼이 없다. 하네스는 |cv - prev_best|가 허용폭 안이면 tie로 보므로 |gain|과 cv(허용폭은 prev_best와 사실상 같다)로 복원한다.
+        is_tie = gain is not None and cv is not None and abs(gain) <= float_noise_tolerance(cv)
+        da, db = bandit_deltas(label, gain, err, is_noop_tie=is_tie)
         if action_type not in state:
             alpha, beta = 1.0 + da, 1.0 + db
         else:
