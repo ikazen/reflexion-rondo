@@ -187,6 +187,13 @@ class _Conn:
         pass
 
 
+_REVERT_SQL = "UPDATE raw.attempts SET was_promoted = false WHERE attempt_id = %s"
+
+
+def _reverts(conn: "_Conn") -> list[object]:
+    return [p for s, p in zip(conn.executed, conn.executed_params) if s == _REVERT_SQL]
+
+
 def _run_promote_with_mocks(
     confirm_result, reflect_mock, confirm_mock, eval_isolated_mock=None, generate_csv_mock=None,
     best_attempt_mock=None, download_submission_csv_mock=None, update_bandit_mock=None,
@@ -426,6 +433,7 @@ def test_merge_verify_matching_cv_allows_promotion() -> None:
     )
     assert conn.insert_pipeline_mock.call_count == 1
     assert conn.upload_best_pipeline_mock.call_count == 1
+    assert _reverts(conn) == []
 
 
 def test_promotion_freezes_winner_params_into_promoted_source() -> None:
@@ -480,6 +488,7 @@ def test_merge_verify_mismatched_cv_blocks_promotion() -> None:
     )
     assert conn.insert_pipeline_mock.call_count == 0
     assert conn.upload_best_pipeline_mock.call_count == 0
+    assert _reverts(conn) == [[_ATTEMPT_ROWS[0][0]]]  # pipeline이 없으면 was_promoted도 되돌린다(#426)
 
 
 def test_best_pipeline_upload_is_strict_and_inside_the_insert_transaction() -> None:
@@ -504,6 +513,7 @@ def test_upload_failure_rolls_back_the_promotion_and_the_task_continues(capsys) 
         upload_side_effect=BestPipelineUploadError("minio down"),
     )
     assert conn.rolled_back is True
+    assert _reverts(conn) == [[_ATTEMPT_ROWS[0][0]]]
     assert reflect_mock.call_count == 3
     out = capsys.readouterr().out
     assert "업로드 실패 — 승격 롤백" in out
@@ -538,6 +548,7 @@ def test_merge_verify_tolerance_scales_with_the_metric(monkeypatch, winner_cv, d
     )
     assert conn.insert_pipeline_mock.call_count == int(promoted)
     assert conn.upload_best_pipeline_mock.call_count == int(promoted)
+    assert len(_reverts(conn)) == int(not promoted)
 
 
 def test_merge_verify_eval_error_blocks_promotion() -> None:
@@ -555,6 +566,7 @@ def test_merge_verify_eval_error_blocks_promotion() -> None:
     )
     assert conn.insert_pipeline_mock.call_count == 0
     assert conn.upload_best_pipeline_mock.call_count == 0
+    assert _reverts(conn) == [[_ATTEMPT_ROWS[0][0]]]  # pipeline이 없으면 was_promoted도 되돌린다(#426)
 
 
 # promote 시점 submission CSV 캐싱 — ops-vm 아침 CPU 스파이크 원인 제거
