@@ -19,7 +19,8 @@ EXTRA_TRAIN_PATHS: list[str] = ["original.csv"]  # zahranusratt/smartphone-usage
 # addiction_level은 대회에 없는 컬럼이라 store/train_data.py의 컬럼 교집합으로 자동
 # 제외됨(addiction_level은 타깃 addicted_label과 다른 파생 라벨이라 누수 없이 정확히
 # 배제돼야 함 — 의도된 동작). MinIO kaggle/s6e8/data/original.csv.
-ACTIVE            = True  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
+ACTIVE            = False  # deep tier 동결 (#422, ADR-064) — 마지막 확정(09-11) 이후 19일 1,732 attempt / 884 CPU-h에 jump 0,
+# 최대 gain 5.5e-5(LB-p90 격차 0.0034의 1/60). 재활성 전 ADR-064 재고 기준 확인.
 EDA_CARD = """competition: playground-series-s6e8 (Predicting Smartphone Addiction)
 task: binary classification  metric: auc  target: addicted_label
 rows: 691369  features: 12
