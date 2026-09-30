@@ -37,6 +37,7 @@ from pydantic import BaseModel
 
 from config.competitions import active_competition_ids, competition_id_to_slug
 from config.settings import ACTION_TYPES, SUBMISSIONS_PER_DAY
+from cycle.action_optimizer import _BANDIT_DECAY, bandit_deltas
 from cycle.stagnation import detect_stagnation
 from evaluator.harness import is_significant_gain
 from memory.transfer import _fp_distance
@@ -105,22 +106,13 @@ def _replay_bandit_timeline(conn: PgConn, competition_id: str) -> list[dict]:
     for step, (run_ts, action_type, label, gain, err) in enumerate(rows, start=1):
         if action_type not in ACTION_TYPES:
             continue
-        # update_bandit(cycle/action_optimizer.py:45-52)과 동일 우선순위 —
-        # error/regression이 label='jump'보다 먼저 체크된다.
-        if err is not None or label == "regression":
-            da, db = 0.0, 1.0
-        elif label == "jump":
-            da, db = 1.0, 0.0
-        elif gain is not None and gain > 0:
-            da, db = 0.5, 0.1
-        else:
-            da, db = 0.1, 0.1
+        da, db = bandit_deltas(label, gain, err)
         if action_type not in state:
             alpha, beta = 1.0 + da, 1.0 + db
         else:
             old_a, old_b = state[action_type]
-            alpha = 1.0 + (old_a - 1.0) * 0.95 + da
-            beta = 1.0 + (old_b - 1.0) * 0.95 + db
+            alpha = 1.0 + (old_a - 1.0) * _BANDIT_DECAY + da
+            beta = 1.0 + (old_b - 1.0) * _BANDIT_DECAY + db
         state[action_type] = (alpha, beta)
         timeline.append({
             "step": step,

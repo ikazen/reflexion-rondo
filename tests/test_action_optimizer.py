@@ -17,6 +17,7 @@ from cycle.action_optimizer import (
     _is_dead_action,
     _reexplore_window_open,
     assign_super_cycle_actions,
+    bandit_deltas,
     get_action_prior,
     update_bandit,
 )
@@ -330,11 +331,13 @@ def test_update_noop_tie_default_is_false():
     assert da == pytest.approx(_NEUTRAL_INCREMENT) and db == pytest.approx(_NEUTRAL_INCREMENT)
 
 
-def test_update_decay_in_sql():
-    """ON CONFLICT SQL에 decay factor(0.95)가 포함된다."""
+def test_update_decay_is_passed_as_a_parameter_not_a_sql_literal():
+    """ON CONFLICT의 decay는 _BANDIT_DECAY를 SQL 파라미터로 받는다 — 리터럴이 상수와 따로 놀지 않게(#420)."""
     conn = _update("jump", 0.02, None)
-    sql: str = conn.execute.call_args[0][0]
-    assert "0.95" in sql
+    sql, params = conn.execute.call_args[0]
+    assert "0.95" not in sql
+    assert params[5] == pytest.approx(_BANDIT_DECAY) and params[7] == pytest.approx(_BANDIT_DECAY)
+    assert (params[6], params[8]) == (params[3], params[4])
 
 
 def test_update_decay_constant_value():
@@ -369,3 +372,21 @@ def test_get_action_prior_seed_deterministic():
     r1 = get_action_prior(_conn(), "s4e1", seed=7)
     r2 = get_action_prior(_conn(), "s4e1", seed=7)
     assert r1 == r2
+
+
+@pytest.mark.parametrize(
+    ("label", "gain", "error", "tie", "expected"),
+    [
+        ("neutral", None, "SyntaxError", False, (0.0, 1.0)),
+        ("regression", -0.01, None, False, (0.0, 1.0)),
+        ("jump", 0.02, None, True, (0.0, _NOOP_TIE_PENALTY)),
+        ("jump", 0.02, None, False, (1.0, 0.0)),
+        ("neutral", 0.005, None, False, (_HALF_SUCCESS, _NEUTRAL_INCREMENT)),
+        ("neutral", 0.0, None, False, (_NEUTRAL_INCREMENT, _NEUTRAL_INCREMENT)),
+        ("neutral", 0.0, None, True, (0.0, _NOOP_TIE_PENALTY)),
+        ("error", None, "boom", True, (0.0, 1.0)),
+    ],
+)
+def test_bandit_deltas_priority_table(label, gain, error, tie, expected):
+    """에러/regression > no-op tie > jump > 양수 gain > 그 외 — update_bandit과 리플레이가 공유하는 표."""
+    assert bandit_deltas(label, gain, error, tie) == pytest.approx(expected)
