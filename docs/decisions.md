@@ -1304,6 +1304,9 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
   `error_trace like 'cpu budget exceeded: projected%'` 건수, kill(3600s)당 CPU 분포, s5e4 kill 비율(현 28%)과 kill CPU 비중(현 66%). 성공은 kill 비율 15% 이하
   또는 kill CPU 비중 33% 이하(절반)이고, kill CPU 비중이 50% 이상 그대로면 동결(ADR-045 방식)을 재판단한다.
 - 재고 트리거: 투영 중단된 attempt를 같은 pipeline으로 다시 돌렸을 때 예산 안에 끝나는 오탐이 보이면 마진을 올린다.
+- **[2026-09-30 #421 amend]**: 배포 후 실측이 성공 기준을 채우지 못했다. 500k 체제 3일(173 attempt)에서 kill CPU 비중 80%(70.6/88.8h), 투영 중단은
+  09-26~29 s5e4에서 13건 vs 워치독 kill 95건(약 12%만 포착)이다. 동결 재판단 기준(kill CPU 비중 >=50%)을 넘었지만 s5e4가 지금 LB가 움직이는 유일한
+  대회라 동결 대신 ADR-063(attempt 예산 하향 + kill 위치 계측)을 택했다. 투영이 못 잡는 이유(kill이 preselect / fold-1 내부인지, fold 2 이후인지)는 아직 모른다.
 
 ---
 
@@ -1371,6 +1374,8 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
   게이트는 53d7e262의 더 높은 cv와 비교하는 불일치가 생겨 사실상 승격 정체로 이어진다.
 - 재고 트리거: 500k 배포 후 7일 안에 새 확정 pipeline이 0건이면(kill 급증이 원인으로 보이면) `MAX_TRAIN_ROWS`를 300k로 낮춰
   절충하고 그 지점에서 cv-LB 정합을 다시 확인한다. kill 비율이 35%를 넘거나 유효 attempt 수가 150k 체제의 절반 미만이면 즉시 검토.
+- **[2026-09-30 #421 amend]**: 7일 트리거는 해소됐다(09-29 첫 확정 승격 2건, 수동 제출 LB 12.6388). 대신 즉시 검토 조건(kill 비율 35%)이 44%로 넘었다.
+  150k 롤백은 LB와 역상관이 확인된 체제로 돌아가는 것이고 300k는 미검증이라 500k를 유지하고, 단가는 ADR-063의 attempt 예산으로 조정한다.
 
 ---
 
@@ -1475,6 +1480,35 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
   해소), 이 노이즈 1건이다. 실제 손상 신호와 새 허용오차(상대 1e-6) 사이에 750배 여유가 있다. 80분 뒤 다른 ensemble이 승격돼 실손실은 없었지만 우연이다.
 - 한계: 값이 0에 가까운 metric(s5e10 rmse 0.02)은 절대 하한 1e-6이 그대로 적용돼 상대로는 더 느슨하다. 그 스케일의 손상 신호(상대 7.5e-4 = 절대 1.6e-5)는
   여전히 하한을 넘으므로 잡힌다. 재고 트리거: 노이즈 수준 delta로 기각되는 merge-verify가 다시 나오면 상대항을 키우기 전에 delta 분포부터 확인한다.
+
+---
+
+## ADR-063 — s5e4 attempt CPU 예산을 2400s로 낮추고 kill 위치를 기록한다 (#421, ADR-056/058 판정)
+
+- 결정: (1) `config/competitions/s5e4.py`에 `ATTEMPT_CPU_BUDGET_SECS = 2400`을 둔다. `config.competitions.attempt_cpu_budget_secs(comp)`가 attempt
+  호출부(`bin/run_attempt_task.py`)에서만 이 값을 우선하고, confirm/holdout/merge-verify/backfill은 기존 `CPU_BUDGET_SECS`(기본 3600s)를 그대로 쓴다 —
+  승격 후보의 재평가가 attempt용 예산에 걸려 기각되지 않게 하려는 분리다. 예산은 `eval_semantics_fingerprint`에 들어가지 않아 자동 정지가 없다.
+  (2) 평가가 CPU/메모리/wall 워치독에 죽으면 `error_trace` 둘째 줄에 `[last_progress] stage=... cpu=...`를 붙인다. `PipelineContext.progress` 콜백을 runner가
+  워크스페이스의 `_progress.log`에 append하고 `eval_isolated`가 마지막 줄을 읽는다. stage는 `eval_start`(진입) / `preselect_done` / `fold_done fold=k/n` /
+  `cv_done`이고 줄이 없으면 `none`(evaluate_pipeline 진입 전에 죽음)이다. 첫 줄은 기존 메시지 그대로라 `startswith("cpu budget exceeded")` 분기와 기존
+  쿼리가 유지되고, `normalize_error`가 진행 줄을 무시해 시그니처 집계는 바뀌지 않는다.
+- 근거(500k 체제 2026-09-27 06:00Z 이후 3일, 173 attempt): CPU 예산 kill 76건이 70.6h(평균 3346s, CPU의 80%), 성공 91건이 17.8h(평균 705s)다. 성공 분포는
+  ensemble p99 2338s / max 2785s, hyperparam_search p90 2805s / max 3377s이고 jump 3건의 CPU는 948/1316/2080s다. 예산 B로 3일을 재계산한 what-if:
+
+  | 예산 | 절감되는 kill CPU-h | 잘리는 성공 | 잘리는 jump |
+  |---|---|---|---|
+  | 1800s | 32.6 | 8 | 1 (2080s) |
+  | 2100s | 26.3 | 6 | 0 (2080s가 경계) |
+  | 2400s | 20.0 | 4 | 0 |
+  | 3000s | 7.3 | 2 | 0 |
+
+  2400s는 최대 jump(2080s)의 1.15배다. 잘리는 성공 4건은 CPU 3.3h짜리 neutral/regression이었다.
+- 기대 효과와 한계: s5e4 총 CPU 약 -22%(20.0h + 잘리는 성공의 초과분). kill 비중 자체는 약 78%로 남는다 — 이 개입은 상한을 낮출 뿐 kill을 없애지 못한다.
+  ADR-044(예산 상향 -> 소각 3배)와 반대 방향이지만 근거가 다르다: 그때는 검열된 분포를 풀어 보려 했고, 이번에는 풀어 본 결과(kill이 예산 상한에 몰려 있고 성공 상단이
+  그 아래에 있다)에서 자른다.
+- 재고 트리거(배포 48h 후): (a) 잘린 attempt에 jump가 있었거나 성공률이 뚜렷이 떨어지면 3600s로 복원한다. (b) `last_progress` 분포로 다음 개입을 고른다 —
+  `eval_start`/`preselect_done` 위주(fold-1 진입 전 또는 fold-1 내부 폭주)면 fold-1 데드라인 규칙(루프 시작 CPU + 남은 예산 / n_splits x 1.15를 넘으면 종료),
+  `fold_done fold=1/n` 이후 위주면 투영 마진 1.15 조정. (c) 성공 판정은 s5e4 총 CPU 약 -20%와 CPU-h당 jump 유지다.
 
 ---
 

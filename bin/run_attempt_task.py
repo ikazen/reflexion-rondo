@@ -32,6 +32,7 @@ def main() -> None:
 
     from store.db import connect
     from store.train_data import load_train
+    from config.competitions import attempt_cpu_budget_secs
     from cycle.run import CycleConfig, run_attempt_core
     from evaluator.harness import split_audit_holdout
 
@@ -83,7 +84,7 @@ def main() -> None:
         is_classification=comp.IS_CLASSIFICATION,
         slug=args.competition,
         holdout=holdout,
-        cpu_budget_secs=getattr(comp, "CPU_BUDGET_SECS", None),
+        cpu_budget_secs=attempt_cpu_budget_secs(comp),
     )
 
     data = run_attempt_core(
