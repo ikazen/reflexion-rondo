@@ -170,7 +170,7 @@ def _projected_cpu(ws: Path, n_splits: int, cpu_now: float) -> tuple[float, int]
 
     fold-1은 evaluator.harness의 투영(ADR-056)과 같은 식이고 CPU는 시간에 따라 늘기만 하므로, fold-1이 끝난 뒤의 투영은 이 값 이상이다 —
     그 투영이 거부했을 attempt만 미리 끊는다. fold-2 이후는 남은 fold를 완료 fold 평균과 진행 중 fold의 소모 중 큰 쪽으로 어림한다:
-    fold-1이 이후 fold보다 싸면 fold-1 투영을 통과하고도 예산 직전에 죽는다(s5e8 fold 3~4/5에서 kill)."""
+    fold-1이 이후 fold보다 싸면 fold-1 투영을 통과하고도 예산 직전에 죽는다."""
     try:
         lines = (ws / "_progress.log").read_text().splitlines()
     except OSError:

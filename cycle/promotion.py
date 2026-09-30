@@ -31,6 +31,7 @@ _LOG = logging.getLogger(__name__)
 # best_source가 없을 때 베이스라인 평가에 쓰는 기본 패치 (= BasePipeline 그대로)
 _NOOP_PATCH = "class Patch:\n    pass\n"
 
+
 @dataclass(frozen=True, slots=True)
 class ConfirmResult:
     confirmed: bool

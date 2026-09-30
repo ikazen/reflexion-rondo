@@ -46,8 +46,8 @@ def main() -> None:
     from cycle.action_optimizer import update_bandit
     from cycle.materialize import materialize_best_pipeline, with_frozen_params
     from cycle.promotion import PromotionCache, confirm_and_measure, effective_label
-    from evaluator.metrics import float_noise_tolerance
     from evaluator.harness import is_significant_gain, split_audit_holdout
+    from evaluator.metrics import float_noise_tolerance
     from memory.retriever import EmbeddingUnavailableError
     from runtime.isolate import eval_isolated
     from store.s3_code import download as _code_download
