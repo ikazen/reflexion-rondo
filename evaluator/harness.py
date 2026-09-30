@@ -7,6 +7,7 @@ from __future__ import annotations
 import inspect
 import os
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -561,6 +562,9 @@ class PipelineContext:
     # 그 attempt의 값으로 채운다. #339(확정 base와의 tie)와 달리 base가 아닌 임의의 과거 attempt와도
     # 매칭해 반복 재생산(같은 params로 수렴하는 서로 다른 patch 등)의 fold 계산을 회수한다.
     known_fold1_scores: list[list[float]] | None = None
+    # 평가 진행 상황을 한 줄씩 받는 콜백(#421) — runner가 워크스페이스 파일에 append하도록 넣는다. 워치독이 CPU/메모리 kill 시 마지막
+    # 줄을 error_trace에 붙여 kill이 preselect / fold-1 / fold 2 이후 중 어디서 났는지 남긴다. None이면 아무 것도 하지 않는다.
+    progress: Callable[[str], None] | None = None
 
 
 class CpuBudgetProjectedError(RuntimeError):
@@ -912,7 +916,11 @@ def evaluate_pipeline(
     fn, metric_sign, metric_class = get_metric(ctx.metric)
     # preselect_params는 is_original이 붙은 원본 train을 그대로 받아야 자기 내부
     # split에서도 원본 행을 validation으로 안 보낸다(#228) — 여기서 미리 벗기지 않는다.
+    if ctx.progress:
+        ctx.progress(f"stage=eval_start cpu={_cpu_seconds():.0f}")
     selected_params = preselect_params(pipeline, train, ctx)
+    if ctx.progress:
+        ctx.progress(f"stage=preselect_done cpu={_cpu_seconds():.0f}")
     train, is_original = _extract_is_original(train)
     y = train[ctx.target_col].to_numpy()
     compute_importance = ctx.action_type in _IMPORTANCE_ACTIONS
@@ -980,6 +988,8 @@ def evaluate_pipeline(
             )
         preds = pipeline.postprocess_predictions(raw_preds, ctx)
         fold_scores.append(float(fn(yva_raw, preds)))
+        if ctx.progress:
+            ctx.progress(f"stage=fold_done fold={fold_idx + 1}/{ctx.n_splits} cpu={_cpu_seconds():.0f}")
         # fold-1 캐시 히트(아래)가 루프를 끊어도 baseline_cv가 남도록 조기 종료 검사보다 먼저 계산한다(#406).
         # 캐시 히트 경로의 baseline_fold_scores는 fold-1 값 하나뿐이다.
         if metric_class == "regression_error":
@@ -1066,6 +1076,8 @@ def evaluate_pipeline(
                 )
             fold_pi_means.append(pi.importances_mean)
 
+    if ctx.progress:
+        ctx.progress(f"stage=cv_done cpu={_cpu_seconds():.0f}")
     cv_score = float(np.mean(fold_scores))
     cv_fold_var = float(np.var(fold_scores))
     fold_std = float(np.std(fold_scores))

@@ -58,3 +58,13 @@ def test_runner_reuses_a_cached_fold1_match(tmp_path) -> None:
     cached = _run_runner(tmp_path, known_fold1_scores=[poisoned])
     assert cached["fold_scores"] == poisoned
     assert cached["cv_score"] == sum(poisoned) / len(poisoned)
+
+
+def test_runner_writes_a_progress_log_for_the_watchdog(tmp_path) -> None:
+    """#421: eval_isolated의 워치독은 kill 시 이 파일의 마지막 줄을 error_trace에 붙여 kill 위치를 남긴다."""
+    _run_runner(tmp_path)
+
+    lines = (tmp_path / "_progress.log").read_text().splitlines()
+    assert lines[0].startswith("stage=eval_start")
+    assert [line.split()[1] for line in lines if "fold_done" in line] == ["fold=1/3", "fold=2/3", "fold=3/3"]
+    assert lines[-1].startswith("stage=cv_done")

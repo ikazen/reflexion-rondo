@@ -5,6 +5,7 @@ import importlib
 import pkgutil
 
 import config.competitions as _comp_pkg
+from config.competitions import attempt_cpu_budget_secs
 from config.settings import is_classification
 
 
@@ -31,3 +32,28 @@ def test_active_flag_is_bool_on_every_competition():
     Python에서 항상 truthy라 daemon이 동결을 무시하고 계속 큐잉한다 — 타입까지 검사."""
     for mod in _load_all_comps():
         assert isinstance(mod.ACTIVE, bool), f"{mod.__name__}: ACTIVE must be bool, got {mod.ACTIVE!r}"
+
+
+def test_attempt_cpu_budget_prefers_the_attempt_specific_value():
+    class _Comp:
+        ATTEMPT_CPU_BUDGET_SECS = 2400
+        CPU_BUDGET_SECS = 3600
+
+    assert attempt_cpu_budget_secs(_Comp) == 2400
+
+
+def test_attempt_cpu_budget_falls_back_to_the_shared_budget_then_none():
+    class _Shared:
+        CPU_BUDGET_SECS = 5400
+
+    assert attempt_cpu_budget_secs(_Shared) == 5400
+    assert attempt_cpu_budget_secs(object()) is None
+
+
+def test_s5e4_lowers_only_the_attempt_budget():
+    """#421/ADR-063: confirm/holdout/merge-verify가 쓰는 CPU_BUDGET_SECS는 건드리지 않는다."""
+    from config.competitions import s5e4
+
+    assert s5e4.ATTEMPT_CPU_BUDGET_SECS == 2400
+    assert not hasattr(s5e4, "CPU_BUDGET_SECS")
+    assert attempt_cpu_budget_secs(s5e4) == 2400

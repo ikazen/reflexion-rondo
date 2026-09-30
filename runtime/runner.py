@@ -20,6 +20,11 @@ def _write(payload: dict) -> None:
     (WS / "output.json").write_text(json.dumps(payload))
 
 
+def _progress(line: str) -> None:
+    with open(WS / "_progress.log", "a") as f:
+        f.write(line + "\n")
+
+
 def _eval_holdout(
     pipeline: object,
     train90: "pl.DataFrame",
@@ -158,6 +163,7 @@ def main() -> None:
         prev_best_fold_scores=inp.get("prev_best_fold_scores"),
         cpu_budget_sec=inp.get("cpu_budget_sec"),
         known_fold1_scores=inp.get("known_fold1_scores"),
+        progress=_progress,
     )
 
     try:

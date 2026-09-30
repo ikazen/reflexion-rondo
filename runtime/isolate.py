@@ -139,6 +139,20 @@ def _read_cpu_seconds(pid: int) -> float | None:
         return None
 
 
+KILL_PROGRESS_PREFIX = "[last_progress] "
+
+
+def _with_last_progress(reason: str, ws: Path) -> str:
+    """워치독 kill 사유 아래에 runner가 남긴 마지막 진행 줄을 붙인다(#421). 첫 줄은 그대로라 `startswith("cpu budget exceeded")`
+    분기(cycle/run.py:_resource_kill_feedback)와 기존 분석 쿼리가 유지되고, 시그니처 정규화는 이 줄을 무시한다
+    (cycle/error_pitfalls.py). 진행 줄이 없으면 evaluate_pipeline 진입 전(소스 로드/데이터 준비)에 죽은 것이다."""
+    try:
+        lines = (ws / "_progress.log").read_text().splitlines()
+    except OSError:
+        lines = []
+    return f"{reason}\n{KILL_PROGRESS_PREFIX}{lines[-1] if lines else 'none'}"
+
+
 def eval_isolated(
     source: str,
     train: pl.DataFrame,
@@ -220,9 +234,10 @@ def eval_isolated(
                 if rss is not None:
                     peak_rss = max(peak_rss, rss)
                     if rss > rss_limit:
-                        killed_reason = (
+                        killed_reason = _with_last_progress(
                             f"memory watchdog: peak RSS {rss // (1024 ** 2)}MB "
-                            f"> limit {rss_limit // (1024 ** 2)}MB"
+                            f"> limit {rss_limit // (1024 ** 2)}MB",
+                            ws,
                         )
                         proc.kill()
                         proc.wait()
@@ -231,8 +246,8 @@ def eval_isolated(
                 if cpu is not None:
                     peak_cpu = max(peak_cpu, cpu)
                     if cpu > cpu_budget:
-                        killed_reason = (
-                            f"cpu budget exceeded: {cpu:.0f}s CPU used (limit {cpu_budget:.0f}s)"
+                        killed_reason = _with_last_progress(
+                            f"cpu budget exceeded: {cpu:.0f}s CPU used (limit {cpu_budget:.0f}s)", ws,
                         )
                         proc.kill()
                         proc.wait()
@@ -241,7 +256,7 @@ def eval_isolated(
                 if remaining <= 0:
                     proc.kill()
                     proc.wait()
-                    killed_reason = f"timeout after {wall_timeout:.0f}s"
+                    killed_reason = _with_last_progress(f"timeout after {wall_timeout:.0f}s", ws)
                     break
                 try:
                     proc.wait(timeout=min(_RSS_POLL_INTERVAL_SEC, remaining))

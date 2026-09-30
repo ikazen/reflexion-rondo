@@ -72,6 +72,15 @@ def test_normalize_catboost_error() -> None:
     assert "CatBoostError" in sig
 
 
+def test_normalize_ignores_the_kill_progress_line() -> None:
+    """#421: kill 사유 아래의 진행 줄이 시그니처를 갈라 pitfall 집계를 쪼개면 안 된다."""
+    plain = "cpu budget exceeded: 3604s CPU used (limit 3600s)"
+    with_progress = plain + "\n[last_progress] stage=fold_done fold=1/3 cpu=1650"
+
+    assert normalize_error(with_progress) == normalize_error(plain)
+    assert normalize_error(with_progress).startswith("cpu budget exceeded:")
+
+
 def test_normalize_syntax_error_excluded() -> None:
     assert normalize_error(_SYNTAX_TRACE) is None
 

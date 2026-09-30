@@ -489,6 +489,19 @@ curl http://rondo-api.internal/api/lessons     # 교훈 목록
 - 실패 attempt도 기록되어 분석 대상.
 - transfer 점검: `cold_start_progression`의 `warm_start_ratio` 추세. 우상향 아니면 fingerprint 가중치/generality 라벨링/검색 메타필터 점검.
 - 노이즈 점검: `cv_fold_var`가 큰 attempt의 label은 `neutral`로 빠지는지 확인.
+- CPU/메모리 kill 위치(ADR-063, #421 이후 행만): `error_trace` 둘째 줄의 `[last_progress]`로 어느 단계에서 죽었는지 본다.
+  `none`(아래 쿼리에서는 stage NULL)은 evaluate_pipeline 진입 전, `eval_start`는 preselect 중, `preselect_done`은 fold-1 내부,
+  `fold_done fold=k/n`은 fold k+1 내부(또는 후처리), `cv_done`은 CV 이후(holdout 등)다.
+
+```sql
+select substring(error_trace from '\[last_progress\] stage=(\S+)( fold=\d+/\d+)?') as stage,
+       substring(error_trace from '\[last_progress\] stage=\S+ (fold=\d+/\d+)') as fold,
+       count(*) as n, round(sum(peak_cpu_sec) / 3600, 1) as cpu_h
+from raw.attempts
+where competition_id = 'playground-series-s5e4' and error_trace like 'cpu budget exceeded%'
+  and error_trace like '%[last_progress]%' and run_ts >= '2026-09-30'
+group by 1, 2 order by n desc;
+```
 
 ## 9. 교훈 위생 (메타 루프)
 
