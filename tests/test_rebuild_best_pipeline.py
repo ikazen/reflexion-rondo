@@ -44,7 +44,7 @@ def test_uploads_and_records_trusted_snapshot():
         patch("store.s3_code.upload_best_pipeline") as up,
     ):
         rebuild("playground-series-s4e11", dry_run=False)
-    up.assert_called_once_with("playground-series-s4e11", _BEST)
+    up.assert_called_once_with("playground-series-s4e11", _BEST, strict=True)
     writes = [c for c in conn.execute.call_args_list if "set materialized_code" in c.args[0]]
     assert len(writes) == 1
     assert writes[0].args[1] == [_BEST, _SHA, "pipe-9"]

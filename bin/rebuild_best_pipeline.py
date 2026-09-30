@@ -45,7 +45,7 @@ def rebuild(competition_id: str, dry_run: bool) -> str:
             print(best)
             return best
 
-        upload_best_pipeline(competition_id, best)
+        upload_best_pipeline(competition_id, best, strict=True)
         # 재생 결과를 최신 유효행의 신뢰 스냅샷으로 기록한다(#254/ADR-039와 동일 방식):
         # materialize 로직이 바뀌었으면 재생본이 승격 당시 병합본과 텍스트로 다를 수
         # 있는데, 그게 이제 MinIO에 올라간 정본이다. _baseline_source_guard와 submit.py가

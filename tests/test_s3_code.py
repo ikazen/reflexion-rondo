@@ -15,8 +15,11 @@ if str(ROOT) not in sys.path:
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from store import s3_code
 from store.s3_code import (
+    BestPipelineUploadError,
     download_submission_csv,
     mark_submission_csv_timed_out,
     submission_csv_timed_out,
@@ -86,3 +89,41 @@ def test_timeout_marker_helpers_are_best_effort() -> None:
         assert submission_csv_timed_out("playground-series-s5e4", "attempt-abc") is False
     with patch.object(s3_code.requests, "put", side_effect=ConnectionError("down")):
         mark_submission_csv_timed_out("playground-series-s5e4", "attempt-abc")
+
+
+def _http_error_response() -> MagicMock:
+    resp = MagicMock(status_code=503)
+    resp.raise_for_status.side_effect = RuntimeError("503 Service Unavailable")
+    return resp
+
+
+def test_best_pipeline_upload_falls_back_to_a_local_file_by_default() -> None:
+    competition_id = "test-comp-419"
+    local_path = ROOT / "runs" / "best" / f"{competition_id}_best_pipeline.py"
+    try:
+        with patch.object(s3_code.requests, "put", side_effect=ConnectionError("down")):
+            uri = s3_code.upload_best_pipeline(competition_id, "class Patch: pass\n")
+        assert Path(uri) == local_path
+        assert local_path.read_text(encoding="utf-8") == "class Patch: pass\n"
+    finally:
+        local_path.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("failure", [{"side_effect": ConnectionError("down")}, {"return_value": _http_error_response()}])
+def test_best_pipeline_upload_strict_raises_instead_of_falling_back(failure: dict) -> None:
+    """#419: DB에 새 sha를 기록하는 경로는 폴백으로 삼키면 blob이 옛 내용인 채 남는다."""
+    competition_id = "test-comp-419-strict"
+    local_path = ROOT / "runs" / "best" / f"{competition_id}_best_pipeline.py"
+    try:
+        with patch.object(s3_code.requests, "put", **failure):
+            with pytest.raises(BestPipelineUploadError, match=competition_id):
+                s3_code.upload_best_pipeline(competition_id, "class Patch: pass\n", strict=True)
+        assert not local_path.exists()
+    finally:
+        local_path.unlink(missing_ok=True)
+
+
+def test_best_pipeline_upload_strict_returns_the_s3_uri_on_success() -> None:
+    with patch.object(s3_code.requests, "put", return_value=MagicMock(status_code=200)):
+        uri = s3_code.upload_best_pipeline("test-comp-419-ok", "x", strict=True)
+    assert uri == "s3://kaggle/test-comp-419-ok/best_pipeline.py"

@@ -16,6 +16,7 @@ from cycle.promotion import ConfirmResult
 from cycle.run import CycleConfig, run_attempt_core
 from cycle.stagnation import StagnationSignal
 from runtime.isolate import IsolatedResult
+from store.s3_code import BestPipelineUploadError
 
 
 def _config() -> CycleConfig:
@@ -131,8 +132,10 @@ def test_error_trace_forces_error_label_and_skips_significance_check():
 # 안 생긴다. raw.attempts.label(insert_attempt row)은 attempt 시점의 잠정 판정을
 # 그대로 보존한다 — 여기서 다운그레이드하는 건 하류 학습 신호뿐이다.
 
-def _run_deferred(iso_result: IsolatedResult, confirm_result: ConfirmResult | None):
+def _run_deferred(iso_result: IsolatedResult, confirm_result: ConfirmResult | None, upload: MagicMock | None = None):
     conn = MagicMock()
+    # MagicMock의 기본 __exit__는 truthy라 with 블록 안 예외를 삼킨다 — 실제 conn.transaction()처럼 전파시킨다.
+    conn.transaction.return_value.__exit__.return_value = False
     # confirm.confirmed=True 경로는 fingerprint를 조회해 raw.pipelines에 insert한다
     # (cycle/run.py:~710) — dict로 고정해 json.loads(MagicMock) TypeError를 피한다.
     conn.execute.return_value.fetchone.return_value = ({},)
@@ -158,7 +161,7 @@ def _run_deferred(iso_result: IsolatedResult, confirm_result: ConfirmResult | No
         patch("cycle.run.update_bandit") as mock_bandit,
         patch("cycle.run.materialize_best_pipeline", return_value="materialized"),
         patch("cycle.run.insert_pipeline"),
-        patch("cycle.run._best_pipeline_upload"),
+        patch("cycle.run._best_pipeline_upload", upload or MagicMock()),
     ):
         data = run_attempt_core(
             conn, _config(), lessons=[], prev_best_cv=0.89,
@@ -193,4 +196,19 @@ def test_confirm_confirmed_jump_keeps_bandit_reward():
     )
 
     assert data.reward_label == "jump"
+    assert mock_bandit.call_args.kwargs["label"] == "jump"
+
+
+def test_direct_mode_upload_is_strict_and_a_failure_only_rolls_back_the_promotion():
+    """#419: 직접모드 승격도 업로드를 insert 트랜잭션 안에서 strict로 부른다. 실패하면 승격만 롤백하고
+    attempt 자체(행 기록, 보상)는 정상 종료한다."""
+    confirm = ConfirmResult(confirmed=True, holdout_score=0.9, seed_gains={"7": {}})
+    upload = MagicMock(side_effect=BestPipelineUploadError("minio down"))
+    data, mock_insert, mock_bandit = _run_deferred(
+        _iso(label="jump", gain_vs_best=0.02), confirm_result=confirm, upload=upload,
+    )
+
+    assert upload.call_args.kwargs["strict"] is True
+    assert data.label == "jump"
+    assert mock_insert.call_count == 1
     assert mock_bandit.call_args.kwargs["label"] == "jump"
