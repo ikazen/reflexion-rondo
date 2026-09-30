@@ -156,6 +156,7 @@ def _promote(conn, comp: object, attempt_id: str, cv_score: float, source: str, 
             oof_preds=merge_oof_preds,
             materialized_code=materialized,
         )
+        # 트랜잭션 안에서 부른다 — 업로드 실패가 insert를 롤백해야 DB와 blob이 어긋나지 않는다.
         upload_best_pipeline(competition_id, materialized, strict=True)
 
 

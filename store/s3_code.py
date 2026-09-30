@@ -63,8 +63,8 @@ class BestPipelineUploadError(RuntimeError):
 def upload_best_pipeline(competition_id: str, content: str, strict: bool = False) -> str:
     """Materialized best pipeline 저장 → URI 반환.
 
-    DB에 새 sha를 기록하는 쓰기 경로는 strict=True로 부른다 — MinIO 실패를 로컬 폴백으로 삼키면 DB는 새 sha인데 blob은
-    옛 내용이라 _baseline_source_guard가 대회를 정지시킨다(#419). 폴백은 MinIO 없이 도는 로컬 개발용이다.
+    DB에 새 sha를 기록하는 쓰기 경로는 insert와 같은 트랜잭션 안에서 strict=True로 부른다 — MinIO 실패를 로컬 폴백으로 삼키면 DB는
+    새 sha인데 blob은 옛 내용이라 _baseline_source_guard가 대회를 정지시킨다. 폴백은 MinIO 없이 도는 로컬 개발용이다.
     """
     key = f"{competition_id}/{_BEST_KEY}"
     try:

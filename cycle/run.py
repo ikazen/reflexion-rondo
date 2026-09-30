@@ -509,6 +509,7 @@ def establish_bootstrap_baseline(
             " where competition_id = %s and train_fingerprint is null",
             [train_data_fingerprint(train90), competition_id],
         )
+        # 트랜잭션 안에서 부른다 — 업로드 실패가 insert를 롤백해야 DB와 blob이 어긋나지 않는다.
         _best_pipeline_upload(competition_id, materialized, strict=True)
     _LOG.info(
         "bootstrap baseline 확립 — competition=%s cv=%.6f attempt=%s",
@@ -1122,6 +1123,7 @@ def run_attempt_core(
                         oof_preds=merge_oof_preds,
                         materialized_code=materialized,
                     )
+                    # 트랜잭션 안에서 부른다 — 업로드 실패가 insert를 롤백해야 DB와 blob이 어긋나지 않는다.
                     _best_pipeline_upload(config.competition_id, materialized, strict=True)
             except BestPipelineUploadError as exc:
                 _LOG.warning("best pipeline 업로드 실패 — 승격 롤백: %s", exc)

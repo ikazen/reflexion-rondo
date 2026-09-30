@@ -114,8 +114,7 @@ def _format_action_prior(prior: dict[str, float]) -> str:
 
 
 def _parse_decision(content: str) -> dict:
-    """구조화 출력 모드에서도 응답 선두 `{"`가 유실되거나 JSON 객체 뒤에 잔여 텍스트가 붙는 경우가 있다
-    (2026-09 실측 attempt task의 3.4%). 첫 객체만 취하고, 그래도 안 되면 호출측이 재시도한다."""
+    """구조화 출력 모드에서도 응답 선두 `{"`가 유실되거나 JSON 객체 뒤에 잔여 텍스트가 붙는 경우가 있다."""
     m = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
     if m:
         content = m.group(1)
