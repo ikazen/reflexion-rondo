@@ -17,6 +17,7 @@ from cycle.promotion import (
     _rounded_signature,
     confirm_and_measure,
     effective_label,
+    merge_verify_tolerance,
 )
 from runtime.isolate import IsolatedResult
 
@@ -755,3 +756,10 @@ def test_cross_seed_measured_rejection_still_measures_holdout():
     assert result.confirmed is False
     assert holdout_called is True
     assert result.holdout_score is not None
+
+
+def test_merge_verify_tolerance_has_an_absolute_floor_and_a_relative_term() -> None:
+    assert merge_verify_tolerance(0.0) == 1e-6
+    assert merge_verify_tolerance(0.966) == 1e-6
+    assert merge_verify_tolerance(12.8178) == pytest.approx(1.28178e-5)
+    assert merge_verify_tolerance(-12.8178) == pytest.approx(1.28178e-5)

@@ -98,6 +98,16 @@ def test_freeze_aborts_when_frozen_cv_differs():
     assert conn.updates == []
 
 
+def test_freeze_tolerates_float_noise_on_a_large_scale_metric():
+    """rmse 12.8에서 2e-6 차이는 부동소수 노이즈다 — 절대 1e-6로는 동결이 거부됐다(#418)."""
+    stored_cv = 12.8178
+    materialized = materialize_best_pipeline(_ROUND1, _ROUND2)
+    conn = _Conn(("pid-0001", _ROUND2, stored_cv, materialized, _PARAMS))
+    done, _, uploads = _run(conn, stored_cv + 2e-6)
+    assert done is True
+    assert uploads and len(conn.updates) == 1
+
+
 def test_freeze_skips_already_frozen_without_evaluating():
     frozen = materialize_best_pipeline(_ROUND1, with_frozen_params(_ROUND2, _PARAMS))
     done, ev, uploads = _run(_Conn(_row(frozen)), _STORED_CV)

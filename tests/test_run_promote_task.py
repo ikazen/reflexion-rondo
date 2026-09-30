@@ -14,6 +14,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
+import pytest
+
 ROOT = Path(__file__).parent.parent
 
 
@@ -469,6 +471,36 @@ def test_merge_verify_mismatched_cv_blocks_promotion() -> None:
     )
     assert conn.insert_pipeline_mock.call_count == 0
     assert conn.upload_best_pipeline_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("winner_cv", "delta", "promoted"),
+    [
+        (0.85, 5e-7, True),
+        (0.85, 2e-6, False),
+        (12.8178, 2e-6, True),
+        (12.8178, 2e-3, False),
+    ],
+)
+def test_merge_verify_tolerance_scales_with_the_metric(monkeypatch, winner_cv, delta, promoted) -> None:
+    """절대 1e-6은 rmse 12.8에서 상대 1e-7이라 멀티스레드 부동소수 노이즈(2e-6)에 정당한 승격이 기각됐다(#418).
+    상대항은 큰 스케일에서만 허용을 넓히고 실제 손상 신호(상대 7.5e-4)는 여전히 기각한다."""
+    rows = [
+        ("w0000000", 0.05, winner_cv, "jump", None, "hyp-w", "model_swap", [], 0.0, "s3://w", None, _WINNER_PARAMS),
+        *_ATTEMPT_ROWS[1:],
+    ]
+    monkeypatch.setattr(sys.modules[__name__], "_ATTEMPT_ROWS", rows)
+    eval_isolated_mock = MagicMock(
+        return_value=SimpleNamespace(cv_score=winner_cv + delta, error_trace=None, oof_preds=None)
+    )
+    conn = _run_promote_with_mocks(
+        SimpleNamespace(confirmed=True, holdout_score=None, seed_gains=None, holdout_regressed=False),
+        MagicMock(return_value=SimpleNamespace(reflection_id="rid")),
+        MagicMock(),
+        eval_isolated_mock=eval_isolated_mock,
+    )
+    assert conn.insert_pipeline_mock.call_count == int(promoted)
+    assert conn.upload_best_pipeline_mock.call_count == int(promoted)
 
 
 def test_merge_verify_eval_error_blocks_promotion() -> None:
