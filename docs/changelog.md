@@ -37,7 +37,8 @@ v1.6.29 배포 12시간 실측에서 어제 수정 6건(#404 dead 폴백, #405 �
 - 배포: 빌드 DAG 4 task success(약 105s)로 task 이미지가 03:10Z에 라이브, s5e8 baseline 재측정 4건(cv 변화 +4.0e-5 ~ -8.7e-7, 순위 불변, 격리 0건)과 s5e8 밴딧 리셋 뒤
   03:39Z에 `release.sh`로 daemon 컷오버(compose `623fe8f`). post-restart heartbeat exit 22는 예의 타이밍 레이스라 `docker inspect`(running, restarts=0),
   `/api/health` 5/5, `/api/heartbeat`로 직접 확인했다. 컷오버 시점에 s6e8 큐가 이미 끝나 취소할 항목은 없었고, 큐 리필이 큐 전체가 빌 때만 돌아
-  s5e8은 API로 직접 큐에 넣었다.
+  s5e8은 API로 직접 큐에 넣었다. 재활성 첫 두 사이클에서 s5e8 attempt 6건 중 4건이 preselect 비용(누적된 param 후보를 매번 재평가, 1150~3540 CPU-s)으로 kill돼
+  큐를 취소하고 `freeze_base`로 base를 동결했다(동결본 cv 비트 일치) — 재활성 절차에 동결이 빠져 있었고 runbook §4-13에 추가했다.
 - 이슈 정리: #11, #85, #208, #234, #285, #304, #308, #309, #357을 근거와 함께 종료하고 Milestone 7개(#3, #5, #13, #14, #15, #17, #18)를 닫았다. #208은 worker-vm 30일 실측
   (MemAvailable 최저 6.09GB, OOM kill 0)으로, #285/#308/#309는 재개 조건을 코멘트에 남기고 닫았다.
 - 미조치: s5e10의 유효 pipeline `b6ef7f78`(cv 0.0215, 세계 1위 0.0554의 약 2.6배)은 누수 의심인데 격리되지 않았다. 같은 chain의 2건은 이미 격리됐다. 휴면 대회(SNR 1.1)라

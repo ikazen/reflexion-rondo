@@ -431,13 +431,17 @@ promote task가 대회 best attempt의 제출 CSV를 MinIO(`submissions/<competi
 3. **컷오버 전에** 재활성 대회의 baseline을 다시 잰다 — 휴면 중 평가 의미가 바뀌었다(§4-8). `docker exec -d deploy-rondo-daemon-1 sh -c
    'uv run --no-sync python -m bin.establish_baseline --remeasure --competition <competition-id> > /tmp/remeasure.log 2>&1'`로 분리 실행하고
    `docker top`으로 진행을 본다(valid 행마다 20~40분). 컷오버가 같은 컨테이너의 exec를 죽이므로 끝난 뒤에 컷오버한다.
-4. 재활성 대회의 밴딧이 휴면 시절 낮은 CPU 예산의 kill 벌점으로 전 액션 dead(평균 0.05, observed 20)인지 확인하고, 그렇다면 리셋한다:
+4. base가 param 후보를 누적한 채 휴면했다면(hyperparam_search 여러 라운드) 모든 attempt가 preselect 비용을 먼저 낸다 — s5e8은 재활성 첫 두 사이클에서 attempt 6건 중
+   4건이 preselect 1150~3540 CPU-s로 예산에 걸려 죽었다. 사이클이 없는 동안(큐를 취소하고 실행 중 dagRun이 끝난 뒤) §4-9 `freeze_base`로 동결한다. 동결본 cv가 저장 cv와
+   비트 일치할 때만 반영된다(s5e8: delta 0, 약 11분). 반영 뒤 `blob sha == 레지스트리 sha`를 확인한다.
+5. 재활성 대회의 밴딧이 휴면 시절 낮은 CPU 예산의 kill 벌점으로 전 액션 dead(평균 0.05, observed 20)인지 확인하고, 그렇다면 리셋한다:
    `DELETE FROM raw.action_bandit WHERE scope = 'local' AND scope_key = '<competition-id>'`(daemon 컨테이너 exec, 대회 큐가 없을 때).
-5. 컷오버 직전에 동결 대회의 pending/running 큐를 `PATCH /api/queue/{id}`(`{"status": "cancelled"}`)로 취소한다. running은 사이클 경계에서 멈춘다.
+6. 컷오버 직전에 동결 대회의 pending/running 큐를 `PATCH /api/queue/{id}`(`{"status": "cancelled"}`)로 취소한다. running은 사이클 경계에서 멈춘다.
    구 daemon은 아직 그 대회를 리필하므로 컷오버 뒤에 다시 큐를 확인해 새로 생긴 항목을 취소한다.
-6. 컷오버 뒤: 큐 리필(`_sweep_queue_refill`)은 pending/running 항목이 하나도 없을 때만 돌므로 진행 중인 큐가 있으면 재활성 대회는 한참 큐에 안 들어온다 —
+7. 컷오버 뒤: 큐 리필(`_sweep_queue_refill`)은 pending/running 항목이 하나도 없을 때만 돌므로 진행 중인 큐가 있으면 재활성 대회는 한참 큐에 안 들어온다 —
    `POST /api/queue`(`{"competition": "<slug>", "stage": "reflexion", "n_cycles": 20}`)로 직접 넣는다. 리스(5사이클)가 끝나면 라운드로빈으로 돌아온다.
-7. `/api/heartbeat`의 `current_competition`, 재활성 대회 첫 사이클의 fingerprint 가드 통과, 첫 슈퍼사이클 액션 배정이 dead 액션 없이 나뉘는지 확인한다.
+8. `/api/heartbeat`의 `current_competition`, 재활성 대회 첫 사이클의 fingerprint 가드 통과, 첫 슈퍼사이클 액션 배정이 dead 액션 없이 나뉘고 attempt의 `[last_progress]`에서
+   `preselect_done`의 cpu가 수백 초 안쪽인지(동결 확인) 본다.
 
 ### 4-3. auto-submit 일시중단 복구
 

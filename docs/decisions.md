@@ -1548,6 +1548,10 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 - 실행 결과(2026-09-30): s5e8 baseline 4건 재측정에서 cv 변화는 +4.0e-5 ~ -8.7e-7이고 순위는 그대로이며 격리는 0건이었다. 휴면 중 바뀐 평가 의미가 이 baseline의
   스케일에는 거의 영향을 주지 않았다. 밴딧은 5개 액션이 모두 dead(평균 0.05, observed 20)로 남아 있었다 — 900s 예산 시절 attempt 대부분이 kill로 끝나 받은 벌점이라
   현재 예산(3600s)에서는 근거가 없어 s5e8 행을 삭제(리셋)했다. 큐 리필은 큐 전체가 빌 때만 돌기 때문에 s5e8은 컷오버 뒤 API로 직접 큐에 넣었다.
+  재활성 첫 두 사이클(attempt 6건)에서 4건이 preselect 비용으로 예산에 걸려 죽었다(preselect_done cpu 1152 / 1384 / 3541, hyperparam_search는 3600s 전부 preselect) —
+  base가 hyperparam_search 3라운드의 param 후보를 누적한 채 휴면해서 매 attempt가 후보 전부를 inner split으로 다시 재기 때문이다. 큐를 취소하고 `freeze_base`(ADR-054)로 base를
+  동결했다(동결본 cv가 저장 cv와 비트 일치, delta 0, sha `f4b2a632c478`, blob 일치 확인). 재활성 절차에 동결이 빠져 있었던 것이다(runbook §4-13에 반영). 참고로 재활성 직후
+  idle-tune이 첫 산출을 냈다(튜닝 LightGBM cv 0.969171 vs baseline 0.968956, +0.000215, 27 trials).
 - 한계와 위험: 헤드룸 지표는 fold-std 대비 LB-p90 격차이고 그 격차를 줄일 수 있다는 보장이 아니다. s6e8도 같은 지표로는 4.8배 헤드룸이 있었다. 이 규칙은 "측정이
   가능한 대회"를 고를 뿐 "탐색으로 개선되는 대회"를 고르지는 못한다. s5e8은 750k행 x 5-fold라 s5e4와 같은 CPU kill 위험이 있다(2026-08 예산 900s 시절
   hyperparam_search 75건 중 57건 kill, 성공 attempt의 CPU 중앙값 622s / p90 853s로 900s에 검열됨). 현재 기본 예산은 3600s다.
