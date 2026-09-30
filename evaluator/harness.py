@@ -1013,6 +1013,8 @@ def evaluate_pipeline(
             # 분산 추정에 직접 평균낸다(ADR-047). 1-fold짜리 값을 채워 넣으면 그
             # 평균이 0/1-fold 쪽으로 오염돼 포트폴리오 판단(ADR-051 등)의 근거
             # 지표가 깨진다 — None은 뷰의 `is not null` 필터로 자연히 제외된다.
+            if ctx.progress:
+                ctx.progress(f"stage=cv_done cpu={_cpu_seconds():.0f}")
             return EvalResult(
                 cv_score=ctx.prev_best,
                 cv_fold_var=None,

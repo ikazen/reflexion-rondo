@@ -1265,6 +1265,25 @@ def _count_fit_predict(monkeypatch) -> list[int]:
     return calls
 
 
+def test_tie_shortcut_reports_cv_done_so_the_watchdog_stops_projecting():
+    """#448: fold-1 지름길로 일찍 끝나면 fold_done 뒤에 cv_done이 없어, 이어지는 holdout 평가를 워치독이 다음 fold로 오인해 투영한다."""
+    df = _make_df()
+    baseline = evaluate_pipeline(BasePipeline(), df, PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+    ))
+    lines: list[str] = []
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+        prev_best=baseline.cv_score, prev_best_fold_scores=baseline.fold_scores, progress=lines.append,
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+
+    assert result.noop_early_exit is True
+    assert [line.split()[0] for line in lines] == [
+        "stage=eval_start", "stage=preselect_done", "stage=fold_done", "stage=cv_done",
+    ]
+
+
 def test_discrete_label_metric_disables_the_base_tie_early_exit(monkeypatch):
     """#390: accuracy 계열은 fold-1 점수가 우연히 같은 경우가 많아 조기 중단하지 않고 전체 fold를 돈다."""
     df = _make_df(n=300)

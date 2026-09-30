@@ -142,7 +142,7 @@ def _read_cpu_seconds(pid: int) -> float | None:
 
 # [last_progress] stage=fold_done fold=1/3 cpu=1650
 KILL_PROGRESS_PREFIX = "[last_progress] "
-_PROGRESS_CPU = re.compile(r"cpu=(\d+)")
+_PROGRESS_LINE = re.compile(r"stage=(\w+)(?: fold=\d+/\d+)? cpu=(\d+)")
 
 
 def _last_progress_line(ws: Path) -> str | None:
@@ -165,19 +165,36 @@ def _cpu_projection_margin() -> float:
     return _CPU_PROJECTION_MARGIN
 
 
-def _fold1_projected_cpu(ws: Path, n_splits: int, cpu_now: float) -> float | None:
-    """fold-1 진행 중(마지막 진행 줄이 preselect_done)이면 지금까지의 CPU로 투영한 전체 CPU를 돌려준다.
+def _projected_cpu(ws: Path, n_splits: int, cpu_now: float) -> tuple[float, int] | None:
+    """CV 진행 중이면 (지금까지의 CPU로 투영한 전체 CPU, 진행 중인 fold 번호)를 돌려준다.
 
-    evaluator.harness의 fold-1 투영(ADR-056)과 같은 식이고 CPU는 시간에 따라 늘기만 하므로, fold-1이 끝난 뒤의 투영은 이 값 이상이다 —
-    그 투영이 거부했을 attempt만 fold-1이 끝나기를 기다리지 않고 미리 끊는다."""
-    line = _last_progress_line(ws)
-    if line is None or not line.startswith("stage=preselect_done"):
+    fold-1은 evaluator.harness의 투영(ADR-056)과 같은 식이고 CPU는 시간에 따라 늘기만 하므로, fold-1이 끝난 뒤의 투영은 이 값 이상이다 —
+    그 투영이 거부했을 attempt만 미리 끊는다. fold-2 이후는 남은 fold를 완료 fold 평균과 진행 중 fold의 소모 중 큰 쪽으로 어림한다:
+    fold-1이 이후 fold보다 싸면 fold-1 투영을 통과하고도 예산 직전에 죽는다(s5e8 fold 3~4/5에서 kill)."""
+    try:
+        lines = (ws / "_progress.log").read_text().splitlines()
+    except OSError:
         return None
-    m = _PROGRESS_CPU.search(line)
-    if m is None:
+    loop_start: float | None = None
+    done: list[float] = []
+    for line in lines:
+        m = _PROGRESS_LINE.search(line)
+        if m is None:
+            continue
+        stage, cpu = m.group(1), float(m.group(2))
+        if stage == "preselect_done":
+            loop_start, done = cpu, []
+        elif stage == "fold_done":
+            done.append(cpu)
+        elif stage == "cv_done":
+            return None
+    if loop_start is None or len(done) >= n_splits:
         return None
-    loop_start_cpu = float(m.group(1))
-    return loop_start_cpu + n_splits * (cpu_now - loop_start_cpu)
+    finished = len(done)
+    last = done[-1] if done else loop_start
+    average = (last - loop_start) / finished if finished else 0.0
+    per_fold = max(cpu_now - last, average)
+    return last + (n_splits - finished) * per_fold, finished + 1
 
 
 def eval_isolated(
@@ -281,10 +298,11 @@ def eval_isolated(
                         proc.kill()
                         proc.wait()
                         break
-                    projected = _fold1_projected_cpu(ws, n_splits, cpu) if projection_limit else None
-                    if projected is not None and projected > projection_limit:
+                    projection = _projected_cpu(ws, n_splits, cpu) if projection_limit else None
+                    if projection is not None and projection[0] > projection_limit:
+                        projected, fold_no = projection
                         killed_reason = _with_last_progress(
-                            f"cpu budget exceeded: projected {projected:.0f}s CPU during fold 1 (limit {cpu_budget:.0f}s)", ws,
+                            f"cpu budget exceeded: projected {projected:.0f}s CPU during fold {fold_no} (limit {cpu_budget:.0f}s)", ws,
                         )
                         proc.kill()
                         proc.wait()
