@@ -1574,8 +1574,9 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 - 결정: ADR-062의 허용오차를 `evaluator/metrics.py:float_noise_tolerance(cv) = max(1e-6, 1e-6 * |cv|)`로 옮기고(`merge_verify_tolerance`의 새 이름,
   merge-verify / `freeze_base` / 백필이 같은 함수를 쓴다) 하네스의 tie 판정에도 쓴다:
   `is_noop_tie = abs(cv_score - prev_best) <= float_noise_tolerance(prev_best)`.
-  fold-1 조기 중단(`noop_early_exit`)은 fold 점수 정확 일치를 유지한다(근사 일치를 세대 간에 재사용하는 위험은 ADR-061). `bin/api.py`의 밴딧 리플레이는
-  저장된 `gain_vs_best`와 `cv_score`로 같은 판정을 복원한다(허용폭을 prev_best 대신 cv로 재도 상대 1e-6이라 차이가 없다). 라벨, `gain_vs_best`, 승격 게이트는 그대로다.
+  fold-1 조기 중단(`noop_early_exit`)은 fold 점수 정확 일치를 유지한다(연속 지표에서도 fold-1이 정확히 같고 나머지 fold가 다른 경우가 8~12%라
+  근사로 넓히면 서로 다른 계산을 건너뛴다, ADR-061 #390 amend). `bin/api.py`의 밴딧 리플레이는 저장된 `gain_vs_best`와 `cv_score`로 같은 판정을 복원한다
+  (허용폭을 prev_best 대신 cv로 재도 상대 1e-6이라 차이가 없다). 라벨, `gain_vs_best`, 승격 게이트는 그대로다.
   바뀌는 것은 tie 벌점(밴딧 β+0.3)과 반사의 no-op 교훈이 near-tie에도 적용된다는 점뿐이다.
 - 근거: 같은 계산도 LightGBM 멀티스레드 축약이 프로세스 간 비트 재현이 안 돼 cv가 1e-7 ~ 2e-6 어긋난다(ADR-062). 2026-09-30 실측: s5e4 hyperparam_search 최근 10일
   204건 중 정확 tie 5건, near-tie(0 < |gain| <= 허용폭) 21건이고 같은 gain -1.611e-07이 09-27 이후 11번 반복된다(결정적 재현 노이즈). s6e8 preprocessing은 328건 중
