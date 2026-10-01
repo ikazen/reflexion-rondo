@@ -40,7 +40,7 @@ def test_coder_playbook_uses_no_pandas_only_api() -> None:
 
 
 def test_strategist_injects_playbook_into_prompt() -> None:
-    with patch("agents.strategist._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.return_value = _strategist_resp()
         from agents.strategist import strategize
 
@@ -54,7 +54,7 @@ def test_coder_injects_playbook_into_system_message() -> None:
     from agents.coder import generate_code
 
     for action_type in ("feature_engineering", "bootstrap"):
-        with patch("agents.coder._client") as mock_client:
+        with patch("agents.llm_retry._client") as mock_client:
             mock_client.return_value.chat.return_value = _coder_resp()
             generate_code(hypothesis="h", action_type=action_type, eda_card="n_rows=100")
             messages = mock_client.return_value.chat.call_args.kwargs["messages"]

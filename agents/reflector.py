@@ -10,8 +10,6 @@ import re
 import uuid
 from dataclasses import dataclass, field
 
-from ollama import Client
-
 from agents.llm_retry import chat_with_retry
 from config import settings
 from memory.retriever import insert_reflection
@@ -83,13 +81,6 @@ def _derive_lesson_type(label: str, error_trace: str | None) -> str:
     if label == "regression":
         return "avoid"
     return "no_op"
-
-
-def _client() -> Client:
-    kwargs: dict = {"host": settings.OLLAMA_CLOUD_BASE_URL}
-    if settings.OLLAMA_API_KEY:
-        kwargs["headers"] = {"Authorization": f"Bearer {settings.OLLAMA_API_KEY}"}
-    return Client(**kwargs)
 
 
 def _tail_error(trace: str) -> str:
@@ -171,7 +162,6 @@ Respond with ONLY a JSON object using exactly these keys:
     last_err: Exception | None = None
     for attempt in range(_REFLECT_RETRIES):
         resp = chat_with_retry(
-            _client,
             model=settings.MODEL_REFLECTOR,
             messages=[{"role": "user", "content": user_prompt}],
             think=settings.MODEL_REFLECTOR_THINK,

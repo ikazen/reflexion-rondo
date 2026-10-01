@@ -28,7 +28,7 @@ LESSONS = [
 def test_returns_strategy_decision() -> None:
     mock_resp = _mock_response("Try target encoding on Geography", "feature_engineering", ["r1"])
 
-    with patch("agents.strategist._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.return_value = mock_resp
         result = strategize(eda_card="n_rows=100k", lessons=LESSONS, stage="reflexion")
 
@@ -41,7 +41,7 @@ def test_returns_strategy_decision() -> None:
 def test_strategize_retries_on_transient_ollama_error() -> None:
     mock_resp = _mock_response("Try target encoding on Geography", "feature_engineering", ["r1"])
 
-    with patch("agents.strategist._client") as mock_client, \
+    with patch("agents.llm_retry._client") as mock_client, \
          patch("agents.llm_retry.time.sleep"):
         mock_client.return_value.chat.side_effect = [
             RuntimeError("model temporarily overloaded"),
@@ -57,7 +57,7 @@ def test_reflection_ids_subset_of_provided() -> None:
     # model hallucinated "r99" which was not in the provided lessons
     mock_resp = _mock_response("some hypothesis", "model_swap", ["r1", "r99"])
 
-    with patch("agents.strategist._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.return_value = mock_resp
         result = strategize(eda_card="x", lessons=LESSONS, stage="reflexion")
 
@@ -68,7 +68,7 @@ def test_reflection_ids_subset_of_provided() -> None:
 def test_empty_reflection_ids_allowed() -> None:
     mock_resp = _mock_response("Try LGBM with lower learning rate", "hyperparam_search", [])
 
-    with patch("agents.strategist._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.return_value = mock_resp
         result = strategize(eda_card="x", lessons=LESSONS, stage="reflexion")
 
@@ -78,7 +78,7 @@ def test_empty_reflection_ids_allowed() -> None:
 def test_no_lessons_still_works() -> None:
     mock_resp = _mock_response("Baseline LightGBM", "model_swap", [])
 
-    with patch("agents.strategist._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.return_value = mock_resp
         result = strategize(eda_card="x", lessons=[], stage="bootstrap")
 
@@ -89,7 +89,7 @@ def test_no_lessons_still_works() -> None:
 def test_action_type_passthrough() -> None:
     for at in ACTION_TYPES:
         mock_resp = _mock_response("hypothesis", at, [])
-        with patch("agents.strategist._client") as mock_client:
+        with patch("agents.llm_retry._client") as mock_client:
             mock_client.return_value.chat.return_value = mock_resp
             result = strategize(eda_card="x", lessons=[], stage="reflexion")
         assert result.action_type == at
@@ -110,7 +110,7 @@ _GOOD = '{"hypothesis": "try target encoding", "action_type": "feature_engineeri
 
 
 def _run(responses: list[MagicMock]) -> tuple[StrategyDecision, MagicMock]:
-    with patch("agents.strategist._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.side_effect = responses
         result = strategize(eda_card="x", lessons=[], stage="reflexion")
     return result, mock_client.return_value.chat
@@ -148,7 +148,7 @@ def test_retries_an_unusable_response(bad: str) -> None:
 
 
 def test_raises_after_exhausting_the_parse_retries() -> None:
-    with patch("agents.strategist._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.side_effect = [_raw_response("nope")] * 3
         with pytest.raises(ValueError, match="Strategist JSON parse failed"):
             strategize(eda_card="x", lessons=[], stage="reflexion")
@@ -157,7 +157,7 @@ def test_raises_after_exhausting_the_parse_retries() -> None:
 
 
 def test_empty_responses_keep_their_own_error_after_retries() -> None:
-    with patch("agents.strategist._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.side_effect = [_raw_response("")] * 3
         with pytest.raises(ValueError, match="empty response"):
             strategize(eda_card="x", lessons=[], stage="reflexion")

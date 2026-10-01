@@ -205,7 +205,7 @@ def test_generate_code_known_errors_in_prompt() -> None:
     mock_resp = MagicMock()
     mock_resp.message.content = "class Patch:\n    action_type = 'feature_engineering'\n"
 
-    with patch("agents.coder._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.return_value = mock_resp
         generate_code(
             hypothesis="Add features",

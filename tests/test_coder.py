@@ -52,7 +52,7 @@ def test_extract_code_falls_back_to_first_block_when_no_patch() -> None:
 
 
 def test_generate_code_returns_string() -> None:
-    with patch("agents.coder._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)
         result = generate_code(
             hypothesis="Drop low-variance columns",
@@ -66,7 +66,7 @@ def test_generate_code_returns_string() -> None:
 def test_generate_code_retries_on_transient_ollama_error() -> None:
     """Ollama Cloud 일시 5xx(예: 'model temporarily overloaded')로 첫 호출이
     실패해도 재시도로 복구되어 attempt task가 죽지 않아야 한다."""
-    with patch("agents.coder._client") as mock_client, \
+    with patch("agents.llm_retry._client") as mock_client, \
          patch("agents.llm_retry.time.sleep"):
         mock_client.return_value.chat.side_effect = [
             RuntimeError("model 'gpt-oss:120b' is temporarily overloaded"),
@@ -82,7 +82,7 @@ def test_generate_code_retries_on_transient_ollama_error() -> None:
 
 
 def test_generate_code_with_error_feedback() -> None:
-    with patch("agents.coder._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)
         generate_code(
             hypothesis="Fix missing class",
@@ -100,7 +100,7 @@ def test_generate_code_with_error_feedback() -> None:
 
 def test_generate_code_system_message_is_contract() -> None:
     """정적 contract가 system 메시지, 동적 컨텍스트는 user 메시지여야 한다."""
-    with patch("agents.coder._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)
         generate_code(
             hypothesis="Drop low-variance columns",
@@ -117,7 +117,7 @@ def test_generate_code_system_message_is_contract() -> None:
 
 def test_generate_code_reflexion_contract_declares_available_libs() -> None:
     """reflexion contract가 실제 설치된 라이브러리를 명시해야 한다."""
-    with patch("agents.coder._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)
         generate_code(
             hypothesis="Swap estimator",
@@ -133,7 +133,7 @@ def test_generate_code_reflexion_contract_declares_available_libs() -> None:
 
 def test_generate_code_bootstrap_contract_declares_available_libs() -> None:
     """bootstrap contract도 동일하게 라이브러리 가용 목록을 명시해야 한다."""
-    with patch("agents.coder._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)
         generate_code(
             hypothesis="Bootstrap baseline",
@@ -154,7 +154,7 @@ def test_generate_code_injects_action_type_specific_hook_directive() -> None:
     s6e7 실측: model_swap이 feature_transform까지 구현하려는 컨트랙트 위반이 47건 —
     정적 검증(evaluator/contract.py)은 생성 *이후*에만 잡아 재시도해도 반복됐다.
     """
-    with patch("agents.coder._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)
         generate_code(
             hypothesis="Swap estimator",
@@ -175,7 +175,7 @@ def test_generate_code_hook_directive_matches_contract_source_of_truth() -> None
     """agents/coder.py가 evaluator/contract.py._ALLOWED_HOOKS를 직접 import해 쓰는지 —
     두 곳에 같은 매핑을 중복 정의하면 드리프트가 생긴다."""
     from evaluator.contract import _ALLOWED_HOOKS as contract_allowed_hooks
-    with patch("agents.coder._client") as mock_client:
+    with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.return_value = _mock_resp(_VALID_PATCH)
         generate_code(
             hypothesis="Hyperparameter search",

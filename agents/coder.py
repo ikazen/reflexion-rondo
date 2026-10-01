@@ -7,8 +7,6 @@ from __future__ import annotations
 import logging
 import re
 
-from ollama import Client
-
 from agents.llm_retry import chat_with_retry
 from agents.playbook import CODER_PLAYBOOK
 from config import settings
@@ -373,13 +371,6 @@ def _extract_code(text: str) -> str:
     return blocks[0].strip()
 
 
-def _client() -> Client:
-    kwargs: dict = {"host": settings.OLLAMA_CLOUD_BASE_URL}
-    if settings.OLLAMA_API_KEY:
-        kwargs["headers"] = {"Authorization": f"Bearer {settings.OLLAMA_API_KEY}"}
-    return Client(**kwargs)
-
-
 def generate_code(
     hypothesis: str,
     action_type: str,
@@ -436,7 +427,6 @@ def generate_code(
               "yes" if prev_code else "no", retry_tag, settings.LLM_TEMPERATURE)
     _t0 = time.monotonic()
     resp = chat_with_retry(
-        _client,
         model=settings.MODEL_CODER,
         messages=[
             {"role": "system", "content": contract},

@@ -87,7 +87,7 @@ def _mock_chat_response() -> MagicMock:
 def test_reflect_retries_on_transient_ollama_error() -> None:
     """Ollama Cloud 일시 5xx로 첫 .chat() 호출이 실패해도 재시도로 복구된다 —
     기존 _REFLECT_RETRIES(빈 응답/파싱 실패용) 루프와 별개로 전송 실패 자체를 흡수."""
-    with patch("agents.reflector._client") as mock_client, \
+    with patch("agents.llm_retry._client") as mock_client, \
          patch("agents.reflector.insert_reflection") as mock_insert, \
          patch("agents.llm_retry.time.sleep"):
         mock_client.return_value.chat.side_effect = [
@@ -104,7 +104,7 @@ def test_reflect_passes_configured_think_setting_to_chat() -> None:
     """#51: kimi-k2.6은 thinking 모델이라 hidden thinking이 num_predict 예산을 잠식해
     JSON이 중간에 잘리는 문제가 있었다 — MODEL_REFLECTOR_THINK가 실제 chat() 호출에
     전달되는지 확인."""
-    with patch("agents.reflector._client") as mock_client, \
+    with patch("agents.llm_retry._client") as mock_client, \
          patch("agents.reflector.insert_reflection") as mock_insert, \
          patch("agents.reflector.settings.MODEL_REFLECTOR_THINK", False):
         mock_client.return_value.chat.return_value = _mock_chat_response()
