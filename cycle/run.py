@@ -44,10 +44,8 @@ from store.db import PgConn, insert_attempt, insert_pipeline
 from store.s3_code import download as _code_download
 from store.s3_code import download_best_pipeline as _best_pipeline_download
 from store.s3_code import upload as _code_upload
-from store.s3_code import BestPipelineUploadError
+from store.s3_code import CODE_HEADER_SEP, BestPipelineUploadError, strip_code_header
 from store.s3_code import upload_best_pipeline as _best_pipeline_upload
-
-_CODE_HEADER_SEP = "# " + "-" * 60  # 저장 헤더와 본문 경계 — _best_code가 이 줄로 헤더를 떼낸다
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,9 +429,7 @@ def establish_bootstrap_baseline(
     if not code_path:
         return False
 
-    content = _code_download(code_path) or ""
-    sep = _CODE_HEADER_SEP + "\n"
-    source = content.split(sep, 1)[1].strip() if sep in content else content.strip()
+    source = strip_code_header(_code_download(code_path) or "")
     if not source:
         return False
 
@@ -624,7 +620,7 @@ def _save_code(
         f"# cv_score:     {cv_score}  gain_vs_best: {gain_vs_best}\n"
         f"# error:        {'yes' if error_trace else 'no'}\n"
         f"# hypothesis:   {' '.join(hypothesis.split())}\n"
-        f"{_CODE_HEADER_SEP}\n"
+        f"{CODE_HEADER_SEP}\n"
     )
     return _code_upload(competition_id, filename, header + source)
 

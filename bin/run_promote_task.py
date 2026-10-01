@@ -52,10 +52,9 @@ def main() -> None:
     from memory.retriever import EmbeddingUnavailableError
     from runtime.isolate import eval_isolated
     from store.s3_code import download as _code_download
-    from store.s3_code import BestPipelineUploadError, download_best_pipeline, upload_best_pipeline
+    from store.s3_code import BestPipelineUploadError, download_best_pipeline, strip_code_header, upload_best_pipeline
     from store.train_data import load_train
     from cycle.run import (
-        _CODE_HEADER_SEP,
         _baseline_source_guard,
         _latest_tuned_params,
         _prev_best_fold_scores,
@@ -162,9 +161,7 @@ def main() -> None:
     bandit_label: str | None = None
 
     if _stage1_significant and not winner_error and winner_code_path:
-        winner_content = _code_download(winner_code_path) or ""
-        sep = _CODE_HEADER_SEP + "\n"
-        winner_source = winner_content.split(sep, 1)[1].strip() if sep in winner_content else winner_content
+        winner_source = strip_code_header(_code_download(winner_code_path) or "")
         if winner_source:
             train90: pl.DataFrame | None = None
             holdout10: pl.DataFrame | None = None
@@ -410,9 +407,7 @@ def main() -> None:
 
         source = ""
         if code_path:
-            content = _code_download(code_path) or ""
-            sep = _CODE_HEADER_SEP + "\n"
-            source = content.split(sep, 1)[1].strip() if sep in content else content
+            source = strip_code_header(_code_download(code_path) or "")
 
         # winner이고 confirm이 실제로 돌았으면 confirm-보정된 label로 lesson을
         # 남긴다 — "CV에서는 좋아 보였지만 실제 검증은 통과 못 했다"는 신호가

@@ -38,12 +38,12 @@ from config.competitions import comp_cpu_budget_secs, comp_n_splits, competition
 from config.settings import PROMOTE_CONFIRM_SEEDS
 from cycle.materialize import materialize_best_pipeline
 from cycle.promotion import PromotionCache, confirm_and_measure, eval_semantics_fingerprint, train_data_fingerprint
-from cycle.run import _CODE_HEADER_SEP, _EVAL_FP_PAUSE_PREFIX, _FP_PAUSE_PREFIX
+from cycle.run import _EVAL_FP_PAUSE_PREFIX, _FP_PAUSE_PREFIX
 from evaluator.harness import split_audit_holdout
 from runtime.isolate import eval_isolated
 from store.db import connect, insert_pipeline
 from store.s3_code import download as _code_download
-from store.s3_code import upload_best_pipeline
+from store.s3_code import strip_code_header, upload_best_pipeline
 from store.train_data import load_train
 
 _DEFAULT_TOP_K = 5
@@ -262,12 +262,10 @@ def establish_for_competition(conn, comp: object, top_k: int, dry_run: bool) -> 
 
     train = load_train(comp)
     train90, holdout10 = split_audit_holdout(train, comp.TARGET, comp.IS_CLASSIFICATION)
-    sep = _CODE_HEADER_SEP + "\n"
 
     cache = PromotionCache(conn)
     for rank, (attempt_id, cv_score, code_path, fold_scores) in enumerate(candidates, 1):
-        content = _code_download(code_path) or ""
-        source = content.split(sep, 1)[1].strip() if sep in content else content.strip()
+        source = strip_code_header(_code_download(code_path) or "")
         if not source:
             print(f"  {comp.COMPETITION_ID} rank={rank} attempt={attempt_id[:8]}: 코드 없음 — 스킵")
             continue
