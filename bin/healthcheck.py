@@ -162,6 +162,7 @@ def _run_cycle(competition: str) -> None:
 
     import polars as pl
 
+    from config.competitions import comp_cpu_budget_secs, comp_n_splits
     from cycle.run import CycleConfig, run_cycle
     from store.db import connect
 
@@ -183,11 +184,9 @@ def _run_cycle(competition: str) -> None:
         metric=comp.METRIC,
         stage="bootstrap",
         eda_card=comp.EDA_CARD,
-        n_splits=getattr(comp, "N_SPLITS", 5),
-        seed=42,
-        k_retrieve=5,
+        n_splits=comp_n_splits(comp),
         is_classification=comp.IS_CLASSIFICATION,
-        cpu_budget_secs=getattr(comp, "CPU_BUDGET_SECS", None),
+        cpu_budget_secs=comp_cpu_budget_secs(comp),
     )
     t0 = time.time()
     result = run_cycle(conn, config)

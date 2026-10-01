@@ -26,7 +26,7 @@ import polars as pl
 
 import bin.airflow_client as airflow_client
 from bin.api import _SUBMIT_TIMEOUT_SEC, DaemonState, create_app, refresh_submission_row
-from config.competitions import active_competition_ids, competition_id_to_slug
+from config.competitions import active_competition_ids, comp_cpu_budget_secs, comp_n_splits, competition_id_to_slug
 from config.settings import TUNE_LANE_ENABLED, TUNE_TIMEOUT_SEC
 from bin.archive_lessons import archive_low_gain_lessons
 from cycle.run import (
@@ -636,11 +636,9 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                 metric=comp.METRIC,
                 stage=stage,
                 eda_card=comp.EDA_CARD,
-                n_splits=getattr(comp, "N_SPLITS", 5),
-                seed=42,
-                k_retrieve=5,
+                n_splits=comp_n_splits(comp),
                 is_classification=comp.IS_CLASSIFICATION,
-                cpu_budget_secs=getattr(comp, "CPU_BUDGET_SECS", None),
+                cpu_budget_secs=comp_cpu_budget_secs(comp),
             )
             try:
                 result = run_cycle(conn, config)
@@ -746,9 +744,9 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                     train=bootstrap_train,
                     target_col=comp.TARGET,
                     metric=comp.METRIC,
-                    n_splits=getattr(comp, "N_SPLITS", 5),
+                    n_splits=comp_n_splits(comp),
                     is_classification=comp.IS_CLASSIFICATION,
-                    cpu_budget_secs=getattr(comp, "CPU_BUDGET_SECS", None),
+                    cpu_budget_secs=comp_cpu_budget_secs(comp),
                 )
                 print(
                     f"[daemon] queue_id={qid} bootstrap baseline "

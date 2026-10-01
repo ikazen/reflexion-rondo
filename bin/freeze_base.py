@@ -18,7 +18,7 @@ from types import ModuleType
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-from config.competitions import competition_id_to_slug
+from config.competitions import comp_cpu_budget_secs, comp_n_splits, competition_id_to_slug
 from cycle.materialize import materialize_best_pipeline, with_frozen_params
 from evaluator.harness import split_audit_holdout
 from evaluator.metrics import float_noise_tolerance
@@ -75,8 +75,8 @@ def freeze_latest(conn: PgConn, comp: ModuleType, dry_run: bool) -> bool:
     train90, _ = split_audit_holdout(load_train(comp), comp.TARGET, comp.IS_CLASSIFICATION)
     result = eval_isolated(
         source=frozen, train=train90, target_col=comp.TARGET, metric=comp.METRIC, prev_best=None,
-        n_splits=getattr(comp, "N_SPLITS", 5), seed=_ATTEMPT_CV_SEED, is_classification=comp.IS_CLASSIFICATION,
-        cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
+        n_splits=comp_n_splits(comp), seed=_ATTEMPT_CV_SEED, is_classification=comp.IS_CLASSIFICATION,
+        cpu_budget_sec=comp_cpu_budget_secs(comp),
     )
     if result.error_trace or result.cv_score is None:
         print(f"  {comp.COMPETITION_ID}: 동결본 평가 실패 — 중단\n{result.error_trace}")

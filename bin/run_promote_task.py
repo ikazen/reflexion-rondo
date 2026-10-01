@@ -42,6 +42,7 @@ def main() -> None:
     import polars as pl
     from store.db import connect, insert_pipeline
     from agents.reflector import AttemptContext, reflect
+    from config.competitions import comp_cpu_budget_secs, comp_n_splits
     from config.settings import PROMOTE_CONFIRM_SEEDS
     from cycle.action_optimizer import update_bandit
     from cycle.materialize import materialize_best_pipeline, with_frozen_params
@@ -165,10 +166,6 @@ def main() -> None:
         sep = _CODE_HEADER_SEP + "\n"
         winner_source = winner_content.split(sep, 1)[1].strip() if sep in winner_content else winner_content
         if winner_source:
-            comp_row = conn.execute(
-                "select task_type, metric from raw.competitions where competition_id = %s",
-                [competition_id],
-            ).fetchone()
             train90: pl.DataFrame | None = None
             holdout10: pl.DataFrame | None = None
             try:
@@ -193,8 +190,8 @@ def main() -> None:
             _baseline_source_guard(conn, competition_id)
             current_best = download_best_pipeline(competition_id)
             if train90 is not None:
-                is_classification = comp.IS_CLASSIFICATION if comp_row else True
-                n_splits = getattr(comp, "N_SPLITS", 5) if comp_row else 5
+                is_classification = comp.IS_CLASSIFICATION
+                n_splits = comp_n_splits(comp)
                 # attempt 평가(cycle/run.py)와 같은 조회 함수를 같은 시점(super-cycle
                 # 종료 직후)에 다시 불러 같은 값을 얻는다(#388) — confirm과 아래
                 # merge_eval이 이 값을 공유해야 winner의 attempt-time cv와 어긋나지 않는다.
@@ -215,7 +212,7 @@ def main() -> None:
                     competition_id=competition_id,
                     candidate_cv=winner_row[2],
                     candidate_fold_scores=winner_fold_scores,
-                    cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
+                    cpu_budget_sec=comp_cpu_budget_secs(comp),
                     conn=conn,
                     best_params=promote_best_params,
                     tuned_params=promote_tuned_params,
@@ -296,7 +293,7 @@ def main() -> None:
                         seed=42,
                         is_classification=is_classification,
                         collect_oof=True,  # 이 1회 eval에 얹어 OOF 확보(추가 비용 없음)
-                        cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
+                        cpu_budget_sec=comp_cpu_budget_secs(comp),
                         # winner의 attempt-time eval과 같은 값이어야 merge-verify 허용오차
                         # 비교가 의미 있다(#388) — 위 confirm 호출과 같은 시점에 조회한 값 재사용.
                         best_params=promote_best_params,

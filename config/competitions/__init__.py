@@ -32,6 +32,14 @@ def active_competition_ids() -> set[str]:
     }
 
 
+def comp_n_splits(comp: object) -> int:
+    return getattr(comp, "N_SPLITS", 5)
+
+
+def comp_cpu_budget_secs(comp: object) -> float | None:
+    return getattr(comp, "CPU_BUDGET_SECS", None)
+
+
 def attempt_cpu_budget_secs(comp: object) -> float | None:
     """confirm/holdout/merge-verify는 승격 후보를 재평가하므로 이 예산으로 자르지 않고 CPU_BUDGET_SECS를 그대로 쓴다(ADR-063)."""
-    return getattr(comp, "ATTEMPT_CPU_BUDGET_SECS", getattr(comp, "CPU_BUDGET_SECS", None))
+    return getattr(comp, "ATTEMPT_CPU_BUDGET_SECS", comp_cpu_budget_secs(comp))

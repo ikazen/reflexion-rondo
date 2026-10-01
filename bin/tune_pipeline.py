@@ -68,6 +68,7 @@ def main() -> None:
 
     import importlib
 
+    from config.competitions import comp_n_splits
     from evaluator.harness import BasePipeline, PatchedPipeline, PipelineContext, split_audit_holdout
     from evaluator.tuner import tune_confirmed_pipeline
     from store.db import connect, insert_tuned_params
@@ -105,7 +106,7 @@ def main() -> None:
     ctx = PipelineContext(
         target_col=comp.TARGET,
         metric=comp.METRIC,
-        n_splits=getattr(comp, "N_SPLITS", 5),
+        n_splits=comp_n_splits(comp),
         seed=42,
         is_classification=comp.IS_CLASSIFICATION,
     )

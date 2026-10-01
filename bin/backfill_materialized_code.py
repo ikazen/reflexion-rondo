@@ -64,6 +64,7 @@ def _sha(s: str) -> str:
 
 
 def _eval_base(comp: object, source: str, train90, cpu_budget):
+    from config.competitions import comp_n_splits
     from runtime.isolate import eval_isolated
     return eval_isolated(
         source=source,
@@ -71,7 +72,7 @@ def _eval_base(comp: object, source: str, train90, cpu_budget):
         target_col=comp.TARGET,
         metric=comp.METRIC,
         prev_best=None,
-        n_splits=getattr(comp, "N_SPLITS", 5),
+        n_splits=comp_n_splits(comp),
         seed=42,
         is_classification=comp.IS_CLASSIFICATION,
         cpu_budget_sec=cpu_budget,
@@ -221,6 +222,7 @@ def _write(conn, row: ChainRow, v: Verdict, remeasure: bool, apply: bool) -> Non
 def backfill_competition(
     conn, comp: object, apply: bool, allow_chain: bool, remeasure: bool,
 ) -> dict[str, int]:
+    from config.competitions import comp_cpu_budget_secs
     from cycle.materialize import promotion_chain
     from evaluator.harness import split_audit_holdout
     from store.train_data import load_train
@@ -233,7 +235,7 @@ def backfill_competition(
     print(f"\n{cid}: 승격 {len(chain)}행, 스냅샷 보유 "
           f"{sum(1 for r in chain if r.materialized_code)}행")
 
-    cpu_budget = getattr(comp, "CPU_BUDGET_SECS", None)
+    cpu_budget = comp_cpu_budget_secs(comp)
     train = load_train(comp)
     train90, _ = split_audit_holdout(train, comp.TARGET, comp.IS_CLASSIFICATION)
     comparable = _drift_probe(comp, chain, train90, cpu_budget)

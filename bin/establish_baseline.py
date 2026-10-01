@@ -34,7 +34,7 @@ sys.path.insert(0, str(ROOT))
 
 import polars as pl
 
-from config.competitions import competition_id_to_slug
+from config.competitions import comp_cpu_budget_secs, comp_n_splits, competition_id_to_slug
 from config.settings import PROMOTE_CONFIRM_SEEDS
 from cycle.materialize import materialize_best_pipeline
 from cycle.promotion import PromotionCache, confirm_and_measure, eval_semantics_fingerprint, train_data_fingerprint
@@ -115,11 +115,11 @@ def _promote(conn, comp: object, attempt_id: str, cv_score: float, source: str, 
             target_col=comp.TARGET,
             metric=comp.METRIC,
             prev_best=None,
-            n_splits=getattr(comp, "N_SPLITS", 5),
+            n_splits=comp_n_splits(comp),
             seed=42,
             is_classification=comp.IS_CLASSIFICATION,
             collect_oof=True,
-            cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
+            cpu_budget_sec=comp_cpu_budget_secs(comp),
         )
         if not merge_eval.error_trace and merge_eval.cv_score is not None:
             merge_oof_preds = merge_eval.oof_preds
@@ -192,7 +192,7 @@ def remeasure_competition(conn, comp: object, dry_run: bool) -> bool:
     train = load_train(comp)
     train90, _holdout10 = split_audit_holdout(train, comp.TARGET, comp.IS_CLASSIFICATION)
     new_fp = train_data_fingerprint(train90)
-    n_splits, seed = getattr(comp, "N_SPLITS", 5), 42
+    n_splits, seed = comp_n_splits(comp), 42
     action = "dry-run, 미반영" if dry_run else "반영"
 
     remeasured = 0
@@ -279,7 +279,7 @@ def establish_for_competition(conn, comp: object, top_k: int, dry_run: bool) -> 
             holdout10=holdout10,
             target_col=comp.TARGET,
             metric=comp.METRIC,
-            n_splits=getattr(comp, "N_SPLITS", 5),
+            n_splits=comp_n_splits(comp),
             seed=42,
             is_classification=comp.IS_CLASSIFICATION,
             confirm_seeds=PROMOTE_CONFIRM_SEEDS,
@@ -287,7 +287,7 @@ def establish_for_competition(conn, comp: object, top_k: int, dry_run: bool) -> 
             competition_id=comp.COMPETITION_ID,
             candidate_cv=cv_score,
             candidate_fold_scores=fold_scores,
-            cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
+            cpu_budget_sec=comp_cpu_budget_secs(comp),
             conn=conn,
         )
         reason = (
