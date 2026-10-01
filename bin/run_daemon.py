@@ -21,6 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import ModuleType
 
 import polars as pl
 
@@ -38,7 +39,7 @@ from cycle.run import (
     run_cycle,
 )
 from memory.retriever import EmbeddingUnavailableError
-from store.db import connect, ensure_competition
+from store.db import PgConn, connect, ensure_competition
 from store.train_data import load_train
 
 POLL_INTERVAL_SEC = 10
@@ -493,7 +494,155 @@ def _run_api(state: DaemonState) -> None:
     uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
-def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
+def _run_airflow_cycle(
+    conn: PgConn, comp: ModuleType, competition: str, stage: str, qid: str, label: str,
+) -> tuple[str, float | None, str | None]:
+    """Airflow DAG run 1개를 트리거하고 끝날 때까지 기다린다. (결과, winner cv, 실패 사유) — 결과는 success/failed."""
+    err_msg = None
+    try:
+        dag_run_id = airflow_client.trigger_dag_run(
+            competition_id=competition,  # 모듈명 (e.g. s4e1), COMPETITION_ID 아님
+            stage=stage,
+            queue_id=qid,
+        )
+        print(f"[daemon] cycle {label} dag_run={dag_run_id}")
+        if _WAIT_ON_PROMOTE_TI:
+            # attempt_gate(#203) 도입 후 straggler attempt는 여전히 45분
+            # execution_timeout까지 DAG run을 running 상태로 붙잡는다 — DAG run
+            # 전체를 기다리면 gate를 추가한 의미가 없다(#204). promote task
+            # instance 하나의 완료만 기다린다.
+            final_state = airflow_client.wait_for_task_instance(
+                dag_run_id, "promote", timeout=_CYCLE_WAIT_TIMEOUT_SEC,
+            )
+        else:
+            final_state = airflow_client.wait_for_dag_run(dag_run_id, timeout=_CYCLE_WAIT_TIMEOUT_SEC)
+    except Exception as exc:
+        final_state, err_msg = "error", str(exc)
+        print(f"[daemon] cycle {label} airflow error: {err_msg}")
+
+    if final_state != "success":
+        return "failed", None, err_msg or f"dag_run {dag_run_id} ended with state={final_state}"
+
+    row = conn.execute(
+        """
+        select attempt_id, cv_score, label from raw.attempts
+        where competition_id = %s
+          and was_promoted is not false
+        order by run_ts desc limit 1
+        """,
+        [comp.COMPETITION_ID],
+    ).fetchone()
+    cv = None
+    if row:
+        aid, cv, winner_label = row
+        print(f"[daemon] cycle {label} winner={aid[:8]} cv={cv} label={winner_label}")
+        _maybe_trigger_tune(conn, competition, aid)
+    return "success", cv, None
+
+
+def _run_direct_cycle(
+    conn: PgConn, comp: ModuleType, stage: str, train: pl.DataFrame, label: str,
+) -> tuple[str, float | None, str | None]:
+    """in-process로 attempt 1회를 돌린다(로컬 smoke 경로). (결과, cv, 사유) — 결과는 success/skipped/failed/aborted."""
+    config = CycleConfig(
+        competition_id=comp.COMPETITION_ID,
+        train=train,
+        target_col=comp.TARGET,
+        metric=comp.METRIC,
+        stage=stage,
+        eda_card=comp.EDA_CARD,
+        n_splits=comp_n_splits(comp),
+        is_classification=comp.IS_CLASSIFICATION,
+        cpu_budget_secs=comp_cpu_budget_secs(comp),
+    )
+    try:
+        result = run_cycle(conn, config)
+    except EmbeddingUnavailableError as exc:
+        print(f"[daemon] cycle {label} skipped — embedding unavailable: {exc}")
+        return "skipped", None, None
+    except (TrainFingerprintMismatchError, EvalFingerprintMismatchError, BaselineSourceMismatchError) as exc:
+        # baseline 게이트 정합성 문제(load_train 설정 변경 미반영 #258, 평가 노브 변경 미반영 #348,
+        # 또는 격리/remeasure 후 MinIO 미재구성 #278) — 재시도해봐야 계속 막히므로
+        # 리스를 즉시 중단한다. 가드가 이미 auto_submit_paused_reason을 심어
+        # 대시보드에 노출된다.
+        return "aborted", None, str(exc)
+    except Exception as exc:
+        return "failed", None, str(exc)
+    print(f"[daemon] cycle {label} attempt={result.attempt_id[:8]} cv={result.cv_score} label={result.label}")
+    return "success", result.cv_score, None
+
+
+def _establish_baseline_after_bootstrap(conn: PgConn, comp: ModuleType, qid: str, train: pl.DataFrame | None) -> None:
+    """bootstrap 배치가 최소 1 cycle이라도 성공했으면 baseline 확립을 시도한다.
+
+    이미 확정 파이프라인이 있으면(재부트스트랩 등) establish_bootstrap_baseline이 내부에서 스킵한다 — airflow 모드는 train이
+    로드 안 돼 있으므로 여기서 새로 읽는다. 실패해도 daemon 루프 자체는 계속돼야 하므로 예외를 여기서 흡수한다.
+    """
+    try:
+        bootstrap_train = train if train is not None else load_train(comp)
+        established = establish_bootstrap_baseline(
+            conn,
+            competition_id=comp.COMPETITION_ID,
+            train=bootstrap_train,
+            target_col=comp.TARGET,
+            metric=comp.METRIC,
+            n_splits=comp_n_splits(comp),
+            is_classification=comp.IS_CLASSIFICATION,
+            cpu_budget_secs=comp_cpu_budget_secs(comp),
+        )
+        print(
+            f"[daemon] queue_id={qid} bootstrap baseline "
+            f"{'established' if established else 'not established (existing baseline or not confirmed)'}"
+        )
+    except Exception as exc:
+        print(f"[daemon] queue_id={qid} bootstrap baseline establishment failed: {exc}")
+
+
+def _finish_lease(
+    conn: PgConn, comp: ModuleType, item: dict, train: pl.DataFrame | None,
+    cycles_done: int, latest_score: float | None, successes: int, skipped: int, failed_cycles: int, aborted: bool,
+) -> None:
+    qid, stage, n_cycles = item["queue_id"], item["stage"], item["n_cycles"]
+    if aborted:
+        pass  # circuit breaker가 이미 failed로 설정
+    elif _is_cancelled(conn, qid):
+        print(f"[daemon] queue_id={qid} cancelled (detected post-cycle)")
+    elif cycles_done < n_cycles:
+        # 리스 소진, 예산 남음 — pending으로 되돌려 다른 큐 항목에 순서를 넘긴다.
+        # last_leased_at은 _process 진입 시 이미 now()로 갱신돼 있어 라운드로빈
+        # 정렬에서 자연히 뒤로 밀린다.
+        _set_status(conn, qid, "pending", cycles_done=cycles_done, latest_score=latest_score)
+        print(f"[daemon] queue_id={qid} lease exhausted at {cycles_done}/{n_cycles} — requeued")
+    else:
+        status, err = _final_status(successes, skipped, failed_cycles)
+        _set_status(conn, qid, status,
+                    ended_at=datetime.now(timezone.utc),
+                    cycles_done=cycles_done,
+                    latest_score=latest_score,
+                    **({"error": err} if err else {}))
+        suffix = f" ({failed_cycles} failed)" if failed_cycles else ""
+        print(f"[daemon] queue_id={qid} {status} latest_score={latest_score}{suffix}")
+
+        if stage == "bootstrap" and successes > 0:
+            _establish_baseline_after_bootstrap(conn, comp, qid, train)
+
+
+def _start_lease(conn: PgConn, state: DaemonState, qid: str, competition: str, cycles_done: int, n_cycles: int) -> None:
+    # started_at은 "최초 시작"으로 dashboard/api가 읽으므로 리스 재개 시에는 건드리지
+    # 않는다 — last_leased_at만 매 리스마다 갱신해 _pop_pending의 라운드로빈 정렬에 쓴다.
+    lease_status_kwargs = {"last_leased_at": datetime.now(timezone.utc)}
+    if cycles_done == 0:
+        lease_status_kwargs["started_at"] = datetime.now(timezone.utc)
+    _set_status(conn, qid, "running", **lease_status_kwargs)
+    state.update(
+        current_queue_id=qid,
+        current_competition=competition,
+        current_cycle=cycles_done,
+        current_n_cycles=n_cycles,
+    )
+
+
+def _process(conn: PgConn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
     qid = item["queue_id"]
     competition = item["competition"]
     stage = item["stage"]
@@ -508,18 +657,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
         f"[daemon] starting queue_id={qid} competition={competition} stage={stage} "
         f"progress={cycles_done}/{n_cycles} mode={mode}"
     )
-    # started_at은 "최초 시작"으로 dashboard/api가 읽으므로 리스 재개 시에는 건드리지
-    # 않는다 — last_leased_at만 매 리스마다 갱신해 _pop_pending의 라운드로빈 정렬에 쓴다.
-    lease_status_kwargs = {"last_leased_at": datetime.now(timezone.utc)}
-    if cycles_done == 0:
-        lease_status_kwargs["started_at"] = datetime.now(timezone.utc)
-    _set_status(conn, qid, "running", **lease_status_kwargs)
-    state.update(
-        current_queue_id=qid,
-        current_competition=competition,
-        current_cycle=cycles_done,
-        current_n_cycles=n_cycles,
-    )
+    _start_lease(conn, state, qid, competition, cycles_done, n_cycles)
 
     try:
         comp = importlib.import_module(f"config.competitions.{competition}")
@@ -563,103 +701,32 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
 
         pacer.acquire()
 
-        cycle_failed = False
-        cycle_skipped = False
-        err_msg = None
-
+        label = f"{cycles_done + 1}/{n_cycles}"
         if mode == "airflow":
-            try:
-                dag_run_id = airflow_client.trigger_dag_run(
-                    competition_id=competition,  # 모듈명 (e.g. s4e1), COMPETITION_ID 아님
-                    stage=stage,
-                    queue_id=qid,
-                )
-                print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} dag_run={dag_run_id}")
-                if _WAIT_ON_PROMOTE_TI:
-                    # attempt_gate(#203) 도입 후 straggler attempt는 여전히 45분
-                    # execution_timeout까지 DAG run을 running 상태로 붙잡는다 — DAG run
-                    # 전체를 기다리면 gate를 추가한 의미가 없다(#204). promote task
-                    # instance 하나의 완료만 기다린다.
-                    final_state = airflow_client.wait_for_task_instance(
-                        dag_run_id, "promote", timeout=_CYCLE_WAIT_TIMEOUT_SEC,
-                    )
-                else:
-                    final_state = airflow_client.wait_for_dag_run(dag_run_id, timeout=_CYCLE_WAIT_TIMEOUT_SEC)
-            except Exception as exc:
-                final_state, err_msg = "error", str(exc)
-                print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} airflow error: {err_msg}")
-
-            if final_state == "success":
-                row = conn.execute(
-                    """
-                    select attempt_id, cv_score, label from raw.attempts
-                    where competition_id = %s
-                      and was_promoted is not false
-                    order by run_ts desc limit 1
-                    """,
-                    [comp.COMPETITION_ID],
-                ).fetchone()
-                if row:
-                    aid, cv, label = row
-                    if cv is not None:
-                        latest_score = cv
-                    print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} winner={aid[:8]} cv={cv} label={label}")
-                    _maybe_trigger_tune(conn, competition, aid)
-                successes += 1
-                consecutive_failures = 0
-                pacer.record()
-            else:
-                cycle_failed = True
-                err_msg = err_msg or f"dag_run {dag_run_id} ended with state={final_state}"
-
+            outcome, score, err_msg = _run_airflow_cycle(conn, comp, competition, stage, qid, label)
         else:
-            if train is None:
-                raise RuntimeError("direct mode requires train data to be loaded")
-            config = CycleConfig(
-                competition_id=comp.COMPETITION_ID,
-                train=train,
-                target_col=comp.TARGET,
-                metric=comp.METRIC,
-                stage=stage,
-                eda_card=comp.EDA_CARD,
-                n_splits=comp_n_splits(comp),
-                is_classification=comp.IS_CLASSIFICATION,
-                cpu_budget_secs=comp_cpu_budget_secs(comp),
-            )
-            try:
-                result = run_cycle(conn, config)
-                if result.cv_score is not None:
-                    latest_score = result.cv_score
-                successes += 1
-                consecutive_failures = 0
-                pacer.record()
-                print(
-                    f"[daemon] cycle {cycles_done + 1}/{n_cycles} attempt={result.attempt_id[:8]}"
-                    f" cv={result.cv_score} label={result.label}"
-                )
-            except EmbeddingUnavailableError as exc:
-                print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} skipped — embedding unavailable: {exc}")
-                skipped += 1
-                cycle_skipped = True
-            except (TrainFingerprintMismatchError, EvalFingerprintMismatchError, BaselineSourceMismatchError) as exc:
-                # baseline 게이트 정합성 문제(load_train 설정 변경 미반영 #258, 평가 노브 변경 미반영 #348,
-                # 또는 격리/remeasure 후 MinIO 미재구성 #278) — 재시도해봐야 계속 막히므로
-                # 리스를 즉시 중단한다. 가드가 이미 auto_submit_paused_reason을 심어
-                # 대시보드에 노출된다.
-                print(f"[daemon] queue_id={qid} aborted — {exc}")
-                _set_status(conn, qid, "failed", ended_at=datetime.now(timezone.utc),
-                            cycles_done=cycles_done, latest_score=latest_score,
-                            error=str(exc)[:2000])
-                aborted = True
-                break
-            except Exception as exc:
-                cycle_failed = True
-                err_msg = str(exc)
+            outcome, score, err_msg = _run_direct_cycle(conn, comp, stage, train, label)
+
+        if outcome == "aborted":
+            print(f"[daemon] queue_id={qid} aborted — {err_msg}")
+            _set_status(conn, qid, "failed", ended_at=datetime.now(timezone.utc),
+                        cycles_done=cycles_done, latest_score=latest_score,
+                        error=err_msg[:2000])
+            aborted = True
+            break
+        if outcome == "success":
+            if score is not None:
+                latest_score = score
+            successes += 1
+            consecutive_failures = 0
+            pacer.record()
+        elif outcome == "skipped":
+            skipped += 1
 
         cycles_done += 1
         state.update(current_cycle=cycles_done, last_cycle_at=datetime.now(timezone.utc))
 
-        if cycle_failed:
+        if outcome == "failed":
             failed_cycles += 1
             consecutive_failures += 1
             print(
@@ -680,7 +747,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                 break
             continue
 
-        if cycle_skipped:
+        if outcome == "skipped":
             continue
 
         # 사이클이 성공한 직후 무조건 "running"으로 되돌아가면, 이 사이클이
@@ -697,49 +764,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
         _set_status(conn, qid, "running",
                     cycles_done=cycles_done, latest_score=latest_score)
 
-    if aborted:
-        pass  # circuit breaker가 이미 failed로 설정
-    elif _is_cancelled(conn, qid):
-        print(f"[daemon] queue_id={qid} cancelled (detected post-cycle)")
-    elif cycles_done < n_cycles:
-        # 리스 소진, 예산 남음 — pending으로 되돌려 다른 큐 항목에 순서를 넘긴다.
-        # last_leased_at은 _process 진입 시 이미 now()로 갱신돼 있어 라운드로빈
-        # 정렬에서 자연히 뒤로 밀린다.
-        _set_status(conn, qid, "pending", cycles_done=cycles_done, latest_score=latest_score)
-        print(f"[daemon] queue_id={qid} lease exhausted at {cycles_done}/{n_cycles} — requeued")
-    else:
-        status, err = _final_status(successes, skipped, failed_cycles)
-        _set_status(conn, qid, status,
-                    ended_at=datetime.now(timezone.utc),
-                    cycles_done=cycles_done,
-                    latest_score=latest_score,
-                    **({"error": err} if err else {}))
-        suffix = f" ({failed_cycles} failed)" if failed_cycles else ""
-        print(f"[daemon] queue_id={qid} {status} latest_score={latest_score}{suffix}")
-
-        # bootstrap 배치가 최소 1 cycle이라도 성공했으면 baseline 확립을 시도한다.
-        # 이미 확정 파이프라인이 있으면(재부트스트랩 등) establish_bootstrap_baseline이
-        # 내부에서 스킵한다 — airflow 모드는 train이 로드 안 돼 있으므로 여기서 새로 읽는다.
-        # 실패해도 daemon 루프 자체는 계속돼야 하므로 예외를 여기서 흡수한다.
-        if stage == "bootstrap" and successes > 0:
-            try:
-                bootstrap_train = train if train is not None else load_train(comp)
-                established = establish_bootstrap_baseline(
-                    conn,
-                    competition_id=comp.COMPETITION_ID,
-                    train=bootstrap_train,
-                    target_col=comp.TARGET,
-                    metric=comp.METRIC,
-                    n_splits=comp_n_splits(comp),
-                    is_classification=comp.IS_CLASSIFICATION,
-                    cpu_budget_secs=comp_cpu_budget_secs(comp),
-                )
-                print(
-                    f"[daemon] queue_id={qid} bootstrap baseline "
-                    f"{'established' if established else 'not established (existing baseline or not confirmed)'}"
-                )
-            except Exception as exc:
-                print(f"[daemon] queue_id={qid} bootstrap baseline establishment failed: {exc}")
+    _finish_lease(conn, comp, item, train, cycles_done, latest_score, successes, skipped, failed_cycles, aborted)
 
     state.update(current_queue_id=None, current_competition=None,
                  current_cycle=0, current_n_cycles=0)
