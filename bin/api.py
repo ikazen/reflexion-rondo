@@ -845,14 +845,7 @@ def refresh_submission_row(conn: PgConn, submission_id: str) -> dict | None:
 
     kaggle_status, lb_score = _poll_kaggle_once(rec["competition_id"], rec["message"])
     if kaggle_status == "not_found":
-        # #173: naive timestamp 비교 관례(bin/run_daemon.py:_submission_refresh_due와
-        # 동일) — DB의 timezone 없는 timestamp를 암묵적 UTC로 보고 양쪽을 naive로
-        # 맞춘 뒤 뺀다.
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        submitted_at = rec["submitted_at"]
-        submitted_at = submitted_at.replace(tzinfo=None) if submitted_at.tzinfo else submitted_at
-        age_hours = (now - submitted_at).total_seconds() / 3600
-        if age_hours < _NOT_FOUND_STALE_HOURS:
+        if _age_hours(rec["submitted_at"]) < _NOT_FOUND_STALE_HOURS:
             kaggle_status = "pending"  # 아직 목록에 없을 수 있는 정상 범위 — pending과 동일 취급
         else:
             # 목록 밖으로 밀려난 것으로 판단 — 실패로 단정하지 않는다(실제로는

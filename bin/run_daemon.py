@@ -220,23 +220,20 @@ _REFRESH_INTERVAL_UNDER_6H_SEC = 1800
 _REFRESH_INTERVAL_OVER_6H_SEC = 7200
 
 
-def _submission_refresh_due(submitted_at: datetime, checked_at, now: datetime) -> bool:
+def _naive_utc(dt: datetime) -> datetime:
+    """DB의 timestamp 컬럼은 timezone 없는 naive라 암묵적 UTC로 취급한다 — aware 값과 비교하려면 이쪽으로 맞춘다(#223)."""
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+
+def _submission_refresh_due(submitted_at: datetime, checked_at: datetime | None, now: datetime) -> bool:
     """제출 경과 시간에 따라 재확인 간격을 늘리는 백오프.
 
     Kaggle 채점은 보통 분 단위지만 드물게 몇 시간 걸린다 — 갓 제출된 건 자주,
     오래 pending인 건 뜸하게 확인해 불필요한 kaggle CLI 호출을 아낀다.
-
-    raw.kaggle_submissions.submitted_at/checked_at는 timezone 없는 `timestamp`
-    컬럼이라 psycopg2가 naive datetime으로 돌려준다 — 이 코드베이스는 DB의 naive
-    timestamp를 암묵적으로 UTC로 취급하는 관례라, aware datetime과 그대로 빼면
-    TypeError이므로 셋 다 naive로 정규화한 뒤 비교한다.
     """
-    now = now.replace(tzinfo=None) if now.tzinfo is not None else now
-    submitted_at = submitted_at.replace(tzinfo=None) if submitted_at.tzinfo is not None else submitted_at
-    if checked_at is not None and checked_at.tzinfo is not None:
-        checked_at = checked_at.replace(tzinfo=None)
     if checked_at is None:
         return True
+    now, submitted_at, checked_at = _naive_utc(now), _naive_utc(submitted_at), _naive_utc(checked_at)
     elapsed_since_submit = (now - submitted_at).total_seconds()
     if elapsed_since_submit < _REFRESH_WINDOW_10MIN_SEC:
         interval = _REFRESH_INTERVAL_UNDER_10MIN_SEC
@@ -276,9 +273,7 @@ def _sweep_stale_submissions(conn) -> None:
             # 업로드와 경합하지 않도록, 업로드 타임아웃(bin/api.py의
             # _SUBMIT_TIMEOUT_SEC)보다 오래 이 상태면(=daemon 재시작 등으로
             # 갱신이 끊긴 것으로 판단) 재확인, 그 전엔 스킵.
-            submitted_naive = submitted_at.replace(tzinfo=None) if submitted_at.tzinfo else submitted_at
-            now_naive = now.replace(tzinfo=None)
-            if (now_naive - submitted_naive).total_seconds() < _SUBMIT_TIMEOUT_SEC:
+            if (_naive_utc(now) - _naive_utc(submitted_at)).total_seconds() < _SUBMIT_TIMEOUT_SEC:
                 continue
         if not _submission_refresh_due(submitted_at, checked_at, now):
             continue
@@ -371,11 +366,7 @@ def _sweep_queue_refill(conn) -> None:
             _QUEUE_REFILL_IDLE_HOURS_AFTER_DONE if last_queue_status.get(slug) == "done"
             else _QUEUE_REFILL_IDLE_HOURS
         )
-        # raw.attempts.run_ts는 timezone 없는 컬럼이라 psycopg2가 naive datetime으로
-        # 반환한다 — aware cutoff와 그대로 비교하면 TypeError(#223). 이 repo에서
-        # timestamp 컬럼에 쓰는 aware datetime은 전부 UTC 기준으로 저장되므로 naive로
-        # 맞춰서 비교한다.
-        return (now - timedelta(hours=hours)).replace(tzinfo=None)
+        return _naive_utc(now - timedelta(hours=hours))
 
     idle_slugs = sorted(
         slug for slug, cid in slug_to_cid.items()
@@ -464,19 +455,14 @@ def _sweep_idle_tuning(conn) -> None:
         ).fetchall()
     }
 
-    # raw.tuned_params.created_at은 timezone 없는 컬럼 — 이 repo 관례대로 naive를
-    # 암묵적 UTC로 보고 비교 전 양쪽을 naive로 맞춘다(#223 패턴, _sweep_queue_refill과 동일).
-    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
-    idle_cutoff = now_naive - timedelta(hours=_TUNE_IDLE_HOURS)
+    idle_cutoff = _naive_utc(datetime.now(timezone.utc)) - timedelta(hours=_TUNE_IDLE_HOURS)
 
     triggered = []
     for slug, cid in sorted(slug_to_cid.items()):
         if cid not in has_confirmed:
             continue
         last = last_tune.get(cid)
-        if last is not None:
-            last = last.replace(tzinfo=None) if last.tzinfo else last
-        if last is not None and last >= idle_cutoff:
+        if last is not None and _naive_utc(last) >= idle_cutoff:
             continue
         # 승격 트리거(_maybe_trigger_tune)는 새 pipeline이 대상이라 진행 중인 런과 무관하게 필요하지만, 이 스윕은
         # 런이 끝나 tuned_params가 갱신될 때까지(약 3h) 같은 pipeline을 매시간 다시 트리거한다(#360).
