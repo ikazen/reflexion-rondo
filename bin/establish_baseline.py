@@ -37,11 +37,13 @@ import polars as pl
 from config.competitions import comp_cpu_budget_secs, comp_n_splits, competition_id_to_slug
 from config.settings import PROMOTE_CONFIRM_SEEDS
 from cycle.materialize import materialize_best_pipeline
-from cycle.promotion import PromotionCache, confirm_and_measure, eval_semantics_fingerprint, train_data_fingerprint
+from cycle.promotion import (
+    PromotionCache, confirm_and_measure, eval_semantics_fingerprint, record_confirm, train_data_fingerprint,
+)
 from cycle.run import _EVAL_FP_PAUSE_PREFIX, _FP_PAUSE_PREFIX
 from evaluator.harness import split_audit_holdout
 from runtime.isolate import eval_isolated
-from store.db import connect, insert_pipeline
+from store.db import competition_fingerprint, connect, insert_pipeline
 from store.s3_code import download as _code_download
 from store.s3_code import strip_code_header, upload_best_pipeline
 from store.train_data import load_train
@@ -84,22 +86,8 @@ def _top_k_attempts(conn, competition_id: str, top_k: int) -> list[tuple[str, fl
 
 def _promote(conn, comp: object, attempt_id: str, cv_score: float, source: str, confirm, train90: pl.DataFrame) -> None:
     competition_id = comp.COMPETITION_ID
-    if confirm.holdout_score is not None:
-        conn.execute(
-            "UPDATE raw.attempts SET holdout_score = %s WHERE attempt_id = %s",
-            [confirm.holdout_score, attempt_id],
-        )
-    if confirm.seed_gains:
-        conn.execute(
-            "UPDATE raw.attempts SET confirm_seed_gains = %s WHERE attempt_id = %s",
-            [json.dumps(confirm.seed_gains), attempt_id],
-        )
-
-    fp_row = conn.execute(
-        "SELECT fingerprint FROM raw.competitions WHERE competition_id = %s",
-        [competition_id],
-    ).fetchone()
-    fp_dict = fp_row[0] if fp_row and fp_row[0] else {}
+    record_confirm(conn, attempt_id, confirm)
+    fp_dict = competition_fingerprint(conn, competition_id)
 
     materialized = materialize_best_pipeline(None, source)
     pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()

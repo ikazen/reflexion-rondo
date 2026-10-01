@@ -4,7 +4,7 @@ eval_isolated를 monkeypatch해 paired cross-seed 확인 로직과 holdout 경�
 """
 from __future__ import annotations
 
-from unittest.mock import call, patch
+from unittest.mock import MagicMock, call, patch
 
 import numpy as np
 import polars as pl
@@ -17,6 +17,7 @@ from cycle.promotion import (
     _rounded_signature,
     confirm_and_measure,
     effective_label,
+    record_confirm,
 )
 from runtime.isolate import IsolatedResult
 
@@ -755,3 +756,17 @@ def test_cross_seed_measured_rejection_still_measures_holdout():
     assert result.confirmed is False
     assert holdout_called is True
     assert result.holdout_score is not None
+
+
+def test_record_confirm_writes_holdout_score_and_seed_gains():
+    conn = MagicMock()
+    record_confirm(conn, "a1", ConfirmResult(confirmed=True, holdout_score=0.83, seed_gains={"7": {"gain": 0.01}}))
+    sqls = [c.args[0] for c in conn.execute.call_args_list]
+    assert len(sqls) == 2 and "holdout_score" in sqls[0] and "confirm_seed_gains" in sqls[1]
+    assert conn.execute.call_args_list[0].args[1] == [0.83, "a1"]
+
+
+def test_record_confirm_skips_missing_values():
+    conn = MagicMock()
+    record_confirm(conn, "a1", ConfirmResult(confirmed=False, holdout_score=None, seed_gains=None))
+    conn.execute.assert_not_called()

@@ -33,6 +33,7 @@ from cycle.promotion import (
     effective_label,
     eval_semantics_fingerprint,
     leaderboard_ceiling_violation,
+    record_confirm,
     train_data_fingerprint,
 )
 from evaluator.contract import validate_patch
@@ -40,7 +41,7 @@ from evaluator.harness import is_significant_gain, split_audit_holdout
 from evaluator.metrics import get as get_metric
 from memory.retriever import EmbeddingUnavailableError, search
 from runtime.isolate import DEFAULT_CPU_BUDGET_SECS, eval_isolated
-from store.db import PgConn, insert_attempt, insert_pipeline
+from store.db import PgConn, competition_fingerprint, insert_attempt, insert_pipeline
 from store.s3_code import download as _code_download
 from store.s3_code import download_best_pipeline as _best_pipeline_download
 from store.s3_code import upload as _code_upload
@@ -453,26 +454,13 @@ def establish_bootstrap_baseline(
         cpu_budget_sec=cpu_budget_secs,
         conn=conn,
     )
-    if confirm.holdout_score is not None:
-        conn.execute(
-            "update raw.attempts set holdout_score = %s where attempt_id = %s",
-            [confirm.holdout_score, attempt_id],
-        )
-    if confirm.seed_gains:
-        conn.execute(
-            "update raw.attempts set confirm_seed_gains = %s where attempt_id = %s",
-            [json.dumps(confirm.seed_gains), attempt_id],
-        )
+    record_confirm(conn, attempt_id, confirm)
     if not confirm.confirmed:
         reason = "holdout 악화" if confirm.holdout_regressed else "cross-seed 미재현"
         _LOG.info("bootstrap baseline 미확립 — %s (%s)", competition_id, reason)
         return False
 
-    fp_row = conn.execute(
-        "select fingerprint from raw.competitions where competition_id = %s",
-        [competition_id],
-    ).fetchone()
-    fp_dict = fp_row[0] if fp_row and fp_row[0] else {}
+    fp_dict = competition_fingerprint(conn, competition_id)
 
     materialized = materialize_best_pipeline(None, source)
     pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
@@ -1030,22 +1018,9 @@ def run_attempt_core(
             best_params=confirm_best_params,
             tuned_params=confirm_tuned_params,
         )
-        if confirm.holdout_score is not None:
-            conn.execute(
-                "UPDATE raw.attempts SET holdout_score = %s WHERE attempt_id = %s",
-                [confirm.holdout_score, attempt_id],
-            )
-        if confirm.seed_gains:
-            conn.execute(
-                "UPDATE raw.attempts SET confirm_seed_gains = %s WHERE attempt_id = %s",
-                [json.dumps(confirm.seed_gains), attempt_id],
-            )
+        record_confirm(conn, attempt_id, confirm)
         if confirm.confirmed:
-            fp_row = conn.execute(
-                "select fingerprint from raw.competitions where competition_id = %s",
-                [config.competition_id],
-            ).fetchone()
-            fp_dict = fp_row[0] if fp_row and fp_row[0] else {}
+            fp_dict = competition_fingerprint(conn, config.competition_id)
             # materialize 먼저 → 해시는 실제 MinIO에 올라가는 내용(submit.py가 exec하는
             # 그 문자열) 기준이어야 한다. raw.pipelines.code(winner source)와는
             # 다른 문자열이므로 순서를 바꿔 sha256을 insert_pipeline에 함께 기록한다.

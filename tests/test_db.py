@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-from store.db import PgConn, insert_pipeline
+from store.db import PgConn, competition_fingerprint, insert_pipeline
 
 
 def _make_pgconn() -> tuple[PgConn, MagicMock]:
@@ -84,3 +84,18 @@ def test_insert_pipeline_nan_oof_becomes_json_null():
 
 def test_insert_pipeline_none_oof_stays_none():
     assert _insert_pipeline_oof_param(None) is None
+
+
+def test_competition_fingerprint_returns_the_stored_dict():
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = ({"n_rows": 10},)
+    assert competition_fingerprint(conn, "comp") == {"n_rows": 10}
+    assert conn.execute.call_args.args[1] == ["comp"]
+
+
+def test_competition_fingerprint_is_empty_without_a_row_or_value():
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = None
+    assert competition_fingerprint(conn, "comp") == {}
+    conn.execute.return_value.fetchone.return_value = (None,)
+    assert competition_fingerprint(conn, "comp") == {}
