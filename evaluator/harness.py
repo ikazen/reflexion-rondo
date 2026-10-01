@@ -184,6 +184,16 @@ def _encode_residual_categoricals(
         Xva = Xva.with_columns(pl.col(c).replace_strict(mapping, default=-1).cast(pl.Int32))
     return Xtr, Xva
 
+def _feature_matrices(
+    pipeline: "BasePipeline | PatchedPipeline", tr2: pl.DataFrame, va2: pl.DataFrame, ctx: "PipelineContext",
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """feature_transform(검증 타깃은 마스킹) → 타깃 제거 → 남은 범주형 인코딩."""
+    Xtr, Xva = pipeline.feature_transform(tr2, _mask_target(va2, ctx.target_col), ctx.target_col, ctx)
+    Xtr = _strip_target(Xtr, ctx.target_col)
+    Xva = _strip_target(Xva, ctx.target_col)
+    return _encode_residual_categoricals(Xtr, Xva)
+
+
 _IMPORTANCE_ACTIONS = frozenset({"feature_engineering", "preprocessing"})
 
 def _build_model_safe(pipeline: object, params: dict, ctx: object) -> object:
@@ -872,10 +882,7 @@ def preselect_params(
     tr2, va2 = pipeline.preprocess(tr, va, ctx.target_col, ctx)
     ytr = tr2[ctx.target_col].to_numpy()
     yva = va2[ctx.target_col].to_numpy()
-    Xtr, Xva = pipeline.feature_transform(tr2, _mask_target(va2, ctx.target_col), ctx.target_col, ctx)
-    Xtr = _strip_target(Xtr, ctx.target_col)
-    Xva = _strip_target(Xva, ctx.target_col)
-    Xtr, Xva = _encode_residual_categoricals(Xtr, Xva)
+    Xtr, Xva = _feature_matrices(pipeline, tr2, va2, ctx)
     Xtr_np = Xtr.to_numpy()
     Xva_np = Xva.to_numpy()
 
@@ -897,6 +904,166 @@ def preselect_params(
                 best_params = params
 
     return best_params
+
+
+def _noop_early_exit_result(ctx: PipelineContext, selected_params: dict, model_type: str | None) -> EvalResult:
+    # fold_scores/cv_fold_var는 None으로 반환한다(1-fold 값을 채우지 않음) —
+    # `competition_snr` 뷰가 `raw.attempts.fold_scores`/`cv_fold_var`를 SNR
+    # 분산 추정에 직접 평균낸다(ADR-047). 1-fold짜리 값을 채워 넣으면 그
+    # 평균이 0/1-fold 쪽으로 오염돼 포트폴리오 판단(ADR-051 등)의 근거
+    # 지표가 깨진다 — None은 뷰의 `is not null` 필터로 자연히 제외된다.
+    return EvalResult(
+        cv_score=ctx.prev_best,
+        cv_fold_var=None,
+        fold_scores=None,
+        label="neutral",
+        gain_vs_best=0.0,
+        gain_vs_best_relative=0.0,
+        feature_importance=None,
+        is_noop_tie=True,
+        selected_params=selected_params,
+        oof_preds=None,
+        model_type=model_type,
+        noop_early_exit=True,
+    )
+
+
+def _after_first_fold(
+    ctx: PipelineContext, fold_scores: list[float], collect_oof: bool, fold1_shortcut_ok: bool,
+    cpu_at_loop_start: float, selected_params: dict, model_type: str | None,
+) -> tuple[EvalResult | None, list[float] | None]:
+    """fold-1 직후의 지름길 판정 — (조기 반환할 결과, 재사용할 전체 fold_scores). 둘 다 None이면 나머지 fold를 계속 돈다.
+    fold-1 CPU로 투영한 전체가 예산을 넘으면 CpuBudgetProjectedError를 raise한다."""
+    # fold-1 비트 단위 tie 조기 중단(#339) — 폴드 분할이 ctx.seed/ctx.n_splits로
+    # 결정적이므로(_make_folds), patch가 유효 계산을 못 바꾸면 fold-1 점수부터
+    # confirmed baseline과 완전히 동일하다. 이 신호를 5-fold를 전부 돌고 나서
+    # (is_noop_tie, 아래) 확인하던 걸 여기서 조기에 잡아 나머지 fold 계산을
+    # 통째로 아낀다. collect_oof=True(merge-verify 등)는 전체 fold가 필요해 제외.
+    # 아래 is_noop_tie와 달리 허용오차를 두지 않는다 — 연속 지표에서도 fold-1이 정확히 같고 나머지 fold가 다른 경우가
+    # 8~12%라 근사로 넓히면 서로 다른 계산의 점수를 건너뛴다(ADR-061).
+    if (
+        fold1_shortcut_ok
+        and ctx.prev_best is not None
+        and ctx.prev_best_fold_scores is not None
+        and len(ctx.prev_best_fold_scores) == ctx.n_splits
+        and fold_scores[0] == ctx.prev_best_fold_scores[0]
+    ):
+        # 조기 반환도 CV 종료를 알린다 — 안 그러면 워치독이 이후 holdout 평가를 다음 fold 진행으로 보고 투영 kill한다(#448).
+        if ctx.progress:
+            ctx.progress(f"stage=cv_done cpu={_cpu_seconds():.0f}")
+        return _noop_early_exit_result(ctx, selected_params, model_type), None
+
+    if fold1_shortcut_ok and ctx.known_fold1_scores:
+        # 위 #339 체크가 이미 확정 base와의 tie를 처리하고 return했으므로 여기 도달했다는 것 자체가
+        # base와는 안 겹친다는 뜻이다 — base가 아닌 임의의 과거 attempt와 매칭해 재계산을 더 회수한다.
+        # 매칭되면 호출부가 fold_scores를 그 attempt의 전체 값으로 통째로 교체하고 fold 루프를 끝낸다.
+        for cached in ctx.known_fold1_scores:
+            if len(cached) == ctx.n_splits and cached[0] == fold_scores[0]:
+                return None, list(cached)
+
+    if not collect_oof and ctx.cpu_budget_sec and ctx.n_splits > 1:
+        # fold-1이 쓴 CPU로 나머지 fold 비용을 투영한다(#361). kill은 예산 전체를 태우고 산출 0이지만, 여기서
+        # 멈추면 남은 예산으로 재생성할 기회가 남는다. collect_oof(merge-verify 등)는 완전한 점수가 필요해 제외.
+        cpu_now = _cpu_seconds()
+        projected = cpu_now + (cpu_now - cpu_at_loop_start) * (ctx.n_splits - 1)
+        if projected > ctx.cpu_budget_sec * _CPU_PROJECTION_MARGIN:
+            raise CpuBudgetProjectedError(
+                f"cpu budget exceeded: projected {projected:.0f}s CPU after fold 1 (limit {ctx.cpu_budget_sec:.0f}s)"
+            )
+    return None, None
+
+
+def _fold_importance(
+    model: object, Xva: np.ndarray, yva: np.ndarray, ctx: PipelineContext,
+    fn: Callable[[np.ndarray, np.ndarray], float], metric_sign: int, metric_class: str,
+) -> np.ndarray:
+    scorer = lambda est, X, y: metric_sign * float(  # noqa: E731
+        fn(y, est.predict_proba(X)[:, 1] if metric_class == "binary_proba" else est.predict(X))
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pi = _permutation_importance(
+            model, Xva, yva,
+            scoring=scorer,
+            n_repeats=_PI_REPEATS,
+            random_state=ctx.seed,
+            n_jobs=1,
+        )
+    return pi.importances_mean
+
+
+def _check_leakage(
+    cv_score: float, metric_sign: int, metric_class: str, baseline_fold_scores: list[float],
+) -> float | None:
+    """누수가 의심되는 점수면 raise한다. regression_error면 trivial mean-baseline의 평균 점수를 돌려준다(아니면 None)."""
+    if metric_sign > 0:
+        if cv_score >= _LEAK_PERFECT_HIGH:
+            raise ValueError(f"suspected target leakage: perfect cv_score={cv_score:.6f} (threshold={_LEAK_PERFECT_HIGH})")
+    else:
+        if cv_score <= _LEAK_PERFECT_LOW:
+            raise ValueError(f"suspected target leakage: perfect cv_score={cv_score:.2e} (threshold={_LEAK_PERFECT_LOW})")
+
+    # "구현 불가 수준"의 회귀 점수 방어 가드 — trivial mean-baseline 대비
+    # _REGRESSION_LEAK_BASELINE_RATIO 배 이상 좋으면 스케일/타깃 누수로 간주.
+    # metric_sign<0(rmse/mae/rmsle 전부 해당)인 regression_error 메트릭에만 적용.
+    if metric_class == "regression_error" and metric_sign < 0 and baseline_fold_scores:
+        baseline_cv = float(np.mean(baseline_fold_scores))
+        if cv_score > 0 and baseline_cv / cv_score > _REGRESSION_LEAK_BASELINE_RATIO:
+            raise ValueError(
+                f"suspected scale leakage: cv_score={cv_score:.6f} is "
+                f"{baseline_cv / cv_score:.1f}x better than trivial mean-baseline={baseline_cv:.6f} "
+                f"(threshold={_REGRESSION_LEAK_BASELINE_RATIO}x)"
+            )
+        return baseline_cv
+    return None
+
+
+def _label_and_gain(
+    cv_score: float, fold_std: float, metric_sign: int, metric_class: str, prev_best: float | None,
+    baseline_cv: float | None,
+) -> tuple[str, float | None, float | None, bool]:
+    """(label, gain_vs_best, gain_vs_best_relative, is_noop_tie). label은 잠정값이다 —
+    cycle/run.py가 promotion과 동일한 is_significant_gain(paired per-fold t-test) 기준으로 최종 재판정/강등한다."""
+    if prev_best is None:
+        return "neutral", None, None, False
+    # prev_best와 재현 노이즈(ADR-062) 안에서 같은 cv_score는 정상적 확률적 학습으로는
+    # 사실상 불가능 — patch hook이 base로 위임/무시되어 유효 계산이 안 바뀐 신호다
+    # (hyperparam_search의 build_model params 무시, feature_engineering의
+    # 기존 base와 동일한 재발명 등 action_type 무관하게 발생). 같은 계산도 멀티스레드
+    # 축약 때문에 프로세스마다 1e-7~2e-6 어긋나 비트 일치만 보면 놓친다(#449).
+    is_noop_tie = abs(cv_score - prev_best) <= float_noise_tolerance(prev_best)
+    delta = metric_sign * (cv_score - prev_best)
+    gain_vs_best = delta
+    # degenerate 회귀 cv_score의 극단적 gain_vs_best가 reflection_impact 전역
+    # z-score를 오염시킨다. label 판정은 클립 전 delta 유지, 저장값만 하한 클립.
+    if baseline_cv is not None and baseline_cv > 0:
+        worst_plausible_cv = baseline_cv * _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO
+        gain_floor = metric_sign * (worst_plausible_cv - prev_best)
+        gain_vs_best = max(delta, gain_floor)
+    gain_vs_best_relative = gain_vs_best
+    if metric_class == "regression_error" and baseline_cv is not None and baseline_cv > 0:
+        gain_vs_best_relative = gain_vs_best / baseline_cv
+    if delta > LABEL_Z * fold_std:
+        label = "jump"
+    elif delta < -LABEL_Z * fold_std:
+        label = "regression"
+    else:
+        label = "neutral"
+    return label, gain_vs_best, gain_vs_best_relative, is_noop_tie
+
+
+def _aggregate_importance(fold_pi_means: list[np.ndarray], feature_names: list[str]) -> dict:
+    agg_means = np.array(fold_pi_means).mean(axis=0)
+    agg_stds = np.array(fold_pi_means).std(axis=0)
+    pairs = sorted(
+        zip(feature_names, agg_means.tolist(), agg_stds.tolist()),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    return {
+        name: {"mean": round(float(m), 6), "std": round(float(s), 6)}
+        for name, m, s in pairs[:_PI_TOP_N]
+    }
 
 
 def evaluate_pipeline(
@@ -965,10 +1132,7 @@ def evaluate_pipeline(
             tr2, va2 = pipeline.preprocess(tr, va, ctx.target_col, ctx)
         ytr = tr2[ctx.target_col].to_numpy()
         yva = va2[ctx.target_col].to_numpy()
-        Xtr, Xva = pipeline.feature_transform(tr2, _mask_target(va2, ctx.target_col), ctx.target_col, ctx)
-        Xtr = _strip_target(Xtr, ctx.target_col)
-        Xva = _strip_target(Xva, ctx.target_col)
-        Xtr, Xva = _encode_residual_categoricals(Xtr, Xva)
+        Xtr, Xva = _feature_matrices(pipeline, tr2, va2, ctx)
 
         Xtr_np = Xtr.to_numpy()
         Xva_np = Xva.to_numpy()
@@ -993,67 +1157,15 @@ def evaluate_pipeline(
             baseline_pred = np.full_like(yva_raw, fill_value=float(np.mean(ytr_raw)), dtype=float)
             baseline_fold_scores.append(float(fn(yva_raw, baseline_pred)))
 
-        # fold-1 비트 단위 tie 조기 중단(#339) — 폴드 분할이 ctx.seed/ctx.n_splits로
-        # 결정적이므로(_make_folds), patch가 유효 계산을 못 바꾸면 fold-1 점수부터
-        # confirmed baseline과 완전히 동일하다. 이 신호를 5-fold를 전부 돌고 나서
-        # (is_noop_tie, 아래) 확인하던 걸 여기서 조기에 잡아 나머지 fold 계산을
-        # 통째로 아낀다. collect_oof=True(merge-verify 등)는 전체 fold가 필요해 제외.
-        # 아래 is_noop_tie와 달리 허용오차를 두지 않는다 — 연속 지표에서도 fold-1이 정확히 같고 나머지 fold가 다른 경우가
-        # 8~12%라 근사로 넓히면 서로 다른 계산의 점수를 건너뛴다(ADR-061).
-        if (
-            fold_idx == 0
-            and fold1_shortcut_ok
-            and ctx.prev_best is not None
-            and ctx.prev_best_fold_scores is not None
-            and len(ctx.prev_best_fold_scores) == ctx.n_splits
-            and fold_scores[0] == ctx.prev_best_fold_scores[0]
-        ):
-            # fold_scores/cv_fold_var는 None으로 반환한다(1-fold 값을 채우지 않음) —
-            # `competition_snr` 뷰가 `raw.attempts.fold_scores`/`cv_fold_var`를 SNR
-            # 분산 추정에 직접 평균낸다(ADR-047). 1-fold짜리 값을 채워 넣으면 그
-            # 평균이 0/1-fold 쪽으로 오염돼 포트폴리오 판단(ADR-051 등)의 근거
-            # 지표가 깨진다 — None은 뷰의 `is not null` 필터로 자연히 제외된다.
-            # 조기 반환도 CV 종료를 알린다 — 안 그러면 워치독이 이후 holdout 평가를 다음 fold 진행으로 보고 투영 kill한다(#448).
-            if ctx.progress:
-                ctx.progress(f"stage=cv_done cpu={_cpu_seconds():.0f}")
-            return EvalResult(
-                cv_score=ctx.prev_best,
-                cv_fold_var=None,
-                fold_scores=None,
-                label="neutral",
-                gain_vs_best=0.0,
-                gain_vs_best_relative=0.0,
-                feature_importance=None,
-                is_noop_tie=True,
-                selected_params=selected_params,
-                oof_preds=None,
-                model_type=model_type,
-                noop_early_exit=True,
+        if fold_idx == 0:
+            early_result, cached_scores = _after_first_fold(
+                ctx, fold_scores, collect_oof, fold1_shortcut_ok, cpu_at_loop_start, selected_params, model_type,
             )
-
-        if fold_idx == 0 and fold1_shortcut_ok and ctx.known_fold1_scores:
-            # 위 #339 체크가 이미 확정 base와의 tie를 처리하고 return했으므로 여기 도달했다는 것 자체가
-            # base와는 안 겹친다는 뜻이다 — base가 아닌 임의의 과거 attempt와 매칭해 재계산을 더 회수한다.
-            # 매칭되면 fold_scores를 그 attempt의 전체 값으로 통째로 교체하고 fold 루프 자체를 끝낸다 —
-            # 안 그러면 다음 fold_idx가 이미 꽉 찬 리스트에 또 append해 길이가 깨진다.
-            fold1_cache_hit = False
-            for cached in ctx.known_fold1_scores:
-                if len(cached) == ctx.n_splits and cached[0] == fold_scores[0]:
-                    fold_scores = list(cached)
-                    fold1_cache_hit = True
-                    break
-            if fold1_cache_hit:
+            if early_result is not None:
+                return early_result
+            if cached_scores is not None:
+                fold_scores = cached_scores
                 break
-
-        if fold_idx == 0 and not collect_oof and ctx.cpu_budget_sec and ctx.n_splits > 1 and len(fold_scores) == 1:
-            # fold-1이 쓴 CPU로 나머지 fold 비용을 투영한다(#361). kill은 예산 전체를 태우고 산출 0이지만, 여기서
-            # 멈추면 남은 예산으로 재생성할 기회가 남는다. collect_oof(merge-verify 등)는 완전한 점수가 필요해 제외.
-            cpu_now = _cpu_seconds()
-            projected = cpu_now + (cpu_now - cpu_at_loop_start) * (ctx.n_splits - 1)
-            if projected > ctx.cpu_budget_sec * _CPU_PROJECTION_MARGIN:
-                raise CpuBudgetProjectedError(
-                    f"cpu budget exceeded: projected {projected:.0f}s CPU after fold 1 (limit {ctx.cpu_budget_sec:.0f}s)"
-                )
 
         if oof is not None:
             oof[va_idx] = preds
@@ -1061,22 +1173,7 @@ def evaluate_pipeline(
         if compute_importance and best_model is not None:
             if not feature_names:
                 feature_names = list(Xtr.columns)
-            _mc = metric_class
-            _fn = fn
-            _ms = metric_sign
-            scorer = lambda est, X, y: _ms * float(  # noqa: E731
-                _fn(y, est.predict_proba(X)[:, 1] if _mc == "binary_proba" else est.predict(X))
-            )
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                pi = _permutation_importance(
-                    best_model, Xva_np, yva,
-                    scoring=scorer,
-                    n_repeats=_PI_REPEATS,
-                    random_state=ctx.seed,
-                    n_jobs=1,
-                )
-            fold_pi_means.append(pi.importances_mean)
+            fold_pi_means.append(_fold_importance(best_model, Xva_np, yva, ctx, fn, metric_sign, metric_class))
 
     if ctx.progress:
         ctx.progress(f"stage=cv_done cpu={_cpu_seconds():.0f}")
@@ -1084,72 +1181,16 @@ def evaluate_pipeline(
     cv_fold_var = float(np.var(fold_scores))
     fold_std = float(np.std(fold_scores))
 
-    if metric_sign > 0:
-        if cv_score >= _LEAK_PERFECT_HIGH:
-            raise ValueError(f"suspected target leakage: perfect cv_score={cv_score:.6f} (threshold={_LEAK_PERFECT_HIGH})")
-    else:
-        if cv_score <= _LEAK_PERFECT_LOW:
-            raise ValueError(f"suspected target leakage: perfect cv_score={cv_score:.2e} (threshold={_LEAK_PERFECT_LOW})")
+    baseline_cv = _check_leakage(cv_score, metric_sign, metric_class, baseline_fold_scores)
 
-    # "구현 불가 수준"의 회귀 점수 방어 가드 — trivial mean-baseline 대비
-    # _REGRESSION_LEAK_BASELINE_RATIO 배 이상 좋으면 스케일/타깃 누수로 간주.
-    # metric_sign<0(rmse/mae/rmsle 전부 해당)인 regression_error 메트릭에만 적용.
-    baseline_cv: float | None = None
-    if metric_class == "regression_error" and metric_sign < 0 and baseline_fold_scores:
-        baseline_cv = float(np.mean(baseline_fold_scores))
-        if cv_score > 0 and baseline_cv / cv_score > _REGRESSION_LEAK_BASELINE_RATIO:
-            raise ValueError(
-                f"suspected scale leakage: cv_score={cv_score:.6f} is "
-                f"{baseline_cv / cv_score:.1f}x better than trivial mean-baseline={baseline_cv:.6f} "
-                f"(threshold={_REGRESSION_LEAK_BASELINE_RATIO}x)"
-            )
+    label, gain_vs_best, gain_vs_best_relative, is_noop_tie = _label_and_gain(
+        cv_score, fold_std, metric_sign, metric_class, ctx.prev_best, baseline_cv,
+    )
 
-    is_noop_tie = False
-    gain_vs_best_relative: float | None = None
-    if ctx.prev_best is None:
-        label = "neutral"
-        gain_vs_best = None
-    else:
-        # prev_best와 재현 노이즈(ADR-062) 안에서 같은 cv_score는 정상적 확률적 학습으로는
-        # 사실상 불가능 — patch hook이 base로 위임/무시되어 유효 계산이 안 바뀐 신호다
-        # (hyperparam_search의 build_model params 무시, feature_engineering의
-        # 기존 base와 동일한 재발명 등 action_type 무관하게 발생). 같은 계산도 멀티스레드
-        # 축약 때문에 프로세스마다 1e-7~2e-6 어긋나 비트 일치만 보면 놓친다(#449).
-        is_noop_tie = abs(cv_score - ctx.prev_best) <= float_noise_tolerance(ctx.prev_best)
-        delta = metric_sign * (cv_score - ctx.prev_best)
-        gain_vs_best = delta
-        # degenerate 회귀 cv_score의 극단적 gain_vs_best가 reflection_impact 전역
-        # z-score를 오염시킨다. label 판정은 클립 전 delta 유지, 저장값만 하한 클립.
-        if baseline_cv is not None and baseline_cv > 0:
-            worst_plausible_cv = baseline_cv * _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO
-            gain_floor = metric_sign * (worst_plausible_cv - ctx.prev_best)
-            gain_vs_best = max(delta, gain_floor)
-        gain_vs_best_relative = gain_vs_best
-        if metric_class == "regression_error" and baseline_cv is not None and baseline_cv > 0:
-            gain_vs_best_relative = gain_vs_best / baseline_cv
-        if delta > LABEL_Z * fold_std:
-            label = "jump"
-        elif delta < -LABEL_Z * fold_std:
-            label = "regression"
-        else:
-            label = "neutral"
-        # 이 절대-마진 jump는 cycle/run.py가 promotion과 동일한
-        # is_significant_gain(paired per-fold t-test) 기준으로 최종 재판정/강등한다 —
-        # 여기 label은 잠정값이다. (수렴한 대회에선 이 절대 마진에 거의 도달 못 함.)
-
-    feature_importance: dict | None = None
-    if compute_importance and fold_pi_means and feature_names:
-        agg_means = np.array(fold_pi_means).mean(axis=0)
-        agg_stds = np.array(fold_pi_means).std(axis=0)
-        pairs = sorted(
-            zip(feature_names, agg_means.tolist(), agg_stds.tolist()),
-            key=lambda x: x[1],
-            reverse=True,
-        )
-        feature_importance = {
-            name: {"mean": round(float(m), 6), "std": round(float(s), 6)}
-            for name, m, s in pairs[:_PI_TOP_N]
-        }
+    feature_importance = (
+        _aggregate_importance(fold_pi_means, feature_names)
+        if compute_importance and fold_pi_means and feature_names else None
+    )
 
     return EvalResult(
         cv_score=cv_score,
