@@ -43,7 +43,7 @@ def bandit_deltas(
     error_trace: str | None,
     is_noop_tie: bool = False,
 ) -> tuple[float, float]:
-    """(alpha, beta) 증가분. update_bandit과 bin/api.py의 posterior 리플레이가 공유한다 — 한쪽만 바꾸면 리플레이가 라이브와 발산한다."""
+    """(alpha, beta) 증가분."""
     if error_trace is not None or label == "regression":
         return 0.0, 1.0
     if is_noop_tie:
