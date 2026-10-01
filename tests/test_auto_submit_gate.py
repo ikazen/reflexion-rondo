@@ -135,7 +135,7 @@ def test_auto_submit_skips_when_gain_not_significant(monkeypatch):
         last="base-attempt",
         significant=False,
     )
-    resp = client.post("/api/submissions/auto", json={"window_hours": 24})
+    resp = client.post("/api/submissions/auto")
     body = resp.json()
     assert body["submitted"] == []
     assert body["skipped"] == [
@@ -152,7 +152,7 @@ def test_auto_submit_submits_when_gain_significant(monkeypatch):
         last="base-attempt",
         significant=True,
     )
-    resp = client.post("/api/submissions/auto", json={"window_hours": 24})
+    resp = client.post("/api/submissions/auto")
     body = resp.json()
     assert body["skipped"] == []
     assert len(body["submitted"]) == 1
@@ -168,7 +168,7 @@ def test_auto_submit_skips_when_no_confirmed_pipeline(monkeypatch):
         last="base-attempt",
         significant=False,  # 호출되면 안 됨
     )
-    resp = client.post("/api/submissions/auto", json={"window_hours": 24})
+    resp = client.post("/api/submissions/auto")
     body = resp.json()
     assert body["submitted"] == []
     assert body["skipped"] == [
@@ -185,7 +185,7 @@ def test_auto_submit_first_submission_skips_gain_check(monkeypatch):
         last=None,
         significant=False,  # 호출되면 안 됨 — 콜드스타트는 게이트 자체를 건너뛴다
     )
-    resp = client.post("/api/submissions/auto", json={"window_hours": 24})
+    resp = client.post("/api/submissions/auto")
     body = resp.json()
     assert body["skipped"] == []
     assert len(body["submitted"]) == 1

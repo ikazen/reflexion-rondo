@@ -13,7 +13,7 @@ from pathlib import Path
 
 from cycle.run import CycleConfig, run_cycle
 from evaluator.harness import split_audit_holdout
-from memory.transfer import cold_start_lessons, bootstrap_seeds
+from memory.transfer import cold_start_lessons
 from store.db import connect, ensure_competition
 from store.train_data import load_train
 

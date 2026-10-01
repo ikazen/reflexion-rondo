@@ -11,9 +11,8 @@ import logging
 import os
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 
 _LOG = logging.getLogger(__name__)
 
@@ -289,10 +288,7 @@ def _prev_best_params(conn: PgConn, competition_id: str) -> dict | None:
         """,
         [competition_id],
     ).fetchone()
-    if not row or not row[0]:
-        return None
-    val = row[0]
-    return val if isinstance(val, dict) else json.loads(val)
+    return row[0] if row and row[0] else None
 
 
 def _latest_tuned_params(conn: PgConn, competition_id: str) -> dict | None:
@@ -317,7 +313,7 @@ def _latest_tuned_params(conn: PgConn, competition_id: str) -> dict | None:
         {
             "model": model_type,
             "member_index": member_index,
-            "params": params if isinstance(params, dict) else json.loads(params),
+            "params": params,
             "cv_score": cv_score,
             "improved": improved,
         }
@@ -358,10 +354,7 @@ def _prev_best_fold_scores(conn: PgConn, competition_id: str) -> list[float] | N
         """,
         [competition_id],
     ).fetchone()
-    if not row or not row[0]:
-        return None
-    val = row[0]
-    return val if isinstance(val, list) else json.loads(val)
+    return row[0] if row and row[0] else None
 
 
 _FOLD1_CACHE_LIMIT = 200  # 최근 N개 attempt만 본다 — 재생산 몰림은 대부분 최근 이력에서 잡히고,
@@ -383,8 +376,7 @@ def _recent_fold1_cache(conn: PgConn, competition_id: str, n_splits: int) -> lis
     ).fetchall()
     seen_fold1: set[float] = set()
     cache: list[list[float]] = []
-    for (val,) in rows:
-        scores = val if isinstance(val, list) else json.loads(val)
+    for (scores,) in rows:
         if not scores or scores[0] in seen_fold1:
             continue
         seen_fold1.add(scores[0])
@@ -484,8 +476,7 @@ def establish_bootstrap_baseline(
         "select fingerprint from raw.competitions where competition_id = %s",
         [competition_id],
     ).fetchone()
-    fp_val = fp_row[0] if fp_row and fp_row[0] else {}
-    fp_dict = fp_val if isinstance(fp_val, dict) else json.loads(fp_val)
+    fp_dict = fp_row[0] if fp_row and fp_row[0] else {}
 
     materialized = materialize_best_pipeline(None, source)
     pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
@@ -530,13 +521,9 @@ def _last_hypothesis(conn: PgConn, competition_id: str) -> str | None:
     return row[0] if row else None
 
 
-def _dynamic_eda_context(
-    conn: PgConn,
-    competition_id: str,
-    prev_best_cv: float | None,
-    window: int = 10,
-) -> str:
+def _dynamic_eda_context(conn: PgConn, competition_id: str, prev_best_cv: float | None) -> str:
     """매 사이클 DB를 조회해 EDA 카드 하단에 붙일 동적 컨텍스트를 생성한다."""
+    window = 10
     lines: list[str] = ["\n## Current State"]
 
     best_str = f"{prev_best_cv:.5f}" if prev_best_cv is not None else "none yet"
@@ -586,11 +573,8 @@ def _dynamic_eda_context(
     return "\n".join(lines)
 
 
-def _recent_failure_summary(
-    conn: PgConn,
-    competition_id: str,
-    window: int = 5,
-) -> str:
+def _recent_failure_summary(conn: PgConn, competition_id: str) -> str:
+    window = 5
     rows = conn.execute(
         """
         select action_type, hypothesis
@@ -703,7 +687,6 @@ def run_attempt_core(
     lessons: list[dict],
     prev_best_cv: float | None,
     super_cycle_id: str | None = None,
-    was_promoted: bool | None = None,
     attempt_index: int | None = None,
     forced_action: str | None = None,
     defer_promotion: bool = False,
@@ -1014,15 +997,9 @@ def run_attempt_core(
     }
     if super_cycle_id is not None:
         row["super_cycle_id"] = super_cycle_id
-    if was_promoted is not None:
-        row["was_promoted"] = was_promoted
-    elif super_cycle_id is not None and defer_promotion:
-        # promote task가 winner만 나중에 True로 뒤집는다. NULL로 두면
-        # `reflection_impact`(store/schema.sql) 뷰가 `IS NOT FALSE`로 NULL을
-        # "legacy(승격됨)"로 취급하는 기존 관례 때문에, gate(#203)가 있는
-        # sequence에서 늦게 도착한 attempt가 영구 NULL로 남아 승자로 잘못
-        # 집계된다(#205) — False로 시작해 promote가 확정할 때만 뒤집는다.
-        row["was_promoted"] = False
+        if defer_promotion:
+            # NULL이면 reflection_impact 뷰(IS NOT FALSE)가 승격된 attempt로 집계한다(#205) — promote가 확정할 때만 True로 바꾼다.
+            row["was_promoted"] = False
     insert_attempt(conn, row)
 
     # defer_promotion=True: caller (super_cycle / Airflow promote task) handles winner-only promotion.
@@ -1072,8 +1049,7 @@ def run_attempt_core(
                 "select fingerprint from raw.competitions where competition_id = %s",
                 [config.competition_id],
             ).fetchone()
-            fp_val = fp_row[0] if fp_row and fp_row[0] else {}
-            fp_dict = fp_val if isinstance(fp_val, dict) else json.loads(fp_val)
+            fp_dict = fp_row[0] if fp_row and fp_row[0] else {}
             # materialize 먼저 → 해시는 실제 MinIO에 올라가는 내용(submit.py가 exec하는
             # 그 문자열) 기준이어야 한다. raw.pipelines.code(winner source)와는
             # 다른 문자열이므로 순서를 바꿔 sha256을 insert_pipeline에 함께 기록한다.

@@ -66,11 +66,6 @@ def test_super_cycle_defer_promotion_defaults_was_promoted_false():
     assert row["was_promoted"] is False
 
 
-def test_explicit_was_promoted_not_overridden():
-    row = _run(super_cycle_id="sc-1", defer_promotion=True, was_promoted=True)
-    assert row["was_promoted"] is True
-
-
 def test_non_super_cycle_path_omits_was_promoted_key():
     """super_cycle_id가 없는(직접모드) 경로는 기존 동작 그대로 — key 자체를 안 넣는다."""
     row = _run(super_cycle_id=None, defer_promotion=False)

@@ -5,7 +5,6 @@ lb_score 원값은 대회마다 metric도 스케일도 달라 fleet 횡단 비�
 """
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -45,13 +44,6 @@ def test_lb_percentile_returns_none_without_snapshot():
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = None
     assert _lb_percentile(conn, "s4e10", 0.96) is None
-
-
-def test_lb_percentile_accepts_json_string_scores():
-    """psycopg2가 jsonb를 파싱해 list로 주기도 하고 str로 주기도 한다 — 둘 다 받는다."""
-    conn = MagicMock()
-    conn.execute.return_value.fetchone.return_value = (json.dumps([0.97, 0.95, 0.90]), 1)
-    assert _lb_percentile(conn, "s4e10", 0.96) == pytest.approx(200.0 / 3)
 
 
 def test_backfill_fills_existing_completed_submissions():

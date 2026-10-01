@@ -542,7 +542,7 @@ ops-vm의 daemon이 제공하는 HTTP API. `http://rondo-api.internal` (Caddy pr
 | POST | `/api/queue` | 사이클 큐 등록. body: `{competition, stage, n_cycles, priority}` |
 | PATCH | `/api/queue/{id}` | 우선순위 변경 또는 취소. body: `{priority?, status?: "cancelled"}` |
 | POST | `/api/submissions` | attempt 지정 Kaggle 제출. body: `{competition, attempt_id?, message?}` |
-| POST | `/api/submissions/auto` | 최근 window 내 대회별 best attempt 자동 선별 제출. body: `{window_hours}` |
+| POST | `/api/submissions/auto` | ACTIVE 대회별 미제출 confirmed pipeline을 일일 제출 예산(`SUBMISSIONS_PER_DAY`) 안에서 자동 제출. body 없음 |
 | GET | `/api/submissions` | 제출 이력 목록. `?competition=`, `?limit=` 파라미터 |
 | GET | `/api/submissions/{id}` | 제출 단건 상세 |
 | POST | `/api/submissions/{id}/refresh` | Kaggle 상태 1회 폴링 → `lb_score`/`status` 갱신 (§1.11) |

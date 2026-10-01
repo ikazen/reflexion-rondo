@@ -81,7 +81,6 @@ agents/          LLM 역할 (strategist, coder, reflector)
 bin/             실행 진입점:
                    run_daemon.py (큐 폴링 + FastAPI + Airflow trigger)
                    run_retrieve_task.py / run_attempt_task.py / run_promote_task.py (Airflow super-cycle 3태스크)
-                   run_cycle_task.py (Airflow single-cycle DockerOperator 태스크)
                    run_reflexion.py (로컬/수동 러너)
                    start_competition.py (대회 등록)
                    seed_competition_data.py (Kaggle 다운로드 → MinIO 시딩)

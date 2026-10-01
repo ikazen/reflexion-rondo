@@ -13,7 +13,7 @@ per-fold t-test) 기준으로 확정된다 — harness의 절대-마진 기준�
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from config.settings import ACTION_TYPES
 from store.db import PgConn

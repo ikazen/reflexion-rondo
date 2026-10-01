@@ -150,7 +150,7 @@ def load_train(comp: object, apply_row_cap: bool = True) -> pl.DataFrame:
 
     max_rows = getattr(comp, "MAX_TRAIN_ROWS", None)
     if apply_row_cap and max_rows and train.height > max_rows:
-        if getattr(comp, "IS_CLASSIFICATION", False):
+        if comp.IS_CLASSIFICATION:
             train = _stratified_sample(train, comp.TARGET, max_rows, seed=_MAX_TRAIN_ROWS_SEED)
         else:
             train = train.sample(n=max_rows, seed=_MAX_TRAIN_ROWS_SEED)

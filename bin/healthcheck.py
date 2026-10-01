@@ -173,8 +173,7 @@ def _run_cycle(competition: str) -> None:
 
     print(f"running 1 cycle for {competition} ...")
     train = pl.read_csv(train_path)
-    if hasattr(comp, "DROP_COLS"):
-        train = train.drop([c for c in comp.DROP_COLS if c in train.columns])
+    train = train.drop([c for c in comp.DROP_COLS if c in train.columns])
 
     conn = connect(apply_schema=False)
     config = CycleConfig(

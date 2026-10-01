@@ -125,7 +125,7 @@ def _read_csv(comp: object, name: str) -> pl.DataFrame:
             raise FileNotFoundError(
                 f"MinIO read failed for {name} ({url}): {exc}"
             ) from exc
-    return pl.read_csv(getattr(comp, "DATA_DIR") / name)
+    return pl.read_csv(comp.DATA_DIR / name)
 
 
 def _load_pipeline(
@@ -471,9 +471,7 @@ def _peak_rss_mb() -> float:
 SUBMIT_FIT_TIMEOUT_SEC = 150 * 60
 
 
-def generate_submission_csv_isolated(
-    competition_slug: str, attempt_id: str, *, full_data: bool, timeout_sec: float = SUBMIT_FIT_TIMEOUT_SEC,
-) -> Path:
+def generate_submission_csv_isolated(competition_slug: str, attempt_id: str, *, full_data: bool) -> Path:
     """generate_submission_csv를 별도 프로세스에서 wall timeout 안에 실행한다. 초과하면 subprocess.TimeoutExpired.
 
     in-process fit은 C 확장 안에서 도는 동안 타임아웃을 받지 못해, 초과하면 호출한 promote task가 통째로 죽는다.
@@ -484,7 +482,7 @@ def generate_submission_csv_isolated(
     cmd = [sys.executable, "-m", "bin.submit", "--competition", competition_slug, "--attempt-id", attempt_id]
     if full_data:
         cmd.append("--full-data")
-    result = _run_in_pgroup(cmd, timeout=timeout_sec, cwd=str(ROOT), env=os.environ.copy())
+    result = _run_in_pgroup(cmd, timeout=SUBMIT_FIT_TIMEOUT_SEC, cwd=str(ROOT), env=os.environ.copy())
     if result.returncode != 0:
         raise RuntimeError(f"bin.submit failed (rc={result.returncode}): {_submit_failure_detail(result)}")
     lines = result.stdout.splitlines()

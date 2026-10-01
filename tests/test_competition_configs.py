@@ -18,6 +18,19 @@ def _load_all_comps():
     return mods
 
 
+_REQUIRED_CONSTANTS = (
+    "COMPETITION_ID", "NAME", "TARGET", "METRIC", "TASK_TYPE", "METRIC_SIGN", "IS_CLASSIFICATION",
+    "DROP_COLS", "DATA_DIR", "ACTIVE", "EDA_CARD",
+)
+
+
+def test_required_constants_are_declared_on_every_competition():
+    """코드가 getattr 기본값 없이 직접 읽는 상수들 — 하나라도 빠지면 daemon이 런타임에 AttributeError로 죽는다."""
+    for mod in _load_all_comps():
+        missing = [c for c in _REQUIRED_CONSTANTS if not hasattr(mod, c)]
+        assert not missing, f"{mod.__name__}: missing {missing}"
+
+
 def test_is_classification_consistent_with_task_type():
     for mod in _load_all_comps():
         derived = is_classification(mod.TASK_TYPE)

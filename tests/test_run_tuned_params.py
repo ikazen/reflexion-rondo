@@ -44,16 +44,6 @@ def test_returns_entries_when_improved():
     }
 
 
-def test_parses_json_string_params():
-    """jsonb가 driver에서 raw str로 온 경우도 dict로 파싱한다(cycle.run._prev_best_params와 동일 관례)."""
-    conn = _conn_with(
-        fetchone_result=("run-1",),
-        fetchall_result=[("lgbm", 0, '{"n_estimators": 300}', 0.7, True)],
-    )
-    result = _latest_tuned_params(conn, "s4e1")
-    assert result["entries"][0]["params"] == {"n_estimators": 300}
-
-
 def test_multi_member_entries_include_both_improved_and_not():
     """일부 멤버만 개선돼도(전부 개선 아니어도) 개선된 항목이 하나라도 있으면
     전체 멤버 목록을 반환한다 — LLM이 어느 게 개선됐는지 improved 필드로 직접 판단."""

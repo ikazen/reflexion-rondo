@@ -61,13 +61,6 @@ def test_prev_best_params_returns_dict_row():
     assert result == {"max_depth": 4}
 
 
-def test_prev_best_params_parses_json_string():
-    """jsonb가 driver에서 raw str로 온 경우도 dict로 파싱한다."""
-    conn = _conn_seq(('{"max_depth": 4}',))
-    result = _prev_best_params(conn, "s4e1")
-    assert result == {"max_depth": 4}
-
-
 def test_prev_best_params_no_row_returns_none():
     conn = _conn_seq(None)
     result = _prev_best_params(conn, "s4e1")
@@ -95,12 +88,6 @@ def test_prev_best_fold_scores_returns_list_row():
     result = _prev_best_fold_scores(conn, "s4e1")
     assert result == [0.9, 0.91, 0.89]
     assert conn.execute.call_count == 1
-
-
-def test_prev_best_fold_scores_parses_json_string():
-    conn = _conn_seq(("[0.9, 0.91, 0.89]",))
-    result = _prev_best_fold_scores(conn, "s4e1")
-    assert result == [0.9, 0.91, 0.89]
 
 
 def test_prev_best_fold_scores_no_confirmed_pipeline_returns_none():
@@ -180,12 +167,6 @@ def test_recent_fold1_cache_deduplicates_by_fold1_value_keeping_the_first():
     conn = _conn_fetchall([([0.1, 0.2, 0.3],), ([0.1, 0.9, 0.9],), ([0.4, 0.5, 0.6],)])
     result = _recent_fold1_cache(conn, "s4e1", n_splits=3)
     assert result == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
-
-
-def test_recent_fold1_cache_parses_json_string_rows():
-    """psycopg가 jsonb를 문자열로 돌려주는 환경 대응 — raw.pipelines.fold_scores와 동일 패턴."""
-    conn = _conn_fetchall([("[0.1, 0.2, 0.3]",)])
-    assert _recent_fold1_cache(conn, "s4e1", n_splits=3) == [[0.1, 0.2, 0.3]]
 
 
 def test_recent_fold1_cache_empty_returns_none():

@@ -1,7 +1,6 @@
 """Cross-competition transfer: 유사 대회 검색 + cold-start 교훈/시드 추출."""
 from __future__ import annotations
 
-import json
 import math
 
 from store.db import PgConn
@@ -59,8 +58,7 @@ def find_similar_competitions(
     ).fetchall()
 
     scored: list[tuple[str, float]] = []
-    for comp_id, fp_json in rows:
-        fp = json.loads(fp_json) if isinstance(fp_json, str) else (fp_json or {})
+    for comp_id, fp in rows:
         if not fp:
             continue
         dist = _fp_distance(fp_new, fp)

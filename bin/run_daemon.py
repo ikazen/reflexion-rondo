@@ -396,7 +396,7 @@ def _sweep_queue_refill(conn) -> None:
     print(f"[daemon] queue refill — {len(idle_slugs)} idle competition(s) re-enqueued: {idle_slugs}")
 
 
-def _maybe_trigger_tune(conn, competition_slug: str, competition_id: str, attempt_id: str) -> None:
+def _maybe_trigger_tune(conn, competition_slug: str, attempt_id: str) -> None:
     """#318 주 트리거 — 이번 사이클 attempt가 실제로 확정 pipeline이 됐으면(merge-verify
     까지 통과, raw.pipelines에 유효 행 존재) Optuna 튜닝 레인(별도 DAG, 900s attempt
     예산 밖)에 태운다. `was_promoted`만으로는 확정 여부를 못 가린다 — run_promote_task.py가
@@ -618,7 +618,7 @@ def _process(conn, item: dict, pacer: OllamaPacer, state: DaemonState) -> None:
                     if cv is not None:
                         latest_score = cv
                     print(f"[daemon] cycle {cycles_done + 1}/{n_cycles} winner={aid[:8]} cv={cv} label={label}")
-                    _maybe_trigger_tune(conn, competition, comp.COMPETITION_ID, aid)
+                    _maybe_trigger_tune(conn, competition, aid)
                 successes += 1
                 consecutive_failures = 0
                 pacer.record()

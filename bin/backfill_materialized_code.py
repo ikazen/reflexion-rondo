@@ -111,7 +111,7 @@ def _verdict_for_row(
     from evaluator.harness import is_significant_gain
     from evaluator.metrics import float_noise_tolerance
 
-    metric_sign = getattr(comp, "METRIC_SIGN", 1)
+    metric_sign = comp.METRIC_SIGN
 
     # 이미 스냅샷이 있는 행 — 독립적으로 신뢰 가능(sha 대조). code는 안 건드리고
     # materialized_sha256/origin만 채운다. 레거시 행은 pipeline_sha256도 NULL이라

@@ -219,23 +219,9 @@ comp_options = {f"{c[0]} — {c[1]}": c[0] for c in competitions}
 selected_label = st.sidebar.selectbox("Competition", list(comp_options.keys()))
 comp_id = comp_options[selected_label]
 
-cols = set(
-    _query_df(
-        conn,
-        "select column_name from information_schema.columns where table_schema='raw' and table_name='attempts'",
-        ["column_name"],
-    )["column_name"]
-)
-has_duration = "duration_sec" in cols
-has_holdout = "holdout_score" in cols
-
-_duration_col = "duration_sec" if has_duration else "null as duration_sec"
-_retries_col  = "retries"       if "retries"      in cols else "0 as retries"
-_holdout_col  = "holdout_score" if has_holdout   else "null as holdout_score"
-
 attempts_df = _query_df(
     conn,
-    f"""
+    """
     select
         row_number() over (order by run_ts) as attempt_no,
         run_ts,
@@ -245,9 +231,9 @@ attempts_df = _query_df(
         cv_score,
         label,
         gain_vs_best,
-        {_duration_col},
-        {_retries_col},
-        {_holdout_col},
+        duration_sec,
+        retries,
+        holdout_score,
         error_trace is not null as has_error
     from raw.attempts
     where competition_id = %s
@@ -497,23 +483,22 @@ else:
 
 st.divider()
 
-if has_holdout:
-    holdout_rows = attempts_df.filter(pl.col("holdout_score").is_not_null())
-    if not holdout_rows.is_empty():
-        st.subheader("CV vs Holdout Divergence")
-        div_df = holdout_rows.select(["attempt_no", "cv_score", "holdout_score"]).filter(
-            pl.col("cv_score").is_not_null()
-        ).with_columns(
-            (pl.col("cv_score") - pl.col("holdout_score")).alias("cv_minus_holdout")
-        )
-        st.line_chart(
-            div_df.to_pandas().set_index("attempt_no")[["cv_score", "holdout_score"]],
-        )
-        st.caption(
-            f"promoted attempts: {len(holdout_rows)}  |  "
-            f"avg(cv - holdout): {div_df['cv_minus_holdout'].mean():.5f}"
-        )
-        st.divider()
+holdout_rows = attempts_df.filter(pl.col("holdout_score").is_not_null())
+if not holdout_rows.is_empty():
+    st.subheader("CV vs Holdout Divergence")
+    div_df = holdout_rows.select(["attempt_no", "cv_score", "holdout_score"]).filter(
+        pl.col("cv_score").is_not_null()
+    ).with_columns(
+        (pl.col("cv_score") - pl.col("holdout_score")).alias("cv_minus_holdout")
+    )
+    st.line_chart(
+        div_df.to_pandas().set_index("attempt_no")[["cv_score", "holdout_score"]],
+    )
+    st.caption(
+        f"promoted attempts: {len(holdout_rows)}  |  "
+        f"avg(cv - holdout): {div_df['cv_minus_holdout'].mean():.5f}"
+    )
+    st.divider()
 
 col_left, col_right = st.columns(2)
 

@@ -52,7 +52,6 @@ def compute(
         target_stat = float(min_count) / n_rows  # minority class ratio
     else:
         arr = y.drop_nulls().to_numpy()
-        import numpy as np
         mean = float(arr.mean())
         std  = float(arr.std())
         target_stat = float(((arr - mean) ** 3).mean() / std**3) if std > 0 else 0.0  # skew

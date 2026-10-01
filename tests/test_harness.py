@@ -1587,20 +1587,20 @@ def test_build_registry_model_catboost_random_seed_no_random_state_collision():
 
 def test_combine_predictions_weighted_average():
     preds = [np.array([1.0, 2.0, 3.0]), np.array([3.0, 4.0, 5.0])]
-    combined = _combine_predictions(preds, "weighted_average", [1.0, 1.0], "regression_error")
+    combined = _combine_predictions(preds, "weighted_average", [1.0, 1.0])
     assert combined.tolist() == pytest.approx([2.0, 3.0, 4.0])
 
 
 def test_combine_predictions_weighted_average_respects_weights():
     preds = [np.array([0.0]), np.array([10.0])]
-    combined = _combine_predictions(preds, "weighted_average", [3.0, 1.0], "regression_error")
+    combined = _combine_predictions(preds, "weighted_average", [3.0, 1.0])
     assert combined[0] == pytest.approx(2.5)  # (3*0 + 1*10) / 4
 
 
 def test_combine_predictions_unknown_method_raises():
     preds = [np.array([1.0]), np.array([2.0])]
     with pytest.raises(ValueError, match="unknown method"):
-        _combine_predictions(preds, "bogus_method", [1.0, 1.0], "regression_error")
+        _combine_predictions(preds, "bogus_method", [1.0, 1.0])
 
 
 def test_weighted_majority_vote_picks_higher_weighted_label():
