@@ -114,8 +114,7 @@ def _promote(conn, comp: object, attempt_id: str, cv_score: float, source: str, 
         "SELECT fingerprint FROM raw.competitions WHERE competition_id = %s",
         [competition_id],
     ).fetchone()
-    fp_val = fp_row[0] if fp_row and fp_row[0] else {}
-    fp_dict = fp_val if isinstance(fp_val, dict) else json.loads(fp_val)
+    fp_dict = fp_row[0] if fp_row and fp_row[0] else {}
 
     materialized = materialize_best_pipeline(None, source)
     pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()

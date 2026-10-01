@@ -38,15 +38,6 @@ def export_score_progression(conn, competition_id: str, out_dir: Path) -> Path:
 
 
 def export_holdout_divergence(conn, competition_id: str, out_dir: Path) -> Path | None:
-    cols = {
-        r[0]
-        for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_schema='raw' AND table_name='attempts'"
-        ).fetchall()
-    }
-    if "holdout_score" not in cols:
-        return None
     rows = conn.execute(
         """
         SELECT

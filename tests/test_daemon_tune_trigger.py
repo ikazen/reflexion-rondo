@@ -29,7 +29,7 @@ def _long_ago() -> float:
 def test_maybe_trigger_tune_skips_when_airflow_unavailable():
     conn = MagicMock()
     with patch("bin.run_daemon.airflow_client.available", return_value=False):
-        _maybe_trigger_tune(conn, "s6e8", "playground-series-s6e8", "attempt-1")
+        _maybe_trigger_tune(conn, "s6e8", "attempt-1")
     conn.execute.assert_not_called()
 
 
@@ -40,7 +40,7 @@ def test_maybe_trigger_tune_skips_when_lane_disabled():
         patch("bin.run_daemon.TUNE_LANE_ENABLED", False),
         patch("bin.run_daemon.airflow_client.available", return_value=True) as mock_available,
     ):
-        _maybe_trigger_tune(conn, "s6e8", "playground-series-s6e8", "attempt-1")
+        _maybe_trigger_tune(conn, "s6e8", "attempt-1")
     mock_available.assert_not_called()
     conn.execute.assert_not_called()
 
@@ -54,7 +54,7 @@ def test_maybe_trigger_tune_skips_when_attempt_not_a_confirmed_pipeline():
         patch("bin.run_daemon.airflow_client.available", return_value=True),
         patch("bin.run_daemon.airflow_client.trigger_tune_dag_run") as mock_trigger,
     ):
-        _maybe_trigger_tune(conn, "s6e8", "playground-series-s6e8", "attempt-1")
+        _maybe_trigger_tune(conn, "s6e8", "attempt-1")
     mock_trigger.assert_not_called()
 
 
@@ -65,7 +65,7 @@ def test_maybe_trigger_tune_triggers_when_pipeline_confirmed():
         patch("bin.run_daemon.airflow_client.available", return_value=True),
         patch("bin.run_daemon.airflow_client.trigger_tune_dag_run", return_value="run-1") as mock_trigger,
     ):
-        _maybe_trigger_tune(conn, "s6e8", "playground-series-s6e8", "attempt-1")
+        _maybe_trigger_tune(conn, "s6e8", "attempt-1")
     mock_trigger.assert_called_once_with("s6e8", timeout_sec=TUNE_TIMEOUT_SEC)
 
 
@@ -78,7 +78,7 @@ def test_maybe_trigger_tune_ignores_in_flight_runs():
         patch("bin.run_daemon.airflow_client.tune_run_in_flight", return_value=True) as mock_in_flight,
         patch("bin.run_daemon.airflow_client.trigger_tune_dag_run", return_value="run-1") as mock_trigger,
     ):
-        _maybe_trigger_tune(conn, "s6e8", "playground-series-s6e8", "attempt-1")
+        _maybe_trigger_tune(conn, "s6e8", "attempt-1")
     mock_in_flight.assert_not_called()
     mock_trigger.assert_called_once_with("s6e8", timeout_sec=TUNE_TIMEOUT_SEC)
 
@@ -90,7 +90,7 @@ def test_maybe_trigger_tune_swallows_trigger_exception():
         patch("bin.run_daemon.airflow_client.available", return_value=True),
         patch("bin.run_daemon.airflow_client.trigger_tune_dag_run", side_effect=RuntimeError("boom")),
     ):
-        _maybe_trigger_tune(conn, "s6e8", "playground-series-s6e8", "attempt-1")  # 예외 전파되면 실패
+        _maybe_trigger_tune(conn, "s6e8", "attempt-1")  # 예외 전파되면 실패
 
 
 # ---- _sweep_idle_tuning (보조 트리거) ----

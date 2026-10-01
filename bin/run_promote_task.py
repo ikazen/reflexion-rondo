@@ -129,8 +129,6 @@ def main() -> None:
     winner_code_path = winner_row[9]
     winner_fold_scores = winner_row[10]
     winner_params = winner_row[11]
-    if isinstance(winner_params, str):
-        winner_params = _json.loads(winner_params)
 
     # paired per-fold 검정용 metric_sign + baseline fold_scores.
     # 이 시점엔 comp 모듈을 아직 import 안 했으므로(뒤에서 필요할 때 import) DB에서 바로 조회.
@@ -175,7 +173,7 @@ def main() -> None:
             holdout10: pl.DataFrame | None = None
             try:
                 comp = importlib.import_module(f"config.competitions.{args.competition}")
-                if getattr(comp, "COMPETITION_ID", None) != competition_id:
+                if comp.COMPETITION_ID != competition_id:
                     print(
                         f"[run_promote_task] WARNING: comp.COMPETITION_ID={comp.COMPETITION_ID!r}"
                         f" != DB competition_id={competition_id!r}",
@@ -276,8 +274,7 @@ def main() -> None:
                     "select fingerprint from raw.competitions where competition_id = %s",
                     [competition_id],
                 ).fetchone()
-                fp_val = fp_row[0] if fp_row and fp_row[0] else {}
-                fp_dict = fp_val if isinstance(fp_val, dict) else _json.loads(fp_val)
+                fp_dict = fp_row[0] if fp_row and fp_row[0] else {}
                 # materialize 먼저 → 해시는 실제 MinIO 업로드 내용(submit.py가 exec하는
                 # 문자열) 기준. raw.pipelines.code(winner source)와는 다른 문자열.
                 promoted_source = with_frozen_params(winner_source, winner_params)

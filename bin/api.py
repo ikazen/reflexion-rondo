@@ -23,7 +23,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
-import polars as pl
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -97,10 +96,6 @@ class DaemonState:
             }
 
 
-class RegisterRequest(BaseModel):
-    competition: str
-
-
 class EnqueueRequest(BaseModel):
     competition: str
     stage: str = "reflexion"
@@ -123,10 +118,6 @@ class LeaderboardRefreshRequest(BaseModel):
     competition: str | None = None
     max_age_hours: int = 24 * 7
     force: bool = False
-
-
-class AutoSubmitRequest(BaseModel):
-    window_hours: int = 24  # 미사용 — 대상 대회는 comp.ACTIVE로 정한다(#233). 호출자 호환용으로만 남김.
 
 
 _TERMINAL = frozenset({"complete", "error", "invalid"})
@@ -506,11 +497,7 @@ def _lb_percentile(conn: PgConn, competition_id: str, lb_score: float) -> float 
     ).fetchone()
     if not row or not row[0]:
         return None
-    # psycopg2는 jsonb를 파싱해 list로 주고 psycopg3는 설정에 따라 str로 준다.
-    scores = row[0] if isinstance(row[0], list) else json.loads(row[0])
-    if not scores:
-        return None
-    return _percentile_in(scores, lb_score, row[1])
+    return _percentile_in(row[0], lb_score, row[1])
 
 
 def _backfill_lb_percentiles(conn: PgConn, competition_id: str) -> int:
@@ -1331,7 +1318,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return {"submission_id": sid, "status": "queued"}
 
     @app.post("/api/submissions/auto", status_code=200)
-    def auto_submit(body: AutoSubmitRequest):
+    def auto_submit():
         """ACTIVE 대회별로 일일 제출 예산 안에서 미제출 confirmed pipeline을 내보낸다.
 
         예전 로직은 "대회 전역 best가 바뀌었나"만 봐서 deep tier가 하루 0~1건에 머물렀고
@@ -1341,7 +1328,6 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         미제출 백로그가 없을 때만 예전 "best 갱신 + 유의성" 경로로 떨어진다(같은 attempt
         재제출은 LB 점수가 같아 정보량 0이므로 그 경로에서 계속 막는다).
         """
-        del body  # window_hours는 더 이상 대상 선정에 쓰지 않는다 — comp.ACTIVE가 대상이다.
         slug_map = _competition_id_to_slug()
         active_ids = _active_competition_ids()
 

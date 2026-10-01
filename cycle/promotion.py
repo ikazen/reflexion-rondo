@@ -165,10 +165,7 @@ def leaderboard_ceiling_violation(
     ).fetchone()
     if not row or not row[0]:
         return None
-    scores = row[0] if isinstance(row[0], list) else json.loads(row[0])
-    if not scores:
-        return None
-    metric_sign = row[1]
+    scores, metric_sign = row
     world_best = max(scores) if metric_sign > 0 else min(scores)
     margin = _CEILING_SE_MULTIPLE * _fold_standard_error(fold_scores)
     if metric_sign * (cv_score - world_best) <= margin:

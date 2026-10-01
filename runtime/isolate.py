@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import resource as _resource
 import sys
 import subprocess
 import tempfile
@@ -61,28 +62,24 @@ _HAVE_NEWNET = sys.platform == "linux" and hasattr(os, "CLONE_NEWNET")
 # env var로 대회/큐별 override 가능.
 _DEFAULT_MEM_LIMIT_BYTES = 6 * 1024 ** 3
 
-try:
-    import resource as _resource
 
-    def _set_resource_limits(cpu_budget: float) -> None:
-        mem = int(os.environ.get("EVAL_MEM_LIMIT_BYTES", str(_DEFAULT_MEM_LIMIT_BYTES)))
-        _resource.setrlimit(_resource.RLIMIT_AS, (mem, mem))
-        soft = int(cpu_budget) + _CPU_BACKSTOP_SOFT_MARGIN_SECS
-        hard = int(cpu_budget) + _CPU_BACKSTOP_HARD_MARGIN_SECS
-        _resource.setrlimit(_resource.RLIMIT_CPU, (soft, hard))
+def _set_resource_limits(cpu_budget: float) -> None:
+    mem = int(os.environ.get("EVAL_MEM_LIMIT_BYTES", str(_DEFAULT_MEM_LIMIT_BYTES)))
+    _resource.setrlimit(_resource.RLIMIT_AS, (mem, mem))
+    soft = int(cpu_budget) + _CPU_BACKSTOP_SOFT_MARGIN_SECS
+    hard = int(cpu_budget) + _CPU_BACKSTOP_HARD_MARGIN_SECS
+    _resource.setrlimit(_resource.RLIMIT_CPU, (soft, hard))
 
-    def _make_preexec(cpu_budget: float):
-        def _preexec_fn() -> None:
-            if _HAVE_NEWNET and os.environ.get("EVAL_SANDBOX") != "none":
-                try:
-                    os.unshare(os.CLONE_NEWNET)
-                except OSError:
-                    pass  # CAP_SYS_ADMIN 없으면 조용히 스킵 (로컬 개발 환경 등)
-            _set_resource_limits(cpu_budget)
-        return _preexec_fn
-except (ImportError, AttributeError):
-    def _make_preexec(cpu_budget: float):  # Windows/non-Linux fallback
-        return None
+
+def _make_preexec(cpu_budget: float):
+    def _preexec_fn() -> None:
+        if _HAVE_NEWNET and os.environ.get("EVAL_SANDBOX") != "none":
+            try:
+                os.unshare(os.CLONE_NEWNET)
+            except OSError:
+                pass  # CAP_SYS_ADMIN 없으면 조용히 스킵 (로컬 개발 환경 등)
+        _set_resource_limits(cpu_budget)
+    return _preexec_fn
 
 
 @dataclass(frozen=True, slots=True)

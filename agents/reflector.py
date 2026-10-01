@@ -19,6 +19,7 @@ from store.db import PgConn
 
 _LOG = logging.getLogger(__name__)
 _REFLECT_RETRIES = 3
+_ERROR_TAIL_CHARS = 1000
 
 GENERALITY_VALUES = ["L1_local", "L2_class", "L3_general"]
 LABEL_VALUES = ["jump", "neutral", "regression"]
@@ -91,12 +92,12 @@ def _client() -> Client:
     return Client(**kwargs)
 
 
-def _tail_error(trace: str, max_chars: int = 1000) -> str:
-    if len(trace) <= max_chars:
+def _tail_error(trace: str) -> str:
+    if len(trace) <= _ERROR_TAIL_CHARS:
         return trace
     lines = trace.splitlines()
     kept: list[str] = []
-    budget = max_chars
+    budget = _ERROR_TAIL_CHARS
     for line in reversed(lines):
         cost = len(line) + 1
         if cost > budget:

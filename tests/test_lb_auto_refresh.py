@@ -387,7 +387,7 @@ def test_auto_submit_skips_paused_competition(monkeypatch):
     conn.execute.return_value.fetchone.return_value = ("cv_lb_divergence: ...",)
 
     app = create_app(conn, DaemonState())
-    resp = TestClient(app).post("/api/submissions/auto", json={"window_hours": 24})
+    resp = TestClient(app).post("/api/submissions/auto")
     body = resp.json()
 
     assert body["submitted"] == []

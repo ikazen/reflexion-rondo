@@ -18,26 +18,18 @@ def competition_id_to_slug() -> dict[str, str]:
         if path.stem.startswith("_"):
             continue
         try:
-            mod = importlib.import_module(f"config.competitions.{path.stem}")
+            result[importlib.import_module(f"config.competitions.{path.stem}").COMPETITION_ID] = path.stem
         except Exception:
             continue
-        cid = getattr(mod, "COMPETITION_ID", None)
-        if cid:
-            result[cid] = path.stem
     return result
 
 
 def active_competition_ids() -> set[str]:
-    """ACTIVE=True인 대회 id 집합 — ADR-032의 deep tier. ACTIVE 미선언은 True로 본다."""
-    result: set[str] = set()
-    for cid, slug in competition_id_to_slug().items():
-        try:
-            mod = importlib.import_module(f"config.competitions.{slug}")
-        except Exception:
-            continue
-        if getattr(mod, "ACTIVE", True):
-            result.add(cid)
-    return result
+    """ACTIVE=True인 대회 id 집합 — ADR-032의 deep tier."""
+    return {
+        cid for cid, slug in competition_id_to_slug().items()
+        if importlib.import_module(f"config.competitions.{slug}").ACTIVE
+    }
 
 
 def attempt_cpu_budget_secs(comp: object) -> float | None:

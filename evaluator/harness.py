@@ -271,9 +271,7 @@ def _weighted_majority_vote(member_preds: list[np.ndarray], weights: list[float]
     return np.array(combined, dtype=member_preds[0].dtype)
 
 
-def _combine_predictions(
-    member_preds: list[np.ndarray], method: str, weights: list[float], metric_class: str,
-) -> np.ndarray:
+def _combine_predictions(member_preds: list[np.ndarray], method: str, weights: list[float]) -> np.ndarray:
     if method == "majority_vote":
         return _weighted_majority_vote(member_preds, weights)
     if method != "weighted_average":
@@ -437,7 +435,7 @@ def _fit_predict_ensemble(
         built = _fit_with_retry(_member_build_fn(model_name, ctx, base), _member_params(member, base), Xtr, ytr)
         member_preds.append(_member_predict(built, Xva, metric_class))
 
-    return _combine_predictions(member_preds, method, weights, metric_class)
+    return _combine_predictions(member_preds, method, weights)
 
 
 _NOT_GIVEN = object()  # ensemble_spec_dict 파라미터에서 "미리 계산 안 함"과 "계산했더니

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import json
 import sys
 from pathlib import Path
 
@@ -50,12 +49,8 @@ def main() -> None:
         print(f"[run_attempt_task] no context for run_id={args.run_id}", file=sys.stderr)
         sys.exit(1)
 
-    super_cycle_id, competition_id, prev_best_cv, lessons_raw, assigned_actions_raw = ctx_row
-    lessons = json.loads(lessons_raw) if isinstance(lessons_raw, str) else lessons_raw
-    assigned_actions = (
-        json.loads(assigned_actions_raw) if isinstance(assigned_actions_raw, str)
-        else (assigned_actions_raw or [])
-    )
+    super_cycle_id, competition_id, prev_best_cv, lessons, assigned_actions = ctx_row
+    assigned_actions = assigned_actions or []
     forced_action = (
         assigned_actions[args.attempt_index]
         if args.attempt_index is not None and args.attempt_index < len(assigned_actions)

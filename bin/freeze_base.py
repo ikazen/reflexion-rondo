@@ -11,7 +11,6 @@ import argparse
 import ast
 import hashlib
 import importlib
-import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -65,8 +64,6 @@ def freeze_latest(conn: PgConn, comp: ModuleType, dry_run: bool) -> bool:
         print(f"  {comp.COMPETITION_ID}: 확정 pipeline 없음")
         return False
     pipeline_id, code, stored_cv, materialized, params = row
-    if isinstance(params, str):
-        params = json.loads(params)
     if not params:
         print(f"  {comp.COMPETITION_ID}: selected_params 없음 — 동결 대상 아님")
         return False

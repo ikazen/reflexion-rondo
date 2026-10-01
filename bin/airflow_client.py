@@ -21,6 +21,7 @@ DAG_ID = "reflexion_rondo_cycle"
 _TUNE_DAG_ID = "reflexion_rondo_tune"
 _TERMINAL = {"success", "failed", "cancelled"}  # dag_run state
 _TI_TERMINAL = {"success", "failed", "upstream_failed", "skipped", "removed"}  # task instance state
+_POLL_INTERVAL_SEC = 15
 
 _token: str | None = None
 _token_expires: float = 0.0
@@ -139,18 +140,14 @@ def get_dag_run_state(dag_run_id: str) -> str:
     return resp.json().get("state", "")
 
 
-def wait_for_dag_run(
-    dag_run_id: str,
-    poll_interval: int = 15,
-    timeout: int = 3600,
-) -> str:
+def wait_for_dag_run(dag_run_id: str, timeout: int = 3600) -> str:
     """terminal 상태가 될 때까지 폴링. 최종 state 반환 (success/failed/cancelled/timeout)."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         state = get_dag_run_state(dag_run_id)
         if state in _TERMINAL:
             return state
-        time.sleep(poll_interval)
+        time.sleep(_POLL_INTERVAL_SEC)
     return "timeout"
 
 
@@ -172,7 +169,7 @@ def get_task_instance_state(dag_run_id: str, task_id: str) -> str:
 def wait_for_task_instance(
     dag_run_id: str,
     task_id: str = "promote",
-    poll_interval: int = 15,
+    poll_interval: int = _POLL_INTERVAL_SEC,
     timeout: int = 3600,
 ) -> str:
     """attempt_gate(#203) 도입 후 daemon은 DAG run 전체가 아니라 promote task 하나의
