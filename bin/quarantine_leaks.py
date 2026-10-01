@@ -31,22 +31,6 @@ ROOT = Path(__file__).parent.parent
 _MIN_ROWS_FOR_SCAN = 20  # 표본이 너무 작으면 leak 판정 자체가 불안정 — 스킵
 
 
-def _competition_id_to_slug() -> dict[str, str]:
-    """config/competitions/*.py 스캔 → {competition_id: module_slug} 맵."""
-    result: dict[str, str] = {}
-    for path in (ROOT / "config" / "competitions").glob("*.py"):
-        if path.stem.startswith("_"):
-            continue
-        try:
-            mod = importlib.import_module(f"config.competitions.{path.stem}")
-        except Exception:
-            continue
-        cid = getattr(mod, "COMPETITION_ID", None)
-        if cid:
-            result[cid] = path.stem
-    return result
-
-
 def _scan_pipeline(comp: object, code: str) -> str | None:
     """이 코드가 valid-target 의존 preprocess를 갖는지 실측.
 
@@ -101,9 +85,10 @@ def _scan_pipeline(comp: object, code: str) -> str | None:
 
 def scan(competition_id: str | None, dry_run: bool) -> None:
     sys.path.insert(0, str(ROOT))
+    from config.competitions import competition_id_to_slug
     from store.db import connect
 
-    slug_map = _competition_id_to_slug()
+    slug_map = competition_id_to_slug()
 
     conn = connect(apply_schema=False)
     try:

@@ -25,6 +25,7 @@ from evaluator import harness
 from evaluator.metrics import get as get_metric
 from runtime.isolate import eval_isolated
 from store import train_data
+from store.db import PgConn
 
 _LOG = logging.getLogger(__name__)
 
@@ -270,6 +271,19 @@ class PromotionCache:
                 result.holdout_score, result.holdout_regressed,
                 json.dumps(result.seed_gains) if result.seed_gains else None,
             ],
+        )
+
+
+def record_confirm(conn: PgConn, attempt_id: str, confirm: ConfirmResult) -> None:
+    if confirm.holdout_score is not None:
+        conn.execute(
+            "update raw.attempts set holdout_score = %s where attempt_id = %s",
+            [confirm.holdout_score, attempt_id],
+        )
+    if confirm.seed_gains:
+        conn.execute(
+            "update raw.attempts set confirm_seed_gains = %s where attempt_id = %s",
+            [json.dumps(confirm.seed_gains), attempt_id],
         )
 
 

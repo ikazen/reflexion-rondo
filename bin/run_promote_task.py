@@ -40,21 +40,21 @@ def main() -> None:
 
     import importlib
     import polars as pl
-    from store.db import connect, insert_pipeline
+    from store.db import competition_fingerprint, connect, insert_pipeline
     from agents.reflector import AttemptContext, reflect
+    from config.competitions import comp_cpu_budget_secs, comp_n_splits
     from config.settings import PROMOTE_CONFIRM_SEEDS
     from cycle.action_optimizer import update_bandit
     from cycle.materialize import materialize_best_pipeline, with_frozen_params
-    from cycle.promotion import PromotionCache, confirm_and_measure, effective_label
+    from cycle.promotion import PromotionCache, confirm_and_measure, effective_label, record_confirm
     from evaluator.harness import is_significant_gain, split_audit_holdout
     from evaluator.metrics import float_noise_tolerance
     from memory.retriever import EmbeddingUnavailableError
     from runtime.isolate import eval_isolated
     from store.s3_code import download as _code_download
-    from store.s3_code import BestPipelineUploadError, download_best_pipeline, upload_best_pipeline
+    from store.s3_code import BestPipelineUploadError, download_best_pipeline, strip_code_header, upload_best_pipeline
     from store.train_data import load_train
     from cycle.run import (
-        _CODE_HEADER_SEP,
         _baseline_source_guard,
         _latest_tuned_params,
         _prev_best_fold_scores,
@@ -119,7 +119,6 @@ def main() -> None:
 
     print(f"  -> promoted {rows[winner_idx][0][:8]} (gain={rows[winner_idx][1]})")
 
-    import json as _json
     import uuid as _uuid
 
     winner_row = rows[winner_idx]
@@ -161,14 +160,8 @@ def main() -> None:
     bandit_label: str | None = None
 
     if _stage1_significant and not winner_error and winner_code_path:
-        winner_content = _code_download(winner_code_path) or ""
-        sep = _CODE_HEADER_SEP + "\n"
-        winner_source = winner_content.split(sep, 1)[1].strip() if sep in winner_content else winner_content
+        winner_source = strip_code_header(_code_download(winner_code_path) or "")
         if winner_source:
-            comp_row = conn.execute(
-                "select task_type, metric from raw.competitions where competition_id = %s",
-                [competition_id],
-            ).fetchone()
             train90: pl.DataFrame | None = None
             holdout10: pl.DataFrame | None = None
             try:
@@ -193,8 +186,8 @@ def main() -> None:
             _baseline_source_guard(conn, competition_id)
             current_best = download_best_pipeline(competition_id)
             if train90 is not None:
-                is_classification = comp.IS_CLASSIFICATION if comp_row else True
-                n_splits = getattr(comp, "N_SPLITS", 5) if comp_row else 5
+                is_classification = comp.IS_CLASSIFICATION
+                n_splits = comp_n_splits(comp)
                 # attempt 평가(cycle/run.py)와 같은 조회 함수를 같은 시점(super-cycle
                 # 종료 직후)에 다시 불러 같은 값을 얻는다(#388) — confirm과 아래
                 # merge_eval이 이 값을 공유해야 winner의 attempt-time cv와 어긋나지 않는다.
@@ -215,21 +208,12 @@ def main() -> None:
                     competition_id=competition_id,
                     candidate_cv=winner_row[2],
                     candidate_fold_scores=winner_fold_scores,
-                    cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
+                    cpu_budget_sec=comp_cpu_budget_secs(comp),
                     conn=conn,
                     best_params=promote_best_params,
                     tuned_params=promote_tuned_params,
                 )
-                if confirm.holdout_score is not None:
-                    conn.execute(
-                        "UPDATE raw.attempts SET holdout_score = %s WHERE attempt_id = %s",
-                        [confirm.holdout_score, winner_row[0]],
-                    )
-                if confirm.seed_gains:
-                    conn.execute(
-                        "UPDATE raw.attempts SET confirm_seed_gains = %s WHERE attempt_id = %s",
-                        [_json.dumps(confirm.seed_gains), winner_row[0]],
-                    )
+                record_confirm(conn, winner_row[0], confirm)
                 if not confirm.confirmed:
                     reason = (
                         "holdout 악화" if confirm.holdout_regressed
@@ -270,11 +254,7 @@ def main() -> None:
             # 묶어 미검증 승격을 허용하던 이전 동작을 제거했다. 재시도 가능한 작업 실패로
             # 자연히 끝난다(다음 promote task가 train 로드를 다시 시도).
             if confirm is not None and confirm.confirmed:
-                fp_row = conn.execute(
-                    "select fingerprint from raw.competitions where competition_id = %s",
-                    [competition_id],
-                ).fetchone()
-                fp_dict = fp_row[0] if fp_row and fp_row[0] else {}
+                fp_dict = competition_fingerprint(conn, competition_id)
                 # materialize 먼저 → 해시는 실제 MinIO 업로드 내용(submit.py가 exec하는
                 # 문자열) 기준. raw.pipelines.code(winner source)와는 다른 문자열.
                 promoted_source = with_frozen_params(winner_source, winner_params)
@@ -296,7 +276,7 @@ def main() -> None:
                         seed=42,
                         is_classification=is_classification,
                         collect_oof=True,  # 이 1회 eval에 얹어 OOF 확보(추가 비용 없음)
-                        cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
+                        cpu_budget_sec=comp_cpu_budget_secs(comp),
                         # winner의 attempt-time eval과 같은 값이어야 merge-verify 허용오차
                         # 비교가 의미 있다(#388) — 위 confirm 호출과 같은 시점에 조회한 값 재사용.
                         best_params=promote_best_params,
@@ -413,9 +393,7 @@ def main() -> None:
 
         source = ""
         if code_path:
-            content = _code_download(code_path) or ""
-            sep = _CODE_HEADER_SEP + "\n"
-            source = content.split(sep, 1)[1].strip() if sep in content else content
+            source = strip_code_header(_code_download(code_path) or "")
 
         # winner이고 confirm이 실제로 돌았으면 confirm-보정된 label로 lesson을
         # 남긴다 — "CV에서는 좋아 보였지만 실제 검증은 통과 못 했다"는 신호가

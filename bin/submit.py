@@ -26,7 +26,6 @@ import requests
 ROOT = Path(__file__).parent.parent
 _MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "").rstrip("/")
 RUNS_DIR = ROOT / "runs"
-CODE_SEP = "# " + "-" * 60
 
 # 5-seed 예측 평균(bagging) — 단일 seed=42 fit 대비 거의 공짜인 LB 이득.
 _BAG_SEEDS = [42, 101, 7, 13, 29]
@@ -67,13 +66,11 @@ def _load_best_code(
         if not row:
             raise ValueError(f"No valid attempt found for {competition_id}")
         code_path, cv_score, aid, run_ts = row
-        from store.s3_code import download as _code_download
+        from store.s3_code import download as _code_download, strip_code_header
         content = _code_download(code_path)
         if not content:
             raise FileNotFoundError(f"code not found: {code_path}")
-        sep = CODE_SEP + "\n"
-        source = content.split(sep, 1)[1].strip() if sep in content else content.strip()
-        return source, cv_score, aid, None, run_ts
+        return strip_code_header(content), cv_score, aid, None, run_ts
 
     row = conn.execute(
         """

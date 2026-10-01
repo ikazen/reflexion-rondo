@@ -31,7 +31,7 @@ def main() -> None:
 
     from store.db import connect
     from store.train_data import load_train
-    from config.competitions import attempt_cpu_budget_secs
+    from config.competitions import attempt_cpu_budget_secs, comp_n_splits
     from cycle.run import CycleConfig, run_attempt_core
     from evaluator.harness import split_audit_holdout
 
@@ -73,9 +73,7 @@ def main() -> None:
         metric=comp.METRIC,
         stage=args.stage,
         eda_card=comp.EDA_CARD,
-        n_splits=getattr(comp, "N_SPLITS", 5),
-        seed=42,
-        k_retrieve=5,
+        n_splits=comp_n_splits(comp),
         is_classification=comp.IS_CLASSIFICATION,
         slug=args.competition,
         holdout=holdout,

@@ -134,18 +134,16 @@ def _find_unbounded_parallelism(tree: ast.AST) -> list[str]:
     return hits
 
 
-def _find_patch_class(tree: ast.AST) -> ast.ClassDef | None:
+def find_patch_class(tree: ast.AST) -> ast.ClassDef | None:
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == "Patch":
             return node
     return None
 
 
-# candidate patch 자체의 undefined-name 검사. cycle/materialize.py의 동명 로직과
-# 별도 구현 — runtime/runner.py가 candidate patch를 base와 완전히 분리된 빈
-# namespace에 exec하는 것과 정확히 같은 이름 해석 범위(자기 자신의 import/top-level
-# helper + builtins + self/ctx)로 검사해, patch 혼자 실행됐을 때 NameError가 날지
-# 정적으로 미리 잡는다.
+# undefined-name 검사(cycle/materialize.py의 병합본 검사와 공유). runtime/runner.py가 patch를 base와 분리된 빈
+# namespace에 exec하는 것과 같은 이름 해석 범위(자기 자신의 import/top-level helper + builtins + self/ctx)로
+# 검사해, patch 혼자 실행됐을 때 NameError가 날지 정적으로 미리 잡는다.
 _SAFE_NAMES = frozenset(dir(builtins)) | {"self", "cls", "__class__"}
 
 
@@ -216,7 +214,7 @@ def _collect_loaded_names(node: ast.AST) -> set[str]:
     return {n.id for n in ast.walk(node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
 
 
-def _undefined_names_in_patch(tree: ast.Module, patch_cls: ast.ClassDef) -> list[tuple[str, list[str]]]:
+def undefined_names_in_patch(tree: ast.Module, patch_cls: ast.ClassDef) -> list[tuple[str, list[str]]]:
     """Patch 메서드가 참조하지만 자신의 소스 어디에도 정의되지 않은 이름 목록.
 
     (method_name, [unresolved_name, ...]) 쌍의 리스트. star import면 빈 리스트(스킵).
@@ -302,12 +300,12 @@ def validate_patch(source: str, action_type: str) -> list[str]:
             f"fixed value (e.g. 2) instead"
         )
 
-    patch_cls = _find_patch_class(tree)
+    patch_cls = find_patch_class(tree)
     if patch_cls is None:
         errors.append("missing class definition: Patch")
         return errors
 
-    for method_name, unresolved in _undefined_names_in_patch(tree, patch_cls):
+    for method_name, unresolved in undefined_names_in_patch(tree, patch_cls):
         errors.append(f"Patch.{method_name}: references undefined name(s): {unresolved}")
 
     hook_methods: set[str] = set()

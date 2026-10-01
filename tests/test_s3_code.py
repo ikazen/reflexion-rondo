@@ -127,3 +127,10 @@ def test_best_pipeline_upload_strict_returns_the_s3_uri_on_success() -> None:
     with patch.object(s3_code.requests, "put", return_value=MagicMock(status_code=200)):
         uri = s3_code.upload_best_pipeline("test-comp-419-ok", "x", strict=True)
     assert uri == "s3://kaggle/test-comp-419-ok/best_pipeline.py"
+
+
+def test_strip_code_header_removes_the_saved_header_and_surrounding_whitespace() -> None:
+    body = "class Patch:\n    pass"
+    saved = f"# attempt_id: x\n{s3_code.CODE_HEADER_SEP}\n{body}\n"
+    assert s3_code.strip_code_header(saved) == body
+    assert s3_code.strip_code_header(f"\n{body}\n  ") == body

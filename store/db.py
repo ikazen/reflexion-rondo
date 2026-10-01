@@ -146,6 +146,14 @@ def ensure_competition(
     )
 
 
+def competition_fingerprint(conn: PgConn, competition_id: str) -> dict:
+    row = conn.execute(
+        "select fingerprint from raw.competitions where competition_id = %s",
+        [competition_id],
+    ).fetchone()
+    return row[0] if row and row[0] else {}
+
+
 def insert_attempt(conn: PgConn, row: dict) -> None:
     columns = list(row.keys())
     query = pgsql.SQL("INSERT INTO raw.attempts ({}) VALUES ({})").format(

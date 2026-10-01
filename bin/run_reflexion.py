@@ -11,6 +11,7 @@ import importlib
 import json
 from pathlib import Path
 
+from config.competitions import comp_cpu_budget_secs, comp_n_splits
 from cycle.run import CycleConfig, run_cycle
 from evaluator.harness import split_audit_holdout
 from memory.transfer import cold_start_lessons
@@ -105,13 +106,11 @@ def main() -> None:
             metric=comp.METRIC,
             stage=args.stage,
             eda_card=eda_card,
-            n_splits=getattr(comp, "N_SPLITS", 5),
-            seed=42,
-            k_retrieve=5,
+            n_splits=comp_n_splits(comp),
             is_classification=comp.IS_CLASSIFICATION,
             seed_code=this_seed,
             holdout=holdout,
-            cpu_budget_secs=getattr(comp, "CPU_BUDGET_SECS", None),
+            cpu_budget_secs=comp_cpu_budget_secs(comp),
         )
         try:
             result = run_cycle(conn, config)

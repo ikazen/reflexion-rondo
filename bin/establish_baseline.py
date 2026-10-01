@@ -34,34 +34,21 @@ sys.path.insert(0, str(ROOT))
 
 import polars as pl
 
+from config.competitions import comp_cpu_budget_secs, comp_n_splits, competition_id_to_slug
 from config.settings import PROMOTE_CONFIRM_SEEDS
 from cycle.materialize import materialize_best_pipeline
-from cycle.promotion import PromotionCache, confirm_and_measure, eval_semantics_fingerprint, train_data_fingerprint
-from cycle.run import _CODE_HEADER_SEP, _EVAL_FP_PAUSE_PREFIX, _FP_PAUSE_PREFIX
+from cycle.promotion import (
+    PromotionCache, confirm_and_measure, eval_semantics_fingerprint, record_confirm, train_data_fingerprint,
+)
+from cycle.run import _EVAL_FP_PAUSE_PREFIX, _FP_PAUSE_PREFIX
 from evaluator.harness import split_audit_holdout
 from runtime.isolate import eval_isolated
-from store.db import connect, insert_pipeline
+from store.db import competition_fingerprint, connect, insert_pipeline
 from store.s3_code import download as _code_download
-from store.s3_code import upload_best_pipeline
+from store.s3_code import strip_code_header, upload_best_pipeline
 from store.train_data import load_train
 
 _DEFAULT_TOP_K = 5
-
-
-def _competition_id_to_slug() -> dict[str, str]:
-    """config/competitions/*.py 스캔 → {competition_id: module_slug} 맵."""
-    result: dict[str, str] = {}
-    for path in (ROOT / "config" / "competitions").glob("*.py"):
-        if path.stem.startswith("_"):
-            continue
-        try:
-            mod = importlib.import_module(f"config.competitions.{path.stem}")
-        except Exception:
-            continue
-        cid = getattr(mod, "COMPETITION_ID", None)
-        if cid:
-            result[cid] = path.stem
-    return result
 
 
 def competitions_without_baseline(conn) -> list[str]:
@@ -99,22 +86,8 @@ def _top_k_attempts(conn, competition_id: str, top_k: int) -> list[tuple[str, fl
 
 def _promote(conn, comp: object, attempt_id: str, cv_score: float, source: str, confirm, train90: pl.DataFrame) -> None:
     competition_id = comp.COMPETITION_ID
-    if confirm.holdout_score is not None:
-        conn.execute(
-            "UPDATE raw.attempts SET holdout_score = %s WHERE attempt_id = %s",
-            [confirm.holdout_score, attempt_id],
-        )
-    if confirm.seed_gains:
-        conn.execute(
-            "UPDATE raw.attempts SET confirm_seed_gains = %s WHERE attempt_id = %s",
-            [json.dumps(confirm.seed_gains), attempt_id],
-        )
-
-    fp_row = conn.execute(
-        "SELECT fingerprint FROM raw.competitions WHERE competition_id = %s",
-        [competition_id],
-    ).fetchone()
-    fp_dict = fp_row[0] if fp_row and fp_row[0] else {}
+    record_confirm(conn, attempt_id, confirm)
+    fp_dict = competition_fingerprint(conn, competition_id)
 
     materialized = materialize_best_pipeline(None, source)
     pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
@@ -130,11 +103,11 @@ def _promote(conn, comp: object, attempt_id: str, cv_score: float, source: str, 
             target_col=comp.TARGET,
             metric=comp.METRIC,
             prev_best=None,
-            n_splits=getattr(comp, "N_SPLITS", 5),
+            n_splits=comp_n_splits(comp),
             seed=42,
             is_classification=comp.IS_CLASSIFICATION,
             collect_oof=True,
-            cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
+            cpu_budget_sec=comp_cpu_budget_secs(comp),
         )
         if not merge_eval.error_trace and merge_eval.cv_score is not None:
             merge_oof_preds = merge_eval.oof_preds
@@ -207,7 +180,7 @@ def remeasure_competition(conn, comp: object, dry_run: bool) -> bool:
     train = load_train(comp)
     train90, _holdout10 = split_audit_holdout(train, comp.TARGET, comp.IS_CLASSIFICATION)
     new_fp = train_data_fingerprint(train90)
-    n_splits, seed = getattr(comp, "N_SPLITS", 5), 42
+    n_splits, seed = comp_n_splits(comp), 42
     action = "dry-run, 미반영" if dry_run else "반영"
 
     remeasured = 0
@@ -277,12 +250,10 @@ def establish_for_competition(conn, comp: object, top_k: int, dry_run: bool) -> 
 
     train = load_train(comp)
     train90, holdout10 = split_audit_holdout(train, comp.TARGET, comp.IS_CLASSIFICATION)
-    sep = _CODE_HEADER_SEP + "\n"
 
     cache = PromotionCache(conn)
     for rank, (attempt_id, cv_score, code_path, fold_scores) in enumerate(candidates, 1):
-        content = _code_download(code_path) or ""
-        source = content.split(sep, 1)[1].strip() if sep in content else content.strip()
+        source = strip_code_header(_code_download(code_path) or "")
         if not source:
             print(f"  {comp.COMPETITION_ID} rank={rank} attempt={attempt_id[:8]}: 코드 없음 — 스킵")
             continue
@@ -294,7 +265,7 @@ def establish_for_competition(conn, comp: object, top_k: int, dry_run: bool) -> 
             holdout10=holdout10,
             target_col=comp.TARGET,
             metric=comp.METRIC,
-            n_splits=getattr(comp, "N_SPLITS", 5),
+            n_splits=comp_n_splits(comp),
             seed=42,
             is_classification=comp.IS_CLASSIFICATION,
             confirm_seeds=PROMOTE_CONFIRM_SEEDS,
@@ -302,7 +273,7 @@ def establish_for_competition(conn, comp: object, top_k: int, dry_run: bool) -> 
             competition_id=comp.COMPETITION_ID,
             candidate_cv=cv_score,
             candidate_fold_scores=fold_scores,
-            cpu_budget_sec=getattr(comp, "CPU_BUDGET_SECS", None),
+            cpu_budget_sec=comp_cpu_budget_secs(comp),
             conn=conn,
         )
         reason = (
@@ -338,7 +309,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    slug_map = _competition_id_to_slug()
+    slug_map = competition_id_to_slug()
     conn = connect(apply_schema=False)
 
     if args.remeasure:

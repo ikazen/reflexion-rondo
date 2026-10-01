@@ -9,13 +9,13 @@ base의 ensemble_spec/model_spec을 병합본에서 제거한다(#374, ADR-059).
 from __future__ import annotations
 
 import ast
-import builtins
 import hashlib
 import logging
 import re
 import textwrap
 from typing import TYPE_CHECKING
 
+from evaluator.contract import find_patch_class, undefined_names_in_patch
 from evaluator.harness import _HOOK_SUPPRESSORS
 
 if TYPE_CHECKING:
@@ -182,45 +182,43 @@ def _extract_other_toplevel_statements(source: str) -> list[str]:
 
 
 def _extract_class_members(source: str) -> dict[str, ast.stmt]:
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == "Patch":
-            result: dict[str, ast.stmt] = {}
-            for item in node.body:
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    # ClassDef 포함: ensemble action_type 등이 build_model에서 참조하는
-                    # wrapper 클래스를 Patch 안에 중첩 정의하는 패턴이 흔해, 누락하면
-                    # 병합본에서만 그 클래스가 사라진다.
-                    result[item.name] = item
-                elif isinstance(item, ast.Assign):
-                    for target in item.targets:
-                        if isinstance(target, ast.Name) and target.id not in _META_ATTRS:
-                            result[target.id] = item
-                elif isinstance(item, ast.AnnAssign):
-                    if isinstance(item.target, ast.Name) and item.target.id not in _META_ATTRS:
-                        result[item.target.id] = item
-            return result
-    return {}
+    patch = find_patch_class(ast.parse(source))
+    if patch is None:
+        return {}
+    result: dict[str, ast.stmt] = {}
+    for item in patch.body:
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            # ClassDef 포함: ensemble action_type 등이 build_model에서 참조하는
+            # wrapper 클래스를 Patch 안에 중첩 정의하는 패턴이 흔해, 누락하면
+            # 병합본에서만 그 클래스가 사라진다.
+            result[item.name] = item
+        elif isinstance(item, ast.Assign):
+            for target in item.targets:
+                if isinstance(target, ast.Name) and target.id not in _META_ATTRS:
+                    result[target.id] = item
+        elif isinstance(item, ast.AnnAssign):
+            if isinstance(item.target, ast.Name) and item.target.id not in _META_ATTRS:
+                result[item.target.id] = item
+    return result
 
 
 def _extract_override_hooks(source: str) -> frozenset[str]:
     """Patch.override(선택적 클래스 속성, 문자열 리스트)를 읽는다 — 여기 나열된 훅은
     합성하지 않고 기존처럼 완전 교체한다(ADR-037, #232). 미선언 시 빈 집합(= 이 patch가
     정의하는 모든 합성 가능 훅을 합성 대상으로 삼는다는 뜻)."""
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == "Patch":
-            for item in node.body:
-                if not isinstance(item, ast.Assign):
-                    continue
-                if not any(isinstance(t, ast.Name) and t.id == "override" for t in item.targets):
-                    continue
-                if isinstance(item.value, (ast.List, ast.Tuple, ast.Set)):
-                    return frozenset(
-                        elt.value for elt in item.value.elts
-                        if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-                    )
-            return frozenset()
+    patch = find_patch_class(ast.parse(source))
+    if patch is None:
+        return frozenset()
+    for item in patch.body:
+        if not isinstance(item, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "override" for t in item.targets):
+            continue
+        if isinstance(item.value, (ast.List, ast.Tuple, ast.Set)):
+            return frozenset(
+                elt.value for elt in item.value.elts
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+            )
     return frozenset()
 
 
@@ -508,83 +506,6 @@ def replay_best_pipeline(
     return best, last_sha256, replayed
 
 
-_SAFE_NAMES = frozenset(dir(builtins)) | {"self", "cls", "__class__"}
-
-
-def _module_level_names(tree: ast.Module) -> set[str] | None:
-    """모듈 최상단에서 해석 가능한 이름 전부 (helper 정의 + import 바인딩).
-
-    star import(`from x import *`)가 있으면 무엇을 바인딩하는지 알 수 없으므로
-    None을 반환해 호출자가 undefined-name 검사 자체를 건너뛰게 한다 — 미탐지가
-    오탐(유효한 파이프라인을 잘못 거부)보다 안전하다.
-    """
-    names: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            names.add(node.name)
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    names.add(target.id)
-        elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name):
-                names.add(node.target.id)
-        elif not isinstance(node, (ast.Import, ast.ImportFrom)):
-            # try/except, if, with 등 top-level 복합문(예: optional-dependency 가드
-            # `try: import x; FLAG=True except ImportError: FLAG=False`) 내부에서
-            # 조건부로 바인딩되는 이름도 모듈 스코프로 인정한다 — _validate_materialized가
-            # 이제 이런 문을 verbatim 보존하므로 오탐하면 안 된다.
-            for n in ast.walk(node):
-                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
-                    names.add(n.id)
-                elif isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                    names.add(n.name)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                names.add(alias.asname or alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                if alias.name == "*":
-                    return None
-                names.add(alias.asname or alias.name)
-    return names
-
-
-def _collect_bound_names(node: ast.AST) -> set[str]:
-    """서브트리 내에서 지역적으로 바인딩되는 모든 이름 (과대추정 — 오탐 방지 우선).
-
-    컴프리헨션 스코프 격리는 무시하고 Store 컨텍스트 Name을 전부 지역 바인딩으로
-    친다. 매개변수·중첩 함수/클래스 이름·for/with/except 타겟·global/nonlocal
-    선언명도 포함.
-    """
-    bound: set[str] = set()
-    for n in ast.walk(node):
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            args = n.args
-            for a in (*args.posonlyargs, *args.args, *args.kwonlyargs):
-                bound.add(a.arg)
-            if args.vararg:
-                bound.add(args.vararg.arg)
-            if args.kwarg:
-                bound.add(args.kwarg.arg)
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                bound.add(n.name)
-        elif isinstance(n, ast.ClassDef):
-            bound.add(n.name)
-        elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
-            bound.add(n.id)
-        elif isinstance(n, ast.ExceptHandler) and n.name:
-            bound.add(n.name)
-        elif isinstance(n, (ast.Global, ast.Nonlocal)):
-            bound.update(n.names)
-    return bound
-
-
-def _collect_loaded_names(node: ast.AST) -> set[str]:
-    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
-
-
 def _check_undefined_names(tree: ast.Module) -> None:
     """병합된 class Patch 메서드가 어디에도 정의되지 않은 이름을 참조하면 raise.
 
@@ -596,28 +517,10 @@ def _check_undefined_names(tree: ast.Module) -> None:
     잡기에 충분하고, helper 내부까지 보면 오탐 표면만 늘어난다 — under-detection은
     의도적으로 허용).
     """
-    module_names = _module_level_names(tree)
-    if module_names is None:
-        return  # star import — 무엇이 바인딩되는지 알 수 없어 검사 스킵
-    resolvable = module_names | _SAFE_NAMES
-
-    patch_cls = next(
-        (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "Patch"),
-        None,
-    )
+    patch_cls = find_patch_class(tree)
     if patch_cls is None:
         return  # missing-Patch는 별도 가드가 처리
-
-    broken: list[tuple[str, list[str]]] = []
-    for item in patch_cls.body:
-        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        loaded = _collect_loaded_names(item)
-        bound = _collect_bound_names(item)
-        unresolved = sorted(loaded - bound - resolvable)
-        if unresolved:
-            broken.append((item.name, unresolved))
-
+    broken = undefined_names_in_patch(tree, patch_cls)
     if broken:
         detail = "; ".join(f"{name}: {unresolved}" for name, unresolved in broken)
         raise ValueError(f"materialized pipeline references undefined name(s) — {detail}")
@@ -633,10 +536,6 @@ def _validate_materialized(source: str) -> None:
     except SyntaxError as exc:
         raise ValueError(f"materialized pipeline has SyntaxError: {exc}") from exc
     tree = ast.parse(source)
-    has_patch = any(
-        isinstance(node, ast.ClassDef) and node.name == "Patch"
-        for node in ast.walk(tree)
-    )
-    if not has_patch:
+    if find_patch_class(tree) is None:
         raise ValueError("materialized pipeline is missing class Patch")
     _check_undefined_names(tree)

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 import optuna
 
+from evaluator.contract import find_patch_class
 from evaluator.harness import _BASE_MEMBER, PipelineContext, evaluate_pipeline
 from evaluator.metrics import get as get_metric
 from evaluator.models import registry_key_for_class
@@ -308,9 +309,7 @@ def infer_registry_model(source: str) -> str | None:
         tree = ast.parse(source)
     except SyntaxError:
         return None
-    patch = next(
-        (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "Patch"), None
-    )
+    patch = find_patch_class(tree)
     if patch is None:
         return None
     build_model = next(
@@ -378,9 +377,7 @@ def _extract_base_params_literal(source: str) -> dict:
         tree = ast.parse(source)
     except SyntaxError:
         return {}
-    patch = next(
-        (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "Patch"), None
-    )
+    patch = find_patch_class(tree)
     if patch is None:
         return {}
     build_model = next(

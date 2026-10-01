@@ -11,8 +11,6 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ollama import Client
-
 from agents.llm_retry import chat_with_retry
 from agents.playbook import STRATEGIST_PLAYBOOK
 from config import settings
@@ -59,13 +57,6 @@ class StrategyDecision:
     hypothesis: str
     action_type: str
     reflection_ids: list[str] = field(default_factory=list)
-
-
-def _client() -> Client:
-    kwargs: dict = {"host": settings.OLLAMA_CLOUD_BASE_URL}
-    if settings.OLLAMA_API_KEY:
-        kwargs["headers"] = {"Authorization": f"Bearer {settings.OLLAMA_API_KEY}"}
-    return Client(**kwargs)
 
 
 def _format_lessons(lessons: list[dict]) -> str:
@@ -187,7 +178,6 @@ Respond with ONLY a JSON object using exactly these keys:
     last_err: ValueError | None = None
     for attempt in range(_PARSE_RETRIES):
         resp = chat_with_retry(
-            _client,
             model=settings.MODEL_STRATEGIST,
             messages=[{"role": "user", "content": user_prompt}],
             format=_OUTPUT_SCHEMA,
