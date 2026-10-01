@@ -5,7 +5,7 @@ import importlib
 import pkgutil
 
 import config.competitions as _comp_pkg
-from config.competitions import attempt_cpu_budget_secs
+from config.competitions import attempt_cpu_budget_secs, competition_id_to_slug
 from config.settings import is_classification
 
 
@@ -29,6 +29,12 @@ def test_required_constants_are_declared_on_every_competition():
     for mod in _load_all_comps():
         missing = [c for c in _REQUIRED_CONSTANTS if not hasattr(mod, c)]
         assert not missing, f"{mod.__name__}: missing {missing}"
+
+
+def test_competition_id_to_slug_includes_known_competitions():
+    mapping = competition_id_to_slug()
+    assert mapping.get("playground-series-s5e10") == "s5e10"
+    assert mapping.get("playground-series-s4e1") == "s4e1"
 
 
 def test_is_classification_consistent_with_task_type():

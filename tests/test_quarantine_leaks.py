@@ -12,7 +12,7 @@ import importlib
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-from bin.quarantine_leaks import _competition_id_to_slug, _scan_pipeline, quarantine_twin_extra_train
+from bin.quarantine_leaks import _scan_pipeline, quarantine_twin_extra_train
 
 _S5E10 = importlib.import_module("config.competitions.s5e10")
 
@@ -51,12 +51,6 @@ class Patch:
         cols = [c for c in train.columns if c != target]
         return train.select(cols), valid.select(cols)
 """
-
-
-def test_competition_id_to_slug_includes_known_competitions():
-    mapping = _competition_id_to_slug()
-    assert mapping.get("playground-series-s5e10") == "s5e10"
-    assert mapping.get("playground-series-s4e1") == "s4e1"
 
 
 def test_scan_pipeline_flags_valid_target_read_in_preprocess():

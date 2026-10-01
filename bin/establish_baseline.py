@@ -34,6 +34,7 @@ sys.path.insert(0, str(ROOT))
 
 import polars as pl
 
+from config.competitions import competition_id_to_slug
 from config.settings import PROMOTE_CONFIRM_SEEDS
 from cycle.materialize import materialize_best_pipeline
 from cycle.promotion import PromotionCache, confirm_and_measure, eval_semantics_fingerprint, train_data_fingerprint
@@ -46,22 +47,6 @@ from store.s3_code import upload_best_pipeline
 from store.train_data import load_train
 
 _DEFAULT_TOP_K = 5
-
-
-def _competition_id_to_slug() -> dict[str, str]:
-    """config/competitions/*.py 스캔 → {competition_id: module_slug} 맵."""
-    result: dict[str, str] = {}
-    for path in (ROOT / "config" / "competitions").glob("*.py"):
-        if path.stem.startswith("_"):
-            continue
-        try:
-            mod = importlib.import_module(f"config.competitions.{path.stem}")
-        except Exception:
-            continue
-        cid = getattr(mod, "COMPETITION_ID", None)
-        if cid:
-            result[cid] = path.stem
-    return result
 
 
 def competitions_without_baseline(conn) -> list[str]:
@@ -338,7 +323,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    slug_map = _competition_id_to_slug()
+    slug_map = competition_id_to_slug()
     conn = connect(apply_schema=False)
 
     if args.remeasure:

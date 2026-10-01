@@ -18,7 +18,7 @@ from types import ModuleType
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-from bin.establish_baseline import _competition_id_to_slug
+from config.competitions import competition_id_to_slug
 from cycle.materialize import materialize_best_pipeline, with_frozen_params
 from evaluator.harness import split_audit_holdout
 from evaluator.metrics import float_noise_tolerance
@@ -118,7 +118,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="평가·검증만 하고 반영하지 않는다")
     args = parser.parse_args()
 
-    slug = _competition_id_to_slug().get(args.competition)
+    slug = competition_id_to_slug().get(args.competition)
     if not slug:
         parser.error(f"unknown competition: {args.competition}")
     comp = importlib.import_module(f"config.competitions.{slug}")
