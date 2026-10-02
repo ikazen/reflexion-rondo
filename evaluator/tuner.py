@@ -34,7 +34,7 @@ _SEED = 42
 _BASELINE_MATCH_REL_TOL = 1e-6
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class TunerResult:
     model_name: str
     member_index: int | None  # None=model_spec(단일모델), int=ensemble_spec 멤버 인덱스

@@ -513,7 +513,7 @@ def fit_predict(
     return raw_preds, model
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class EvalResult:
     cv_score: float
     # noop_early_exit(#339)일 때만 None — 1-fold만 계산했으므로 5-fold 분산/전체
