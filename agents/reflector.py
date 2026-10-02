@@ -36,7 +36,10 @@ _OUTPUT_SCHEMA: dict = {
         "generality": {
             "type": "string",
             "enum": GENERALITY_VALUES,
-            "description": "L1_local: specific to this competition. L2_class: applies to similar fingerprint class. L3_general: universal tabular principle.",
+            "description": (
+                "L1_local: specific to this competition. L2_class: applies to similar fingerprint class. "
+                "L3_general: universal tabular principle."
+            ),
         },
         "reflector_label": {
             "type": "string",
@@ -151,7 +154,8 @@ For generality:
 - L3_general if it is a universal principle for tabular ML
 
 Respond with ONLY a JSON object using exactly these keys:
-{{"embedded_text": "one-paragraph summary for search (2-3 sentences max)", "full_lesson": "detailed lesson (4-5 sentences max)", "generality": "<L1_local|L2_class|L3_general>", "reflector_label": "<jump|neutral|regression>"}}"""
+{{"embedded_text": "one-paragraph summary for search (2-3 sentences max)", "full_lesson": "detailed lesson (4-5 sentences max)", \
+"generality": "<L1_local|L2_class|L3_general>", "reflector_label": "<jump|neutral|regression>"}}"""
 
     import time as _time
 

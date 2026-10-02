@@ -18,10 +18,10 @@ def _traffic_light(*, green: bool, red: bool) -> str:
     """bin/api.py:_traffic_light와 동일 판정(red가 green보다 우선) — API를 거치지
     않고 대시보드가 같은 뷰를 직접 재계산하는 GH #65 설계라 여기서도 재현한다."""
     if red:
-        return "🔴"
+        return "red"
     if green:
-        return "🟢"
-    return "🟡"
+        return "green"
+    return "amber"
 
 
 def _rows_df(rows: list[tuple], columns: list[str]) -> pl.DataFrame:
@@ -55,10 +55,10 @@ def _tune_status(row: dict) -> str:
     """#318/#319 — 튜닝 레인이 다시 조용히 죽지 않았는지(#310 배경, 자동 트리거
     배선 전엔 lifetime 산출물 2행뿐) 한눈에 보이게."""
     if row["hours_since_last_tune"] is None:
-        return "⚪ never"
+        return "never"
     if row["hours_since_last_tune"] > 48:
-        return "🟡 stale"
-    return "🟢"
+        return "stale"
+    return "ok"
 
 
 def _fleet_attention(row: dict) -> str:
@@ -66,23 +66,23 @@ def _fleet_attention(row: dict) -> str:
     별도 함수. 천장 진단(2026-08-03)에서 대회 26개를 하나씩 SQL로 찔러 찾았던
     "baseline 없음/큐 방치/OOM 과다"를 한 테이블에서 바로 보이게 하는 게 목적."""
     if row["auto_submit_paused_reason"]:
-        return "🔴"
+        return "red"
     attempts = row["attempts_14d"] or 0
     if attempts > 0 and (row["errors_14d"] or 0) / attempts > 0.7:
-        return "🔴"
+        return "red"
     if (row["confirmed"] or 0) == 0 and (row["quarantined"] or 0) > 0:
-        return "🔴"  # baseline이 전부 격리돼 지금 하나도 없음
+        return "red"  # baseline이 전부 격리돼 지금 하나도 없음
     if (row["confirmed"] or 0) == 0:
-        return "🟡"  # 아직 baseline 자체가 없음
+        return "amber"  # 아직 baseline 자체가 없음
     if row["is_active"] and (
         row["days_since_lb"] is None or row["days_since_lb"] > _LB_STALE_DAYS
     ):
-        return "🟡"  # deep tier인데 외부 검증(LB)을 주 1회도 못 받고 있다(#233 완료 기준)
+        return "amber"  # deep tier인데 외부 검증(LB)을 주 1회도 못 받고 있다(#233 완료 기준)
     if row["queue_status"] == "pending":
-        return "🟡"  # 예약만 되고 daemon이 아직 안 돎
+        return "amber"  # 예약만 되고 daemon이 아직 안 돎
     if (row["jumps_14d"] or 0) == 0:
-        return "🟡"
-    return "🟢"
+        return "amber"
+    return "green"
 
 
 st.set_page_config(page_title="Reflexion Monitor", layout="wide")
@@ -96,7 +96,7 @@ except Exception as exc:
 
 st.subheader("Fleet Overview")
 st.caption(
-    "전 대회 한눈에 — 어디부터 볼지 여기서 고른다. attention: 🔴 즉시 확인 / 🟡 관찰 필요 / 🟢 정상. "
+    "전 대회 한눈에 — 어디부터 볼지 여기서 고른다. attention: red 즉시 확인 / amber 관찰 필요 / green 정상. "
     "gap_to_p90은 리더보드 상위 10% 컷오프까지 남은 원점수 거리(0 이하 = 도달) — "
     "lb_percentile(rank-count 백분위)은 저효과 진입이 두터운 대회에서 과대평가돼(#289) 내려감."
 )
@@ -189,7 +189,7 @@ fleet = fleet.with_columns(
 )
 fleet_rows = [_fleet_attention(r) for r in fleet.iter_rows(named=True)]
 fleet = fleet.with_columns(pl.Series("attention", fleet_rows)).sort(
-    pl.col("attention").replace_strict({"🔴": 0, "🟡": 1, "🟢": 2}, return_dtype=pl.Int32)
+    pl.col("attention").replace_strict({"red": 0, "amber": 1, "green": 2}, return_dtype=pl.Int32)
 )
 
 st.dataframe(
@@ -355,28 +355,28 @@ with h1:
         green=(cite_rate >= 0.30 and jumps_last10 >= 1),
         red=(cite_rate < 0.10 or (jumps_last10 == 0 and stagnation.is_stagnant)),
     )
-    st.metric(f"{status} Accumulation", f"cite {cite_rate:.2f}")
+    st.metric(f"Accumulation ({status})", f"cite {cite_rate:.2f}")
     st.caption(f"jumps(last10)={jumps_last10}" + ("" if retrieved_precise else " (approx)"))
 with h2:
     status = _traffic_light(
         green=(posterior_spread >= 0.15 and calibration_gap <= 0.15),
         red=(posterior_spread < 0.05 or calibration_gap > 0.30),
     )
-    st.metric(f"{status} Bandit", f"gap {calibration_gap:.2f}")
+    st.metric(f"Bandit ({status})", f"gap {calibration_gap:.2f}")
     st.caption(f"posterior spread={posterior_spread:.2f}")
 with h3:
     status = _traffic_light(
         green=(error_rate_slope < 0 and repeat_after_pitfall_rate <= 0.20),
         red=(repeat_after_pitfall_rate > 0.50),
     )
-    st.metric(f"{status} Antipattern", f"repeat {repeat_after_pitfall_rate:.2f}")
+    st.metric(f"Antipattern ({status})", f"repeat {repeat_after_pitfall_rate:.2f}")
     st.caption(f"error slope={error_rate_slope:+d}")
 with h4:
     status = _traffic_light(
         green=(action_coverage >= 3),
         red=(stagnation.is_stagnant and action_coverage <= 1),
     )
-    st.metric(f"{status} Exploration", f"{action_coverage}/{len(ACTION_TYPES)} types")
+    st.metric(f"Exploration ({status})", f"{action_coverage}/{len(ACTION_TYPES)} types")
     st.caption(f"stagnant_for={stagnation.stagnant_for}")
 
 st.divider()

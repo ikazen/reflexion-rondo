@@ -1,5 +1,28 @@
 # 변경 이력
 
+## 미배포 — 코드 스타일 제약 정렬 (Milestone "코드 스타일 제약 정렬", 2026-10-02)
+
+`~/.claude/CLAUDE.md`의 코드 스타일 제약(요청되지 않은 확장 금지, 중복 제거, 단순한 구조, 타입 힌트)에 맞춰 비테스트 소스 전체를 정리했다.
+동작 변경 없이 줄이고 옮기는 작업이라 버전 번호는 배포 시점에 정한다.
+
+- 삭제: 문서에 없고 소비처도 없던 관측용 GET 엔드포인트 20개(`bin/api.py`, 약 670줄)와 리플레이 헬퍼, DAG가 쓰지 않던 `bin/run_cycle_task.py`,
+  `RegisterRequest`, `/api/submissions/auto`의 쓰지 않던 body(`window_hours`), 호출부가 없던 옵션 인자 8개. psycopg2가 이미 파싱해 주는 jsonb 컬럼의
+  이중 파싱 분기 17곳, 항상 있는 컬럼의 `information_schema` 확인, 비-Linux `resource` 폴백, 전 대회가 선언하는 상수의 `getattr` 기본값도 걷어냈다.
+- 중복 통합: AST 이름 해석 함수(`evaluator/contract.py` 단일 정의), Ollama `_client()`(`agents/llm_retry.py`), 코드 헤더 분리와 MinIO 호출 보일러플레이트
+  (`store/s3_code.py`), fingerprint 조회와 holdout UPDATE(`store/db.py:competition_fingerprint`, `cycle/promotion.py:record_confirm`),
+  `N_SPLITS`/`CPU_BUDGET_SECS` 조회(`config/competitions`의 `comp_n_splits`, `comp_cpu_budget_secs`), competition_id-slug 매핑 사본.
+- 함수 분할(코드 100줄 초과 8개 중 7개, 이동만): `run_attempt_core`, `run_promote_task.main`, `run_daemon._process`, `eval_isolated`, `evaluate_pipeline`,
+  `confirm_and_measure`, 그리고 분할 헬퍼를 재사용하게 된 `establish_bootstrap_baseline`. `create_app`은 handler 합계라 두었다. `eval_fingerprint`가 코드가 아닌 노브를 해시해 이동을 못 잡으므로 별도로 검증했다:
+  `eval_isolated` golden 스냅샷(합성 데이터 3종 x patch 3종)은 분할 전후 비트 동일, `run_attempt_core`와 `_process`는 옛 코드와의 차분 테스트에서 불일치 0.
+- 타입 힌트 누락 87개를 채웠고(`Any` 미사용), 값을 바꾸지 않는 `EvalResult`, `CycleResult`, `_AttemptData`, `TunerResult`를 `frozen, slots` dataclass로 바꿨다.
+- 대시보드의 이모지 배지를 텍스트(`red`/`amber`/`green`, 튜닝 상태 `never`/`stale`/`ok`)로 바꿨다. 140자 초과 소스 줄 4개를 줄였다.
+- 알려진 기존 동작(이번에 안 고침): no-op 동점 재생성 분기에서 재생성 코드가 정적 검증에 실패해도 그 소스가 이전 tie 결과와 함께 저장된다.
+- 스키마 변경 없음. `bin/api.py`와 `bin/run_daemon.py`가 바뀌어 daemon 컷오버가 필요하고 task 이미지도 갱신된다(배포 대기). 테스트 1130 -> 1110 passed
+  (죽은 기능 테스트 삭제, 신규 가드 테스트 추가).
+- 확인 지표: 배포 후 첫 super-cycle의 promote 로그(승격 경로 문구 불변), `/docs`에 남은 엔드포인트 18개, 대시보드 Fleet Overview 정렬.
+
+---
+
 ## v1.6.32 — 워치독 fold별 재투영, near-tie 판정, 위생 (Milestone "v1.6.32 후속 2026-09-30", 2026-09-30)
 
 v1.6.30/31 라이브 9시간 실측(2026-09-30 12:33Z)에서 남은 낭비 두 곳과 위생 두 건을 한 묶음으로 처리했다. 후보 9개 중 실측 근거가 있는 것만 골랐다.
@@ -667,7 +690,7 @@ Milestone #16(#287~#291) 전체 반영.
 
 ### 대시보드
 - Fleet Overview에 `is_active` / `lb_percentile` / `days_since_lb` 컬럼 추가. `_fleet_attention`에
-  "deep tier인데 7일 넘게 LB 갱신 없음 → 🟡" 규칙 추가 — #233 완료 기준("주 1회 이상 LB 갱신")이
+  "deep tier인데 7일 넘게 LB 갱신 없음 → amber" 규칙 추가 — #233 완료 기준("주 1회 이상 LB 갱신")이
   대시보드에서 바로 읽힌다.
 - Submissions 섹션에 cv-LB 갭 패널 추가(양수 = CV가 LB보다 낙관적).
 
@@ -1001,7 +1024,7 @@ Milestone #16(#287~#291) 전체 반영.
 
 ## v1.4.19 — 대시보드 Fleet Overview (2026-08-03)
 - #143: 대시보드 최상단에 전역 Fleet Overview 신설 — 대회별 큐 상태·confirmed/quarantined pipeline 수·14일 attempt/jump/error/OOM
-카운트·`auto_submit_paused_reason`을 벌크 쿼리 5개(N+1 아님, 실측 0.085s)로 모아 attention 배지(🔴/🟡/🟢)로 정렬해 어디부터 볼지 여기서 고르게 함. 대회 선택 종속
+카운트·`auto_submit_paused_reason`을 벌크 쿼리 5개(N+1 아님, 실측 0.085s)로 모아 attention 배지(red/amber/green)로 정렬해 어디부터 볼지 여기서 고르게 함. 대회 선택 종속
 섹션으로 Submissions·Quarantine·Blend 신설 — `cv_lb_calibration` 제출 이력(발산 경고), 격리 pipeline 목록, `auto_submit_paused_reason` 경고,
 blend_cv_score vs 단일 best pipeline 비교. daemon API 미경유, 전부 Postgres 직접 쿼리(GH #65 설계 그대로).
 
