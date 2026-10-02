@@ -1,9 +1,9 @@
 # 변경 이력
 
-## 미배포 — 코드 스타일 제약 정렬 (Milestone "코드 스타일 제약 정렬", 2026-10-02)
+## v1.6.33 — 코드 스타일 제약 정렬 (Milestone "코드 스타일 제약 정렬 2026-10", 2026-10-02)
 
 `~/.claude/CLAUDE.md`의 코드 스타일 제약(요청되지 않은 확장 금지, 중복 제거, 단순한 구조, 타입 힌트)에 맞춰 비테스트 소스 전체를 정리했다.
-동작 변경 없이 줄이고 옮기는 작업이라 버전 번호는 배포 시점에 정한다.
+동작 변경 없이 줄이고 옮기는 작업이라 patch 범프로 배포했다.
 
 - 삭제: 문서에 없고 소비처도 없던 관측용 GET 엔드포인트 20개(`bin/api.py`, 약 670줄)와 리플레이 헬퍼, DAG가 쓰지 않던 `bin/run_cycle_task.py`,
   `RegisterRequest`, `/api/submissions/auto`의 쓰지 않던 body(`window_hours`), 호출부가 없던 옵션 인자 8개. psycopg2가 이미 파싱해 주는 jsonb 컬럼의
@@ -17,8 +17,8 @@
 - 타입 힌트 누락 87개를 채웠고(`Any` 미사용), 값을 바꾸지 않는 `EvalResult`, `CycleResult`, `_AttemptData`, `TunerResult`를 `frozen, slots` dataclass로 바꿨다.
 - 대시보드의 이모지 배지를 텍스트(`red`/`amber`/`green`, 튜닝 상태 `never`/`stale`/`ok`)로 바꿨다. 140자 초과 소스 줄 4개를 줄였다.
 - 알려진 기존 동작(이번에 안 고침): no-op 동점 재생성 분기에서 재생성 코드가 정적 검증에 실패해도 그 소스가 이전 tie 결과와 함께 저장된다.
-- 스키마 변경 없음. `bin/api.py`와 `bin/run_daemon.py`가 바뀌어 daemon 컷오버가 필요하고 task 이미지도 갱신된다(배포 대기). 테스트 1130 -> 1110 passed
-  (죽은 기능 테스트 삭제, 신규 가드 테스트 추가).
+- 스키마 변경 없음. `bin/api.py`와 `bin/run_daemon.py`가 바뀌어 DAG 빌드(task 이미지 즉시 라이브) 뒤 `release.sh v1.6.33`으로 daemon을 컷오버했다
+  (compose `93ad861`). 테스트 1130 -> 1110 passed(죽은 기능 테스트 삭제, 신규 가드 테스트 추가).
 - 확인 지표: 배포 후 첫 super-cycle의 promote 로그(승격 경로 문구 불변), `/docs`에 남은 엔드포인트 18개, 대시보드 Fleet Overview 정렬.
 
 ---
