@@ -22,8 +22,16 @@ MODEL_REGISTRY: dict[str, dict[str, str]] = {
     "lgbm":          {"module": "lightgbm",           "classifier": "LGBMClassifier",                "regressor": "LGBMRegressor"},
     "xgboost":       {"module": "xgboost",             "classifier": "XGBClassifier",                  "regressor": "XGBRegressor"},
     "catboost":      {"module": "catboost",             "classifier": "CatBoostClassifier",             "regressor": "CatBoostRegressor"},
-    "hgb":           {"module": "sklearn.ensemble",     "classifier": "HistGradientBoostingClassifier", "regressor": "HistGradientBoostingRegressor"},
-    "random_forest": {"module": "sklearn.ensemble",     "classifier": "RandomForestClassifier",         "regressor": "RandomForestRegressor"},
+    "hgb": {
+        "module": "sklearn.ensemble",
+        "classifier": "HistGradientBoostingClassifier",
+        "regressor": "HistGradientBoostingRegressor",
+    },
+    "random_forest": {
+        "module": "sklearn.ensemble",
+        "classifier": "RandomForestClassifier",
+        "regressor": "RandomForestRegressor",
+    },
     "extra_trees":   {"module": "sklearn.ensemble",     "classifier": "ExtraTreesClassifier",           "regressor": "ExtraTreesRegressor"},
     "ridge":         {"module": "sklearn.linear_model", "classifier": "RidgeClassifier",                "regressor": "Ridge"},
     # elastic_net 분류기는 sklearn에 전용 클래스가 없다 — LogisticRegression을 쓰되
