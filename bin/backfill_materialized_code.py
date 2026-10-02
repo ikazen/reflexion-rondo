@@ -32,6 +32,13 @@ import hashlib
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import polars as pl
+
+    from runtime.isolate import IsolatedResult
+    from store.db import PgConn
 
 ROOT = Path(__file__).parent.parent
 
@@ -63,7 +70,7 @@ def _sha(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()
 
 
-def _eval_base(comp: object, source: str, train90, cpu_budget):
+def _eval_base(comp: object, source: str, train90: pl.DataFrame, cpu_budget: float | None) -> IsolatedResult:
     from config.competitions import comp_n_splits
     from runtime.isolate import eval_isolated
     return eval_isolated(
@@ -79,7 +86,7 @@ def _eval_base(comp: object, source: str, train90, cpu_budget):
     )
 
 
-def _drift_probe(comp: object, chain: list[ChainRow], train90, cpu_budget) -> bool | None:
+def _drift_probe(comp: object, chain: list[ChainRow], train90: pl.DataFrame, cpu_budget: float | None) -> bool | None:
     """대회의 최신 materialized_code 행을 오늘 데이터로 재평가해 기록 cv와 대조한다.
 
     재현되면 cv tier가 이 대회에서 신뢰 가능(True), 안 되면 학습 데이터가 이동한 것
@@ -103,8 +110,8 @@ def _drift_probe(comp: object, chain: list[ChainRow], train90, cpu_budget) -> bo
 
 
 def _verdict_for_row(
-    conn, comp: object, row: ChainRow, train90, comparable: bool | None,
-    prev_eval: tuple[float, list[float] | None] | None, allow_chain: bool, cpu_budget,
+    conn: PgConn, comp: object, row: ChainRow, train90: pl.DataFrame, comparable: bool | None,
+    prev_eval: tuple[float, list[float] | None] | None, allow_chain: bool, cpu_budget: float | None,
     is_latest: bool,
 ) -> tuple[Verdict, tuple[float, list[float] | None] | None]:
     """한 행의 verdict + (다음 층에 물려줄 prev_eval). prev_eval은 (cv, fold_scores)."""
@@ -199,7 +206,7 @@ def _verdict_for_row(
                    f"데이터 이동됨, --allow-chain 없음 (재평가 cv {res.cv_score})"), None
 
 
-def _write(conn, row: ChainRow, v: Verdict, remeasure: bool, apply: bool) -> None:
+def _write(conn: PgConn, row: ChainRow, v: Verdict, remeasure: bool, apply: bool) -> None:
     sets = ["materialized_origin = %s"]
     params: list = [v.origin]
     if v.snapshot is not None:
@@ -220,7 +227,7 @@ def _write(conn, row: ChainRow, v: Verdict, remeasure: bool, apply: bool) -> Non
 
 
 def backfill_competition(
-    conn, comp: object, apply: bool, allow_chain: bool, remeasure: bool,
+    conn: PgConn, comp: object, apply: bool, allow_chain: bool, remeasure: bool,
 ) -> dict[str, int]:
     from config.competitions import comp_cpu_budget_secs
     from cycle.materialize import promotion_chain

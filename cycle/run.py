@@ -67,7 +67,7 @@ class CycleConfig:
     cpu_budget_secs: float | None = None  # comp.CPU_BUDGET_SECS 오버라이드, 미설정 시 env/DEFAULT_CPU_BUDGET_SECS
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class CycleResult:
     attempt_id: str
     cv_score: float | None
@@ -79,7 +79,7 @@ class CycleResult:
     code_path: str
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class _AttemptData:
     """Internal: complete data from one attempt, before reflect."""
     attempt_id: str

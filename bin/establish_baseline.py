@@ -38,12 +38,13 @@ from config.competitions import comp_cpu_budget_secs, comp_n_splits, competition
 from config.settings import PROMOTE_CONFIRM_SEEDS
 from cycle.materialize import materialize_best_pipeline
 from cycle.promotion import (
-    PromotionCache, confirm_and_measure, eval_semantics_fingerprint, record_confirm, train_data_fingerprint,
+    ConfirmResult, PromotionCache, confirm_and_measure, eval_semantics_fingerprint, record_confirm,
+    train_data_fingerprint,
 )
 from cycle.run import _EVAL_FP_PAUSE_PREFIX, _FP_PAUSE_PREFIX
 from evaluator.harness import split_audit_holdout
 from runtime.isolate import eval_isolated
-from store.db import competition_fingerprint, connect, insert_pipeline
+from store.db import PgConn, competition_fingerprint, connect, insert_pipeline
 from store.s3_code import download as _code_download
 from store.s3_code import strip_code_header, upload_best_pipeline
 from store.train_data import load_train
@@ -51,7 +52,7 @@ from store.train_data import load_train
 _DEFAULT_TOP_K = 5
 
 
-def competitions_without_baseline(conn) -> list[str]:
+def competitions_without_baseline(conn: PgConn) -> list[str]:
     rows = conn.execute(
         """
         SELECT c.competition_id
@@ -67,7 +68,7 @@ def competitions_without_baseline(conn) -> list[str]:
     return [r[0] for r in rows]
 
 
-def _top_k_attempts(conn, competition_id: str, top_k: int) -> list[tuple[str, float, str, list]]:
+def _top_k_attempts(conn: PgConn, competition_id: str, top_k: int) -> list[tuple[str, float, str, list]]:
     return conn.execute(
         """
         SELECT a.attempt_id, a.cv_score, a.code_path, a.fold_scores
@@ -84,7 +85,10 @@ def _top_k_attempts(conn, competition_id: str, top_k: int) -> list[tuple[str, fl
     ).fetchall()
 
 
-def _promote(conn, comp: object, attempt_id: str, cv_score: float, source: str, confirm, train90: pl.DataFrame) -> None:
+def _promote(
+    conn: PgConn, comp: object, attempt_id: str, cv_score: float, source: str, confirm: ConfirmResult,
+    train90: pl.DataFrame,
+) -> None:
     competition_id = comp.COMPETITION_ID
     record_confirm(conn, attempt_id, confirm)
     fp_dict = competition_fingerprint(conn, competition_id)
@@ -132,7 +136,7 @@ def _promote(conn, comp: object, attempt_id: str, cv_score: float, source: str, 
         upload_best_pipeline(competition_id, materialized, strict=True)
 
 
-def _valid_confirmed_pipelines(conn, competition_id: str) -> list[tuple[str, str, float]]:
+def _valid_confirmed_pipelines(conn: PgConn, competition_id: str) -> list[tuple[str, str, float]]:
     """재측정 대상 확정 pipeline 전체 (pipeline_id, materialized_code, cv_score).
 
     최고점 1건만 보면 다른 valid 행이 min으로 남아 stale baseline이 된다(#262) —
@@ -153,7 +157,7 @@ def _valid_confirmed_pipelines(conn, competition_id: str) -> list[tuple[str, str
     ).fetchall()
 
 
-def remeasure_competition(conn, comp: object, dry_run: bool) -> bool:
+def remeasure_competition(conn: PgConn, comp: object, dry_run: bool) -> bool:
     """load_train 설정(EXTRA_TRAIN_PATHS/MAX_TRAIN_ROWS/DROP_COLS)이 바뀌었을 때,
     확정 pipeline 전체의 cv_score를 새 데이터로 재측정하고 raw.competitions.
     train_fingerprint를 갱신한다(#135/#258/#262).
@@ -241,7 +245,7 @@ def remeasure_competition(conn, comp: object, dry_run: bool) -> bool:
     return True
 
 
-def establish_for_competition(conn, comp: object, top_k: int, dry_run: bool) -> str | None:
+def establish_for_competition(conn: PgConn, comp: object, top_k: int, dry_run: bool) -> str | None:
     """이 대회에 baseline 확립을 시도한다. 성공 시 승격된 attempt_id, 실패면 None."""
     candidates = _top_k_attempts(conn, comp.COMPETITION_ID, top_k)
     if not candidates:

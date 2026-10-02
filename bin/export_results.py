@@ -18,10 +18,10 @@ sys.path.insert(0, str(ROOT))
 
 import polars as pl
 
-from store.db import connect
+from store.db import PgConn, connect
 
 
-def export_score_progression(conn, competition_id: str, out_dir: Path) -> Path:
+def export_score_progression(conn: PgConn, competition_id: str, out_dir: Path) -> Path:
     rows = conn.execute(
         """
         SELECT attempt_no, stage, cv_score, best_so_far
@@ -37,7 +37,7 @@ def export_score_progression(conn, competition_id: str, out_dir: Path) -> Path:
     return path
 
 
-def export_holdout_divergence(conn, competition_id: str, out_dir: Path) -> Path | None:
+def export_holdout_divergence(conn: PgConn, competition_id: str, out_dir: Path) -> Path | None:
     rows = conn.execute(
         """
         SELECT
@@ -60,7 +60,7 @@ def export_holdout_divergence(conn, competition_id: str, out_dir: Path) -> Path 
     return path
 
 
-def export_cold_start_summary(conn, out_dir: Path) -> Path:
+def export_cold_start_summary(conn: PgConn, out_dir: Path) -> Path:
     rows = conn.execute(
         """
         SELECT

@@ -25,6 +25,10 @@ import importlib
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from store.db import PgConn
 
 ROOT = Path(__file__).parent.parent
 
@@ -135,7 +139,9 @@ def scan(competition_id: str | None, dry_run: bool) -> None:
             print(f"  uv run python -m bin.rebuild_best_pipeline --competition {cid}")
 
 
-def quarantine_twin_extra_train(conn, competition_id: str, since_dt: datetime, dry_run: bool) -> tuple[int, int]:
+def quarantine_twin_extra_train(
+    conn: PgConn, competition_id: str, since_dt: datetime, dry_run: bool
+) -> tuple[int, int]:
     """EXTRA_TRAIN_PATHS twin 중복(#228/#287) 오염 기간의 confirmed pipeline을
     격리하고 그 기간 reflection을 archive한다. 반환: (격리된 pipeline 수, archive된
     reflection 수).

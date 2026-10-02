@@ -13,11 +13,15 @@ import argparse
 import sys
 import uuid
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from store.db import PgConn
 
 ROOT = Path(__file__).parent.parent
 
 
-def _load_confirmed_pipeline_source(conn, competition_id: str) -> tuple[str, float]:
+def _load_confirmed_pipeline_source(conn: PgConn, competition_id: str) -> tuple[str, float]:
     """확정 pipeline의 materialized 소스를 반환한다 — 병합된 자체완결 `class Patch`
     (cycle/materialize.py). 단일 promotion patch(p.code)가 아니라 materialized_code를
     쓴다: p.code는 그 승격의 패치 하나뿐이라(feature_engineering 패치면 build_model이

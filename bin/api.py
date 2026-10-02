@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 import zipfile
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -80,7 +81,7 @@ class DaemonState:
     last_cycle_at: datetime | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def update(self, **kwargs) -> None:
+    def update(self, **kwargs: object) -> None:
         with self._lock:
             for k, v in kwargs.items():
                 setattr(self, k, v)
@@ -320,7 +321,7 @@ def _get_fresh_kaggle_token() -> str | None:
 
 
 @contextlib.contextmanager
-def _kaggle_home_env():
+def _kaggle_home_env() -> Iterator[dict[str, str] | None]:
     """kaggle CLI가 OAuth credentials.json 대신 access_token 파일을 쓰도록 HOME 오버라이드.
 
     kagglesdk가 credentials.json의 save()를 항상 호출 → read-only mount에서 OSError.
@@ -738,7 +739,7 @@ def _cv_lb_diverged(delta_cv: float, delta_lb: float, prev_lb: float) -> bool:
 
 
 def _detect_cv_lb_divergence(
-    conn: PgConn, competition_id: str, attempt_id: str, lb_score: float, submitted_at,
+    conn: PgConn, competition_id: str, attempt_id: str, lb_score: float, submitted_at: datetime,
 ) -> str | None:
     """최근 4회 제출(연속 delta 3개) 중 2개 이상이 cv-LB 발산이면 사유 문자열을 반환한다.
 
@@ -905,19 +906,19 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
     app = FastAPI(title="reflexion-rondo", version="v1")
 
     @app.get("/api/heartbeat")
-    def heartbeat():
+    def heartbeat() -> dict:
         snap = state.snapshot()
         return {"status": "running" if snap["current_queue_id"] else "idle", **snap}
 
     @app.get("/api/health")
-    def health():
+    def health() -> dict:
         from bin.healthcheck import run_checks
         checks = run_checks()
         overall = "ok" if all(v["status"] != "fail" for v in checks.values()) else "degraded"
         return {"overall": overall, "checks": checks}
 
     @app.get("/api/competitions")
-    def get_competitions():
+    def get_competitions() -> list[dict]:
         cached, hit = _cache.get("competitions", ttl=60)
         if hit:
             return cached
@@ -938,7 +939,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         stage: str | None = None,
         super_cycle_id: str | None = None,
         limit: int = 50,
-    ):
+    ) -> list[dict]:
         limit = min(limit, 500)
         cache_key = (
             f"attempts:{competition}:{action_type}:{label}:{has_error}:"
@@ -999,7 +1000,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return result
 
     @app.get("/api/attempts/{attempt_id}")
-    def get_attempt(attempt_id: str):
+    def get_attempt(attempt_id: str) -> dict:
         row = conn.execute(
             """
             select
@@ -1039,7 +1040,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         archived: bool | None = None,
         sort: str = "created_at",
         limit: int = 50,
-    ):
+    ) -> list[dict]:
         limit = min(limit, 500)
         cache_key = (
             f"lessons:{competition}:{generality}:{lesson_type}:{archived}:{sort}:{limit}"
@@ -1093,7 +1094,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return result
 
     @app.get("/api/cold-start")
-    def get_cold_start(competition: str | None = None, limit: int = 200):
+    def get_cold_start(competition: str | None = None, limit: int = 200) -> list[dict]:
         limit = min(limit, 1000)
         cache_key = f"cold_start:{competition}:{limit}"
         cached, hit = _cache.get(cache_key, ttl=30)
@@ -1117,7 +1118,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return result
 
     @app.get("/api/reflexion-health")
-    def get_reflexion_health(competition: str):
+    def get_reflexion_health(competition: str) -> dict:
         """#11 §6 건강 신호등 4칸(T5). /api/health(의존성 헬스체크)와 경로 충돌 피하려 개명."""
         cache_key = f"reflexion_health:{competition}"
         cached, hit = _cache.get(cache_key, ttl=60)
@@ -1225,7 +1226,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return result
 
     @app.get("/api/queue")
-    def get_queue(status: str | None = None, limit: int = 100):
+    def get_queue(status: str | None = None, limit: int = 100) -> list[dict]:
         limit = min(limit, 500)
         where = "where status = %s" if status else ""
         params = [status] if status else []
@@ -1249,7 +1250,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return [dict(zip(cols, r)) for r in rows]
 
     @app.post("/api/queue", status_code=201)
-    def enqueue(body: EnqueueRequest):
+    def enqueue(body: EnqueueRequest) -> dict:
         try:
             importlib.import_module(f"config.competitions.{body.competition}")
         except ModuleNotFoundError:
@@ -1267,7 +1268,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return {"queue_id": qid}
 
     @app.patch("/api/queue/{queue_id}")
-    def patch_queue(queue_id: str, body: QueuePatchRequest):
+    def patch_queue(queue_id: str, body: QueuePatchRequest) -> dict:
         row = conn.execute(
             "select status from raw.cycle_queue where queue_id = %s",
             [queue_id],
@@ -1300,7 +1301,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return {"queue_id": queue_id, "updated": True}
 
     @app.post("/api/submissions", status_code=201)
-    def submit(body: SubmitRequest):
+    def submit(body: SubmitRequest) -> dict:
         try:
             comp = importlib.import_module(f"config.competitions.{body.competition}")
         except ModuleNotFoundError:
@@ -1311,7 +1312,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return {"submission_id": sid, "status": "queued"}
 
     @app.post("/api/submissions/auto", status_code=200)
-    def auto_submit():
+    def auto_submit() -> dict:
         """ACTIVE 대회별로 일일 제출 예산 안에서 미제출 confirmed pipeline을 내보낸다.
 
         예전 로직은 "대회 전역 best가 바뀌었나"만 봐서 deep tier가 하루 0~1건에 머물렀고
@@ -1383,7 +1384,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return {"submitted": submitted, "skipped": skipped}
 
     @app.post("/api/leaderboard/refresh", status_code=200)
-    def refresh_leaderboards(body: LeaderboardRefreshRequest):
+    def refresh_leaderboards(body: LeaderboardRefreshRequest) -> dict:
         """대회별 public leaderboard 점수 분포를 다시 받아 스냅샷을 갱신한다.
 
         종료된 대회는 최종 LB가 고정이라 한 번이면 충분하다 — `max_age_hours`보다
@@ -1415,7 +1416,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return {"refreshed": refreshed, "skipped": skipped}
 
     @app.get("/api/submissions")
-    def get_submissions(competition: str | None = None, limit: int = 50):
+    def get_submissions(competition: str | None = None, limit: int = 50) -> list[dict]:
         limit = min(limit, 200)
         where = "where competition_id = %s" if competition else ""
         params = [competition] if competition else []
@@ -1437,7 +1438,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return [dict(zip(cols, r)) for r in rows]
 
     @app.get("/api/cv-lb-calibration")
-    def get_cv_lb_calibration(competition: str | None = None, limit: int = 50):
+    def get_cv_lb_calibration(competition: str | None = None, limit: int = 50) -> list[dict]:
         """cv_lb_calibration 뷰 — cv↔LB 부호 일치 관측. 실시간 차단은 이
         엔드포인트가 아니라 refresh_submission_row의 트립와이어가 담당하고,
         여기는 그 판정의 사후 관측·검증용."""
@@ -1462,7 +1463,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return [dict(zip(cols, r)) for r in rows]
 
     @app.get("/api/submissions/{submission_id}")
-    def get_submission(submission_id: str):
+    def get_submission(submission_id: str) -> dict:
         row = conn.execute(
             """
             select submission_id, competition_id, attempt_id, submitted_at,
@@ -1481,7 +1482,7 @@ def create_app(conn: PgConn, state: DaemonState) -> FastAPI:
         return dict(zip(cols, row))
 
     @app.post("/api/submissions/{submission_id}/refresh")
-    def refresh_submission(submission_id: str):
+    def refresh_submission(submission_id: str) -> dict:
         rec = refresh_submission_row(conn, submission_id)
         if rec is None:
             raise HTTPException(status_code=404, detail="submission not found")

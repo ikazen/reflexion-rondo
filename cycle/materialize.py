@@ -19,6 +19,8 @@ from evaluator.contract import find_patch_class, undefined_names_in_patch
 from evaluator.harness import _HOOK_SUPPRESSORS
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from store.db import PgConn
 
 logger = logging.getLogger(__name__)
@@ -364,7 +366,7 @@ def materialize_best_pipeline(base_source: str | None, patch_source: str) -> str
 
 
 def load_base_snapshot(
-    conn: "PgConn", competition_id: str, before_run_ts=None
+    conn: "PgConn", competition_id: str, before_run_ts: datetime | None = None
 ) -> tuple[str | None, str]:
     """attempt 평가 시점의 base pipeline 소스를 Postgres 신뢰 사본에서 가져온다.
 
@@ -434,7 +436,7 @@ def promotion_chain(conn: "PgConn", competition_id: str) -> list[tuple]:
 
 
 def replay_best_pipeline(
-    conn: "PgConn", competition_id: str, before_run_ts=None, strict_sha: bool = False,
+    conn: "PgConn", competition_id: str, before_run_ts: datetime | None = None, strict_sha: bool = False,
     stop_at_pipeline_id: str | None = None,
 ) -> tuple[str | None, str | None, int]:
     """raw.pipelines 히스토리를 시간순 재생해 materialized base pipeline을 재구성한다.

@@ -7,7 +7,7 @@ from __future__ import annotations
 import inspect
 import os
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -150,7 +150,7 @@ def _check_preprocess_target_leak(
     return tr_real, va_real
 
 
-def dummy_target_value(train: pl.DataFrame, target_col: str):
+def dummy_target_value(train: pl.DataFrame, target_col: str) -> object:
     """실제 추론(test) 시점과 동일하게 쓸 더미 타깃 값 — train 실재값이어야 한다.
 
     synthetic placeholder(0, NaN 등)는 Patch의 exhaustive target 인코딩에서
@@ -207,7 +207,7 @@ def _build_model_safe(pipeline: object, params: dict, ctx: object) -> object:
     return construct_with_kwarg_retry(lambda p: pipeline.build_model(p, ctx), params)
 
 
-def _fit_with_early_stopping(model: object, Xtr, ytr, Xva, yva) -> None:
+def _fit_with_early_stopping(model: object, Xtr: np.ndarray, ytr: np.ndarray, Xva: np.ndarray, yva: np.ndarray) -> None:
     """fold valid를 early stopping에 쓸 수 있는 estimator면 opt-in으로 활용한다.
 
     fit() 시그니처를 검사해 eval_set/X_val 지원 여부를 감지하고, 실패하면 조용히
@@ -235,7 +235,7 @@ def _fit_with_early_stopping(model: object, Xtr, ytr, Xva, yva) -> None:
     model.fit(Xtr, ytr)
 
 
-def _fit_with_retry(build_fn, params: dict, Xtr, ytr) -> object:
+def _fit_with_retry(build_fn: Callable[[dict], object], params: dict, Xtr: np.ndarray, ytr: np.ndarray) -> object:
     """build_fn(params)로 모델을 만들어 Xtr/ytr 전체로 fit한다. CV fold fit이 채점
     대상 fold를 early stopping eval_set으로 재사용해 낙관 편향을 만들던 경로를
     제거했다(#305) — CV/holdout/제출 세 경로와 단일모델/ensemble 멤버 양쪽이
@@ -316,7 +316,7 @@ def _base_member(pipeline: object, ctx: "PipelineContext") -> tuple | None:
     return (lambda p: _build_model_safe(pipeline, p, ctx)), (dict(candidates[0]) if candidates else {})
 
 
-def _member_build_fn(model_name: str, ctx: "PipelineContext", base: tuple | None):
+def _member_build_fn(model_name: str, ctx: "PipelineContext", base: tuple | None) -> Callable[[dict], object]:
     if model_name != _BASE_MEMBER:
         return lambda p, _name=model_name: build_registry_model(_name, p, ctx)
     if base is None:
@@ -513,7 +513,7 @@ def fit_predict(
     return raw_preds, model
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class EvalResult:
     cv_score: float
     # noop_early_exit(#339)일 때만 None — 1-fold만 계산했으므로 5-fold 분산/전체
@@ -687,7 +687,9 @@ class PatchedPipeline:
             return False
         return isinstance(self.base, PatchedPipeline) and self.base._chain_defines(hook_name)
 
-    def preprocess(self, train, valid, target, ctx):
+    def preprocess(
+        self, train: pl.DataFrame, valid: pl.DataFrame, target: str, ctx: PipelineContext
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
         fn = getattr(self.patch, "preprocess", None)
         if fn is None:
             return self.base.preprocess(train, valid, target, ctx)
@@ -696,7 +698,9 @@ class PatchedPipeline:
         train, valid = self.base.preprocess(train, valid, target, ctx)
         return fn(train, valid, target, ctx)
 
-    def feature_transform(self, train, valid, target, ctx):
+    def feature_transform(
+        self, train: pl.DataFrame, valid: pl.DataFrame, target: str, ctx: PipelineContext
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
         fn = getattr(self.patch, "feature_transform", None)
         if fn is None:
             return self.base.feature_transform(train, valid, target, ctx)
@@ -709,7 +713,7 @@ class PatchedPipeline:
         Xtr_patch, Xva_patch = fn(train, valid, target, ctx)
         return _union_feature_columns(Xtr_base, Xtr_patch), _union_feature_columns(Xva_base, Xva_patch)
 
-    def param_candidates(self, ctx):
+    def param_candidates(self, ctx: PipelineContext) -> list[dict]:
         fn = getattr(self.patch, "param_candidates", None)
         if fn is None:
             return self.base.param_candidates(ctx)
@@ -717,13 +721,13 @@ class PatchedPipeline:
             return fn(ctx)
         return _union_param_candidates(self.base.param_candidates(ctx), fn(ctx))
 
-    def build_model(self, params, ctx):
+    def build_model(self, params: dict, ctx: PipelineContext) -> object:
         # build_model은 합성 대상이 아니다 — "이 모델을 어떻게 만들지"는 단일 값이라
         # 두 구현을 조합할 방법이 없다(ensemble_spec/model_spec처럼 항상 완전 교체).
         fn = getattr(self.patch, "build_model", None)
         return fn(params, ctx) if fn else self.base.build_model(params, ctx)
 
-    def postprocess_predictions(self, preds, ctx):
+    def postprocess_predictions(self, preds: np.ndarray, ctx: PipelineContext) -> np.ndarray:
         fn = getattr(self.patch, "postprocess_predictions", None)
         if fn is None:
             return self.base.postprocess_predictions(preds, ctx)
@@ -732,7 +736,7 @@ class PatchedPipeline:
         preds = self.base.postprocess_predictions(preds, ctx)
         return fn(preds, ctx)
 
-    def ensemble_spec(self, ctx):
+    def ensemble_spec(self, ctx: PipelineContext) -> dict | None:
         fn = getattr(self.patch, "ensemble_spec", None)
         if fn:
             return fn(ctx)
@@ -740,7 +744,7 @@ class PatchedPipeline:
             return None
         return self.base.ensemble_spec(ctx)
 
-    def model_spec(self, ctx):
+    def model_spec(self, ctx: PipelineContext) -> dict | None:
         fn = getattr(self.patch, "model_spec", None)
         if fn:
             return fn(ctx)
@@ -772,7 +776,9 @@ def _synthetic_indices(is_original: np.ndarray | None, n: int) -> tuple[np.ndarr
     return idx[~is_original], idx[is_original]
 
 
-def _synthetic_only_splits(splits_on_synth, synth_idx: np.ndarray, orig_idx: np.ndarray) -> list:
+def _synthetic_only_splits(
+    splits_on_synth: Iterable[tuple[np.ndarray, np.ndarray]], synth_idx: np.ndarray, orig_idx: np.ndarray
+) -> list:
     """synth_idx 부분집합 기준으로 계산된 (tr_local, va_local) 인덱스를 전체 배열
     인덱스로 되돌리고, orig_idx(원본 데이터 행)를 모든 분할의 train 쪽에 무조건
     합친다 — validation/holdout 쪽에는 절대 안 들어간다."""

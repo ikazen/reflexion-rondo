@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import argparse
 
-from store.db import connect
+from store.db import PgConn, connect
 
 DEFAULT_MIN_APPLIED = 3
 DEFAULT_MAX_GAIN = 0.0
 
 
 def find_archive_candidates(
-    conn, min_applied: int = DEFAULT_MIN_APPLIED, max_gain: float = DEFAULT_MAX_GAIN,
+    conn: PgConn, min_applied: int = DEFAULT_MIN_APPLIED, max_gain: float = DEFAULT_MAX_GAIN,
 ) -> list[tuple]:
     """(reflection_id, times_applied, avg_gain, generality, competition_id) 목록.
 
@@ -42,7 +42,7 @@ def find_archive_candidates(
 
 
 def archive_low_gain_lessons(
-    conn, min_applied: int = DEFAULT_MIN_APPLIED, max_gain: float = DEFAULT_MAX_GAIN,
+    conn: PgConn, min_applied: int = DEFAULT_MIN_APPLIED, max_gain: float = DEFAULT_MAX_GAIN,
 ) -> list[str]:
     """저효율 교훈을 archived=true로 표기하고 archive된 reflection_id 목록을 반환한다.
 

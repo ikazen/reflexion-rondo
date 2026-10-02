@@ -42,7 +42,7 @@ LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
 LLM_SEED: int | None = int(os.getenv("LLM_SEED")) if os.getenv("LLM_SEED") else None
 
 
-def llm_options(**extra) -> dict:
+def llm_options(**extra: object) -> dict:
     """Strategist/Coder/Reflector 공용 .chat() options. temperature/seed를 단일 소스로 유지."""
     opts: dict = {"temperature": LLM_TEMPERATURE}
     if LLM_SEED is not None:
