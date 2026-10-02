@@ -149,7 +149,7 @@ def _fold_standard_error(fold_scores: list[float] | None) -> float:
 
 
 def leaderboard_ceiling_violation(
-    conn, competition_id: str, cv_score: float, fold_scores: list[float] | None = None,
+    conn: PgConn, competition_id: str, cv_score: float, fold_scores: list[float] | None = None,
 ) -> str | None:
     """cv_score가 이 대회 리더보드 스냅샷(raw.leaderboard_snapshot)의 세계 1위 점수를 metric_sign 방향으로
     fold 표준오차의 _CEILING_SE_MULTIPLE배보다 크게 넘으면 사유 문자열, 아니면 None(스냅샷 없음 포함 — 판정
@@ -200,7 +200,7 @@ class PromotionCache:
 
     __slots__ = ("conn",)
 
-    def __init__(self, conn) -> None:
+    def __init__(self, conn: PgConn) -> None:
         self.conn = conn
 
     def get_baseline(self, key: tuple, mode: str, seed: int) -> float | None:
@@ -324,7 +324,7 @@ def confirm_and_measure(
     candidate_cv: float | None = None,
     candidate_fold_scores: list[float] | None = None,
     cpu_budget_sec: float | None = None,
-    conn=None,
+    conn: PgConn | None = None,
     best_params: dict | None = None,
     tuned_params: dict | None = None,
 ) -> ConfirmResult:

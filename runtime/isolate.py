@@ -19,6 +19,7 @@ import sys
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -71,7 +72,7 @@ def _set_resource_limits(cpu_budget: float) -> None:
     _resource.setrlimit(_resource.RLIMIT_CPU, (soft, hard))
 
 
-def _make_preexec(cpu_budget: float):
+def _make_preexec(cpu_budget: float) -> Callable[[], None]:
     def _preexec_fn() -> None:
         if _HAVE_NEWNET and os.environ.get("EVAL_SANDBOX") != "none":
             try:

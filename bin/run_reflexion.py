@@ -15,14 +15,14 @@ from config.competitions import comp_cpu_budget_secs, comp_n_splits
 from cycle.run import CycleConfig, run_cycle
 from evaluator.harness import split_audit_holdout
 from memory.transfer import cold_start_lessons
-from store.db import connect, ensure_competition
+from store.db import PgConn, connect, ensure_competition
 from store.train_data import load_train
 
 ROOT = Path(__file__).parent.parent
 COLD_START_DIR = ROOT / "runs" / "cold_start"
 
 
-def _load_cold_start(competition_id: str, conn) -> tuple[list[dict], str | None]:
+def _load_cold_start(competition_id: str, conn: PgConn) -> tuple[list[dict], str | None]:
     """cold-start JSON에서 교훈 목록과 첫 시드 코드를 로드."""
     path = COLD_START_DIR / f"{competition_id}.json"
     if not path.exists():

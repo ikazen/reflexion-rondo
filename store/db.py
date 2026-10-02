@@ -5,6 +5,7 @@ apply_schema=False로 스키마 재적용 경합을 피한다.
 """
 import os
 import threading
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -57,7 +58,9 @@ class PgConn:
         self._conn = raw
         self._lock = threading.RLock()
 
-    def execute(self, query: str | pgsql.Composable, params=None) -> _Result:
+    def execute(
+        self, query: str | pgsql.Composable, params: Sequence[object] | Mapping[str, object] | None = None
+    ) -> _Result:
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(query, params)
@@ -72,7 +75,7 @@ class PgConn:
         self.close()
 
     @contextmanager
-    def transaction(self):
+    def transaction(self) -> Iterator["PgConn"]:
         """Atomic block: disables autocommit, commits on success, rolls back on error."""
         self._conn.autocommit = False
         try:

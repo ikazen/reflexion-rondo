@@ -10,6 +10,8 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from evaluator.harness import PipelineContext
 
 _MAX_BUILD_MODEL_RETRIES = 3
@@ -31,7 +33,7 @@ MODEL_REGISTRY: dict[str, dict[str, str]] = {
 }
 
 
-def construct_with_kwarg_retry(build_fn, params: dict):
+def construct_with_kwarg_retry(build_fn: Callable[[dict], object], params: dict) -> object:
     """params로 build_fn(params)를 호출하되, 제거된/불명 kwarg로 인한 TypeError면
     그 키 하나만 벗기고 재시도한다.
 

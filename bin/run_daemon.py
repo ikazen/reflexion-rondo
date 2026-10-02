@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import ModuleType
+from types import FrameType, ModuleType
 
 import polars as pl
 
@@ -85,7 +85,7 @@ class OllamaPacer:
             weekly_cycles=int(os.getenv("OLLAMA_CLOUD_WEEKLY_CYCLES", "0")),
         )
 
-    def restore_from_db(self, conn) -> None:
+    def restore_from_db(self, conn: PgConn) -> None:
         """재시작 후 DB의 실제 attempt 수로 카운터를 복원한다."""
         if not self.enabled:
             return
@@ -154,13 +154,13 @@ class OllamaPacer:
         self._week_count += 1
 
 
-def _handle_signal(sig, frame) -> None:
+def _handle_signal(sig: int, frame: FrameType | None) -> None:
     global _running
     _running = False
     print(f"[daemon] signal {sig} received — will stop after current cycle")
 
 
-def _pop_pending(conn) -> dict | None:
+def _pop_pending(conn: PgConn) -> dict | None:
     # last_leased_at 기준 오름차순 — 리스를 방금 마친 항목은 last_leased_at이 now()로
     # 갱신돼 뒤로 밀리고, 한 번도 리스된 적 없는 항목은 NULL이라 created_at으로 폴백해
     # 기존 "가장 오래 기다린 것부터" 순서를 유지한다.
@@ -180,7 +180,7 @@ def _pop_pending(conn) -> dict | None:
             "latest_score": row[6]}
 
 
-def _set_status(conn, queue_id: str, status: str, **extra) -> None:
+def _set_status(conn: PgConn, queue_id: str, status: str, **extra: object) -> None:
     sets = ["status = %s"]
     vals: list = [status]
     for k, v in extra.items():
@@ -193,7 +193,7 @@ def _set_status(conn, queue_id: str, status: str, **extra) -> None:
     )
 
 
-def _is_cancelled(conn, queue_id: str) -> bool:
+def _is_cancelled(conn: PgConn, queue_id: str) -> bool:
     row = conn.execute(
         "select status from raw.cycle_queue where queue_id = %s",
         [queue_id],
@@ -247,7 +247,7 @@ def _submission_refresh_due(submitted_at: datetime, checked_at: datetime | None,
     return (now - checked_at).total_seconds() >= interval
 
 
-def _sweep_stale_submissions(conn) -> None:
+def _sweep_stale_submissions(conn: PgConn) -> None:
     global _last_submission_sweep
     now_mono = time.monotonic()
     if now_mono - _last_submission_sweep < _SUBMISSION_SWEEP_INTERVAL_SEC:
@@ -295,7 +295,7 @@ _LESSON_ARCHIVE_SWEEP_INTERVAL_SEC = 24 * 3600
 _last_lesson_archive_sweep: float = 0.0
 
 
-def _sweep_low_gain_lessons(conn) -> None:
+def _sweep_low_gain_lessons(conn: PgConn) -> None:
     global _last_lesson_archive_sweep
     now_mono = time.monotonic()
     if now_mono - _last_lesson_archive_sweep < _LESSON_ARCHIVE_SWEEP_INTERVAL_SEC:
@@ -324,7 +324,7 @@ _QUEUE_REFILL_N_CYCLES = 20
 _last_queue_refill_sweep: float = 0.0
 
 
-def _sweep_queue_refill(conn) -> None:
+def _sweep_queue_refill(conn: PgConn) -> None:
     global _last_queue_refill_sweep
     now_mono = time.monotonic()
     if now_mono - _last_queue_refill_sweep < _QUEUE_REFILL_SWEEP_INTERVAL_SEC:
@@ -388,7 +388,7 @@ def _sweep_queue_refill(conn) -> None:
     print(f"[daemon] queue refill — {len(idle_slugs)} idle competition(s) re-enqueued: {idle_slugs}")
 
 
-def _maybe_trigger_tune(conn, competition_slug: str, attempt_id: str) -> None:
+def _maybe_trigger_tune(conn: PgConn, competition_slug: str, attempt_id: str) -> None:
     """#318 주 트리거 — 이번 사이클 attempt가 실제로 확정 pipeline이 됐으면(merge-verify
     까지 통과, raw.pipelines에 유효 행 존재) Optuna 튜닝 레인(별도 DAG, 900s attempt
     예산 밖)에 태운다. `was_promoted`만으로는 확정 여부를 못 가린다 — run_promote_task.py가
@@ -420,7 +420,7 @@ _TUNE_IDLE_HOURS = 48
 _last_tune_sweep: float = 0.0
 
 
-def _sweep_idle_tuning(conn) -> None:
+def _sweep_idle_tuning(conn: PgConn) -> None:
     """#318 보조 트리거 — 승격 트리거(주 트리거, 위 _maybe_trigger_tune)만으로는 승격이
     드문 대회(낮은 SNR 등)가 튜닝 레인의 혜택을 영영 못 받을 수 있다. 마지막 튜닝 실행이
     _TUNE_IDLE_HOURS 넘은 ACTIVE 대회는 승격 여부와 무관하게 현재 확정 pipeline을

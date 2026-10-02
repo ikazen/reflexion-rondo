@@ -10,7 +10,7 @@ import polars as pl
 
 from config.settings import ACTION_TYPES
 from config.competitions import active_competition_ids
-from cycle.stagnation import detect_stagnation
+from cycle.stagnation import StagnationSignal, detect_stagnation
 from store.db import PgConn, connect
 
 
@@ -44,7 +44,7 @@ def _query_df(_conn: PgConn, query: str, columns: list[str], params: list | None
 
 
 @st.cache_data(ttl=60)
-def _fetch_stagnation(_conn: PgConn, competition_id: str):
+def _fetch_stagnation(_conn: PgConn, competition_id: str) -> StagnationSignal:
     return detect_stagnation(_conn, competition_id)
 
 

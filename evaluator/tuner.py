@@ -12,9 +12,12 @@ import ast
 import copy
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
+import numpy as np
 import optuna
+import polars as pl
 
 from evaluator.contract import find_patch_class
 from evaluator.harness import _BASE_MEMBER, PipelineContext, evaluate_pipeline
@@ -50,19 +53,23 @@ class _SingleModelTrialPipeline:
         self._model_name = model_name
         self._params = params
 
-    def preprocess(self, train, valid, target, ctx):
+    def preprocess(
+        self, train: pl.DataFrame, valid: pl.DataFrame, target: str, ctx: PipelineContext
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
         return self._base.preprocess(train, valid, target, ctx)
 
-    def feature_transform(self, train, valid, target, ctx):
+    def feature_transform(
+        self, train: pl.DataFrame, valid: pl.DataFrame, target: str, ctx: PipelineContext
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
         return self._base.feature_transform(train, valid, target, ctx)
 
-    def postprocess_predictions(self, preds, ctx):
+    def postprocess_predictions(self, preds: np.ndarray, ctx: PipelineContext) -> np.ndarray:
         return self._base.postprocess_predictions(preds, ctx)
 
-    def ensemble_spec(self, ctx):
+    def ensemble_spec(self, ctx: PipelineContext) -> None:
         return None
 
-    def model_spec(self, ctx):
+    def model_spec(self, ctx: PipelineContext) -> dict:
         return {"model": self._model_name, "params": self._params}
 
 
@@ -76,31 +83,35 @@ class _EnsembleMemberTrialPipeline:
         self._member_index = member_index
         self._params = params
 
-    def preprocess(self, train, valid, target, ctx):
+    def preprocess(
+        self, train: pl.DataFrame, valid: pl.DataFrame, target: str, ctx: PipelineContext
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
         return self._base.preprocess(train, valid, target, ctx)
 
-    def feature_transform(self, train, valid, target, ctx):
+    def feature_transform(
+        self, train: pl.DataFrame, valid: pl.DataFrame, target: str, ctx: PipelineContext
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
         return self._base.feature_transform(train, valid, target, ctx)
 
-    def postprocess_predictions(self, preds, ctx):
+    def postprocess_predictions(self, preds: np.ndarray, ctx: PipelineContext) -> np.ndarray:
         return self._base.postprocess_predictions(preds, ctx)
 
-    def ensemble_spec(self, ctx):
+    def ensemble_spec(self, ctx: PipelineContext) -> dict:
         spec = copy.deepcopy(self._base_spec)
         spec["members"][self._member_index]["params"] = self._params
         return spec
 
-    def model_spec(self, ctx):
+    def model_spec(self, ctx: PipelineContext) -> None:
         return None
 
     # 예약어 멤버 "base"(#362)가 트라이얼에서도 confirmed pipeline과 같은 모델로 풀리도록 위임한다.
-    def build_model(self, params, ctx):
+    def build_model(self, params: dict, ctx: PipelineContext) -> object:
         return self._base.build_model(params, ctx)
 
-    def param_candidates(self, ctx):
+    def param_candidates(self, ctx: PipelineContext) -> list[dict]:
         return self._base.param_candidates(ctx)
 
-    def _chain_defines(self, hook_name):
+    def _chain_defines(self, hook_name: str) -> bool:
         return self._base._chain_defines(hook_name)
 
 
@@ -112,7 +123,7 @@ def _remaining_budget(timeout_sec: float | None, started_at: float) -> float | N
 
 
 def _optimize(
-    objective,
+    objective: Callable[[optuna.Trial], float],
     n_trials: int,
     timeout_sec: float | None,
     direction: str,
