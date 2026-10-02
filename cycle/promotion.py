@@ -417,12 +417,9 @@ def confirm_and_measure(
 
     holdout_score: float | None = None
     holdout_regressed = False
-    # holdout10이 주어졌다는 건 이 게이트에서 holdout이 필수라는 뜻이다 — 평가 자체가
-    # 실패(candidate/baseline 어느 쪽이든)하면 "정보 없음"이지 "악화 아님"이 아니다.
-    # _rejected_by_error와 같은 원칙: 일시적 실패를 확정 거부로 memo에 굳히지 않는다(#389).
     holdout_measurement_failed = False
     if holdout10 is not None and not cross_seed_errored:
-        holdout_score, holdout_errored = _measure_holdout(
+        holdout_score, holdout_regressed, holdout_measurement_failed = _holdout_gate(
             source=source,
             best_source=best_source,
             train90=train90,
@@ -436,41 +433,10 @@ def confirm_and_measure(
             cpu_budget_sec=cpu_budget_sec,
             best_params=best_params,
             tuned_params=tuned_params,
+            cache=cache,
+            ctx_key=ctx_key,
+            competition_id=competition_id,
         )
-        if holdout_errored:
-            holdout_measurement_failed = True
-        else:
-            baseline_holdout_score = cache.get_baseline(ctx_key, "holdout", seed) if ctx_key is not None else None
-            if baseline_holdout_score is None:
-                baseline_holdout_score, baseline_errored = _measure_holdout(
-                    source=best_source if best_source else _NOOP_PATCH,
-                    best_source=None,
-                    train90=train90,
-                    holdout10=holdout10,
-                    target_col=target_col,
-                    metric=metric,
-                    n_splits=n_splits,
-                    seed=seed,
-                    is_classification=is_classification,
-                    action_type=action_type,
-                    cpu_budget_sec=cpu_budget_sec,
-                    best_params=best_params,
-                    tuned_params=tuned_params,
-                )
-                if baseline_errored:
-                    holdout_measurement_failed = True
-                elif baseline_holdout_score is not None and ctx_key is not None:
-                    cache.put_baseline(ctx_key, "holdout", seed, competition_id, baseline_holdout_score)
-            if not holdout_measurement_failed and baseline_holdout_score is not None:
-                _, metric_sign, _ = get_metric(metric)
-                holdout_regressed = (
-                    metric_sign * holdout_score < metric_sign * baseline_holdout_score
-                )
-                if holdout_regressed:
-                    _LOG.warning(
-                        "holdout 악화로 승격 거부: candidate=%.6f baseline=%.6f",
-                        holdout_score, baseline_holdout_score,
-                    )
 
     result = ConfirmResult(
         confirmed=confirmed and not holdout_regressed and not holdout_measurement_failed,
@@ -682,3 +648,67 @@ def _measure_holdout(
             bool(result.error_trace), bool(result.holdout_error),
         )
     return result.holdout_score, errored
+
+
+def _holdout_gate(
+    *,
+    source: str,
+    best_source: str | None,
+    train90: pl.DataFrame,
+    holdout10: pl.DataFrame,
+    target_col: str,
+    metric: str,
+    n_splits: int,
+    seed: int,
+    is_classification: bool,
+    action_type: str,
+    cpu_budget_sec: float | None,
+    best_params: dict | None,
+    tuned_params: dict | None,
+    cache: PromotionCache | None,
+    ctx_key: tuple | None,
+    competition_id: str | None,
+) -> tuple[float | None, bool, bool]:
+    """(holdout_score, 악화 여부, 측정 실패 여부). 후보와 현재 best(없으면 BasePipeline)를 같은 holdout으로 측정해 비교한다.
+
+    holdout10이 주어졌다는 건 이 게이트에서 holdout이 필수라는 뜻이다 — 평가 자체가
+    실패(candidate/baseline 어느 쪽이든)하면 "정보 없음"이지 "악화 아님"이 아니다.
+    _rejected_by_error와 같은 원칙: 일시적 실패를 확정 거부로 memo에 굳히지 않는다(#389).
+    """
+    common = dict(
+        train90=train90,
+        holdout10=holdout10,
+        target_col=target_col,
+        metric=metric,
+        n_splits=n_splits,
+        seed=seed,
+        is_classification=is_classification,
+        action_type=action_type,
+        cpu_budget_sec=cpu_budget_sec,
+        best_params=best_params,
+        tuned_params=tuned_params,
+    )
+    holdout_score, holdout_errored = _measure_holdout(source=source, best_source=best_source, **common)
+    if holdout_errored:
+        return holdout_score, False, True
+
+    baseline_holdout_score = cache.get_baseline(ctx_key, "holdout", seed) if ctx_key is not None else None
+    if baseline_holdout_score is None:
+        baseline_holdout_score, baseline_errored = _measure_holdout(
+            source=best_source if best_source else _NOOP_PATCH, best_source=None, **common,
+        )
+        if baseline_errored:
+            return holdout_score, False, True
+        if baseline_holdout_score is not None and ctx_key is not None:
+            cache.put_baseline(ctx_key, "holdout", seed, competition_id, baseline_holdout_score)
+    if baseline_holdout_score is None:
+        return holdout_score, False, False
+
+    _, metric_sign, _ = get_metric(metric)
+    regressed = metric_sign * holdout_score < metric_sign * baseline_holdout_score
+    if regressed:
+        _LOG.warning(
+            "holdout 악화로 승격 거부: candidate=%.6f baseline=%.6f",
+            holdout_score, baseline_holdout_score,
+        )
+    return holdout_score, regressed, False

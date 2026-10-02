@@ -194,6 +194,130 @@ def _projected_cpu(ws: Path, n_splits: int, cpu_now: float) -> tuple[float, int]
     return last + (n_splits - finished) * per_fold, finished + 1
 
 
+_EVAL_ENV_ALLOWLIST = frozenset({
+    "PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE",
+    "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+})
+
+
+def _write_workspace(
+    ws: Path, source: str, train: pl.DataFrame, payload: dict, best_source: str | None, holdout_data: pl.DataFrame | None,
+) -> None:
+    (ws / "source.py").write_text(source)
+    train.write_parquet(ws / "train.parquet")
+    (ws / "input.json").write_text(json.dumps(payload))
+    if best_source:
+        (ws / "best_pipeline.py").write_text(best_source)
+    if holdout_data is not None:
+        holdout_data.write_parquet(ws / "holdout.parquet")
+
+
+def _kill(proc: subprocess.Popen) -> None:
+    proc.kill()
+    proc.wait()
+
+
+def _watch(
+    proc: subprocess.Popen, ws: Path, n_splits: int, cpu_budget: float, wall_timeout: float, rss_limit: int,
+    projection_limit: float | None,
+) -> tuple[str | None, int, float]:
+    """자식이 끝나거나 한도를 넘어 kill될 때까지 폴링한다. (kill 사유 또는 None, peak RSS bytes, peak CPU sec)를 돌려준다."""
+    peak_rss = 0
+    peak_cpu = 0.0
+    start = time.monotonic()
+    while True:
+        rss = _read_rss_bytes(proc.pid)
+        if rss is not None:
+            peak_rss = max(peak_rss, rss)
+            if rss > rss_limit:
+                reason = _with_last_progress(
+                    f"memory watchdog: peak RSS {rss // (1024 ** 2)}MB "
+                    f"> limit {rss_limit // (1024 ** 2)}MB",
+                    ws,
+                )
+                _kill(proc)
+                return reason, peak_rss, peak_cpu
+        cpu = _read_cpu_seconds(proc.pid)
+        if cpu is not None:
+            peak_cpu = max(peak_cpu, cpu)
+            if cpu > cpu_budget:
+                reason = _with_last_progress(
+                    f"cpu budget exceeded: {cpu:.0f}s CPU used (limit {cpu_budget:.0f}s)", ws,
+                )
+                _kill(proc)
+                return reason, peak_rss, peak_cpu
+            projection = _projected_cpu(ws, n_splits, cpu) if projection_limit else None
+            if projection is not None and projection[0] > projection_limit:
+                projected, fold_no = projection
+                reason = _with_last_progress(
+                    f"cpu budget exceeded: projected {projected:.0f}s CPU during fold {fold_no} (limit {cpu_budget:.0f}s)", ws,
+                )
+                _kill(proc)
+                return reason, peak_rss, peak_cpu
+        remaining = wall_timeout - (time.monotonic() - start)
+        if remaining <= 0:
+            _kill(proc)
+            return _with_last_progress(f"timeout after {wall_timeout:.0f}s", ws), peak_rss, peak_cpu
+        try:
+            proc.wait(timeout=min(_RSS_POLL_INTERVAL_SEC, remaining))
+            return None, peak_rss, peak_cpu  # 자식이 스스로 종료
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _read_result(
+    ws: Path, returncode: int | None, killed_reason: str | None, peak_rss: int, peak_cpu: float,
+) -> IsolatedResult:
+    peak_rss_bytes = peak_rss or None
+    peak_cpu_sec = peak_cpu or None
+
+    if killed_reason:
+        return _err(killed_reason, peak_rss_bytes=peak_rss_bytes, peak_cpu_sec=peak_cpu_sec)
+
+    out_path = ws / "output.json"
+    if not out_path.exists():
+        stderr = (ws / "_stderr.log").read_text(errors="replace")[:2000]
+        return _err(
+            f"runner exited without output.json (rc={returncode})\n{stderr}",
+            peak_rss_bytes=peak_rss_bytes,
+            peak_cpu_sec=peak_cpu_sec,
+        )
+
+    try:
+        out: dict = json.loads(out_path.read_text())
+    except Exception as exc:
+        return _err(
+            f"failed to parse output.json: {exc}",
+            peak_rss_bytes=peak_rss_bytes, peak_cpu_sec=peak_cpu_sec,
+        )
+
+    if out.get("error_trace"):
+        return _err(
+            out["error_trace"],
+            peak_rss_bytes=peak_rss_bytes, peak_cpu_sec=peak_cpu_sec,
+        )
+
+    return IsolatedResult(
+        cv_score=out.get("cv_score"),
+        cv_fold_var=out.get("cv_fold_var"),
+        fold_scores=out.get("fold_scores"),
+        label=out.get("label"),
+        gain_vs_best=out.get("gain_vs_best"),
+        error_trace=None,
+        feature_importance=out.get("feature_importance"),
+        holdout_score=out.get("holdout_score"),
+        holdout_error=out.get("holdout_error"),
+        is_noop_tie=out.get("is_noop_tie", False),
+        selected_params=out.get("selected_params"),
+        oof_preds=out.get("oof_preds"),
+        gain_vs_best_relative=out.get("gain_vs_best_relative"),
+        model_type=out.get("model_type"),
+        peak_rss_bytes=peak_rss_bytes,
+        peak_cpu_sec=peak_cpu_sec,
+        noop_early_exit=out.get("noop_early_exit", False),
+    )
+
+
 def eval_isolated(
     source: str,
     train: pl.DataFrame,
@@ -220,9 +344,7 @@ def eval_isolated(
             cpu_budget_sec if cpu_budget_sec is not None
             else float(os.environ.get("EVAL_CPU_BUDGET_SECS", str(DEFAULT_CPU_BUDGET_SECS)))
         )
-        (ws / "source.py").write_text(source)
-        train.write_parquet(ws / "train.parquet")
-        (ws / "input.json").write_text(json.dumps({
+        _write_workspace(ws, source, train, {
             "target_col": target_col,
             "metric": metric,
             "prev_best": prev_best,
@@ -236,16 +358,8 @@ def eval_isolated(
             "prev_best_fold_scores": prev_best_fold_scores,
             "cpu_budget_sec": cpu_budget,
             "known_fold1_scores": known_fold1_scores,
-        }))
-        if best_source:
-            (ws / "best_pipeline.py").write_text(best_source)
-        if holdout_data is not None:
-            holdout_data.write_parquet(ws / "holdout.parquet")
+        }, best_source, holdout_data)
 
-        _EVAL_ENV_ALLOWLIST = {
-            "PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE",
-            "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
-        }
         env = {k: v for k, v in os.environ.items() if k in _EVAL_ENV_ALLOWLIST}
         env["PYTHONPATH"] = str(_RUNNER.parent.parent)
         env["HOME"] = tmpdir  # catboost_info 등 홈 쓰기를 tmpdir로 격리
@@ -254,17 +368,11 @@ def eval_isolated(
         wall_timeout = timeout_sec if timeout_sec is not None else max(DEFAULT_TIMEOUT, cpu_budget)
         # collect_oof(merge-verify 등)는 완전한 점수가 필요해 harness의 fold-1 투영과 같이 제외한다.
         projection_limit = None if collect_oof or n_splits < 2 else cpu_budget * _cpu_projection_margin()
-        stdout_path = ws / "_stdout.log"
-        stderr_path = ws / "_stderr.log"
-        peak_rss = 0
-        peak_cpu = 0.0
-        killed_reason: str | None = None
-        start = time.monotonic()
 
         # stdout/stderr는 PIPE 대신 파일로 리다이렉트 — RSS 폴링 중 자식이
         # 파이프 버퍼를 채우면 부모가 안 읽어가는 동안 자식이 write()에서
         # 블로킹돼 데드락(watchdog이 kill할 기회조차 없이 멈춤)이 난다.
-        with open(stdout_path, "wb") as out_f, open(stderr_path, "wb") as err_f:
+        with open(ws / "_stdout.log", "wb") as out_f, open(ws / "_stderr.log", "wb") as err_f:
             proc = subprocess.Popen(
                 [sys.executable, str(_RUNNER), tmpdir],
                 stdout=out_f,
@@ -272,98 +380,11 @@ def eval_isolated(
                 env=env,
                 preexec_fn=_make_preexec(cpu_budget),
             )
-            while True:
-                rss = _read_rss_bytes(proc.pid)
-                if rss is not None:
-                    peak_rss = max(peak_rss, rss)
-                    if rss > rss_limit:
-                        killed_reason = _with_last_progress(
-                            f"memory watchdog: peak RSS {rss // (1024 ** 2)}MB "
-                            f"> limit {rss_limit // (1024 ** 2)}MB",
-                            ws,
-                        )
-                        proc.kill()
-                        proc.wait()
-                        break
-                cpu = _read_cpu_seconds(proc.pid)
-                if cpu is not None:
-                    peak_cpu = max(peak_cpu, cpu)
-                    if cpu > cpu_budget:
-                        killed_reason = _with_last_progress(
-                            f"cpu budget exceeded: {cpu:.0f}s CPU used (limit {cpu_budget:.0f}s)", ws,
-                        )
-                        proc.kill()
-                        proc.wait()
-                        break
-                    projection = _projected_cpu(ws, n_splits, cpu) if projection_limit else None
-                    if projection is not None and projection[0] > projection_limit:
-                        projected, fold_no = projection
-                        killed_reason = _with_last_progress(
-                            f"cpu budget exceeded: projected {projected:.0f}s CPU during fold {fold_no} (limit {cpu_budget:.0f}s)", ws,
-                        )
-                        proc.kill()
-                        proc.wait()
-                        break
-                remaining = wall_timeout - (time.monotonic() - start)
-                if remaining <= 0:
-                    proc.kill()
-                    proc.wait()
-                    killed_reason = _with_last_progress(f"timeout after {wall_timeout:.0f}s", ws)
-                    break
-                try:
-                    proc.wait(timeout=min(_RSS_POLL_INTERVAL_SEC, remaining))
-                    break  # 자식이 스스로 종료
-                except subprocess.TimeoutExpired:
-                    continue
-
-        peak_rss_bytes = peak_rss or None
-        peak_cpu_sec = peak_cpu or None
-
-        if killed_reason:
-            return _err(killed_reason, peak_rss_bytes=peak_rss_bytes, peak_cpu_sec=peak_cpu_sec)
-
-        out_path = ws / "output.json"
-        if not out_path.exists():
-            stderr = stderr_path.read_text(errors="replace")[:2000]
-            return _err(
-                f"runner exited without output.json (rc={proc.returncode})\n{stderr}",
-                peak_rss_bytes=peak_rss_bytes,
-                peak_cpu_sec=peak_cpu_sec,
+            killed_reason, peak_rss, peak_cpu = _watch(
+                proc, ws, n_splits, cpu_budget, wall_timeout, rss_limit, projection_limit,
             )
 
-        try:
-            out: dict = json.loads(out_path.read_text())
-        except Exception as exc:
-            return _err(
-                f"failed to parse output.json: {exc}",
-                peak_rss_bytes=peak_rss_bytes, peak_cpu_sec=peak_cpu_sec,
-            )
-
-        if out.get("error_trace"):
-            return _err(
-                out["error_trace"],
-                peak_rss_bytes=peak_rss_bytes, peak_cpu_sec=peak_cpu_sec,
-            )
-
-        return IsolatedResult(
-            cv_score=out.get("cv_score"),
-            cv_fold_var=out.get("cv_fold_var"),
-            fold_scores=out.get("fold_scores"),
-            label=out.get("label"),
-            gain_vs_best=out.get("gain_vs_best"),
-            error_trace=None,
-            feature_importance=out.get("feature_importance"),
-            holdout_score=out.get("holdout_score"),
-            holdout_error=out.get("holdout_error"),
-            is_noop_tie=out.get("is_noop_tie", False),
-            selected_params=out.get("selected_params"),
-            oof_preds=out.get("oof_preds"),
-            gain_vs_best_relative=out.get("gain_vs_best_relative"),
-            model_type=out.get("model_type"),
-            peak_rss_bytes=peak_rss_bytes,
-            peak_cpu_sec=peak_cpu_sec,
-            noop_early_exit=out.get("noop_early_exit", False),
-        )
+        return _read_result(ws, proc.returncode, killed_reason, peak_rss, peak_cpu)
 
 
 def _err(

@@ -24,7 +24,7 @@ from agents.strategist import StrategyDecision, strategize
 from config.settings import MODEL_CODER, PROMOTE_CONFIRM_SEEDS
 from cycle.action_optimizer import get_action_prior, update_bandit
 from cycle.error_pitfalls import normalize_error, top_error_pitfalls
-from cycle.stagnation import detect_stagnation
+from cycle.stagnation import StagnationSignal, detect_stagnation
 from cycle.materialize import materialize_best_pipeline, with_frozen_params
 from cycle.promotion import (
     ConfirmResult,
@@ -40,7 +40,7 @@ from evaluator.contract import validate_patch
 from evaluator.harness import is_significant_gain, split_audit_holdout
 from evaluator.metrics import get as get_metric
 from memory.retriever import EmbeddingUnavailableError, search
-from runtime.isolate import DEFAULT_CPU_BUDGET_SECS, eval_isolated
+from runtime.isolate import DEFAULT_CPU_BUDGET_SECS, IsolatedResult, eval_isolated
 from store.db import PgConn, competition_fingerprint, insert_attempt, insert_pipeline
 from store.s3_code import download as _code_download
 from store.s3_code import download_best_pipeline as _best_pipeline_download
@@ -665,6 +665,331 @@ def _noop_tie_feedback(action_type: str) -> str:
 
 
 
+_MAX_CODE_RETRIES = 2
+_NO_EVAL = IsolatedResult(
+    cv_score=None, cv_fold_var=None, fold_scores=None, label=None, gain_vs_best=None, error_trace=None,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _EvalOutcome:
+    source: str
+    retries: int
+    error_trace: str | None
+    result: IsolatedResult
+    peak_rss_bytes: int | None
+    peak_cpu_sec: float | None
+
+
+def _generate_until_valid(
+    gen_kwargs: dict, action_type: str, feedback: str | None = None,
+) -> tuple[str, int, list[str]]:
+    """코드를 생성하고 정적 검사를 통과할 때까지 위반 목록을 피드백으로 다시 생성한다(최대 _MAX_CODE_RETRIES + 1회 생성).
+    (소스, 생성 횟수, 마지막 정적 위반 목록 — 통과했으면 빈 리스트)."""
+    source, errors, generated = "", [], 0
+    for attempt in range(_MAX_CODE_RETRIES + 1):
+        source = generate_code(**gen_kwargs, **({} if feedback is None else {"error_feedback": feedback}))
+        generated += 1
+        errors = validate_patch(source, action_type)
+        if not errors:
+            break
+        feedback = "\n".join(errors)
+        if attempt < _MAX_CODE_RETRIES:
+            _LOG.info("static error (%d violation(s)) → regenerating (retry %d)", len(errors), attempt + 1)
+    return source, generated, errors
+
+
+def _evaluate_attempt(
+    conn: PgConn, config: CycleConfig, source: str, retries: int, prev_best_cv: float | None, prev_code: str | None,
+    action_type: str, gen_kwargs: dict, prev_best_fold_scores: list[float] | None,
+) -> _EvalOutcome:
+    """격리 평가를 최대 2회차까지 돌린다. 실패하면 실행 가능한 피드백으로 코드를 재생성해 재시도하고,
+    fold-1 no-op tie(#339)는 남은 예산으로 다른 후보를 1회 더 시도한다."""
+    _LOG.info("evaluating (n_splits=%d metric=%s)...", config.n_splits, config.metric)
+    t_eval = time.monotonic()
+    # #376 — attempt당 1회만 조회하고 두 eval 회차(재시도 포함)가 같은 캐시를 공유한다.
+    known_fold1_scores = _recent_fold1_cache(conn, config.competition_id, config.n_splits)
+    # CPU 예산은 eval 회차가 아니라 attempt 전체 기준으로 집행한다 — 회차마다 독립적으로 주면 rc=-9 피드백으로 재생성한
+    # 2회차가 같은 자리에서 또 예산을 태워 attempt 하나가 예산의 2배까지 갔다(2026-08 실측). 1회차가 다 쓰면 2회차는 돌리지 않는다.
+    cpu_budget_total = (
+        config.cpu_budget_secs
+        if config.cpu_budget_secs is not None
+        else float(os.environ.get("EVAL_CPU_BUDGET_SECS", str(DEFAULT_CPU_BUDGET_SECS)))
+    )
+    cpu_spent = 0.0
+    result = _NO_EVAL
+    error_trace: str | None = None
+    peak_rss_bytes: int | None = None
+    peak_cpu_sec: float | None = None
+    for eval_i in range(2):
+        cpu_remaining = cpu_budget_total - cpu_spent
+        iso = eval_isolated(
+            source=source,
+            train=config.train,
+            target_col=config.target_col,
+            metric=config.metric,
+            prev_best=prev_best_cv,
+            n_splits=config.n_splits,
+            seed=config.seed,
+            is_classification=config.is_classification,
+            action_type=action_type,
+            best_source=prev_code,
+            best_params=_prev_best_params(conn, config.competition_id),
+            tuned_params=_latest_tuned_params(conn, config.competition_id),
+            cpu_budget_sec=cpu_remaining,
+            prev_best_fold_scores=prev_best_fold_scores,
+            known_fold1_scores=known_fold1_scores,
+        )
+        peak_rss_bytes = iso.peak_rss_bytes
+        peak_cpu_sec = iso.peak_cpu_sec
+        cpu_spent += iso.peak_cpu_sec or 0.0
+        if not iso.error_trace:
+            result = iso
+            gain_str = f"{iso.gain_vs_best:+.6f}" if iso.gain_vs_best is not None else "N/A"
+            _LOG.info(
+                "eval ok in %.1fs cv=%.6f fold_var=%.6f gain=%s label=%s",
+                time.monotonic() - t_eval, iso.cv_score, iso.cv_fold_var or 0.0, gain_str, iso.label or "regression",
+            )
+            if iso.is_noop_tie:
+                _LOG.warning(
+                    "no-op tie: cv_score matches prev_best within float noise "
+                    "(action=%s)%s — patch made no effective change",
+                    action_type, " [fold-1 조기 중단]" if iso.noop_early_exit else "",
+                )
+            if iso.noop_early_exit and eval_i == 0 and cpu_budget_total - cpu_spent > 0:
+                # tie 결과는 이미 유효하니 재시도가 실패해도 잃을 게 없다. 재생성이 정적검사를 못 넘겨도 그 tie 결과를 그대로 채택한다.
+                _LOG.info("noop tie (fold-1 조기 중단) → 다른 후보로 재시도")
+                source, generated, static_errs = _generate_until_valid(
+                    gen_kwargs, action_type, _noop_tie_feedback(action_type),
+                )
+                retries += generated
+                if static_errs:
+                    break
+                continue
+            break
+        _LOG.warning("eval error (try %d) → regenerating: %s", eval_i + 1, (iso.error_trace or "")[:120])
+        if eval_i == 0 and cpu_budget_total - cpu_spent <= 0:
+            # 남은 예산 0으로 재시도해봐야 즉시 다시 죽으므로 LLM 호출과 2회차 eval을 통째로 아낀다.
+            _LOG.warning(
+                "cpu budget exhausted after try 1 (spent %.0fs of %.0fs) — skipping retry", cpu_spent, cpu_budget_total,
+            )
+            error_trace = iso.error_trace
+            break
+        if eval_i == 0:
+            # 재생성 정적검사도 최초 codegen과 같은 재시도 폭을 준다(#273). 전부 실패해도 원래 kill 사유를 error_trace에
+            # 남겨 정적 가드 메시지가 진짜 원인을 가리지 않게 한다.
+            source, generated, static_errs = _generate_until_valid(
+                gen_kwargs, action_type, _resource_kill_feedback(iso.error_trace, cpu_remaining, action_type),
+            )
+            retries += generated
+            if static_errs:
+                error_trace = (
+                    f"{iso.error_trace}\n(regeneration also failed static "
+                    f"validation after {_MAX_CODE_RETRIES + 1} tries: {'; '.join(static_errs)})"
+                )
+                break
+        else:
+            error_trace = iso.error_trace
+            # 1회차 tie 결과는 지금 저장될 (에러난) 재생성 코드의 것이 아니다(#405).
+            result = _NO_EVAL
+    return _EvalOutcome(source, retries, error_trace, result, peak_rss_bytes, peak_cpu_sec)
+
+
+def _judge_attempt(
+    conn: PgConn, config: CycleConfig, res: IsolatedResult, error_trace: str | None,
+    prev_best_fold_scores: list[float] | None,
+) -> tuple[str, bool, str | None]:
+    """(최종 label, 유의한 개선 여부, error_trace). 리더보드 세계 1위를 넘는 cv는 격리한다(#288).
+
+    jump 판정은 promotion 게이트(is_significant_gain, paired per-fold t-test)와 같은 기준으로 통일한다 — harness의
+    절대-마진 jump는 수렴한 대회에서 사실상 도달 불가해 실제 승격 attempt도 전부 neutral로 남았고,
+    bandit/stagnation/reflection이 "성공 신호 0"으로 굳어 있었다."""
+    if not error_trace and res.cv_score is not None:
+        ceiling_reason = leaderboard_ceiling_violation(
+            conn, config.competition_id, res.cv_score, fold_scores=res.fold_scores,
+        )
+        if ceiling_reason is not None:
+            error_trace = ceiling_reason
+            _LOG.warning("%s — attempt 격리(promotion 이전 단계, #288)", ceiling_reason)
+    if error_trace:
+        _LOG.warning("failed — %s", error_trace[:200])
+        return "error", False, error_trace
+    _, metric_sign, _ = get_metric(config.metric)
+    if is_significant_gain(
+        res.gain_vs_best, res.cv_fold_var or 0.0,
+        candidate_fold_scores=res.fold_scores,
+        baseline_fold_scores=prev_best_fold_scores,
+        metric_sign=metric_sign,
+    ):
+        return "jump", True, None
+    label = res.label or "regression"
+    return ("neutral" if label == "jump" else label), False, None  # harness 절대-마진 jump는 paired 유의성 미달이면 강등
+
+
+def _attempt_row(
+    attempt_id: str, config: CycleConfig, decision: StrategyDecision, action_type: str, lessons: list[dict],
+    ev: _EvalOutcome, label: str, error_trace: str | None, code_path: str, duration_sec: float,
+) -> dict:
+    res = ev.result
+    return {
+        "attempt_id":       attempt_id,
+        "competition_id":   config.competition_id,
+        "run_ts":           datetime.now(timezone.utc),
+        "stage":            config.stage,
+        "hypothesis":       decision.hypothesis,
+        "action_type":      action_type,
+        "reflection_ids":   decision.reflection_ids or None,
+        "retrieval_scores": _retrieval_scores(lessons),
+        "retrieved_ids":    [l["reflection_id"] for l in lessons] or None,
+        "cv_score":         res.cv_score,
+        # noop_early_exit(fold-1 tie 조기 중단)일 때 harness는 None을 의도한다(1-fold만 계산해 분산을 못 만듦) — 0.0으로
+        # 대체하면 "분산이 실제로 0"과 구분이 안 되므로 None 그대로 저장한다(#356).
+        "cv_fold_var":      res.cv_fold_var,
+        "label":            label,
+        "gain_vs_best":     res.gain_vs_best,
+        "gain_vs_best_relative": res.gain_vs_best_relative,
+        "error_trace":      error_trace,
+        "error_signature":  normalize_error(error_trace) if error_trace else None,
+        "duration_sec":     round(duration_sec, 1),
+        "peak_rss_bytes":   ev.peak_rss_bytes,
+        "peak_cpu_sec":     ev.peak_cpu_sec,
+        "code_path":        str(code_path),
+        "retries":          ev.retries,
+        "fold_scores":      json.dumps(res.fold_scores) if res.fold_scores is not None else None,
+        "params":           json.dumps(res.selected_params) if res.selected_params else None,
+        "model_type":       res.model_type,
+        "noop_early_exit":  res.noop_early_exit,
+    }
+
+
+def _promote_in_process(
+    conn: PgConn, config: CycleConfig, attempt_id: str, source: str, prev_code: str | None, action_type: str,
+    res: IsolatedResult,
+) -> ConfirmResult:
+    """직접 모드(defer_promotion=False)의 in-process 승격: confirm → 병합 → 저장. Airflow 경로는 bin/run_promote_task.py가 맡는다."""
+    # attempt 평가와 같은 조회 함수를 다시 불러 같은 시점의 값을 얻는다(#388) — confirm과 아래 merge_eval이 이 값을
+    # 공유해야 attempt-time cv와 어긋나지 않는다.
+    best_params = _prev_best_params(conn, config.competition_id)
+    tuned_params = _latest_tuned_params(conn, config.competition_id)
+    confirm = confirm_and_measure(
+        source=source,
+        best_source=prev_code,
+        train90=config.train,
+        holdout10=config.holdout,
+        target_col=config.target_col,
+        metric=config.metric,
+        n_splits=config.n_splits,
+        seed=config.seed,
+        is_classification=config.is_classification,
+        confirm_seeds=PROMOTE_CONFIRM_SEEDS,
+        action_type=action_type,
+        cache=PromotionCache(conn),
+        competition_id=config.competition_id,
+        candidate_cv=res.cv_score,
+        candidate_fold_scores=res.fold_scores,
+        cpu_budget_sec=config.cpu_budget_secs,
+        conn=conn,
+        best_params=best_params,
+        tuned_params=tuned_params,
+    )
+    record_confirm(conn, attempt_id, confirm)
+    if not confirm.confirmed:
+        reason = "holdout 악화" if confirm.holdout_regressed else "cross-seed 미확인"
+        _LOG.info("%s — 승격 스킵 (gain=%+.5f)", reason, res.gain_vs_best)
+        return confirm
+
+    # materialize 먼저 → 해시는 실제 MinIO에 올라가는 내용(submit.py가 exec하는 그 문자열) 기준이어야 한다.
+    # raw.pipelines.code(winner source)와는 다른 문자열이므로 sha256을 insert_pipeline에 함께 기록한다.
+    promoted_source = with_frozen_params(source, res.selected_params)
+    materialized = materialize_best_pipeline(prev_code, promoted_source)
+    # merge-verify와 같은 패턴으로 materialized를 1회 재평가하는 김에 OOF를 얹는다. 이 경로는 merge-verify 게이트가 없으므로
+    # 실패해도 승격 자체는 막지 않고 oof_preds만 비운다 — best-effort.
+    merge_oof_preds = None
+    try:
+        merge_eval = eval_isolated(
+            source=materialized,
+            train=config.train,
+            target_col=config.target_col,
+            metric=config.metric,
+            prev_best=None,
+            n_splits=config.n_splits,
+            seed=config.seed,
+            is_classification=config.is_classification,
+            collect_oof=True,
+            cpu_budget_sec=config.cpu_budget_secs,
+            best_params=best_params,
+            tuned_params=tuned_params,
+        )
+        if not merge_eval.error_trace and merge_eval.cv_score is not None:
+            merge_oof_preds = merge_eval.oof_preds
+    except Exception as exc:
+        _LOG.warning("merge-verify OOF 수집 실패(무시하고 계속): %s", exc)
+
+    try:
+        with conn.transaction():
+            insert_pipeline(
+                conn,
+                pipeline_id=str(uuid.uuid4()),
+                attempt_id=attempt_id,
+                competition_id=config.competition_id,
+                fingerprint_snapshot=competition_fingerprint(conn, config.competition_id),
+                code=promoted_source,
+                cv_score=res.cv_score,
+                gain_vs_best=res.gain_vs_best,
+                pipeline_sha256=hashlib.sha256(materialized.encode()).hexdigest(),
+                oof_preds=merge_oof_preds,
+                materialized_code=materialized,
+            )
+            # 트랜잭션 안에서 부른다 — 업로드 실패가 insert를 롤백해야 DB와 blob이 어긋나지 않는다.
+            _best_pipeline_upload(config.competition_id, materialized, strict=True)
+    except BestPipelineUploadError as exc:
+        _LOG.warning("best pipeline 업로드 실패 — 승격 롤백: %s", exc)
+    else:
+        _LOG.info("best pipeline materialized (gain=%+.5f)", res.gain_vs_best)
+    return confirm
+
+
+def _strategize_attempt(
+    conn: PgConn, config: CycleConfig, lessons: list[dict], prev_best_cv: float | None, stagnation: StagnationSignal,
+    forced_action: str | None,
+) -> StrategyDecision:
+    enriched_eda = config.eda_card + _dynamic_eda_context(conn, config.competition_id, prev_best_cv)
+    action_prior = get_action_prior(conn, config.competition_id)
+    t_strategize = time.monotonic()
+    decision = strategize(
+        eda_card=enriched_eda,
+        lessons=lessons,
+        stage=config.stage,
+        prev_best_cv=prev_best_cv,
+        stagnation=stagnation,
+        action_prior=action_prior,
+        forced_action_type=forced_action,
+    )
+    _LOG.info("strategize done in %.1fs", time.monotonic() - t_strategize)
+    return decision
+
+
+def _generate_attempt_source(
+    conn: PgConn, config: CycleConfig, decision: StrategyDecision, prev_code: str | None, action_type: str,
+) -> tuple[dict, str, int, list[str]]:
+    """(gen_kwargs, 소스, 생성 횟수, 마지막 정적 위반 목록)."""
+    t_codegen = time.monotonic()
+    pitfalls = top_error_pitfalls(conn, config.competition_id, action_type)
+    known_errors = [f"{sig} (seen {cnt}x)" for sig, cnt in pitfalls] or None
+    if known_errors:
+        _LOG.info("pitfalls injected (%d): %s", len(known_errors), "; ".join(known_errors))
+    gen_kwargs: dict = dict(
+        hypothesis=decision.hypothesis,
+        action_type=action_type,
+        eda_card=config.eda_card,
+        prev_code=prev_code,
+        known_errors=known_errors,
+    )
+    source, generated, static_errs = _generate_until_valid(gen_kwargs, action_type)
+    _LOG.info("codegen done in %.1fs retries=%d", time.monotonic() - t_codegen, generated - 1)
+    return gen_kwargs, source, generated, static_errs
+
+
 def run_attempt_core(
     conn: PgConn,
     config: CycleConfig,
@@ -683,8 +1008,6 @@ def run_attempt_core(
     attempt_id = str(uuid.uuid4())
     attempt_start = time.monotonic()
 
-    dynamic_ctx = _dynamic_eda_context(conn, config.competition_id, prev_best_cv)
-    enriched_eda = config.eda_card + dynamic_ctx
     stagnation = detect_stagnation(conn, config.competition_id)
     _LOG.info(
         "start attempt_id=%s super_cycle=%s idx=%s stage=%s prev_best=%s n_lessons=%d stagnant=%s",
@@ -694,291 +1017,40 @@ def run_attempt_core(
         config.stage, prev_best_cv, len(lessons),
         stagnation.is_stagnant if stagnation else False,
     )
-    action_prior = get_action_prior(conn, config.competition_id)
-    _t_strategize = time.monotonic()
-    decision = strategize(
-        eda_card=enriched_eda,
-        lessons=lessons,
-        stage=config.stage,
-        prev_best_cv=prev_best_cv,
-        stagnation=stagnation,
-        action_prior=action_prior,
-        forced_action_type=forced_action,
-    )
-    _LOG.info("strategize done in %.1fs", time.monotonic() - _t_strategize)
+    decision = _strategize_attempt(conn, config, lessons, prev_best_cv, stagnation, forced_action)
     if config.stage == "bootstrap" and config.seed_code:
         prev_code: str | None = config.seed_code
     else:
         prev_code = _load_best_pipeline(config.competition_id)
     action_type = "bootstrap" if (config.stage == "bootstrap" and not prev_code) else decision.action_type
 
-    _t_codegen = time.monotonic()
-    _MAX_CODE_RETRIES = 2
-    pitfalls = top_error_pitfalls(conn, config.competition_id, action_type)
-    known_errors = [f"{sig} (seen {cnt}x)" for sig, cnt in pitfalls] or None
-    if known_errors:
-        _LOG.info("pitfalls injected (%d): %s", len(known_errors), "; ".join(known_errors))
-    gen_kwargs: dict = dict(
-        hypothesis=decision.hypothesis,
-        action_type=action_type,
-        eda_card=config.eda_card,
-        prev_code=prev_code,
-        known_errors=known_errors,
-    )
-    source = generate_code(**gen_kwargs)
-    retries = 0
-    error_trace: str | None = None
+    gen_kwargs, source, generated, static_errs = _generate_attempt_source(conn, config, decision, prev_code, action_type)
 
-    for _i in range(_MAX_CODE_RETRIES + 1):
-        errors = validate_patch(source, action_type)
-        if not errors:
-            break
-        feedback = "\n".join(errors)
-        if _i < _MAX_CODE_RETRIES:
-            _LOG.info("static error (%d violation(s)) → regenerating (retry %d)", len(errors), _i + 1)
-            source = generate_code(**gen_kwargs, error_feedback=feedback)
-            retries += 1
-        else:
-            error_trace = feedback
-
-    _LOG.info("codegen done in %.1fs retries=%d", time.monotonic() - _t_codegen, retries)
-
-    _LOG.info("evaluating (n_splits=%d metric=%s)...", config.n_splits, config.metric)
-    _t_eval = time.monotonic()
-    cv_score = None
-    cv_fold_var = 0.0
-    label = "regression"
-    gain_vs_best = None
-    gain_vs_best_relative = None
-    feature_importance: dict | None = None
-    is_noop_tie = False
-    fold_scores: list[float] | None = None
-    selected_params: dict | None = None
-    peak_rss_bytes: int | None = None
-    peak_cpu_sec: float | None = None
-    model_type: str | None = None
-    # cv_fold_var(위)는 is_significant_gain/reflect 등 기존 소비처를 위해 0.0-폴백을 유지한다 —
-    # harness가 noop_early_exit에서 의도한 None(#356)은 이 별도 변수로만 DB에 그대로 전달한다.
-    noop_early_exit = False
-    cv_fold_var_stored: float | None = None
-    # is_significant_gain(아래)과 eval_isolated의 fold-1 조기 중단(#339) 양쪽이
-    # 같은 baseline fold_scores를 쓰므로 attempt당 1회만 조회해 재사용한다.
+    # is_significant_gain(아래)과 eval_isolated의 fold-1 조기 중단(#339)이 같은 baseline fold_scores를 쓰므로 attempt당 1회만 조회한다.
     prev_best_fold_scores = _prev_best_fold_scores(conn, config.competition_id)
-    # #376 — attempt당 1회만 조회, 두 eval 회차(재시도 포함)가 같은 캐시를 공유한다.
-    known_fold1_scores = _recent_fold1_cache(conn, config.competition_id, config.n_splits)
-
-    if not error_trace:
-        # CPU 예산은 eval 회차가 아니라 attempt 전체 기준으로 집행한다 — 과거엔
-        # 회차마다 독립적으로 900초를 줬는데, 무의미한 rc=-9 피드백으로 재생성한
-        # 2회차도 같은 자리에서 또 900초를 태워 attempt 하나가 최대 ~1800초까지
-        # 갔다(2026-08 실측: CPU kill attempt 113건 중앙값 971초). 1회차가 예산을
-        # 다 쓰면 2회차는 애초에 돌리지 않는다 — 최악 소모가 절반으로 줄고, 다
-        # 못 쓴 나머지 예산은 그대로 2회차에 넘어가 재시도가 낭비가 아니라
-        # 실제 성공 기회가 된다(피드백도 아래에서 실행 가능한 지시로 바꾼다).
-        cpu_budget_total = (
-            config.cpu_budget_secs
-            if config.cpu_budget_secs is not None
-            else float(os.environ.get("EVAL_CPU_BUDGET_SECS", str(DEFAULT_CPU_BUDGET_SECS)))
+    if static_errs:
+        ev = _EvalOutcome(source, generated - 1, "\n".join(static_errs), _NO_EVAL, None, None)
+    else:
+        ev = _evaluate_attempt(
+            conn, config, source, generated - 1, prev_best_cv, prev_code, action_type, gen_kwargs, prev_best_fold_scores,
         )
-        cpu_spent = 0.0
-        for _eval_i in range(2):
-            cpu_remaining = cpu_budget_total - cpu_spent
-            iso = eval_isolated(
-                source=source,
-                train=config.train,
-                target_col=config.target_col,
-                metric=config.metric,
-                prev_best=prev_best_cv,
-                n_splits=config.n_splits,
-                seed=config.seed,
-                is_classification=config.is_classification,
-                action_type=action_type,
-                best_source=prev_code,
-                best_params=_prev_best_params(conn, config.competition_id),
-                tuned_params=_latest_tuned_params(conn, config.competition_id),
-                cpu_budget_sec=cpu_remaining,
-                prev_best_fold_scores=prev_best_fold_scores,
-                known_fold1_scores=known_fold1_scores,
-            )
-            peak_rss_bytes = iso.peak_rss_bytes
-            peak_cpu_sec = iso.peak_cpu_sec
-            cpu_spent += iso.peak_cpu_sec or 0.0
-            if not iso.error_trace:
-                cv_score = iso.cv_score
-                cv_fold_var = iso.cv_fold_var or 0.0
-                cv_fold_var_stored = iso.cv_fold_var
-                label = iso.label or "regression"
-                gain_vs_best = iso.gain_vs_best
-                gain_vs_best_relative = iso.gain_vs_best_relative
-                feature_importance = iso.feature_importance
-                is_noop_tie = iso.is_noop_tie
-                fold_scores = iso.fold_scores
-                selected_params = iso.selected_params
-                model_type = iso.model_type
-                noop_early_exit = iso.noop_early_exit
-                gain_str = f"{gain_vs_best:+.6f}" if gain_vs_best is not None else "N/A"
-                _LOG.info(
-                    "eval ok in %.1fs cv=%.6f fold_var=%.6f gain=%s label=%s",
-                    time.monotonic() - _t_eval, cv_score, cv_fold_var, gain_str, label,
-                )
-                if is_noop_tie:
-                    _LOG.warning(
-                        "no-op tie: cv_score matches prev_best within float noise "
-                        "(action=%s)%s — patch made no effective change",
-                        action_type, " [fold-1 조기 중단]" if iso.noop_early_exit else "",
-                    )
-                if iso.noop_early_exit and _eval_i == 0 and cpu_budget_total - cpu_spent > 0:
-                    # fold-1만으로 tie가 확정됐고 예산이 남아 있으면, 나머지 4-fold를
-                    # 도는 대신 그 예산으로 다른 후보를 1회 더 시도한다(#339) — tie
-                    # 결과는 이미 유효하니 재시도가 실패해도 잃을 게 없다.
-                    _LOG.info("noop tie (fold-1 조기 중단) → 다른 후보로 재시도")
-                    feedback = _noop_tie_feedback(action_type)
-                    static_errs = []
-                    for _regen_i in range(_MAX_CODE_RETRIES + 1):
-                        source = generate_code(**gen_kwargs, error_feedback=feedback)
-                        retries += 1
-                        static_errs = validate_patch(source, action_type)
-                        if not static_errs:
-                            break
-                        if _regen_i < _MAX_CODE_RETRIES:
-                            feedback = "\n".join(static_errs)
-                    if static_errs:
-                        # 재생성이 정적검사를 못 넘겨도 이미 확보한 tie 결과가
-                        # 유효하므로 그대로 채택한다.
-                        break
-                    continue
-                break
-            _LOG.warning("eval error (try %d) → regenerating: %s",
-                         _eval_i + 1, (iso.error_trace or "")[:120])
-            if _eval_i == 0 and cpu_budget_total - cpu_spent <= 0:
-                # 1회차가 예산을 이미 다 태웠으면 재생성 자체를 하지 않는다 —
-                # 남은 예산 0으로 재시도해봐야 즉시 다시 죽으므로, 규정 위반
-                # 없이도 LLM 호출과 2회차 eval을 통째로 아낀다.
-                _LOG.warning(
-                    "cpu budget exhausted after try 1 (spent %.0fs of %.0fs) — "
-                    "skipping retry", cpu_spent, cpu_budget_total,
-                )
-                error_trace = iso.error_trace
-                break
-            if _eval_i == 0:
-                # #273: 재생성 정적검사도 codegen 루프(위, _MAX_CODE_RETRIES)와 동일한
-                # 재시도 폭을 준다 — 예전엔 1회 실패로 즉시 attempt를 포기해 eval 2회차와
-                # 남은 CPU 예산을 통째로 버렸다. 전부 실패해도 원래 kill 사유(CPU 예산
-                # 초과 등)를 error_trace에 남겨 정적 가드 메시지가 진짜 원인을 가리지
-                # 않게 한다.
-                original_kill_reason = iso.error_trace
-                feedback = _resource_kill_feedback(iso.error_trace, cpu_remaining, action_type)
-                static_errs: list[str] = []
-                for _regen_i in range(_MAX_CODE_RETRIES + 1):
-                    source = generate_code(**gen_kwargs, error_feedback=feedback)
-                    retries += 1
-                    static_errs = validate_patch(source, action_type)
-                    if not static_errs:
-                        break
-                    if _regen_i < _MAX_CODE_RETRIES:
-                        _LOG.info(
-                            "post-kill regen static error (%d violation(s)) → retrying (%d)",
-                            len(static_errs), _regen_i + 1,
-                        )
-                        feedback = "\n".join(static_errs)
-                    else:
-                        error_trace = (
-                            f"{original_kill_reason}\n(regeneration also failed static "
-                            f"validation after {_MAX_CODE_RETRIES + 1} tries: "
-                            f"{'; '.join(static_errs)})"
-                        )
-                if error_trace:
-                    break
-            else:
-                error_trace = iso.error_trace
-                # 1회차 tie 결과는 지금 저장될 (에러난) 재생성 코드의 것이 아니다(#405). 세계 1위 가드로 격리된 행은
-                # cv_score를 남기므로 초기화는 이 분기에만 둔다.
-                cv_score, cv_fold_var, cv_fold_var_stored = None, 0.0, None
-                gain_vs_best = gain_vs_best_relative = None
-                fold_scores = selected_params = model_type = feature_importance = None
-                is_noop_tie = noop_early_exit = False
-
-    if not error_trace and cv_score is not None:
-        ceiling_reason = leaderboard_ceiling_violation(
-            conn, config.competition_id, cv_score, fold_scores=fold_scores,
-        )
-        if ceiling_reason is not None:
-            error_trace = ceiling_reason
-            _LOG.warning("%s — attempt 격리(promotion 이전 단계, #288)", ceiling_reason)
-
-    if error_trace:
-        label = "error"
-        _LOG.warning("failed — %s", error_trace[:200])
-
-    # label의 jump 판정을 promotion 게이트(is_significant_gain, paired
-    # per-fold t-test)와 동일 기준으로 통일한다. harness의 절대-마진 jump
-    # (LABEL_Z*fold_std)는 수렴한 대회에서 사실상 도달 불가해 실제 승격 attempt도
-    # 전부 label=neutral로 남았고, 그 결과 bandit/stagnation/reflection 전부가
-    # "성공 신호 0"으로 굳어 있었다. 여기서 확정해야 insert_attempt에 반영된다.
-    _, _metric_sign, _ = get_metric(config.metric)
-    _significant = (
-        is_significant_gain(
-            gain_vs_best, cv_fold_var,
-            candidate_fold_scores=fold_scores,
-            baseline_fold_scores=prev_best_fold_scores,
-            metric_sign=_metric_sign,
-        )
-        if not error_trace
-        else False
-    )
-    if not error_trace:
-        if _significant:
-            label = "jump"
-        elif label == "jump":
-            # harness 절대-마진 기준은 통과했지만 paired 유의성은 미달 — 강등.
-            label = "neutral"
+    res = ev.result
+    label, significant, error_trace = _judge_attempt(conn, config, res, ev.error_trace, prev_best_fold_scores)
 
     code_path = _save_code(
-        source,
+        ev.source,
         competition_id=config.slug or config.competition_id,
         attempt_id=attempt_id,
         stage=config.stage,
         hypothesis=decision.hypothesis,
         action_type=action_type,
-        cv_score=cv_score,
-        gain_vs_best=gain_vs_best,
+        cv_score=res.cv_score,
+        gain_vs_best=res.gain_vs_best,
         error_trace=error_trace,
     )
 
     duration_sec = time.monotonic() - attempt_start
-    row: dict = {
-        "attempt_id":       attempt_id,
-        "competition_id":   config.competition_id,
-        "run_ts":           datetime.now(timezone.utc),
-        "stage":            config.stage,
-        "hypothesis":       decision.hypothesis,
-        "action_type":      action_type,
-        "reflection_ids":   decision.reflection_ids or None,
-        "retrieval_scores": _retrieval_scores(lessons),
-        "retrieved_ids":    [l["reflection_id"] for l in lessons] or None,
-        "cv_score":         cv_score,
-        # noop_early_exit(fold-1 tie 조기 중단, #339/#376)일 때 harness는 None을 의도한다
-        # (1-fold만 계산해 5-fold 분산을 못 만듦) — cv_fold_var(위 0.0-폴백 버전)는
-        # is_significant_gain/reflect 등 기존 소비처용이고, DB엔 이 None-보존 버전을
-        # 그대로 저장한다(#356). 0.0을 심으면 "분산이 실제로 0"과 구분이 안 된다.
-        "cv_fold_var":      cv_fold_var_stored,
-        "label":            label,
-        "gain_vs_best":     gain_vs_best,
-        "gain_vs_best_relative": gain_vs_best_relative,
-        "error_trace":      error_trace,
-        "error_signature":  normalize_error(error_trace) if error_trace else None,
-        "duration_sec":     round(duration_sec, 1),
-        "peak_rss_bytes":   peak_rss_bytes,
-        "peak_cpu_sec":     peak_cpu_sec,
-        "code_path":        str(code_path),
-        "retries":          retries,
-        # 다음 attempt/승격 게이트가 이 attempt의 fold_scores/params를
-        # 참고할 수 있도록 영속화 (이전엔 EvalResult 안에서만 존재하고 버려졌음).
-        "fold_scores":      json.dumps(fold_scores) if fold_scores is not None else None,
-        "params":           json.dumps(selected_params) if selected_params else None,
-        "model_type":       model_type,
-        "noop_early_exit":  noop_early_exit,
-    }
+    row = _attempt_row(attempt_id, config, decision, action_type, lessons, ev, label, error_trace, code_path, duration_sec)
     if super_cycle_id is not None:
         row["super_cycle_id"] = super_cycle_id
         if defer_promotion:
@@ -986,107 +1058,17 @@ def run_attempt_core(
             row["was_promoted"] = False
     insert_attempt(conn, row)
 
-    # defer_promotion=True: caller (super_cycle / Airflow promote task) handles winner-only promotion.
-    # _significant은 위에서 label 확정 시 이미 계산됨 — 재계산하지 않음.
-    # confirm은 아래 update_bandit 직전에 effective_label(label, confirm)로 다시
-    # 참조된다 — 블록을 안 타는 경우(defer_promotion/미유의/에러) None으로 초기화.
+    # defer_promotion=True면 caller(Airflow promote task)가 winner만 승격한다.
     confirm: ConfirmResult | None = None
-    if not defer_promotion and _significant and not error_trace:
-        # attempt 평가(위 eval_isolated 호출)와 같은 조회 함수를 다시 불러 같은 시점의
-        # 값을 얻는다(#388 — 이 직접모드 호출부는 원래 PR에서 놓쳤다) — confirm과 아래
-        # merge_eval이 이 값을 공유해야 attempt-time cv와 어긋나지 않는다.
-        confirm_best_params = _prev_best_params(conn, config.competition_id)
-        confirm_tuned_params = _latest_tuned_params(conn, config.competition_id)
-        confirm = confirm_and_measure(
-            source=source,
-            best_source=prev_code,
-            train90=config.train,
-            holdout10=config.holdout,
-            target_col=config.target_col,
-            metric=config.metric,
-            n_splits=config.n_splits,
-            seed=config.seed,
-            is_classification=config.is_classification,
-            confirm_seeds=PROMOTE_CONFIRM_SEEDS,
-            action_type=action_type,
-            cache=PromotionCache(conn),
-            competition_id=config.competition_id,
-            candidate_cv=cv_score,
-            candidate_fold_scores=fold_scores,
-            cpu_budget_sec=config.cpu_budget_secs,
-            conn=conn,
-            best_params=confirm_best_params,
-            tuned_params=confirm_tuned_params,
-        )
-        record_confirm(conn, attempt_id, confirm)
-        if confirm.confirmed:
-            fp_dict = competition_fingerprint(conn, config.competition_id)
-            # materialize 먼저 → 해시는 실제 MinIO에 올라가는 내용(submit.py가 exec하는
-            # 그 문자열) 기준이어야 한다. raw.pipelines.code(winner source)와는
-            # 다른 문자열이므로 순서를 바꿔 sha256을 insert_pipeline에 함께 기록한다.
-            promoted_source = with_frozen_params(source, selected_params)
-            materialized = materialize_best_pipeline(prev_code, promoted_source)
-            pipeline_sha256 = hashlib.sha256(materialized.encode()).hexdigest()
-
-            # OOF 확보 — bin/run_promote_task.py의 merge-verify와 동일 패턴
-            # (materialized를 1회 재평가하는 김에 collect_oof=True로 얹는다,
-            # 추가 eval 아님). 소비처였던 bin/blend.py는 #231로 폐기됐지만
-            # raw.pipelines.oof_preds 자체는 유지한다(향후 분석 재료). 이 경로는
-            # 기존에 merge-verify 게이트가 없었으므로 실패해도 승격 자체는 막지
-            # 않고 oof_preds만 비운다 — best-effort.
-            merge_oof_preds = None
-            try:
-                merge_eval = eval_isolated(
-                    source=materialized,
-                    train=config.train,
-                    target_col=config.target_col,
-                    metric=config.metric,
-                    prev_best=None,
-                    n_splits=config.n_splits,
-                    seed=config.seed,
-                    is_classification=config.is_classification,
-                    collect_oof=True,
-                    cpu_budget_sec=config.cpu_budget_secs,
-                    best_params=confirm_best_params,
-                    tuned_params=confirm_tuned_params,
-                )
-                if not merge_eval.error_trace and merge_eval.cv_score is not None:
-                    merge_oof_preds = merge_eval.oof_preds
-            except Exception as exc:
-                _LOG.warning("merge-verify OOF 수집 실패(무시하고 계속): %s", exc)
-
-            try:
-                with conn.transaction():
-                    insert_pipeline(
-                        conn,
-                        pipeline_id=str(uuid.uuid4()),
-                        attempt_id=attempt_id,
-                        competition_id=config.competition_id,
-                        fingerprint_snapshot=fp_dict,
-                        code=promoted_source,
-                        cv_score=cv_score,
-                        gain_vs_best=gain_vs_best,
-                        pipeline_sha256=pipeline_sha256,
-                        oof_preds=merge_oof_preds,
-                        materialized_code=materialized,
-                    )
-                    # 트랜잭션 안에서 부른다 — 업로드 실패가 insert를 롤백해야 DB와 blob이 어긋나지 않는다.
-                    _best_pipeline_upload(config.competition_id, materialized, strict=True)
-            except BestPipelineUploadError as exc:
-                _LOG.warning("best pipeline 업로드 실패 — 승격 롤백: %s", exc)
-            else:
-                _LOG.info("best pipeline materialized (gain=%+.5f)", gain_vs_best)
-        else:
-            reason = "holdout 악화" if confirm.holdout_regressed else "cross-seed 미확인"
-            _LOG.info("%s — 승격 스킵 (gain=%+.5f)", reason, gain_vs_best)
+    if not defer_promotion and significant and not error_trace:
+        confirm = _promote_in_process(conn, config, attempt_id, ev.source, prev_code, action_type, res)
 
     _LOG.info(
         "persist done — total %.1fs attempt_id=%s action=%s label=%s retries=%d",
-        duration_sec, attempt_id[:8], action_type, label, retries,
+        duration_sec, attempt_id[:8], action_type, label, ev.retries,
     )
 
-    # confirm이 jump를 거부했으면(cross-seed 미재현/holdout 악화) 보상 신호를
-    # regression으로 다운그레이드 — #164, effective_label 참고.
+    # confirm이 jump를 거부했으면(cross-seed 미재현/holdout 악화) 보상 신호를 regression으로 다운그레이드한다(#164).
     reward_label = effective_label(label, confirm)
     if config.stage == "reflexion":
         update_bandit(
@@ -1094,26 +1076,26 @@ def run_attempt_core(
             competition_id=config.competition_id,
             action_type=action_type,
             label=reward_label,
-            gain_vs_best=gain_vs_best,
+            gain_vs_best=res.gain_vs_best,
             error_trace=error_trace,
-            is_noop_tie=is_noop_tie,
+            is_noop_tie=res.is_noop_tie,
         )
 
     return _AttemptData(
         attempt_id=attempt_id,
         decision=decision,
         action_type=action_type,
-        source=source,
-        cv_score=cv_score,
-        cv_fold_var=cv_fold_var,
+        source=ev.source,
+        cv_score=res.cv_score,
+        cv_fold_var=res.cv_fold_var or 0.0,
         label=label,
-        gain_vs_best=gain_vs_best,
-        retries=retries,
+        gain_vs_best=res.gain_vs_best,
+        retries=ev.retries,
         error_trace=error_trace,
         code_path=code_path,
-        feature_importance=feature_importance,
+        feature_importance=res.feature_importance,
         reward_label=reward_label,
-        is_noop_tie=is_noop_tie,
+        is_noop_tie=res.is_noop_tie,
     )
 
 
