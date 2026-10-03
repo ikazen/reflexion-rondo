@@ -9,6 +9,8 @@ v1.6.33 배포 후 17시간 점검(승격 경로, auto-submit, 튜닝 트리거 
   튜닝이 `big` 슬롯 3개 중 2개를 3h씩 점유해 `attempt_1/2`가 큐 대기 12분 뒤 즉시 failed되던 문제(24h 13건, 사이클당 attempt 2.95 -> 2.60)의 원인이었다.
   s5e8 튜닝은 최근 14일 20회 중 1회만 개선됐다.
 - 확인 지표: `reflexion_rondo_tune` 동시 running <= 1, 시작=종료 0초 attempt 실패 ~0, 사이클당 attempt 평균 >= 2.9.
+- #472: s5e8 attempt CPU 예산을 3600s에서 2700s로 낮춘다(ADR-066, ADR-064 재고 트리거 (b)). 배포 후 s5e8 221 attempt의 76% CPU가 예산 kill에 쓰였고(63.2h, 성공 20.3h),
+  jump 9건은 전부 2266s 이하였다. what-if 표는 ADR-066. confirm/holdout/merge-verify는 3600s를 유지한다. 확인 지표: s5e8 kill CPU 감소와 jump 비율(기준 4.0%) 유지.
 
 ---
 

@@ -69,6 +69,15 @@ def test_attempt_cpu_budget_falls_back_to_the_shared_budget_then_none():
     assert attempt_cpu_budget_secs(object()) is None
 
 
+def test_s5e8_lowers_only_the_attempt_budget():
+    """#472/ADR-066: s5e4(ADR-063)와 같은 분리 — confirm/holdout/merge-verify가 쓰는 CPU_BUDGET_SECS는 건드리지 않는다."""
+    from config.competitions import s5e8
+
+    assert s5e8.ATTEMPT_CPU_BUDGET_SECS == 2700
+    assert not hasattr(s5e8, "CPU_BUDGET_SECS")
+    assert attempt_cpu_budget_secs(s5e8) == 2700
+
+
 def test_s5e4_lowers_only_the_attempt_budget():
     """#421/ADR-063: confirm/holdout/merge-verify가 쓰는 CPU_BUDGET_SECS는 건드리지 않는다."""
     from config.competitions import s5e4

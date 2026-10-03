@@ -1609,6 +1609,28 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 
 ---
 
+## ADR-066 — s5e8 attempt CPU 예산을 2700s로 낮춘다 (#472, ADR-064 재고 트리거 (b), ADR-063 방식)
+
+- 결정: `config/competitions/s5e8.py`에 `ATTEMPT_CPU_BUDGET_SECS = 2700`을 둔다. ADR-063과 같은 분리다 — `attempt_cpu_budget_secs(comp)`를 쓰는 attempt 호출부만
+  이 값을 쓰고 confirm/holdout/merge-verify/backfill은 기본 `CPU_BUDGET_SECS`(3600s)를 유지한다. 워치독 투영 한계(예산 x 1.15)도 3105s로 같이 내려간다.
+- 근거(v1.6.32 이후 09-30 13:05Z~10-03, s5e8 221 attempt): CPU 예산 kill 140건이 63.2h(CPU의 76%), 성공 72건이 20.3h, jump 9건은 전부 hyperparam_search이고
+  CPU 최대 2266s(역대 12건도 2266s 이하)다. 예산 B로 재계산한 what-if:
+
+  | 예산 | 절감되는 kill CPU-h | 잘리는 성공 | 잘리는 jump |
+  |---|---|---|---|
+  | 1800s | 16.2 | 9 | 3 |
+  | 2100s | 13.3 | 6 | 2 |
+  | 2400s | 10.5 | 2 | 0 |
+  | 2700s | 7.8 | 1 | 0 |
+  | 3000s | 5.2 | 1 | 0 |
+
+  ADR-063의 기준은 최대 jump의 1.15배(2266s x 1.15 = 2606s)이고 2400s는 jump 여유가 6%뿐이라, 2700s를 고른다(2400s와의 절감 차이는 2.7 CPU-h/3.5일).
+- 기대 효과와 한계: s5e8 총 CPU(83.5h) 약 -9%. kill 비중은 약 70%로 남는다 — 상한을 낮출 뿐 kill을 없애지 못한다. 2400s 초과 구간의 kill 33건(10.5h)과 성공 2건뿐이라
+  잘리는 성공의 손실은 작다.
+- 재고 트리거(배포 48~72h 후): s5e8 jump 비율이 기준 4.0%(9/221)의 절반 미만이거나 잘린 attempt에 jump가 있으면 3600s로 복원한다. 성공 판정은 kill CPU 감소와 jump 비율 유지다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |
