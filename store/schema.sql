@@ -71,7 +71,7 @@ ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS gain_vs_best_relative double p
 -- forward-only(과거 attempt는 원본 검색 결과가 남아있지 않아 backfill 불가).
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS retrieved_ids text[];
 -- error_signature: error_pitfalls._normalize_error(error_trace) 결과 영속화 — 매 조회마다
--- on-the-fly 정규화하던 것을 저장. bin/backfill_error_signatures.py로 기존 행 소급 채움 가능.
+-- on-the-fly 정규화하던 것을 저장.
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS error_signature text;
 
 -- eval_isolated의 RSS 워치독(runtime/isolate.py)이 폴링한 peak RSS.
