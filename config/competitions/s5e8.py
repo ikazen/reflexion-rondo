@@ -18,6 +18,9 @@ EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미�
 ACTIVE            = True  # deep tier 재활성 (#422, ADR-064) — s6e8 동결로 빈 슬롯 교체. 재활성 전에 baseline을
 # `bin.establish_baseline --remeasure`로 현재 평가 의미에 맞춰 다시 잰다(휴면 중 평가 의미가 바뀌었다).
 
+# attempt 평가에만 적용한다. confirm/holdout/merge-verify는 승격 후보의 재평가라 기본 3600s를 유지한다. 근거와 복원 조건은 ADR-066.
+ATTEMPT_CPU_BUDGET_SECS = 2700
+
 EDA_CARD = """competition: playground-series-s5e8 (Bank Dataset — Term Deposit Subscription)
 task: binary classification  metric: AUC  target: y
 rows: 750000  features: 16
