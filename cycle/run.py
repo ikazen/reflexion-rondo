@@ -1,7 +1,7 @@
 """단일 attempt 실행 루프: strategize -> generate_code -> eval_isolated -> 라벨링/영속화.
 
 CPU 예산은 attempt 전체 기준으로 집행(1회차 소진 시 2회차 스킵). run_attempt_core가
-핵심 진입점 — Airflow 프로덕션 모드(defer_promotion=True)와 직접모드(run_cycle) 공유.
+핵심 진입점 — Airflow attempt task(bin/run_attempt_task.py)가 호출하고, 승격은 promote task가 맡는다.
 """
 from __future__ import annotations
 
@@ -19,18 +19,15 @@ _LOG = logging.getLogger(__name__)
 import polars as pl
 
 from agents.coder import generate_code
-from agents.reflector import AttemptContext, reflect
 from agents.strategist import StrategyDecision, strategize
 from config.settings import MODEL_CODER, PROMOTE_CONFIRM_SEEDS
 from cycle.action_optimizer import get_action_prior, update_bandit
 from cycle.error_pitfalls import normalize_error, top_error_pitfalls
 from cycle.stagnation import StagnationSignal, detect_stagnation
-from cycle.materialize import materialize_best_pipeline, with_frozen_params
+from cycle.materialize import materialize_best_pipeline
 from cycle.promotion import (
-    ConfirmResult,
     PromotionCache,
     confirm_and_measure,
-    effective_label,
     eval_semantics_fingerprint,
     leaderboard_ceiling_violation,
     record_confirm,
@@ -39,13 +36,12 @@ from cycle.promotion import (
 from evaluator.contract import validate_patch
 from evaluator.harness import is_significant_gain, split_audit_holdout
 from evaluator.metrics import get as get_metric
-from memory.retriever import EmbeddingUnavailableError, search
 from runtime.isolate import DEFAULT_CPU_BUDGET_SECS, IsolatedResult, eval_isolated
 from store.db import PgConn, competition_fingerprint, insert_attempt, insert_pipeline
 from store.s3_code import download as _code_download
 from store.s3_code import download_best_pipeline as _best_pipeline_download
 from store.s3_code import upload as _code_upload
-from store.s3_code import CODE_HEADER_SEP, BestPipelineUploadError, strip_code_header
+from store.s3_code import CODE_HEADER_SEP, strip_code_header
 from store.s3_code import upload_best_pipeline as _best_pipeline_upload
 
 
@@ -61,40 +57,20 @@ class CycleConfig:
     seed: int = 42
     k_retrieve: int = 5
     is_classification: bool = True
-    seed_code: str | None = None
     slug: str | None = None  # S3 경로용 모듈명 (e.g. s4e1), 미설정 시 competition_id fallback
-    holdout: pl.DataFrame | None = None  # audit holdout 10% — 승격 시 1회 측정·기록에만 사용
+    holdout: pl.DataFrame | None = None  # 값이 있을 때만 run_attempt_core가 평가 전에 fingerprint/baseline 가드를 건다(attempt task가 채움)
     cpu_budget_secs: float | None = None  # comp.CPU_BUDGET_SECS 오버라이드, 미설정 시 env/DEFAULT_CPU_BUDGET_SECS
 
 
 @dataclass(frozen=True, slots=True)
-class CycleResult:
-    attempt_id: str
-    cv_score: float | None
-    label: str
-    gain_vs_best: float | None
-    retries: int
-    reflection_id: str | None
-    error_trace: str | None
-    code_path: str
-
-
-@dataclass(frozen=True, slots=True)
 class _AttemptData:
-    """Internal: complete data from one attempt, before reflect."""
+    """run_attempt_task가 로그로 남기는 attempt 결과 요약."""
     attempt_id: str
     decision: StrategyDecision
-    action_type: str
-    source: str
     cv_score: float | None
-    cv_fold_var: float
     label: str
     gain_vs_best: float | None
     retries: int
-    error_trace: str | None
-    code_path: str
-    feature_importance: dict | None
-    reward_label: str
     is_noop_tie: bool = False
 
 
@@ -177,7 +153,7 @@ def _train_fingerprint_guard(conn: PgConn, competition_id: str, train90: pl.Data
 
     호출부는 train90(split_audit_holdout 결과)을 넘겨야 한다 — remeasure도 같은
     분할을 거치므로 그때만 지문 비교가 성립한다. holdout이 분리되지 않은
-    smoke/direct 경로는 호출하지 않는다.
+    경로(CycleConfig.holdout=None)는 호출하지 않는다.
     """
     cmd = f"uv run python -m bin.establish_baseline --remeasure --competition {competition_id}"
     _fingerprint_guard(
@@ -798,8 +774,8 @@ def _evaluate_attempt(
 def _judge_attempt(
     conn: PgConn, config: CycleConfig, res: IsolatedResult, error_trace: str | None,
     prev_best_fold_scores: list[float] | None,
-) -> tuple[str, bool, str | None]:
-    """(최종 label, 유의한 개선 여부, error_trace). 리더보드 세계 1위를 넘는 cv는 격리한다(#288).
+) -> tuple[str, str | None]:
+    """(최종 label, error_trace). 리더보드 세계 1위를 넘는 cv는 격리한다(#288).
 
     jump 판정은 promotion 게이트(is_significant_gain, paired per-fold t-test)와 같은 기준으로 통일한다 — harness의
     절대-마진 jump는 수렴한 대회에서 사실상 도달 불가해 실제 승격 attempt도 전부 neutral로 남았고,
@@ -813,7 +789,7 @@ def _judge_attempt(
             _LOG.warning("%s — attempt 격리(promotion 이전 단계, #288)", ceiling_reason)
     if error_trace:
         _LOG.warning("failed — %s", error_trace[:200])
-        return "error", False, error_trace
+        return "error", error_trace
     _, metric_sign, _ = get_metric(config.metric)
     if is_significant_gain(
         res.gain_vs_best, res.cv_fold_var or 0.0,
@@ -821,9 +797,9 @@ def _judge_attempt(
         baseline_fold_scores=prev_best_fold_scores,
         metric_sign=metric_sign,
     ):
-        return "jump", True, None
+        return "jump", None
     label = res.label or "regression"
-    return ("neutral" if label == "jump" else label), False, None  # harness 절대-마진 jump는 paired 유의성 미달이면 강등
+    return ("neutral" if label == "jump" else label), None  # harness 절대-마진 jump는 paired 유의성 미달이면 강등
 
 
 def _attempt_row(
@@ -860,93 +836,6 @@ def _attempt_row(
         "model_type":       res.model_type,
         "noop_early_exit":  res.noop_early_exit,
     }
-
-
-def _promote_in_process(
-    conn: PgConn, config: CycleConfig, attempt_id: str, source: str, prev_code: str | None, action_type: str,
-    res: IsolatedResult,
-) -> ConfirmResult:
-    """직접 모드(defer_promotion=False)의 in-process 승격: confirm → 병합 → 저장. Airflow 경로는 bin/run_promote_task.py가 맡는다."""
-    # attempt 평가와 같은 조회 함수를 다시 불러 같은 시점의 값을 얻는다(#388) — confirm과 아래 merge_eval이 이 값을
-    # 공유해야 attempt-time cv와 어긋나지 않는다.
-    best_params = _prev_best_params(conn, config.competition_id)
-    tuned_params = _latest_tuned_params(conn, config.competition_id)
-    confirm = confirm_and_measure(
-        source=source,
-        best_source=prev_code,
-        train90=config.train,
-        holdout10=config.holdout,
-        target_col=config.target_col,
-        metric=config.metric,
-        n_splits=config.n_splits,
-        seed=config.seed,
-        is_classification=config.is_classification,
-        confirm_seeds=PROMOTE_CONFIRM_SEEDS,
-        action_type=action_type,
-        cache=PromotionCache(conn),
-        competition_id=config.competition_id,
-        candidate_cv=res.cv_score,
-        candidate_fold_scores=res.fold_scores,
-        cpu_budget_sec=config.cpu_budget_secs,
-        conn=conn,
-        best_params=best_params,
-        tuned_params=tuned_params,
-    )
-    record_confirm(conn, attempt_id, confirm)
-    if not confirm.confirmed:
-        reason = "holdout 악화" if confirm.holdout_regressed else "cross-seed 미확인"
-        _LOG.info("%s — 승격 스킵 (gain=%+.5f)", reason, res.gain_vs_best)
-        return confirm
-
-    # materialize 먼저 → 해시는 실제 MinIO에 올라가는 내용(submit.py가 exec하는 그 문자열) 기준이어야 한다.
-    # raw.pipelines.code(winner source)와는 다른 문자열이므로 sha256을 insert_pipeline에 함께 기록한다.
-    promoted_source = with_frozen_params(source, res.selected_params)
-    materialized = materialize_best_pipeline(prev_code, promoted_source)
-    # merge-verify와 같은 패턴으로 materialized를 1회 재평가하는 김에 OOF를 얹는다. 이 경로는 merge-verify 게이트가 없으므로
-    # 실패해도 승격 자체는 막지 않고 oof_preds만 비운다 — best-effort.
-    merge_oof_preds = None
-    try:
-        merge_eval = eval_isolated(
-            source=materialized,
-            train=config.train,
-            target_col=config.target_col,
-            metric=config.metric,
-            prev_best=None,
-            n_splits=config.n_splits,
-            seed=config.seed,
-            is_classification=config.is_classification,
-            collect_oof=True,
-            cpu_budget_sec=config.cpu_budget_secs,
-            best_params=best_params,
-            tuned_params=tuned_params,
-        )
-        if not merge_eval.error_trace and merge_eval.cv_score is not None:
-            merge_oof_preds = merge_eval.oof_preds
-    except Exception as exc:
-        _LOG.warning("merge-verify OOF 수집 실패(무시하고 계속): %s", exc)
-
-    try:
-        with conn.transaction():
-            insert_pipeline(
-                conn,
-                pipeline_id=str(uuid.uuid4()),
-                attempt_id=attempt_id,
-                competition_id=config.competition_id,
-                fingerprint_snapshot=competition_fingerprint(conn, config.competition_id),
-                code=promoted_source,
-                cv_score=res.cv_score,
-                gain_vs_best=res.gain_vs_best,
-                pipeline_sha256=hashlib.sha256(materialized.encode()).hexdigest(),
-                oof_preds=merge_oof_preds,
-                materialized_code=materialized,
-            )
-            # 트랜잭션 안에서 부른다 — 업로드 실패가 insert를 롤백해야 DB와 blob이 어긋나지 않는다.
-            _best_pipeline_upload(config.competition_id, materialized, strict=True)
-    except BestPipelineUploadError as exc:
-        _LOG.warning("best pipeline 업로드 실패 — 승격 롤백: %s", exc)
-    else:
-        _LOG.info("best pipeline materialized (gain=%+.5f)", res.gain_vs_best)
-    return confirm
 
 
 def _strategize_attempt(
@@ -998,7 +887,6 @@ def run_attempt_core(
     super_cycle_id: str | None = None,
     attempt_index: int | None = None,
     forced_action: str | None = None,
-    defer_promotion: bool = False,
 ) -> _AttemptData:
     """Strategize → Generate → Evaluate → Persist one attempt. Returns data needed for reflect."""
     if config.holdout is not None:
@@ -1018,10 +906,7 @@ def run_attempt_core(
         stagnation.is_stagnant if stagnation else False,
     )
     decision = _strategize_attempt(conn, config, lessons, prev_best_cv, stagnation, forced_action)
-    if config.stage == "bootstrap" and config.seed_code:
-        prev_code: str | None = config.seed_code
-    else:
-        prev_code = _load_best_pipeline(config.competition_id)
+    prev_code = _load_best_pipeline(config.competition_id)
     action_type = "bootstrap" if (config.stage == "bootstrap" and not prev_code) else decision.action_type
 
     gen_kwargs, source, generated, static_errs = _generate_attempt_source(conn, config, decision, prev_code, action_type)
@@ -1035,7 +920,7 @@ def run_attempt_core(
             conn, config, source, generated - 1, prev_best_cv, prev_code, action_type, gen_kwargs, prev_best_fold_scores,
         )
     res = ev.result
-    label, significant, error_trace = _judge_attempt(conn, config, res, ev.error_trace, prev_best_fold_scores)
+    label, error_trace = _judge_attempt(conn, config, res, ev.error_trace, prev_best_fold_scores)
 
     code_path = _save_code(
         ev.source,
@@ -1053,29 +938,21 @@ def run_attempt_core(
     row = _attempt_row(attempt_id, config, decision, action_type, lessons, ev, label, error_trace, code_path, duration_sec)
     if super_cycle_id is not None:
         row["super_cycle_id"] = super_cycle_id
-        if defer_promotion:
-            # NULL이면 reflection_impact 뷰(IS NOT FALSE)가 승격된 attempt로 집계한다(#205) — promote가 확정할 때만 True로 바꾼다.
-            row["was_promoted"] = False
+        # NULL이면 reflection_impact 뷰(IS NOT FALSE)가 승격된 attempt로 집계한다(#205) — promote가 확정할 때만 True로 바꾼다.
+        row["was_promoted"] = False
     insert_attempt(conn, row)
-
-    # defer_promotion=True면 caller(Airflow promote task)가 winner만 승격한다.
-    confirm: ConfirmResult | None = None
-    if not defer_promotion and significant and not error_trace:
-        confirm = _promote_in_process(conn, config, attempt_id, ev.source, prev_code, action_type, res)
 
     _LOG.info(
         "persist done — total %.1fs attempt_id=%s action=%s label=%s retries=%d",
         duration_sec, attempt_id[:8], action_type, label, ev.retries,
     )
 
-    # confirm이 jump를 거부했으면(cross-seed 미재현/holdout 악화) 보상 신호를 regression으로 다운그레이드한다(#164).
-    reward_label = effective_label(label, confirm)
     if config.stage == "reflexion":
         update_bandit(
             conn,
             competition_id=config.competition_id,
             action_type=action_type,
-            label=reward_label,
+            label=label,
             gain_vs_best=res.gain_vs_best,
             error_trace=error_trace,
             is_noop_tie=res.is_noop_tie,
@@ -1084,76 +961,9 @@ def run_attempt_core(
     return _AttemptData(
         attempt_id=attempt_id,
         decision=decision,
-        action_type=action_type,
-        source=ev.source,
         cv_score=res.cv_score,
-        cv_fold_var=res.cv_fold_var or 0.0,
         label=label,
         gain_vs_best=res.gain_vs_best,
         retries=ev.retries,
-        error_trace=error_trace,
-        code_path=code_path,
-        feature_importance=res.feature_importance,
-        reward_label=reward_label,
         is_noop_tie=res.is_noop_tie,
-    )
-
-
-def _do_reflect(conn: PgConn, competition_id: str, data: _AttemptData) -> str | None:
-    """Reflect if label warrants it, or if a no-op tie was detected —
-    otherwise these zero-effect attempts silently bypass the label gate (label=neutral,
-    error_trace=None) and the strategist never learns why the action had no effect.
-
-    data.reward_label(jump/regression 둘 다 이 게이트를 통과하므로 판정 자체는
-    안 바뀐다)을 쓴다 — confirm이 jump를 거부한 경우 lesson도 "CV에서는 좋아
-    보였지만 실제 검증은 통과 못 했다"는 correction된 신호를 받아야 한다(#164).
-    """
-    if data.reward_label not in ("jump", "regression") and data.error_trace is None and not data.is_noop_tie:
-        return None
-    ctx = AttemptContext(
-        hypothesis=data.decision.hypothesis,
-        action_type=data.action_type,
-        code=data.source,
-        cv_score=data.cv_score or 0.0,
-        cv_fold_var=data.cv_fold_var,
-        gain_vs_best=data.gain_vs_best,
-        label=data.reward_label,
-        retrieved_ids=data.decision.reflection_ids,
-        feature_importance=data.feature_importance,
-        error_trace=data.error_trace,
-        is_noop_tie=data.is_noop_tie,
-    )
-    try:
-        output = reflect(conn, attempt_id=data.attempt_id, competition_id=competition_id, context=ctx)
-        return output.reflection_id
-    except EmbeddingUnavailableError:
-        return None
-
-
-def run_cycle(
-    conn: PgConn,
-    config: CycleConfig,
-) -> CycleResult:
-    fail_summary = _recent_failure_summary(conn, config.competition_id)
-    query = _build_retrieval_query(conn, config.competition_id, config.eda_card, fail_summary)
-    try:
-        lessons = search(conn, query, config.competition_id, k=config.k_retrieve)
-    except EmbeddingUnavailableError as exc:
-        _LOG.warning("embedding unavailable, proceeding with no lessons: %s", exc)
-        lessons = []
-    prev_best_cv = _prev_best(conn, config.competition_id)
-
-    data = run_attempt_core(conn, config, lessons, prev_best_cv)
-
-    reflection_id = _do_reflect(conn, config.competition_id, data)
-
-    return CycleResult(
-        attempt_id=data.attempt_id,
-        cv_score=data.cv_score,
-        label=data.label,
-        gain_vs_best=data.gain_vs_best,
-        retries=data.retries,
-        reflection_id=reflection_id,
-        error_trace=data.error_trace,
-        code_path=data.code_path,
     )

@@ -1,4 +1,4 @@
-"""Cold-start: fingerprint 계산 → 유사 대회 검색 → 시드/교훈 추출 → JSON 저장.
+"""신규 대회 등록: fingerprint 계산 → raw.competitions 등록 → 유사 대회·교훈·시드 파이프라인 요약 출력.
 
 Usage:
     uv run python bin/start_competition.py \\
@@ -17,7 +17,6 @@ from evaluator.metrics import get as get_metric
 from memory.transfer import find_similar_competitions, cold_start_lessons, bootstrap_seeds
 
 DATA_ROOT = Path(__file__).parent.parent / "data"
-COLD_START_DIR = Path(__file__).parent.parent / "runs" / "cold_start"
 
 
 def main() -> None:
@@ -76,16 +75,6 @@ def main() -> None:
     print(f"시드 파이프라인: {len(seeds)}개")
     for s in seeds:
         print(f"  {s['pipeline_id'][:8]}  cv={s['cv_score']:.5f}  from={s['competition_id']}")
-
-    COLD_START_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = COLD_START_DIR / f"{args.id}.json"
-    out_path.write_text(json.dumps({
-        "competition_id":      args.id,
-        "similar_competitions": similar,
-        "lesson_ids":          [l["reflection_id"] for l in lessons],
-        "seed_pipeline_ids":   [s["pipeline_id"] for s in seeds],
-    }, indent=2))
-    print(f"\ncold-start 정보 저장: {out_path}")
     conn.close()
 
 

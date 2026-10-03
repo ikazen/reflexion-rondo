@@ -6,6 +6,12 @@
 
 - #473: 소비처가 없던 일회성 스크립트 `bin/backfill_error_signatures.py`(68줄, 2026-07 소급 채움)와 `bin/export_results.py`(138줄, CSV 내보내기)를 삭제한다.
   이력은 git에 남는다. README 구조 트리와 `store/schema.sql` 주석의 언급을 정리했다.
+- #474: direct 모드(`AIRFLOW_URL` 없이 daemon 프로세스 안에서 단일 attempt를 도는 로컬 smoke 경로)를 제거한다. 삭제: `bin/run_reflexion.py`, `cycle/run.py`의
+  `run_cycle`/`_promote_in_process`/`_do_reflect`/`CycleResult`와 `run_attempt_core`의 `defer_promotion` 인자·분기(항상 True였던 프로덕션 경로만 남김),
+  `CycleConfig.seed_code`, daemon의 `_run_direct_cycle`과 direct 분기, `healthcheck --cycle`, `start_competition`의 cold-start JSON 출력. daemon은 `AIRFLOW_URL`
+  없이 시작하면 오류로 종료한다. 영향: `--cold-start` seed code 주입(direct 모드 전용)이 사라졌다 — 운영 bootstrap은 이미 큐 API로 시드 없이 진행해 왔다.
+  README/architecture/runbook/setup의 해당 절차를 정리했다. 진입점 테스트가 없어 stale 인자가 운영 attempt를 죽일 뻔한 것을 발견해
+  `tests/test_run_attempt_task.py`(autospec으로 시그니처 검증)를 추가했다.
 
 ---
 

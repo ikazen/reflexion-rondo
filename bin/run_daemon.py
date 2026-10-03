@@ -23,23 +23,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import FrameType, ModuleType
 
-import polars as pl
-
 import bin.airflow_client as airflow_client
 from bin.api import _SUBMIT_TIMEOUT_SEC, DaemonState, create_app, refresh_submission_row
 from config.competitions import active_competition_ids, comp_cpu_budget_secs, comp_n_splits, competition_id_to_slug
 from config.settings import TUNE_LANE_ENABLED, TUNE_TIMEOUT_SEC
 from bin.archive_lessons import archive_low_gain_lessons
-from cycle.run import (
-    BaselineSourceMismatchError,
-    CycleConfig,
-    EvalFingerprintMismatchError,
-    TrainFingerprintMismatchError,
-    establish_bootstrap_baseline,
-    run_cycle,
-)
-from memory.retriever import EmbeddingUnavailableError
-from store.db import PgConn, connect, ensure_competition
+from cycle.run import establish_bootstrap_baseline
+from store.db import PgConn, connect
 from store.train_data import load_train
 
 POLL_INTERVAL_SEC = 10
@@ -201,9 +191,9 @@ def _is_cancelled(conn: PgConn, queue_id: str) -> bool:
     return row is not None and row[0] == "cancelled"
 
 
-def _final_status(cycles_done: int, skipped: int, failed_cycles: int) -> tuple[str, str | None]:
-    if cycles_done == 0 and (skipped + failed_cycles) > 0:
-        return "failed", f"all cycles unsuccessful — {failed_cycles} failed, {skipped} skipped"
+def _final_status(successes: int, failed_cycles: int) -> tuple[str, str | None]:
+    if successes == 0 and failed_cycles > 0:
+        return "failed", f"all cycles unsuccessful — {failed_cycles} failed"
     return "done", None
 
 
@@ -542,50 +532,17 @@ def _run_airflow_cycle(
     return "success", cv, None
 
 
-def _run_direct_cycle(
-    conn: PgConn, comp: ModuleType, stage: str, train: pl.DataFrame, label: str,
-) -> tuple[str, float | None, str | None]:
-    """in-process로 attempt 1회를 돌린다(로컬 smoke 경로). (결과, cv, 사유) — 결과는 success/skipped/failed/aborted."""
-    config = CycleConfig(
-        competition_id=comp.COMPETITION_ID,
-        train=train,
-        target_col=comp.TARGET,
-        metric=comp.METRIC,
-        stage=stage,
-        eda_card=comp.EDA_CARD,
-        n_splits=comp_n_splits(comp),
-        is_classification=comp.IS_CLASSIFICATION,
-        cpu_budget_secs=comp_cpu_budget_secs(comp),
-    )
-    try:
-        result = run_cycle(conn, config)
-    except EmbeddingUnavailableError as exc:
-        print(f"[daemon] cycle {label} skipped — embedding unavailable: {exc}")
-        return "skipped", None, None
-    except (TrainFingerprintMismatchError, EvalFingerprintMismatchError, BaselineSourceMismatchError) as exc:
-        # baseline 게이트 정합성 문제(load_train 설정 변경 미반영 #258, 평가 노브 변경 미반영 #348,
-        # 또는 격리/remeasure 후 MinIO 미재구성 #278) — 재시도해봐야 계속 막히므로
-        # 리스를 즉시 중단한다. 가드가 이미 auto_submit_paused_reason을 심어
-        # 대시보드에 노출된다.
-        return "aborted", None, str(exc)
-    except Exception as exc:
-        return "failed", None, str(exc)
-    print(f"[daemon] cycle {label} attempt={result.attempt_id[:8]} cv={result.cv_score} label={result.label}")
-    return "success", result.cv_score, None
-
-
-def _establish_baseline_after_bootstrap(conn: PgConn, comp: ModuleType, qid: str, train: pl.DataFrame | None) -> None:
+def _establish_baseline_after_bootstrap(conn: PgConn, comp: ModuleType, qid: str) -> None:
     """bootstrap 배치가 최소 1 cycle이라도 성공했으면 baseline 확립을 시도한다.
 
-    이미 확정 파이프라인이 있으면(재부트스트랩 등) establish_bootstrap_baseline이 내부에서 스킵한다 — airflow 모드는 train이
-    로드 안 돼 있으므로 여기서 새로 읽는다. 실패해도 daemon 루프 자체는 계속돼야 하므로 예외를 여기서 흡수한다.
+    이미 확정 파이프라인이 있으면(재부트스트랩 등) establish_bootstrap_baseline이 내부에서 스킵한다 — train은 여기서 새로 읽는다.
+    실패해도 daemon 루프 자체는 계속돼야 하므로 예외를 여기서 흡수한다.
     """
     try:
-        bootstrap_train = train if train is not None else load_train(comp)
         established = establish_bootstrap_baseline(
             conn,
             competition_id=comp.COMPETITION_ID,
-            train=bootstrap_train,
+            train=load_train(comp),
             target_col=comp.TARGET,
             metric=comp.METRIC,
             n_splits=comp_n_splits(comp),
@@ -601,8 +558,8 @@ def _establish_baseline_after_bootstrap(conn: PgConn, comp: ModuleType, qid: str
 
 
 def _finish_lease(
-    conn: PgConn, comp: ModuleType, item: dict, train: pl.DataFrame | None,
-    cycles_done: int, latest_score: float | None, successes: int, skipped: int, failed_cycles: int, aborted: bool,
+    conn: PgConn, comp: ModuleType, item: dict,
+    cycles_done: int, latest_score: float | None, successes: int, failed_cycles: int, aborted: bool,
 ) -> None:
     qid, stage, n_cycles = item["queue_id"], item["stage"], item["n_cycles"]
     if aborted:
@@ -616,7 +573,7 @@ def _finish_lease(
         _set_status(conn, qid, "pending", cycles_done=cycles_done, latest_score=latest_score)
         print(f"[daemon] queue_id={qid} lease exhausted at {cycles_done}/{n_cycles} — requeued")
     else:
-        status, err = _final_status(successes, skipped, failed_cycles)
+        status, err = _final_status(successes, failed_cycles)
         _set_status(conn, qid, status,
                     ended_at=datetime.now(timezone.utc),
                     cycles_done=cycles_done,
@@ -626,7 +583,7 @@ def _finish_lease(
         print(f"[daemon] queue_id={qid} {status} latest_score={latest_score}{suffix}")
 
         if stage == "bootstrap" and successes > 0:
-            _establish_baseline_after_bootstrap(conn, comp, qid, train)
+            _establish_baseline_after_bootstrap(conn, comp, qid)
 
 
 def _start_lease(conn: PgConn, state: DaemonState, qid: str, competition: str, cycles_done: int, n_cycles: int) -> None:
@@ -654,10 +611,9 @@ def _process(conn: PgConn, item: dict, pacer: OllamaPacer, state: DaemonState) -
     cycles_done = item.get("cycles_done") or 0
     latest_score: float | None = item.get("latest_score")
 
-    mode = "airflow" if airflow_client.available() else "direct"
     print(
         f"[daemon] starting queue_id={qid} competition={competition} stage={stage} "
-        f"progress={cycles_done}/{n_cycles} mode={mode}"
+        f"progress={cycles_done}/{n_cycles}"
     )
     _start_lease(conn, state, qid, competition, cycles_done, n_cycles)
 
@@ -668,27 +624,12 @@ def _process(conn: PgConn, item: dict, pacer: OllamaPacer, state: DaemonState) -
         print(f"[daemon] failed to load competition config: {exc}")
         return
 
-    # direct 모드는 로컬 smoke/test용 단일 attempt 경로다.
-    # airflow 모드는 task 컨테이너 안에서 데이터를 로드하고 super-cycle을 실행한다.
-    train: pl.DataFrame | None = None
-    if mode == "direct":
-        train = load_train(comp)
-        ensure_competition(
-            conn,
-            competition_id=comp.COMPETITION_ID,
-            name=comp.NAME,
-            task_type=comp.TASK_TYPE,
-            metric=comp.METRIC,
-            metric_sign=comp.METRIC_SIGN,
-        )
-
     # successes는 "이번 리스에서 실제로 성공한 cycle 수"(_final_status의 "전량 실패"
-    # 판정용, 기존 cycles_done의 원래 의미). cycles_done은 이제 성공/실패/스킵을
+    # 판정용, 기존 cycles_done의 원래 의미). cycles_done은 이제 성공/실패를
     # 가리지 않고 소비한 예산 전체를 가리킨다 — 리스 경계를 넘어 n_cycles 소진 여부를
     # 정확히 재개 판단하려면 "시도한 총량"이 필요하기 때문(성공만 세면 계속 실패하는
     # 대회가 예산을 영영 못 채워 무한정 리스를 반복하게 된다).
     successes = 0
-    skipped = 0
     failed_cycles = 0
     consecutive_failures = 0
     aborted = False
@@ -704,26 +645,13 @@ def _process(conn: PgConn, item: dict, pacer: OllamaPacer, state: DaemonState) -
         pacer.acquire()
 
         label = f"{cycles_done + 1}/{n_cycles}"
-        if mode == "airflow":
-            outcome, score, err_msg = _run_airflow_cycle(conn, comp, competition, stage, qid, label)
-        else:
-            outcome, score, err_msg = _run_direct_cycle(conn, comp, stage, train, label)
-
-        if outcome == "aborted":
-            print(f"[daemon] queue_id={qid} aborted — {err_msg}")
-            _set_status(conn, qid, "failed", ended_at=datetime.now(timezone.utc),
-                        cycles_done=cycles_done, latest_score=latest_score,
-                        error=err_msg[:2000])
-            aborted = True
-            break
+        outcome, score, err_msg = _run_airflow_cycle(conn, comp, competition, stage, qid, label)
         if outcome == "success":
             if score is not None:
                 latest_score = score
             successes += 1
             consecutive_failures = 0
             pacer.record()
-        elif outcome == "skipped":
-            skipped += 1
 
         cycles_done += 1
         state.update(current_cycle=cycles_done, last_cycle_at=datetime.now(timezone.utc))
@@ -749,9 +677,6 @@ def _process(conn: PgConn, item: dict, pacer: OllamaPacer, state: DaemonState) -
                 break
             continue
 
-        if outcome == "skipped":
-            continue
-
         # 사이클이 성공한 직후 무조건 "running"으로 되돌아가면, 이 사이클이
         # 진행되는 동안(대부분의 시간, ~2분) 걸린 외부 PATCH cancelled 요청이 여기서
         # 조용히 지워지고 다음 반복의 취소 체크는 이미 복구된 "running"만 보게 된다 —
@@ -766,7 +691,7 @@ def _process(conn: PgConn, item: dict, pacer: OllamaPacer, state: DaemonState) -
         _set_status(conn, qid, "running",
                     cycles_done=cycles_done, latest_score=latest_score)
 
-    _finish_lease(conn, comp, item, train, cycles_done, latest_score, successes, skipped, failed_cycles, aborted)
+    _finish_lease(conn, comp, item, cycles_done, latest_score, successes, failed_cycles, aborted)
 
     state.update(current_queue_id=None, current_competition=None,
                  current_cycle=0, current_n_cycles=0)
@@ -787,10 +712,9 @@ def main() -> None:
             f"weekly={pacer.weekly_cycles} cycles"
         )
 
-    if airflow_client.available():
-        print(f"[daemon] airflow mode — {airflow_client._AIRFLOW_URL} dag={airflow_client.DAG_ID}")
-    else:
-        print("[daemon] direct mode — AIRFLOW_URL not set, running single-attempt test cycles in-process")
+    if not airflow_client.available():
+        raise SystemExit("[daemon] AIRFLOW_URL이 설정돼 있지 않아 시작할 수 없다 — 사이클은 Airflow DAG로만 실행된다")
+    print(f"[daemon] airflow mode — {airflow_client._AIRFLOW_URL} dag={airflow_client.DAG_ID}")
 
     state = DaemonState()
     api_thread = threading.Thread(target=_run_api, args=(state,), daemon=True)
