@@ -409,6 +409,9 @@ def _maybe_trigger_tune(conn: PgConn, competition_slug: str, attempt_id: str) ->
         ).fetchone()
         if not pipeline_row:
             return
+        if airflow_client.tune_run_in_flight(competition_slug):
+            print(f"[daemon] promotion-triggered tune skipped for {competition_slug}: tune run already in flight")
+            return
         tune_run_id = airflow_client.trigger_tune_dag_run(competition_slug, timeout_sec=TUNE_TIMEOUT_SEC)
         print(f"[daemon] promotion-triggered tune DAG for {competition_slug}: {tune_run_id}")
     except Exception as exc:
@@ -465,8 +468,7 @@ def _sweep_idle_tuning(conn: PgConn) -> None:
         last = last_tune.get(cid)
         if last is not None and _naive_utc(last) >= idle_cutoff:
             continue
-        # 승격 트리거(_maybe_trigger_tune)는 새 pipeline이 대상이라 진행 중인 런과 무관하게 필요하지만, 이 스윕은
-        # 런이 끝나 tuned_params가 갱신될 때까지(약 3h) 같은 pipeline을 매시간 다시 트리거한다(#360).
+        # 런이 끝나 tuned_params가 갱신될 때까지(약 3h) 같은 pipeline을 매시간 다시 트리거하는 것을 막는다(#360).
         try:
             if airflow_client.tune_run_in_flight(slug):
                 print(f"[daemon] idle-tune skipped {slug}: tune run already in flight")
