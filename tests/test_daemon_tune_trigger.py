@@ -63,24 +63,25 @@ def test_maybe_trigger_tune_triggers_when_pipeline_confirmed():
     conn.execute.return_value.fetchone.return_value = (1,)
     with (
         patch("bin.run_daemon.airflow_client.available", return_value=True),
+        patch("bin.run_daemon.airflow_client.tune_run_in_flight", return_value=False),
         patch("bin.run_daemon.airflow_client.trigger_tune_dag_run", return_value="run-1") as mock_trigger,
     ):
         _maybe_trigger_tune(conn, "s6e8", "attempt-1")
     mock_trigger.assert_called_once_with("s6e8", timeout_sec=TUNE_TIMEOUT_SEC)
 
 
-def test_maybe_trigger_tune_ignores_in_flight_runs():
-    """#360: 승격 트리거는 새로 확정된 pipeline이 대상이라 같은 대회 런이 진행 중이어도 트리거해야 한다."""
+def test_maybe_trigger_tune_skips_when_same_competition_run_in_flight():
+    """같은 대회 튜닝이 진행 중이면 승격 트리거도 건너뛴다 — 겹친 런이 big 큐 슬롯을 굶긴다(#471)."""
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = (1,)
     with (
         patch("bin.run_daemon.airflow_client.available", return_value=True),
         patch("bin.run_daemon.airflow_client.tune_run_in_flight", return_value=True) as mock_in_flight,
-        patch("bin.run_daemon.airflow_client.trigger_tune_dag_run", return_value="run-1") as mock_trigger,
+        patch("bin.run_daemon.airflow_client.trigger_tune_dag_run") as mock_trigger,
     ):
         _maybe_trigger_tune(conn, "s6e8", "attempt-1")
-    mock_in_flight.assert_not_called()
-    mock_trigger.assert_called_once_with("s6e8", timeout_sec=TUNE_TIMEOUT_SEC)
+    mock_in_flight.assert_called_once_with("s6e8")
+    mock_trigger.assert_not_called()
 
 
 def test_maybe_trigger_tune_swallows_trigger_exception():
@@ -88,6 +89,7 @@ def test_maybe_trigger_tune_swallows_trigger_exception():
     conn.execute.return_value.fetchone.return_value = (1,)
     with (
         patch("bin.run_daemon.airflow_client.available", return_value=True),
+        patch("bin.run_daemon.airflow_client.tune_run_in_flight", return_value=False),
         patch("bin.run_daemon.airflow_client.trigger_tune_dag_run", side_effect=RuntimeError("boom")),
     ):
         _maybe_trigger_tune(conn, "s6e8", "attempt-1")  # 예외 전파되면 실패

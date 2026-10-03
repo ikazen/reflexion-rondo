@@ -372,8 +372,8 @@ uv run python -m bin.freeze_base --competition <competition-id>             # Mi
 
 ### 4-10. 튜닝 레인 점검 (#318, #360, ADR-050)
 
-`reflexion_rondo_tune` 런은 끝날 때(약 3h) 한 번에 `raw.tuned_params`를 쓴다. daemon 스윕은 진행 중인 런이 있으면 같은 대회를 다시 트리거하지
-않지만(`tune_run_in_flight`), 수동 트리거나 재기동 직후에는 같은 대회 런이 겹칠 수 있다. 겹치면 가장 이른 런만 남기고 나머지를 종료한다:
+`reflexion_rondo_tune` 런은 끝날 때(약 3h) 한 번에 `raw.tuned_params`를 쓴다. daemon의 두 트리거(승격, idle 스윕)는 진행 중인 런이 있으면 같은 대회를
+다시 트리거하지 않지만(`tune_run_in_flight`, #471), 수동 트리거나 재기동 직후에는 같은 대회 런이 겹칠 수 있다. 겹치면 가장 이른 런만 남기고 나머지를 종료한다:
 
 ```bash
 # 진행 중 런 조회와 종료 (Airflow REST)
