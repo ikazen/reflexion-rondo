@@ -423,8 +423,8 @@ def main() -> None:
                     conn, comp, competition_id, train90, holdout10, winner_row, winner_source, current_best,
                     best_params, tuned_params,
                 )
-                # bandit 보상을 confirm 결과와 연동 — cycle/run.py의 attempt-생성 시점 update_bandit(defer_promotion=True라
-                # 원본 label로 이미 한 번 쐈다)은 confirm을 모른다. confirm이 jump를 거부하면 regression 방향으로 보정
+                # bandit 보상을 confirm 결과와 연동 — cycle/run.py의 attempt-생성 시점 update_bandit은
+                # 원본 label로 이미 한 번 쐈고 confirm을 모른다. confirm이 jump를 거부하면 regression 방향으로 보정
                 # 신호를 추가로 준다 — 안 그러면 같은 action_type이 다음 cycle에 계속 높은 확률로 재선택된다(#164).
                 bandit_label = effective_label(winner_row[3], confirm)
                 update_bandit(

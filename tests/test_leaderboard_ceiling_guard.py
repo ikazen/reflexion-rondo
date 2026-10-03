@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 
 from agents.strategist import StrategyDecision
-from cycle.promotion import ConfirmResult, leaderboard_ceiling_violation
+from cycle.promotion import leaderboard_ceiling_violation
 from cycle.run import CycleConfig, run_attempt_core
 from cycle.stagnation import StagnationSignal
 from runtime.isolate import IsolatedResult
@@ -279,7 +279,6 @@ def test_run_attempt_core_isolates_cv_exceeding_world_best():
     ):
         data = run_attempt_core(
             conn, _config(), lessons=[], prev_best_cv=0.89,
-            defer_promotion=True,
         )
 
     assert data.label == "error"
@@ -318,7 +317,6 @@ def test_run_attempt_core_untouched_when_within_ceiling():
     ):
         data = run_attempt_core(
             conn, _config(), lessons=[], prev_best_cv=0.89,
-            defer_promotion=True,
         )
 
     mock_ceiling.assert_called_once()

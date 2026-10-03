@@ -67,7 +67,6 @@ def _run(eval_side_effect, generate_code_mock=None, cpu_budget_secs=None,
     ):
         data = run_attempt_core(
             conn, _config(cpu_budget_secs), lessons=[], prev_best_cv=0.89,
-            defer_promotion=True,
         )
     return data, mock_insert, mock_eval, generate_code_mock
 

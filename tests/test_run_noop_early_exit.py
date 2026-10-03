@@ -62,7 +62,6 @@ def _run(eval_side_effect, generate_code_mock=None, validate_patch_mock=None):
     ):
         data = run_attempt_core(
             conn, _config(), lessons=[], prev_best_cv=0.9,
-            defer_promotion=True,
         )
     return data, mock_insert, mock_eval, generate_code_mock
 

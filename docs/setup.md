@@ -191,12 +191,8 @@ uv run python bin/start_competition.py \
     --task binary --metric auc --target Exited
 ```
 
-이후 운영 daemon을 실행하거나, 로컬 smoke/test 용도로 단일 사이클을 실행한다.
+이후 daemon을 실행한다. `AIRFLOW_URL`이 있어야 시작하며 Airflow super-cycle을 트리거한다.
 
 ```bash
-# 운영 daemon. AIRFLOW_URL이 있으면 Airflow super-cycle을 트리거한다.
 uv run python -m bin.run_daemon
-
-# daemon 없이 수동 단일 사이클 실행
-uv run python -m bin.run_reflexion --competition s4e1 --stage bootstrap --cycles 1
 ```

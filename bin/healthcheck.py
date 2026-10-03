@@ -2,7 +2,6 @@
 
 Usage:
     python -m bin.healthcheck                    # DB/MinIO/Ollama/Airflow 연결 확인
-    python -m bin.healthcheck --cycle s4e1       # + 1사이클 실행 (LLM 토큰 소모)
 """
 from __future__ import annotations
 
@@ -123,8 +122,6 @@ def _row(label: str, ok: bool | None, detail: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="reflexion-rondo dependency health check")
-    parser.add_argument("--cycle", metavar="COMPETITION",
-                        help="health 통과 후 1사이클 실행 (LLM 토큰 소모)")
     parser.add_argument("--skip", metavar="CHECK", nargs="+", default=[],
                         help="지정 체크를 SKIP으로 처리 (e.g. --skip ollama_local airflow)")
     args = parser.parse_args()
@@ -151,47 +148,6 @@ def main() -> None:
         sys.exit(1)
 
     print(f"{_GREEN}OK{_RESET}\n")
-
-    if args.cycle:
-        _run_cycle(args.cycle)
-
-
-def _run_cycle(competition: str) -> None:
-    import importlib
-    import time
-
-    import polars as pl
-
-    from config.competitions import comp_cpu_budget_secs, comp_n_splits
-    from cycle.run import CycleConfig, run_cycle
-    from store.db import connect
-
-    comp = importlib.import_module(f"config.competitions.{competition}")
-    train_path = comp.DATA_DIR / "train.csv"
-    if not train_path.exists():
-        print(f"SKIP cycle: {train_path} not found")
-        return
-
-    print(f"running 1 cycle for {competition} ...")
-    train = pl.read_csv(train_path)
-    train = train.drop([c for c in comp.DROP_COLS if c in train.columns])
-
-    conn = connect(apply_schema=False)
-    config = CycleConfig(
-        competition_id=comp.COMPETITION_ID,
-        train=train,
-        target_col=comp.TARGET,
-        metric=comp.METRIC,
-        stage="bootstrap",
-        eda_card=comp.EDA_CARD,
-        n_splits=comp_n_splits(comp),
-        is_classification=comp.IS_CLASSIFICATION,
-        cpu_budget_secs=comp_cpu_budget_secs(comp),
-    )
-    t0 = time.time()
-    result = run_cycle(conn, config)
-    conn.close()
-    print(f"cycle done  attempt={result.attempt_id[:8]} cv={result.cv_score} [{time.time()-t0:.1f}s]")
 
 
 if __name__ == "__main__":

@@ -38,7 +38,7 @@ classification 계열 metric만 쓴다.
 - 객체 스토리지: MinIO (생성 코드 `.py` 저장). `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`.
 - LLM 추론: Ollama Cloud Pro (`OLLAMA_CLOUD_BASE_URL`, `OLLAMA_API_KEY`).
 - 임베딩: Mac Ollama 서버 로컬 (`OLLAMA_BASE_URL`, 키 없음).
-- 운영 호스트: worker-vm (Airflow DockerOperator 경유). 로컬에선 direct 모드로 실행.
+- 운영 호스트: worker-vm (Airflow DockerOperator 경유). daemon은 `AIRFLOW_URL`이 있어야 시작한다.
 
 ## 모델 배정
 
@@ -58,9 +58,8 @@ classification 계열 metric만 쓴다.
 # daemon 시작 (큐 폴링)
 uv run python -m bin.run_daemon
 
-# 새 대회 등록 + 첫 루프
+# 새 대회 등록 (이후 첫 bootstrap은 아래 큐 API로)
 uv run python -m bin.start_competition --id <slug> --name "<명>" --task binary --metric auc --target <col>
-uv run python -m bin.run_reflexion --competition <slug> --stage bootstrap --cycles 5
 
 # 큐 조작 (daemon 실행 중)
 curl -X POST http://localhost:8000/api/queue \
@@ -81,7 +80,6 @@ agents/          LLM 역할 (strategist, coder, reflector)
 bin/             실행 진입점:
                    run_daemon.py (큐 폴링 + FastAPI + Airflow trigger)
                    run_retrieve_task.py / run_attempt_task.py / run_promote_task.py (Airflow super-cycle 3태스크)
-                   run_reflexion.py (로컬/수동 러너)
                    start_competition.py (대회 등록)
                    seed_competition_data.py (Kaggle 다운로드 → MinIO 시딩)
                    archive_lessons.py (저효율 교훈 자동 archive)
@@ -109,7 +107,7 @@ runtime/         격리 실행 (isolate.py → preexec_fn os.unshare(CLONE_NEWNE
 store/           db.py (psycopg2 풀), s3_code.py (MinIO), fingerprint.py, train_data.py (train 로딩), schema.sql
 deploy/          Dockerfile, release.sh (daemon 컷오버, semver — 빌드는 airflow-stack DAG), build.sh (mac-server dev 빌드)
 dashboard.py     Streamlit 모니터링
-runs/            생성 코드 캐시 · cold-start JSON · 제출 CSV (gitignore)
+runs/            생성 코드 캐시 · 제출 CSV (gitignore)
 docs/            아래 문서
 ```
 

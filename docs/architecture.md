@@ -38,9 +38,8 @@
 
 ## 3. Reflexion 슈퍼사이클 (1 super-cycle = 1 retrieve + 3 parallel attempts + 1 promote)
 
-운영 경로는 Airflow DAG `reflexion_rondo_cycle`이다. `bin/run_daemon.py`의 direct 모드는
-`AIRFLOW_URL`이 없을 때 쓰는 로컬 smoke/test fallback이며, 슈퍼사이클이 아니라 단일 `run_cycle()`
-attempt만 실행한다.
+사이클은 Airflow DAG `reflexion_rondo_cycle`로만 실행된다. `bin/run_daemon.py`는 `AIRFLOW_URL` 없이는
+시작하지 않는다(로컬 단일 attempt fallback이던 direct 모드는 #474에서 제거).
 
 Airflow DAG `reflexion_rondo_cycle` 4태스크 구조:
 
@@ -134,8 +133,8 @@ LLM 역할 3개:
 
 > **상태: 부분 구현.** `store/fingerprint.py`, `memory/transfer.py`,
 > `bin/start_competition.py`, `raw.pipelines`, `cold_start_progression` 뷰는 구현되어 있다.
-> 새 대회 등록 시 유사 대회/교훈/seed pipeline id를 `runs/cold_start/{competition_id}.json`에 저장하고,
-> `bin/run_reflexion.py --cold-start`가 이를 읽어 첫 bootstrap 컨텍스트와 seed code로 사용한다.
+> `bin/start_competition.py`는 새 대회 등록 시 유사 대회/교훈/seed 후보를 요약 출력만 한다. seed code를 첫 bootstrap에
+> 주입하던 `bin/run_reflexion.py --cold-start`는 direct 모드와 함께 제거됐다(#474) — 운영 bootstrap은 큐 API로 시드 없이 시작한다.
 > 자동 품질 검증/가중치 캘리브레이션은 아직 운영 데이터가 더 필요하다.
 
 사용자 목표의 핵심: *"다른 Playground Series 하나 넣으면 예전 경험에 기반해 빠르게 시작."* 이를 메커니즘으로 보장한다.
@@ -148,8 +147,7 @@ LLM 역할 3개:
   1. `similar = find_similar_competitions(fp_new, k=3)`
   2. 벡터 메타필터: `(competition_id IN similar AND generality='L2_class') OR generality='L3_general'`, `archived=false`
   3. Top-K 교훈 → Strategist 첫 컨텍스트
-  4. `raw.pipelines`에서 `competition_id IN similar AND gain_vs_best > 0` 코드 1~2개를 seed 후보로 저장
-  5. `bin/run_reflexion.py --cold-start` 첫 bootstrap에서 seed code를 `prev_code`로 주입
+  4. `raw.pipelines`에서 `competition_id IN similar AND gain_vs_best > 0` 코드 1~2개를 seed 후보로 요약 출력(주입 경로는 현재 없음, #474)
 - **측정**: `cold_start_progression` 마트 — 누적 경험량 vs 새 대회 첫 시도의 best 대비 비율(`warm_start_ratio`). 우상향하면 transfer 작동. 아니면
 fingerprint 가중치/generality 라벨링/검색 메타필터 점검.
 
@@ -158,8 +156,8 @@ fingerprint 가중치/generality 라벨링/검색 메타필터 점검.
 1. 데이터셋 다운로드 (Kaggle API)
 2. Fingerprint 계산 → `raw.competitions` insert
 3. 유사 대회 검색 (위)
-4. 시드 후보 구성: 유사 대회 `gain_vs_best > 0` 코드 1~2개 + 도메인 무관 안전 베이스라인 1개(LightGBM + 타깃 인지 k-fold)
-5. Bootstrap attempts로 시드 실행, Strategist 컨텍스트를 L2/L3 교훈으로 워밍
+4. 시드 후보 확인: 유사 대회 `gain_vs_best > 0` 코드 1~2개(`start_competition` 출력, 자동 주입은 없음)
+5. Bootstrap attempts(큐 API)로 시작, Strategist 컨텍스트를 L2/L3 교훈으로 워밍
 6. `reflexion` 단계로 전환
 
 ### Transfer 리스크
@@ -181,7 +179,7 @@ knowledge 풀(`raw.reflections`)을 오염시키지 않는다.
 조회 → 추출 LLM(Strategist/Reflector 와 다른 호출) → 가드 4개(실측 수치 인용 / 다수 동의 / 조건부 진술만 / 500자 상한 + 코드 블록 분리) →
 `raw.external_ideas` insert (Beta(1, 1) 균일 prior).
 - **노출 = stage 게이팅 + 톰슨 샘플링**: `reflexion` Strategist 만, `applies_when` fingerprint 1차 필터 → 각 후보 θ ~ Beta(α, β) 샘플 →
-top-3. `bootstrap`/`exploitation` 은 외부 idea 차단 (cold-start lessons + seed_code 가 이미 외부 신호, exploitation 은 안정화 우선).
+top-3. `bootstrap`/`exploitation` 은 외부 idea 차단 (cold-start lessons 가 이미 외부 신호, exploitation 은 안정화 우선).
 - **승격 = 시스템 기본 루프**: 외부 idea 채택 → Coder 실행 → Evaluator 결정적 신호 → Reflector 정상 reflection. 검증된 부분만 자연히 lessons 풀로 진입. 외부
 idea 자체는 `verified` 마킹 없이 영구 게이트웨이.
 - **사후 학습**: 채택+jump → α++, 채택+regression → β++, 미채택 무변화. `external_idea_bandit` 뷰가 사후 상태 노출. 자동 archive:

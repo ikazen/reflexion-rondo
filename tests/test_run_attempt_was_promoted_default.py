@@ -1,9 +1,9 @@
-"""super-cycle(defer_promotion) 경로에서 was_promoted가 영구 NULL로 남지 않는지 검증한다 (#205).
+"""super-cycle 경로에서 was_promoted가 영구 NULL로 남지 않는지 검증한다 (#205).
 
 `store/schema.sql`의 `reflection_impact` 뷰가 `was_promoted IS NOT FALSE`로 NULL을
 "legacy(승격됨)"로 취급하는 기존 관례 때문에, promote가 아직 안 뒤집은 attempt를 NULL로
-두면(특히 attempt_gate 도입 후 늦게 도착하는 attempt) 승자로 잘못 집계된다. defer_promotion
-경로는 False로 시작해 promote가 winner만 나중에 True로 뒤집어야 한다.
+두면(특히 attempt_gate 도입 후 늦게 도착하는 attempt) 승자로 잘못 집계된다. attempt는
+False로 시작해 promote가 winner만 나중에 True로 뒤집어야 한다.
 """
 from __future__ import annotations
 
@@ -61,12 +61,12 @@ def _run(**kwargs):
     return mock_insert.call_args[0][1]
 
 
-def test_super_cycle_defer_promotion_defaults_was_promoted_false():
-    row = _run(super_cycle_id="sc-1", defer_promotion=True)
+def test_super_cycle_defaults_was_promoted_false():
+    row = _run(super_cycle_id="sc-1")
     assert row["was_promoted"] is False
 
 
 def test_non_super_cycle_path_omits_was_promoted_key():
-    """super_cycle_id가 없는(직접모드) 경로는 기존 동작 그대로 — key 자체를 안 넣는다."""
-    row = _run(super_cycle_id=None, defer_promotion=False)
+    """super_cycle_id가 없으면 was_promoted key 자체를 안 넣는다."""
+    row = _run(super_cycle_id=None)
     assert "was_promoted" not in row

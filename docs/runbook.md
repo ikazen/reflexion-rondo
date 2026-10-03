@@ -54,14 +54,10 @@ uv run python -m bin.start_competition \
 
 ### 1-4. 큐에 등록하고 daemon 실행
 ```bash
-# daemon이 떠있으면 API로 큐잉
+# daemon API로 큐잉
 curl -X POST http://localhost:8000/api/queue \
   -H 'Content-Type: application/json' \
   -d '{"competition": "<slug>", "stage": "bootstrap", "n_cycles": 5}'
-
-# daemon 없이 직접 실행
-uv run python -m bin.run_reflexion \
-    --competition <slug> --stage bootstrap --cycles 5 --cold-start
 ```
 
 ### 1-5. reflexion 루프
@@ -100,11 +96,8 @@ curl -X PATCH http://localhost:8000/api/queue/<queue_id> \
 직전 큐가 `done`이면 30분, `failed`/`cancelled`/이력 없음이면 6시간이 지나야 대상이다(실패하는 대회가 재보급 루프를 도는 것을 막는 안전장치).
 대회를 재보급에서 빼려면 `config/competitions/<slug>.py`의 `ACTIVE = False`.
 
-실행 모드:
-- **airflow 모드 (운영)**: `AIRFLOW_URL` 환경변수가 있으면 Airflow DAG `reflexion_rondo_cycle` 트리거. 1 DAG run = 1 슈퍼사이클 (retrieve →
-attempt_0/1/2 병렬 → promote). retrieve는 default 큐, attempt/promote는 big 큐(순차 실행이라 동시 점유는 없음).
-- **direct 모드 (로컬 테스트)**: `AIRFLOW_URL` 없으면 daemon 프로세스 안에서 단일 `run_cycle()` attempt만 실행한다. forced action 배정, 3-way 병렬
-attempt, promote/loser reflection은 실행하지 않는다.
+실행 방식: daemon은 `AIRFLOW_URL`이 있어야 시작하고(없으면 오류로 종료, direct 모드는 #474에서 제거) Airflow DAG `reflexion_rondo_cycle`을 트리거한다.
+1 DAG run = 1 슈퍼사이클 (retrieve → attempt_0/1/2 병렬 → promote). retrieve는 default 큐, attempt/promote는 big 큐(순차 실행이라 동시 점유는 없음).
 
 **이미지 배포 (semver, issue #17 이후 2단계)**
 
