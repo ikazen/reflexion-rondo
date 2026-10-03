@@ -94,8 +94,6 @@ bin/             실행 진입점:
                    quarantine_leaks.py (타깃 누수 파이프라인 스캔·격리)
                    establish_baseline.py (baseline 없는 대회 소급 확립)
                    backfill_materialized_code.py (승격 행에 병합본 스냅샷 소급)
-                   backfill_error_signatures.py (에러 시그니처 정규화 소급)
-                   export_results.py (핵심 가설 검증 CSV 내보내기)
                    reset.py
 config/          settings.py + competitions/<slug>.py (대회별 설정)
 cycle/           사이클 로직:
