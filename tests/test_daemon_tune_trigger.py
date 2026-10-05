@@ -61,6 +61,7 @@ def test_maybe_trigger_tune_skips_when_attempt_not_a_confirmed_pipeline():
 def test_maybe_trigger_tune_triggers_when_pipeline_confirmed():
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = (1,)
+    conn.execute.return_value.fetchall.return_value = []
     with (
         patch("bin.run_daemon.airflow_client.available", return_value=True),
         patch("bin.run_daemon.airflow_client.tune_run_in_flight", return_value=False),
@@ -74,6 +75,7 @@ def test_maybe_trigger_tune_skips_when_same_competition_run_in_flight():
     """같은 대회 튜닝이 진행 중이면 승격 트리거도 건너뛴다 — 겹친 런이 big 큐 슬롯을 굶긴다(#471)."""
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = (1,)
+    conn.execute.return_value.fetchall.return_value = []
     with (
         patch("bin.run_daemon.airflow_client.available", return_value=True),
         patch("bin.run_daemon.airflow_client.tune_run_in_flight", return_value=True) as mock_in_flight,
@@ -84,9 +86,54 @@ def test_maybe_trigger_tune_skips_when_same_competition_run_in_flight():
     mock_trigger.assert_not_called()
 
 
+def _backoff_conn(runs: list[tuple]) -> MagicMock:
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = ("playground-series-s6e8",)
+    conn.execute.return_value.fetchall.return_value = runs
+    return conn
+
+
+def test_maybe_trigger_tune_skips_after_five_runs_without_improvement():
+    """최근 5회 튜닝이 전부 미개선이면 승격 트리거를 건너뛴다 — in-flight 확인도 하지 않는다(#479)."""
+    conn = _backoff_conn([(False,)] * 5)
+    with (
+        patch("bin.run_daemon.airflow_client.available", return_value=True),
+        patch("bin.run_daemon.airflow_client.tune_run_in_flight") as mock_in_flight,
+        patch("bin.run_daemon.airflow_client.trigger_tune_dag_run") as mock_trigger,
+    ):
+        _maybe_trigger_tune(conn, "s6e8", "attempt-1")
+    mock_trigger.assert_not_called()
+    mock_in_flight.assert_not_called()
+    backoff_params = conn.execute.call_args_list[-1].args[1]
+    assert backoff_params == ["playground-series-s6e8", 5]
+
+
+def test_maybe_trigger_tune_triggers_when_fewer_than_five_runs_exist():
+    conn = _backoff_conn([(False,)] * 4)
+    with (
+        patch("bin.run_daemon.airflow_client.available", return_value=True),
+        patch("bin.run_daemon.airflow_client.tune_run_in_flight", return_value=False),
+        patch("bin.run_daemon.airflow_client.trigger_tune_dag_run", return_value="run-1") as mock_trigger,
+    ):
+        _maybe_trigger_tune(conn, "s6e8", "attempt-1")
+    mock_trigger.assert_called_once_with("s6e8", timeout_sec=TUNE_TIMEOUT_SEC)
+
+
+def test_maybe_trigger_tune_triggers_when_any_recent_run_improved():
+    conn = _backoff_conn([(False,), (False,), (True,), (False,), (False,)])
+    with (
+        patch("bin.run_daemon.airflow_client.available", return_value=True),
+        patch("bin.run_daemon.airflow_client.tune_run_in_flight", return_value=False),
+        patch("bin.run_daemon.airflow_client.trigger_tune_dag_run", return_value="run-1") as mock_trigger,
+    ):
+        _maybe_trigger_tune(conn, "s6e8", "attempt-1")
+    mock_trigger.assert_called_once_with("s6e8", timeout_sec=TUNE_TIMEOUT_SEC)
+
+
 def test_maybe_trigger_tune_swallows_trigger_exception():
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = (1,)
+    conn.execute.return_value.fetchall.return_value = []
     with (
         patch("bin.run_daemon.airflow_client.available", return_value=True),
         patch("bin.run_daemon.airflow_client.tune_run_in_flight", return_value=False),
