@@ -16,8 +16,8 @@ DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_I
 S3_DATA_PATH      = "s5e4/data/"
 EXTRA_TRAIN_PATHS: list[str] = ["original.csv"]  # sangampaudel530/original-podcast-dataset —
 # 컬럼 완전 일치. MinIO kaggle/s5e4/data/original.csv.
-ACTIVE            = True  # deep tier 재활성 (#332, ADR-051) — s5e2 동결로 빈 회귀 트랙 슬롯
-# 교체, SNR 100.8(fleet 2위의 3배)·gap_to_p90 fleet 최대.
+ACTIVE            = False  # deep tier 동결 (#480, ADR-067) — 마지막 확정(09-29) 이후 5.4일 559 attempt / 124 CPU-h에 jump 1,
+# 확정 0, fleet CPU의 43%. 재활성 전 ADR-067 재고 기준 확인(과거 재활성: #332, ADR-051).
 
 # 2026-09 재활성 1일 실측(#340, ADR-052): attempt 70%가 CPU 예산(3600s) kill, fleet
 # CPU의 65%(89h 중 57.5h)를 이 대회 하나가 소각. ADR-044(예산 3600→10800 상향)는 이미
