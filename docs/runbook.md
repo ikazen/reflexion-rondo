@@ -378,6 +378,10 @@ PATCH /api/v2/dags/reflexion_rondo_tune/dagRuns/<dag_run_id>   {"state": "failed
 pipeline cv와 상대 1e-6 넘게 다름 — 태스크 로그에 `tuner: baseline ... 비교 불가능`). 자유형 `build_model` base(s6e8)에서 정상이며
 advisory(`ctx.tuned_params`)는 생성되지 않는다.
 
+승격 트리거는 대회의 최근 5회 튜닝이 모두 미개선이면 건너뛴다(#479, `daemon 로그: promotion-triggered tune skipped ... no improvement`). 확인 쿼리:
+`select bool_or(improved), max(created_at) from raw.tuned_params where competition_id = '<competition-id>' group by tuning_run_id order by 2 desc limit 5`.
+idle 스윕(48h)은 계속 돌아 탐침이 되고 개선이 나오면 승격 트리거가 자동 복귀한다.
+
 ### 4-11. 제출 CSV 재생성과 전량 학습 A/B (#355, ADR-055)
 
 promote task가 대회 best attempt의 제출 CSV를 MinIO(`submissions/<competition_id>/<attempt_id>.csv`)에 캐싱하고, 캐시가 있으면 다시 만들지 않는다.

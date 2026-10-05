@@ -378,6 +378,18 @@ def _sweep_queue_refill(conn: PgConn) -> None:
     print(f"[daemon] queue refill — {len(idle_slugs)} idle competition(s) re-enqueued: {idle_slugs}")
 
 
+_TUNE_BACKOFF_RUNS = 5  # 최근 이 횟수의 튜닝이 전부 미개선이면 승격 트리거를 건너뛴다(#479)
+
+
+def _recent_tunes_all_failed(conn: PgConn, competition_id: str) -> bool:
+    runs = conn.execute(
+        "select bool_or(improved) from raw.tuned_params where competition_id = %s"
+        " group by tuning_run_id order by max(created_at) desc limit %s",
+        [competition_id, _TUNE_BACKOFF_RUNS],
+    ).fetchall()
+    return len(runs) == _TUNE_BACKOFF_RUNS and not any(r[0] for r in runs)
+
+
 def _maybe_trigger_tune(conn: PgConn, competition_slug: str, attempt_id: str) -> None:
     """#318 주 트리거 — 이번 사이클 attempt가 실제로 확정 pipeline이 됐으면(merge-verify
     까지 통과, raw.pipelines에 유효 행 존재) Optuna 튜닝 레인(별도 DAG, 900s attempt
@@ -394,10 +406,17 @@ def _maybe_trigger_tune(conn: PgConn, competition_slug: str, attempt_id: str) ->
         return
     try:
         pipeline_row = conn.execute(
-            "select 1 from raw.pipelines where attempt_id = %s and invalid_reason is null",
+            "select competition_id from raw.pipelines where attempt_id = %s and invalid_reason is null",
             [attempt_id],
         ).fetchone()
         if not pipeline_row:
+            return
+        # idle 스윕(48h)은 그대로 돌아 탐침이 되고, 개선이 나오면 최근 런에 True가 들어와 이 가드가 풀린다.
+        if _recent_tunes_all_failed(conn, pipeline_row[0]):
+            print(
+                f"[daemon] promotion-triggered tune skipped for {competition_slug}: "
+                f"last {_TUNE_BACKOFF_RUNS} tune runs had no improvement"
+            )
             return
         if airflow_client.tune_run_in_flight(competition_slug):
             print(f"[daemon] promotion-triggered tune skipped for {competition_slug}: tune run already in flight")
