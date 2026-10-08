@@ -7,6 +7,8 @@ v1.6.36 점검에서 인프라는 정상이었지만 s5e8 jump가 10-05부터 0�
 - #486: preselect 구간에 워치독 CPU 투영을 추가한다(ADR-068). hyperparam_search 126건(CPU 53.8h, 26%)이 후보 6개(`n_estimators` 5000~7000)를 재학습하다가
   `stage=eval_start`에서 예산 2700s를 다 쓰고 죽었고 재시도도 건너뛰었다. 이제 첫 후보가 끝난 뒤 종료 CPU를 투영해 예산의 절반을 넘으면 끊고 후보 축소 피드백으로 재시도한다.
   확인 지표: `stage=eval_start` kill(기준 약 31건/일) -> 0 근처, "during preselect" kill 뒤 재시도 성공률, 성공 hyperparam_search 유지.
+- #487: CODER playbook의 "6-12 wide candidates"를 비용 인지 문구로 바꾼다(3-6개, `n_estimators` 합 상한, 단일 후보 상한). 후보 목록 폭주를 만드는 유도를 줄이고
+  #486의 워치독은 그 뒤의 안전망으로 남는다. 확인 지표: hyperparam_search 후보 수와 `stage=eval_start` kill 비중.
 
 ---
 

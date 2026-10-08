@@ -16,8 +16,9 @@ Curated Playground Series strategy (static baseline knowledge — not a measured
   categorical), and date-part decomposition.
 - Model diversity then blend. Three GBDTs trained separately (lgbm, xgboost, catboost) and averaged usually beats
   any one heavily tuned model; a stacked ridge meta-model on their out-of-fold predictions is the standard next step.
-- Prefer a wide Optuna search over a hand-picked hyperparameter list. A 3-candidate param_candidates rarely finds
-  anything — the useful move is widening ranges (num_leaves, learning_rate log-scale, subsample/colsample, L1/L2).
+- Prefer a wide search over a hand-picked hyperparameter list: widen the ranges (num_leaves, learning_rate log-scale,
+  subsample/colsample, L1/L2) rather than the candidate count — every param_candidates entry is refit once before the
+  CV and spends the CPU budget.
 - Merging original / extra source data (already wired for some competitions) tends to help when the columns are
   compatible.
 - If best CV has been flat for many attempts, change action_type away from the one tried repeatedly. A config that
@@ -48,7 +49,9 @@ pandas spellings).
     train = train.with_columns((pl.col(a) / (pl.col(b) + 1e-6)).alias(f"{a}_over_{b}"))
 - For a stacking ensemble on rmse/mae/rmsle/auc/logloss: ensemble_spec with members lgbm + xgboost + catboost
   (each with distinct params), method "stack", meta {"model": "ridge"}.
-- param_candidates: return 6-12 genuinely different dicts spanning wide ranges — not a grid, not near-duplicates
+- param_candidates: return 3-6 genuinely different dicts spanning wide ranges — not a grid, not near-duplicates
   of the current params. Wide num_leaves / max_depth, log-scale learning_rate, subsample and colsample below 1.0,
-  non-zero L1/L2.
+  non-zero L1/L2. Every candidate is refit once on 80% of train before the CV runs, and that counts against the CPU
+  budget: keep the sum of n_estimators over all candidates under about 4x the current best's n_estimators
+  (ctx.best_params), and give no single candidate more than 2x its n_estimators or less than half its learning_rate.
 - Do not re-propose a change whose only effect last time was a higher CV with a worse or flat audit holdout."""
