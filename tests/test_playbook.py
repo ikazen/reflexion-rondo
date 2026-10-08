@@ -39,6 +39,15 @@ def test_coder_playbook_uses_no_pandas_only_api() -> None:
         assert not re.search(rf"\.{re.escape(attr)}\s*\(", CODER_PLAYBOOK), attr
 
 
+def test_playbooks_warn_that_every_param_candidate_costs_a_full_refit() -> None:
+    """ADR-068: "6-12 wide candidates" 지시가 n_estimators 5000~7000 후보 6개를 유도해 preselect가 예산을 태웠다."""
+    coder, strategist = " ".join(CODER_PLAYBOOK.split()), " ".join(STRATEGIST_PLAYBOOK.split())
+    assert "6-12" not in coder
+    assert "3-6 genuinely different" in coder
+    assert "CPU budget" in coder
+    assert "CPU budget" in strategist
+
+
 def test_strategist_injects_playbook_into_prompt() -> None:
     with patch("agents.llm_retry._client") as mock_client:
         mock_client.return_value.chat.return_value = _strategist_resp()
