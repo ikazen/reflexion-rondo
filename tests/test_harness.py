@@ -404,6 +404,30 @@ def test_preselect_returns_one_of_candidates():
     assert result in pipeline.param_candidates(_ctx())
 
 
+def test_preselect_reports_progress_per_candidate():
+    """ADR-068: 워치독이 preselect 종료 CPU를 투영하려면 후보 수와 후보별 완료 시점을 줄로 받아야 한다."""
+    lines: list[str] = []
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True, progress=lines.append,
+    )
+    preselect_params(_TwoCandidates(), _make_df(), ctx)
+
+    assert [line.split()[:2] for line in lines] == [
+        ["stage=preselect_start", "cand=0/2"], ["stage=preselect_fit", "cand=1/2"], ["stage=preselect_fit", "cand=2/2"],
+    ]
+    assert all(line.split()[-1].startswith("cpu=") for line in lines)
+
+
+def test_preselect_with_a_single_candidate_reports_no_progress():
+    lines: list[str] = []
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True, progress=lines.append,
+    )
+    preselect_params(_SingleCandidate(), _make_df(), ctx)
+
+    assert lines == []
+
+
 def test_preselect_is_deterministic():
     pipeline = _TwoCandidates()
     df = _make_df()
