@@ -1709,6 +1709,24 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 
 ---
 
+## ADR-070 — s5e8에 원본 데이터(UCI Bank Marketing)를 병합한다 (#489, ADR-040/064 적용)
+
+- 결정: `config/competitions/s5e8.py`의 `EXTRA_TRAIN_PATHS`를 `["original.csv"]`로 둔다. 원본은 UCI Bank Marketing `bank-full.csv`(45,211행, `;` 구분)를 `y` yes/no -> 1/0으로 바꿔
+  MinIO `kaggle/s5e8/data/original.csv`에 올린 것이다(변환은 일회성이라 repo에 스크립트를 두지 않는다). 병합은 기존 `store/train_data.py:load_train` 경로 그대로이고(원본 행은
+  `is_original`로 표시돼 검증 fold에 들어가지 않는다, #228) config 변경이므로 runbook 4-5 절차를 따른다: 배포 직후 `establish_baseline --remeasure`(dry-run 먼저), 격리가 생기면
+  `rebuild_best_pipeline`(4-6), 낡은 밴딧 행 삭제(ADR-064 선례).
+- 근거: s5e8은 마지막 확정 pipeline이 10-06이고 밴딧이 5개 액션을 전부 dead(평균 0.045~0.063)로 판정한 상태라 현재 레버가 소진됐다. 원본 병합은 s4e10에서 5-fold 전부 개선(+0.0018 AUC, #228)이었고
+  s5e4에서 사용 중이며 s5e8에는 쓰이지 않았다. 사전 검증(2026-10-09, 실제 MinIO 경로로 `load_train`): 컬럼 16개 + y가 train과 같고 dtype 불일치 0, 문자열 컬럼 9개의 값 집합이 완전히 같으며
+  (job/marital/education/default/housing/loan/contact/month/poutcome), 타깃 비율 11.7%(원본) 대 12.07%(train)다. 전체 컬럼(타깃 포함) 기준 twin이 0건이라 #287 가드(50% 초과 시 중단)에 걸리지 않고
+  s4e11 같은 암기 오염(원본이 train에 이미 들어 있음)이 없다. 병합 후 795,211행 중 원본은 45,211행(5.7%)이다.
+- 한계와 위험: 원본이 train의 5.7%뿐이라 이득이 s4e10(원본 비중이 큰 대회)보다 작을 수 있다. remeasure는 확정 pipeline 19개를 순차 재평가하며 그동안 `_train_fingerprint_guard`가 s5e8 cycle을 멈춘다
+  (유일한 deep tier이므로 그 시간만큼 탐색이 중단). 합성 train과 원본의 분포 차이로 CV는 오르는데 LB는 안 오를 수 있다 — 암기 오염이 없다는 것(twin 0건)만 확인했고 분포 차이는
+  검증하지 못했다. 병합 후 첫 제출들의 `cv_lb_gap_trend`를 본다.
+- 재고 트리거: (a) remeasure 후 확정 cv 변화가 +-0.003를 넘거나 리더보드 상한 가드(ADR-046)가 발동하면 twin/누수 오염을 의심해 `EXTRA_TRAIN_PATHS=[]`로 되돌리고 다시 remeasure한다.
+  (b) 배포 24~48h 동안 s5e8 jump가 0이고 밴딧이 다시 5개 dead로 수렴하면 이 레버로는 부족한 것이므로 ADR-067 (a)의 s6e6 교체 검토로 넘어간다. (c) 제출 LB가 CV 상승분을 따라가지 않으면 되돌린다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |

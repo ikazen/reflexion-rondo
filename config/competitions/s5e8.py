@@ -14,7 +14,8 @@ IS_CLASSIFICATION = True
 DROP_COLS         = ["id"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s5e8/data/"
-EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
+EXTRA_TRAIN_PATHS: list[str] = ["original.csv"]  # UCI Bank Marketing bank-full(45,211행, y를 1/0으로 변환) — 컬럼 완전
+# 일치, twin 0건(#489). MinIO kaggle/s5e8/data/original.csv.
 ACTIVE            = True  # deep tier 재활성 (#422, ADR-064) — s6e8 동결로 빈 슬롯 교체. 재활성 전에 baseline을
 # `bin.establish_baseline --remeasure`로 현재 평가 의미에 맞춰 다시 잰다(휴면 중 평가 의미가 바뀌었다).
 

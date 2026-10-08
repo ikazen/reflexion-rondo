@@ -14,6 +14,15 @@ v1.6.36 점검에서 인프라는 정상이었지만 s5e8 jump가 10-05부터 0�
 - #488: Optuna lgbm 탐색공간에 `max_bin`/`scale_pos_weight`를 더하고 `num_leaves`/`min_child_samples` 상한을 넓히며, freeform 확정 pipeline의 seed를 `param_candidates`에서 뽑는다
   (ADR-069). 10-01 이후 s5e8 튜닝 23회가 전부 같은 best(0.969171, 확정 0.9732와 -0.004)로 끝났다. 로컬 실측으로 baseline 비트 일치와 seed trial -2.7e-5를 확인했다.
   확인 지표: 튜닝 best params가 서로 다른지, `improved` 발생, 완료 trial 수.
+- 배포: 빌드 DAG(`v1.6.37`) 후 `release.sh v1.6.37`(compose `51518cf`). 스키마 변경 없음. 첫 사이클 확인은 이슈 코멘트에 남긴다.
+
+---
+
+## v1.6.38 — s5e8 원본 데이터 병합 (Milestone "s5e8 탐색 재가동 2026-10", 2026-10-09)
+
+- #489: `config/competitions/s5e8.py`의 `EXTRA_TRAIN_PATHS`에 UCI Bank Marketing 원본(45,211행)을 병합한다(ADR-070). 컬럼/dtype/값 집합이 train과 같고 twin 0건이라 병합 후 795,211행이다.
+  `train_fingerprint`가 바뀌므로 배포 직후 `establish_baseline --remeasure`가 필요하다(runbook 4-5) — 끝나기 전까지 s5e8 cycle은 가드로 멈춘다.
+  확인 지표: remeasure 델타, 첫 사이클 정상, 24~48h 내 jump/확정 pipeline 수(기준 10-07~08 = 0), 제출 CV 대비 LB.
 
 ---
 
