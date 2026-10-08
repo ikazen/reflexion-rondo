@@ -15,14 +15,18 @@ SearchSpaceFn = Callable[["optuna.Trial", bool], dict]
 
 
 def _lgbm_space(trial: "optuna.Trial", is_classification: bool) -> dict:
-    return {
+    params = {
         # 상한 1000→2000(#341) — 자유형 build_model이 자주 쓰는 n_estimators=1500
         # 같은 confirmed baseline 값이 탐색공간 밖 고립점이 되면(#331 실측) TPE가
         # 그 영역을 전혀 샘플링 못 해 seed trial만 유일하게 좋은 값으로 남는다.
         "n_estimators": trial.suggest_int("n_estimators", 100, 2000),
         "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.3, log=True),
-        "num_leaves": trial.suggest_int("num_leaves", 15, 255),
-        "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
+        # num_leaves/min_child_samples 상한과 max_bin/scale_pos_weight(#488): s5e8 확정 pipeline(num_leaves 250,
+        # max_bin 2047, scale_pos_weight 1.08)이 이전 공간 밖이라 23회 튜닝이 전부 같은 0.969171로 수렴했다.
+        # max_bin은 categorical이면 seed가 choices 밖일 때 trial이 실패하므로 정수 log 스케일로 둔다.
+        "num_leaves": trial.suggest_int("num_leaves", 15, 512),
+        "min_child_samples": trial.suggest_int("min_child_samples", 5, 200),
+        "max_bin": trial.suggest_int("max_bin", 255, 4095, log=True),
         "subsample": trial.suggest_float("subsample", 0.5, 1.0),
         "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
         "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
@@ -34,6 +38,9 @@ def _lgbm_space(trial: "optuna.Trial", is_classification: bool) -> dict:
         # 비활성화된다(#393) — 이 값 없이는 위 subsample 탐색이 죽은 차원이었다.
         "bagging_freq": 1,
     }
+    if is_classification:
+        params["scale_pos_weight"] = trial.suggest_float("scale_pos_weight", 0.5, 10.0, log=True)
+    return params
 
 
 def _xgboost_space(trial: "optuna.Trial", is_classification: bool) -> dict:

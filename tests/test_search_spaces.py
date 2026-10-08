@@ -53,8 +53,23 @@ def test_lgbm_search_space_bagging_freq_makes_subsample_effective():
     y = X[:, 0] * 2.0 + X[:, 1] - X[:, 2] + rng.standard_normal(n) * 0.5
     ctx = _ctx(is_classification=False)
 
-    low = build_registry_model("lgbm", {**params, "subsample": 0.5, "n_estimators": 50}, ctx)
-    high = build_registry_model("lgbm", {**params, "subsample": 1.0, "n_estimators": 50}, ctx)
+    # min_child_samples 상한(200, #488)이 n=300 표본보다 커질 수 있어 분할이 막히는 draw를 고정으로 피한다.
+    fixed = {**params, "n_estimators": 50, "min_child_samples": 5}
+    low = build_registry_model("lgbm", {**fixed, "subsample": 0.5}, ctx)
+    high = build_registry_model("lgbm", {**fixed, "subsample": 1.0}, ctx)
     low.fit(X, y)
     high.fit(X, y)
     assert not np.allclose(low.predict(X), high.predict(X))
+
+
+def test_lgbm_search_space_covers_the_dimensions_the_s5e8_base_uses():
+    """#488: 확정 pipeline이 쓰는 max_bin/scale_pos_weight가 공간에 없어 23회 튜닝이 같은 점으로 수렴했다. 분류에서만 scale_pos_weight를 낸다."""
+    trial = optuna.create_study().ask()
+    clf = get_search_space("lgbm")(trial, is_classification=True)
+    reg = get_search_space("lgbm")(optuna.create_study().ask(), is_classification=False)
+
+    assert 255 <= clf["max_bin"] <= 4095
+    assert 0.5 <= clf["scale_pos_weight"] <= 10.0
+    assert "max_bin" in reg
+    assert "scale_pos_weight" not in reg
+

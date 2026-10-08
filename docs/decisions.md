@@ -1689,6 +1689,25 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 
 ---
 
+## ADR-069 — Optuna lgbm 탐색공간 확장과 freeform base seed 정정 (#488, ADR-035/050 개정)
+
+- 결정: (1) `_lgbm_space`에 `max_bin`(정수 log 255~4095, categorical은 seed가 choices 밖이면 trial이 실패해 피함), `scale_pos_weight`(분류만, 0.5~10 log)를 추가하고
+  `num_leaves` 상한을 512, `min_child_samples` 상한을 200으로 넓힌다. `bagging_freq=1` 고정(#393)은 유지. (2) freeform 추론 분기(`tune_confirmed_pipeline`)의 seed를
+  `pipeline.param_candidates(ctx)`가 정확히 1개일 때 그 dict로 쓴다(동결 base, ADR-054) — 비어 있으면 기존 `build_model` 리터럴 추출로 폴백. (3) `enqueue_trial`에만
+  `_to_space_seed`를 적용한다: LightGBM native 별칭(`bagging_fraction`/`feature_fraction`/`lambda_l1`/`lambda_l2`)을 탐색공간 키로 옮기고, `bagging_fraction`을 쓰면서
+  `bagging_freq`가 없는 base는 `subsample=1.0`으로 둔다(LightGBM이 bagging_freq=0이면 bagging_fraction을 무시하므로 같은 모델). baseline 평가용 seed는 정규화하지 않는다.
+- 근거: 2026-10-01 이후 s5e8 튜닝 23회의 best params가 전부 같았고(cv 0.969171, 확정 0.9732와 0.004 차이) 한 번도 improved가 아니었다. 결정적 TPE(seed 42)가 같은 공간에서 매번 같은 점에
+  수렴했고, 확정 pipeline(max_bin 2047, scale_pos_weight 1.08, num_leaves 250, min_child_samples 10)은 공간 밖이었다. seed도 `build_model` 리터럴(`{random_state, **params}`)에는 params가 없어
+  비어 있었다. 로컬 실측(s5e8 확정 pipeline, n_trials=1): registry 기반 baseline이 확정 cv와 비트 단위로 일치(0.9731775179345593)하고, 정정 전 seed trial은 0.97265(-5.3e-4,
+  bagging_freq=1 고정 때문)였으나 정정 후 0.97315(-2.7e-5, 남은 차이는 max_depth 32 대 -1과 RNG)다.
+- 한계: 기대치는 중간 확신이다. 막혀 있던 레인을 여는 것이지 개선을 보장하지 않는다 — LLM hyperparam_search가 이미 같은 영역을 훑었고, 이 공간에도 max_depth/min_split_gain/
+  feature_fraction_bynode 등은 없다. `bagging_fraction` 별칭 없이 sklearn `subsample`로 쓴 base는 bagging 무효 보정을 받지 못한다(xgboost의 subsample과 구분할 모델명이 `_optimize`에 없다).
+  튜닝 결과는 계속 advisory(`ctx.tuned_params`)로만 전달되고 확정 pipeline을 직접 바꾸지 않는다.
+- 재고 트리거(배포 뒤 첫 3회 튜닝): best params가 서로 다른지(23회 동일 기준), `improved`가 한 번이라도 나오는지, 완료 trial 수(기준 15~71). 3회 모두 같은 점이거나 개선이 없으면
+  max_depth 등 차원을 더하기 전에 백오프(ADR-050 개정, 최근 5회 미개선 시 건너뜀)가 이 레인을 다시 닫는 것을 그대로 둔다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |

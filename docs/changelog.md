@@ -9,6 +9,9 @@ v1.6.36 점검에서 인프라는 정상이었지만 s5e8 jump가 10-05부터 0�
   확인 지표: `stage=eval_start` kill(기준 약 31건/일) -> 0 근처, "during preselect" kill 뒤 재시도 성공률, 성공 hyperparam_search 유지.
 - #487: CODER playbook의 "6-12 wide candidates"를 비용 인지 문구로 바꾼다(3-6개, `n_estimators` 합 상한, 단일 후보 상한). 후보 목록 폭주를 만드는 유도를 줄이고
   #486의 워치독은 그 뒤의 안전망으로 남는다. 확인 지표: hyperparam_search 후보 수와 `stage=eval_start` kill 비중.
+- #488: Optuna lgbm 탐색공간에 `max_bin`/`scale_pos_weight`를 더하고 `num_leaves`/`min_child_samples` 상한을 넓히며, freeform 확정 pipeline의 seed를 `param_candidates`에서 뽑는다
+  (ADR-069). 10-01 이후 s5e8 튜닝 23회가 전부 같은 best(0.969171, 확정 0.9732와 -0.004)로 끝났다. 로컬 실측으로 baseline 비트 일치와 seed trial -2.7e-5를 확인했다.
+  확인 지표: 튜닝 best params가 서로 다른지, `improved` 발생, 완료 trial 수.
 
 ---
 

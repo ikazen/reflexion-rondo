@@ -408,6 +408,54 @@ def test_tune_confirmed_pipeline_freeform_seeds_first_trial_from_literal():
     assert results[0].best_params["alpha"] == 5.0
 
 
+def test_optimize_seed_aliases_are_mapped_to_the_search_space_keys():
+    """확정 pipeline이 LightGBM native 별칭(bagging_fraction 등)으로 쓴 값도 seed trial에 반영된다(#488)."""
+    def objective(trial: "optuna.Trial") -> float:
+        return trial.suggest_float("subsample", 0.5, 1.0) + trial.suggest_float("colsample_bytree", 0.5, 1.0)
+
+    study = _optimize(
+        objective, n_trials=1, timeout_sec=None, direction="minimize",
+        seed_params={"bagging_fraction": 0.6, "bagging_freq": 1, "feature_fraction": 0.5, "max_depth": 32},
+    )
+    assert study.trials[0].params == {"subsample": 0.6, "colsample_bytree": 0.5}
+
+
+def test_optimize_seed_disables_bagging_when_the_base_never_enabled_it():
+    """bagging_freq가 없는 확정 pipeline의 bagging_fraction은 LightGBM이 무시한다 — 탐색공간은 bagging_freq=1 고정이라 subsample=1.0으로 옮겨야 같은 모델이다(#488)."""
+    def objective(trial: "optuna.Trial") -> float:
+        return trial.suggest_float("subsample", 0.5, 1.0)
+
+    off = _optimize(
+        objective, n_trials=1, timeout_sec=None, direction="minimize", seed_params={"bagging_fraction": 0.6},
+    )
+    on = _optimize(
+        objective, n_trials=1, timeout_sec=None, direction="minimize",
+        seed_params={"bagging_fraction": 0.6, "bagging_freq": 5},
+    )
+    assert off.trials[0].params == {"subsample": 1.0}
+    assert on.trials[0].params == {"subsample": 0.6}
+
+
+def test_tune_confirmed_pipeline_freeform_seeds_from_a_single_param_candidate():
+    """동결 base는 params를 build_model 리터럴이 아니라 param_candidates 한 개로 갖는다 — 리터럴이 비어도 그 dict가 seed다(#488)."""
+    class _FrozenRidge:
+        action_type = "model_swap"
+
+        def param_candidates(self, ctx):
+            return [{"alpha": 7.0}]
+
+        def build_model(self, params, ctx):
+            from sklearn.linear_model import Ridge
+            return Ridge(**params)
+
+    source = "class Patch:\n    def build_model(self, params, ctx):\n        from sklearn.linear_model import Ridge\n        return Ridge(**params)\n"
+    pipeline = PatchedPipeline(BasePipeline(), _FrozenRidge())
+    results = tune_confirmed_pipeline(
+        pipeline, _make_df(), _ctx(is_classification=False), n_trials=1, pipeline_source=source,
+    )
+    assert results[0].best_params["alpha"] == 7.0
+
+
 def test_tune_single_model_seeds_from_model_spec_params():
     """model_spec 경로는 별도 추출 없이 spec의 params를 그대로 seed로 쓴다."""
     pipeline = PatchedPipeline(BasePipeline(), _ModelSpecPatch())

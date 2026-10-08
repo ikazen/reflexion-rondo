@@ -32,6 +32,22 @@ _DEFAULT_N_TRIALS = 100
 _SEED = 42
 # 같은 pipeline의 baseline도 실행마다 상대 1e-8 안팎으로 흔들린다(s5e4 rmse 13.046045137~13.046045327)
 _BASELINE_MATCH_REL_TOL = 1e-6
+# LightGBM native 별칭 -> 탐색공간(sklearn) 키. 확정 pipeline이 별칭으로 쓴 값도 seed trial이 반영해야 한다(#488).
+_SEED_ALIASES = {
+    "bagging_fraction": "subsample",
+    "feature_fraction": "colsample_bytree",
+    "lambda_l1": "reg_alpha",
+    "lambda_l2": "reg_lambda",
+}
+
+
+def _to_space_seed(seed_params: dict) -> dict:
+    seed = {_SEED_ALIASES.get(k, k): v for k, v in seed_params.items()}
+    # LightGBM은 bagging_freq=0이면 bagging_fraction을 무시하는데 탐색공간은 bagging_freq=1 고정(#393)이라 그대로 옮기면
+    # seed가 확정 pipeline보다 약 0.0005 나쁜 지점이 된다(s5e8 실측). bagging이 꺼진 것과 같은 subsample=1.0으로 둔다.
+    if "bagging_fraction" in seed_params and not seed_params.get("bagging_freq"):
+        seed["subsample"] = 1.0
+    return seed
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +154,7 @@ def _optimize(
         # UserWarning만 내고 그대로 쓰고(clip 안 함), objective가 요구 안 하는 여분
         # 키(objective/eval_metric 등)는 조용히 무시된다 — 실측 확인(2026-09,
         # optuna 4.x). 그래서 search space 키로 사전 필터링할 필요가 없다.
-        study.enqueue_trial(seed_params, skip_if_exists=True)
+        study.enqueue_trial(_to_space_seed(seed_params), skip_if_exists=True)
     study.optimize(objective, n_trials=n_trials, timeout=timeout_sec, catch=(Exception,))
     return study
 
@@ -458,7 +474,11 @@ def tune_confirmed_pipeline(
     inferred = infer_registry_model(pipeline_source) if pipeline_source else None
     if inferred is not None:
         _LOG.info("tune_confirmed_pipeline: freeform build_model → inferred registry model %r", inferred)
-        seed_params = _extract_base_params_literal(pipeline_source) or None
+        # 동결 base(ADR-054)는 params를 build_model 리터럴이 아니라 param_candidates 한 개로 갖는다(#488).
+        candidates = pipeline.param_candidates(ctx)
+        seed_params = (
+            (candidates[0] if len(candidates) == 1 else None) or _extract_base_params_literal(pipeline_source) or None
+        )
         return [tune_single_model(
             pipeline, train, ctx, inferred, n_trials=n_trials, timeout_sec=timeout_sec,
             seed_params=seed_params, expected_baseline_cv=expected_baseline_cv,
