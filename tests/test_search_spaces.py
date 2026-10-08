@@ -53,8 +53,10 @@ def test_lgbm_search_space_bagging_freq_makes_subsample_effective():
     y = X[:, 0] * 2.0 + X[:, 1] - X[:, 2] + rng.standard_normal(n) * 0.5
     ctx = _ctx(is_classification=False)
 
-    low = build_registry_model("lgbm", {**params, "subsample": 0.5, "n_estimators": 50}, ctx)
-    high = build_registry_model("lgbm", {**params, "subsample": 1.0, "n_estimators": 50}, ctx)
+    # min_child_samples 상한(200, #488)이 n=300 표본보다 커질 수 있어 분할이 막히는 draw를 고정으로 피한다.
+    fixed = {**params, "n_estimators": 50, "min_child_samples": 5}
+    low = build_registry_model("lgbm", {**fixed, "subsample": 0.5}, ctx)
+    high = build_registry_model("lgbm", {**fixed, "subsample": 1.0}, ctx)
     low.fit(X, y)
     high.fit(X, y)
     assert not np.allclose(low.predict(X), high.predict(X))
