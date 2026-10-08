@@ -354,10 +354,14 @@ def test_preselect_projection_lets_a_cheap_candidate_list_finish() -> None:
     assert _fold1_run(cheap, cpu=70.0).error_trace is None  # 60 + 50 + 4 x 50 = 310 <= 450
 
 
-def test_preselect_projection_waits_for_the_first_candidate() -> None:
-    """첫 후보가 끝나기 전에는 후보 비용 근거가 없어 투영하지 않는다 — 일반 예산(900s)만 적용된다."""
+def test_preselect_first_candidate_is_bounded_by_the_current_cpu() -> None:
+    """첫 후보가 끝나기 전에는 비용 근거가 없어 종료 CPU의 하한(지금 CPU)만 쓴다 — 한도(450s)를 넘기 전에는 끊지 않고, 넘으면 후보 하나가 이미 한도를 쓴 것이다."""
     started = ["stage=eval_start cpu=1", "stage=preselect_start cand=0/6 cpu=10"]
-    assert _fold1_run(started, cpu=800.0).error_trace is None
+
+    assert _fold1_run(started, cpu=440.0).error_trace is None
+    first, second = _fold1_run(started, cpu=460.0).error_trace.split("\n")
+    assert first == "cpu budget exceeded: projected 460s CPU during preselect candidate 1/6 (limit 900s)"
+    assert second == "[last_progress] stage=preselect_start cand=0/6 cpu=10"
 
 
 def test_preselect_projection_stops_once_preselect_is_done() -> None:

@@ -1672,7 +1672,8 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 - 결정: `evaluate_pipeline`의 preselect(`param_candidates`가 2개 이상일 때 후보 전부를 80% train으로 재학습, ADR-021)가 후보마다 진행 줄을 남긴다
   (`stage=preselect_start cand=0/n`, `stage=preselect_fit cand=k/n`). 워치독(`runtime/isolate.py:_projected_preselect_cpu`)이 첫 후보가 끝난 뒤부터
   `투영 종료 CPU = 마지막 완료 시점 + max(진행 중 후보 소모, 완료 후보 평균) + 남은 후보 수 x 완료 후보 평균`을 계산해 예산 x `_PRESELECT_CPU_FRACTION`(0.5)을
-  넘으면 `cpu budget exceeded: projected ... during preselect candidate k/n`으로 끊는다. 게이트는 fold 투영과 같다(`collect_oof`와 `n_splits < 2` 제외,
+  넘으면 `cpu budget exceeded: projected ... during preselect candidate k/n`으로 끊는다. 첫 후보가 끝나기 전에는 종료 CPU의 하한인 지금 CPU를 쓴다(후보 하나가 이미 한도의 절반을 넘겼다면
+  나머지를 어떻게 어림하든 넘는다 — v1.6.37 라이브 첫 30분에 첫 후보가 1299s를 다 쓰고 `eval_start`에서 죽은 사례로 추가). 게이트는 fold 투영과 같다(`collect_oof`와 `n_splits < 2` 제외,
   접두사는 기존 그대로). 재생성 피드백(`_resource_kill_feedback`)은 이 경우 "후보를 3~4개로 줄이고 n_estimators가 큰/learning_rate가 작은 후보를 빼라"를 전한다.
   한도는 평가 지문 대상이 아니다(`_PRESELECT_CPU_FRACTION`은 중단 여부만 바꿈) — baseline 재측정이 필요 없다.
 - 근거(2026-10-05~09, s5e8 938 attempt / 204h): hyperparam_search 126건(53.8h, 26%)이 `stage=eval_start`에서 예산 2700s를 다 쓰고 죽었다. 죽은 코드 실물은
@@ -1680,7 +1681,7 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
   preselect를 통과한 noop attempt 133건의 preselect+fold-1 CPU는 p50 623s / p90 1017s / max 1870s라, 예산의 절반(1350s)을 preselect만으로 넘길 것으로 투영되면
   정상 후보 분포의 바깥이다. ADR-063 (b)가 예고한 "`eval_start`/`preselect_done` 위주면 데드라인 규칙" 중 preselect 쪽을 구현한 것이다.
 - 기대 효과와 한계: kill당 소모가 예산 전체(2700s)에서 첫 후보 1~2개 분량으로 줄고 남은 예산으로 재생성이 돈다. 126건 53.8h의 절반 안팎이 회수되는 상한이다 —
-  첫 후보 자체가 큰 경우(진행 중 후보 항)와 후보 비용이 균질하지 않은 경우의 오탐/미탐은 남는다. 첫 후보 완료 전에는 투영하지 않는다.
+  첫 후보 자체가 큰 경우(진행 중 후보 항)와 후보 비용이 균질하지 않은 경우의 오탐/미탐은 남는다. 첫 후보 완료 전에는 하한만 쓰므로 한도 절반을 넘기 전의 낭비는 남는다.
 - 같은 결정의 프롬프트 쪽(#487): `agents/playbook.py`의 CODER 지시를 "6-12 wide candidates"에서 "3-6개, 후보 `n_estimators` 합은 현 best의 약 4배 이하,
   단일 후보는 best의 2배 초과/learning_rate 절반 미만 금지"로 바꾸고 STRATEGIST 문구도 후보 수가 아니라 범위를 넓히라고 정리했다. `agents/coder.py`의 3-12개 계약은
   정적 검증과 연결돼 그대로 둔다. 워치독은 어떤 코드든 막는 안전망이고 프롬프트는 그 안전망에 걸릴 후보를 애초에 덜 만들게 하는 쪽이다.

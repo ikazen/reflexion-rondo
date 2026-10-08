@@ -202,10 +202,11 @@ def _projected_cpu(ws: Path, n_splits: int, cpu_now: float) -> tuple[float, int]
 
 
 def _projected_preselect_cpu(ws: Path, cpu_now: float) -> tuple[float, int, int] | None:
-    """preselect 중이고 후보를 하나 이상 끝냈으면 (어림한 preselect 종료 CPU, 진행 중인 후보 번호, 후보 수)를 돌려준다.
+    """preselect 중이면 (어림한 preselect 종료 CPU, 진행 중인 후보 번호, 후보 수)를 돌려준다.
 
     후보마다 80% train 전체를 다시 학습하므로 비용은 후보 수에 비례한다. 진행 중인 후보는 완료 후보 평균과 지금까지의 소모 중 큰 쪽으로,
-    남은 후보는 완료 후보 평균으로 어림한다. 첫 후보가 끝나기 전에는 후보 수만 알고 비용 근거가 없어 투영하지 않는다."""
+    남은 후보는 완료 후보 평균으로 어림한다. 첫 후보가 끝나기 전에는 비용 근거가 없어 종료 CPU의 하한인 지금 CPU를 돌려준다 —
+    후보 하나가 한도의 절반을 이미 넘겼다면 나머지 후보를 어떻게 어림하든 한도를 넘는다."""
     try:
         lines = (ws / "_progress.log").read_text().splitlines()
     except OSError:
@@ -224,8 +225,10 @@ def _projected_preselect_cpu(ws: Path, cpu_now: float) -> tuple[float, int, int]
             last, done = cpu, int(m.group(2))
         elif stage in ("preselect_done", "cv_done"):
             return None
-    if start is None or done == 0 or done >= total:
+    if start is None or done >= total:
         return None
+    if done == 0:
+        return cpu_now, 1, total
     average = (last - start) / done
     return last + max(cpu_now - last, average) + (total - done - 1) * average, done + 1, total
 
