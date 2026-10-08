@@ -168,6 +168,19 @@ def test_non_ensemble_kill_feedback_is_unchanged():
     assert _resource_kill_feedback(_CPU_KILL, 900) == feedback
 
 
+def test_preselect_kill_feedback_tells_the_coder_to_cut_candidates():
+    """ADR-068: preselect 투영 kill은 후보 수/비용을 줄이라는 지시여야 하고, 일반 CPU kill 문구와 달라야 한다."""
+    trace = (
+        "cpu budget exceeded: projected 1900s CPU during preselect candidate 2/6 (limit 2700s)\n"
+        "[last_progress] stage=preselect_fit cand=1/6 cpu=300"
+    )
+    feedback = _resource_kill_feedback(trace, 2700, "hyperparam_search")
+    assert "preselect" in feedback
+    assert "CPU 예산 2700초" in feedback
+    assert "후보" in feedback
+    assert feedback != _resource_kill_feedback(_CPU_KILL, 2700, "hyperparam_search")
+
+
 def test_ensemble_memory_kill_feedback_is_unchanged():
     memory = "memory watchdog: peak RSS 7000MB > limit 6144MB"
     assert _resource_kill_feedback(memory, 900, "ensemble") == _resource_kill_feedback(memory, 900, "model_swap")

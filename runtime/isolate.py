@@ -140,7 +140,7 @@ def _read_cpu_seconds(pid: int) -> float | None:
 
 # [last_progress] stage=fold_done fold=1/3 cpu=1650
 KILL_PROGRESS_PREFIX = "[last_progress] "
-_PROGRESS_LINE = re.compile(r"stage=(\w+)(?: fold=\d+/\d+)? cpu=(\d+)")
+_PROGRESS_LINE = re.compile(r"stage=(\w+)(?: (?:fold|cand)=(\d+)/(\d+))? cpu=(\d+)")
 
 
 def _last_progress_line(ws: Path) -> str | None:
@@ -163,6 +163,12 @@ def _cpu_projection_margin() -> float:
     return _CPU_PROJECTION_MARGIN
 
 
+def _preselect_cpu_fraction() -> float:
+    from evaluator.harness import _PRESELECT_CPU_FRACTION
+
+    return _PRESELECT_CPU_FRACTION
+
+
 def _projected_cpu(ws: Path, n_splits: int, cpu_now: float) -> tuple[float, int] | None:
     """CV 진행 중이면 (지금까지의 CPU로 투영한 전체 CPU, 진행 중인 fold 번호)를 돌려준다.
 
@@ -179,7 +185,7 @@ def _projected_cpu(ws: Path, n_splits: int, cpu_now: float) -> tuple[float, int]
         m = _PROGRESS_LINE.search(line)
         if m is None:
             continue
-        stage, cpu = m.group(1), float(m.group(2))
+        stage, cpu = m.group(1), float(m.group(4))
         if stage == "preselect_done":
             loop_start, done = cpu, []
         elif stage == "fold_done":
@@ -193,6 +199,35 @@ def _projected_cpu(ws: Path, n_splits: int, cpu_now: float) -> tuple[float, int]
     average = (last - loop_start) / finished if finished else 0.0
     per_fold = max(cpu_now - last, average)
     return last + (n_splits - finished) * per_fold, finished + 1
+
+
+def _projected_preselect_cpu(ws: Path, cpu_now: float) -> tuple[float, int, int] | None:
+    """preselect 중이고 후보를 하나 이상 끝냈으면 (어림한 preselect 종료 CPU, 진행 중인 후보 번호, 후보 수)를 돌려준다.
+
+    후보마다 80% train 전체를 다시 학습하므로 비용은 후보 수에 비례한다. 진행 중인 후보는 완료 후보 평균과 지금까지의 소모 중 큰 쪽으로,
+    남은 후보는 완료 후보 평균으로 어림한다. 첫 후보가 끝나기 전에는 후보 수만 알고 비용 근거가 없어 투영하지 않는다."""
+    try:
+        lines = (ws / "_progress.log").read_text().splitlines()
+    except OSError:
+        return None
+    start: float | None = None
+    done = total = 0
+    last = 0.0
+    for line in lines:
+        m = _PROGRESS_LINE.search(line)
+        if m is None:
+            continue
+        stage, cpu = m.group(1), float(m.group(4))
+        if stage == "preselect_start":
+            start, last, done, total = cpu, cpu, 0, int(m.group(3))
+        elif stage == "preselect_fit":
+            last, done = cpu, int(m.group(2))
+        elif stage in ("preselect_done", "cv_done"):
+            return None
+    if start is None or done == 0 or done >= total:
+        return None
+    average = (last - start) / done
+    return last + max(cpu_now - last, average) + (total - done - 1) * average, done + 1, total
 
 
 _EVAL_ENV_ALLOWLIST = frozenset({
@@ -252,6 +287,15 @@ def _watch(
                 projected, fold_no = projection
                 reason = _with_last_progress(
                     f"cpu budget exceeded: projected {projected:.0f}s CPU during fold {fold_no} (limit {cpu_budget:.0f}s)", ws,
+                )
+                _kill(proc)
+                return reason, peak_rss, peak_cpu
+            preselect = _projected_preselect_cpu(ws, cpu) if projection_limit else None
+            if preselect is not None and preselect[0] > cpu_budget * _preselect_cpu_fraction():
+                projected, cand_no, n_cands = preselect
+                reason = _with_last_progress(
+                    f"cpu budget exceeded: projected {projected:.0f}s CPU during preselect candidate "
+                    f"{cand_no}/{n_cands} (limit {cpu_budget:.0f}s)", ws,
                 )
                 _kill(proc)
                 return reason, peak_rss, peak_cpu

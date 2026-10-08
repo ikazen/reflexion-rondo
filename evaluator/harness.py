@@ -52,6 +52,8 @@ _REGRESSION_LEAK_BASELINE_RATIO = 100.0
 _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO = 10.0
 # fold-1의 CPU 소모로 전체를 투영해 예산의 이 배수를 넘으면 나머지 fold를 돌지 않고 중단한다(#361, ADR-056).
 _CPU_PROJECTION_MARGIN = 1.15
+# preselect(후보 전부를 80% train으로 재학습)가 이 비율의 예산을 넘겨 쓸 것으로 투영되면 워치독이 CV 전에 중단한다(ADR-068).
+_PRESELECT_CPU_FRACTION = 0.5
 
 
 def is_significant_gain(
@@ -896,7 +898,9 @@ def preselect_params(
     best_params: dict = candidates[0]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        for params in candidates:
+        if ctx.progress:
+            ctx.progress(f"stage=preselect_start cand=0/{len(candidates)} cpu={_cpu_seconds():.0f}")
+        for i, params in enumerate(candidates, 1):
             model = _build_model_safe(pipeline, params, ctx)
             _fit_with_early_stopping(model, Xtr_np, ytr, Xva_np, yva)
             if metric_class == "binary_proba":
@@ -908,6 +912,8 @@ def preselect_params(
             if best_score is None or metric_sign * score > metric_sign * best_score:
                 best_score = score
                 best_params = params
+            if ctx.progress:
+                ctx.progress(f"stage=preselect_fit cand={i}/{len(candidates)} cpu={_cpu_seconds():.0f}")
 
     return best_params
 

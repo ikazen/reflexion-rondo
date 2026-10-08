@@ -331,6 +331,43 @@ def test_projection_only_applies_while_the_cv_loop_runs(progress_lines) -> None:
     assert _fold1_run(progress_lines, cpu=800.0).error_trace is None
 
 
+# 예산 900s, preselect 한도 = 900 x 0.5 = 450. 후보 6개 중 1개가 100s에 끝남(평균 100s) -> 종료 투영 = 110 + max(지금 - 110, 100) + 4 x 100.
+_PRESELECT = ["stage=eval_start cpu=1", "stage=preselect_start cand=0/6 cpu=10", "stage=preselect_fit cand=1/6 cpu=110"]
+
+
+def test_preselect_projection_kills_a_candidate_list_that_would_exhaust_the_budget() -> None:
+    """ADR-068: 후보 6개를 전부 재학습하는 preselect가 예산의 절반을 넘길 것으로 투영되면 CV 전에 끊는다. 투영 = 110 + 100 + 400 = 610 > 450."""
+    result = _fold1_run(_PRESELECT, cpu=120.0)
+
+    first, second = result.error_trace.split("\n")
+    assert first == "cpu budget exceeded: projected 610s CPU during preselect candidate 2/6 (limit 900s)"
+    assert second == "[last_progress] stage=preselect_fit cand=1/6 cpu=110"
+
+
+def test_preselect_projection_uses_the_in_progress_candidate_when_it_costs_more_than_the_average() -> None:
+    """평균(100s)보다 오래 걸리는 후보가 진행 중이면 그 소모를 쓴다: 110 + 390 + 400 = 900."""
+    assert "projected 900s CPU during preselect candidate 2/6" in _fold1_run(_PRESELECT, cpu=500.0).error_trace
+
+
+def test_preselect_projection_lets_a_cheap_candidate_list_finish() -> None:
+    cheap = ["stage=eval_start cpu=1", "stage=preselect_start cand=0/6 cpu=10", "stage=preselect_fit cand=1/6 cpu=60"]
+    assert _fold1_run(cheap, cpu=70.0).error_trace is None  # 60 + 50 + 4 x 50 = 310 <= 450
+
+
+def test_preselect_projection_waits_for_the_first_candidate() -> None:
+    """첫 후보가 끝나기 전에는 후보 비용 근거가 없어 투영하지 않는다 — 일반 예산(900s)만 적용된다."""
+    started = ["stage=eval_start cpu=1", "stage=preselect_start cand=0/6 cpu=10"]
+    assert _fold1_run(started, cpu=800.0).error_trace is None
+
+
+def test_preselect_projection_stops_once_preselect_is_done() -> None:
+    assert _fold1_run(_PRESELECT + ["stage=preselect_done cpu=600"], cpu=620.0).error_trace is None
+
+
+def test_preselect_projection_skips_collect_oof_evaluations() -> None:
+    assert _fold1_run(_PRESELECT, cpu=120.0, collect_oof=True).error_trace is None
+
+
 _FIVE_FOLDS = dict(budget=3600.0, n_splits=5)  # 한도 = 3600 x 1.15 = 4140
 
 
