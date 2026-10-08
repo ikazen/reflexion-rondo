@@ -58,3 +58,16 @@ def test_lgbm_search_space_bagging_freq_makes_subsample_effective():
     low.fit(X, y)
     high.fit(X, y)
     assert not np.allclose(low.predict(X), high.predict(X))
+
+
+def test_lgbm_search_space_covers_the_dimensions_the_s5e8_base_uses():
+    """#488: 확정 pipeline이 쓰는 max_bin/scale_pos_weight가 공간에 없어 23회 튜닝이 같은 점으로 수렴했다. 분류에서만 scale_pos_weight를 낸다."""
+    trial = optuna.create_study().ask()
+    clf = get_search_space("lgbm")(trial, is_classification=True)
+    reg = get_search_space("lgbm")(optuna.create_study().ask(), is_classification=False)
+
+    assert 255 <= clf["max_bin"] <= 4095
+    assert 0.5 <= clf["scale_pos_weight"] <= 10.0
+    assert "max_bin" in reg
+    assert "scale_pos_weight" not in reg
+
