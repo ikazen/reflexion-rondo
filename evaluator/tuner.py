@@ -42,9 +42,11 @@ _SEED_ALIASES = {
 
 
 def _to_space_seed(seed_params: dict) -> dict:
+    """enqueue_trial 전용이다. baseline 평가 seed에 쓰면 baseline cv가 확정 cv와 달라져 튜닝 전체가 건너뛰어진다."""
     seed = {_SEED_ALIASES.get(k, k): v for k, v in seed_params.items()}
     # LightGBM은 bagging_freq=0이면 bagging_fraction을 무시하는데 탐색공간은 bagging_freq=1 고정(#393)이라 그대로 옮기면
-    # seed가 확정 pipeline보다 약 0.0005 나쁜 지점이 된다(s5e8 실측). bagging이 꺼진 것과 같은 subsample=1.0으로 둔다.
+    # seed가 확정 pipeline보다 약 0.0005 나쁜 지점이 된다. bagging이 꺼진 것과 같은 subsample=1.0으로 두되,
+    # xgboost의 subsample과 구분할 수 없어 LightGBM native 별칭 bagging_fraction이 있을 때만 적용한다.
     if "bagging_fraction" in seed_params and not seed_params.get("bagging_freq"):
         seed["subsample"] = 1.0
     return seed

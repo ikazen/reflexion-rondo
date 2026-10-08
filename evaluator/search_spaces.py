@@ -21,9 +21,8 @@ def _lgbm_space(trial: "optuna.Trial", is_classification: bool) -> dict:
         # 그 영역을 전혀 샘플링 못 해 seed trial만 유일하게 좋은 값으로 남는다.
         "n_estimators": trial.suggest_int("n_estimators", 100, 2000),
         "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.3, log=True),
-        # num_leaves/min_child_samples 상한과 max_bin/scale_pos_weight(#488): s5e8 확정 pipeline(num_leaves 250,
-        # max_bin 2047, scale_pos_weight 1.08)이 이전 공간 밖이라 23회 튜닝이 전부 같은 0.969171로 수렴했다.
-        # max_bin은 categorical이면 seed가 choices 밖일 때 trial이 실패하므로 정수 log 스케일로 둔다.
+        # 확정 pipeline이 쓰는 값(num_leaves 250, min_child_samples 10, max_bin 2047, scale_pos_weight 1.08)이 공간 안에 있어야
+        # seed trial이 baseline을 재현한다(#488). max_bin은 categorical이면 seed가 choices 밖일 때 trial이 실패해 정수 log로 둔다.
         "num_leaves": trial.suggest_int("num_leaves", 15, 512),
         "min_child_samples": trial.suggest_int("min_child_samples", 5, 200),
         "max_bin": trial.suggest_int("max_bin", 255, 4095, log=True),

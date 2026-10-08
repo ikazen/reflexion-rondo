@@ -612,7 +612,7 @@ def _resource_kill_feedback(error_trace: str, cpu_budget_sec: float, action_type
             "iterations/max_depth는 줄이지 마라 — 약한 멤버는 블렌드를 더 나쁘게 만든다. 가장 비싼 멤버를 빼 멤버 수를"
             " 줄이거나, method가 stack이면 weighted_average로 바꿔라."
         )
-    if "during preselect" in error_trace:
+    if "during preselect" in error_trace:  # runtime/isolate.py:_watch의 preselect 투영 kill 메시지와 맞물린다
         return (
             "param_candidates의 후보는 전부 CV 전에 80% train으로 한 번씩 재학습된다(preselect). 이 후보 목록은 그 단계만으로 "
             f"CPU 예산 {cpu_budget_sec:.0f}초의 절반을 넘겨 종료됐다(코드 버그 아님). 후보를 3~4개로 줄이고 "

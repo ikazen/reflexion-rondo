@@ -140,6 +140,7 @@ def _read_cpu_seconds(pid: int) -> float | None:
 
 # [last_progress] stage=fold_done fold=1/3 cpu=1650
 KILL_PROGRESS_PREFIX = "[last_progress] "
+# stage=fold_done fold=1/3 cpu=1650 | stage=preselect_fit cand=2/6 cpu=640 (evaluator/harness.py가 남기는 진행 줄)
 _PROGRESS_LINE = re.compile(r"stage=(\w+)(?: (?:fold|cand)=(\d+)/(\d+))? cpu=(\d+)")
 
 
@@ -202,11 +203,9 @@ def _projected_cpu(ws: Path, n_splits: int, cpu_now: float) -> tuple[float, int]
 
 
 def _projected_preselect_cpu(ws: Path, cpu_now: float) -> tuple[float, int, int] | None:
-    """preselect 중이면 (어림한 preselect 종료 CPU, 진행 중인 후보 번호, 후보 수)를 돌려준다.
+    """preselect 중이면 (어림한 preselect 종료 CPU, 진행 중인 후보 번호, 후보 수)를 돌려준다. 후보마다 80% train 전체를 재학습해 비용이 후보 수에 비례한다.
 
-    후보마다 80% train 전체를 다시 학습하므로 비용은 후보 수에 비례한다. 진행 중인 후보는 완료 후보 평균과 지금까지의 소모 중 큰 쪽으로,
-    남은 후보는 완료 후보 평균으로 어림한다. 첫 후보가 끝나기 전에는 비용 근거가 없어 종료 CPU의 하한인 지금 CPU를 돌려준다 —
-    후보 하나가 한도의 절반을 이미 넘겼다면 나머지 후보를 어떻게 어림하든 한도를 넘는다."""
+    첫 후보가 끝나기 전에는 종료 CPU의 하한인 지금 CPU를 돌려준다 — 후보 하나가 한도의 절반을 이미 넘겼다면 나머지를 어떻게 어림하든 한도를 넘는다."""
     try:
         lines = (ws / "_progress.log").read_text().splitlines()
     except OSError:
