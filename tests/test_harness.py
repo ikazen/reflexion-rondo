@@ -1609,6 +1609,19 @@ def test_build_registry_model_catboost_random_seed_no_random_state_collision():
     model.fit(_np.random.randn(30, 2), _np.random.randn(30))
 
 
+@pytest.mark.parametrize("key", ["depth", "max_depth"])
+def test_build_registry_model_catboost_caps_depth_at_16(key):
+    """lgbm base의 max_depth(예: 32)를 catboost 멤버에 그대로 옮긴 ensemble이 fit()에서
+    "Maximum tree depth is 16"으로 죽던 사고(s5e8 v1.6.38 점검)."""
+    model = build_registry_model("catboost", {key: 32, "verbose": False}, _reg_ctx())
+    assert model.get_params()[key] == 16
+
+
+def test_build_registry_model_catboost_keeps_depth_within_limit():
+    model = build_registry_model("catboost", {"depth": 12, "verbose": False}, _reg_ctx())
+    assert model.get_params()["depth"] == 12
+
+
 def test_combine_predictions_weighted_average():
     preds = [np.array([1.0, 2.0, 3.0]), np.array([3.0, 4.0, 5.0])]
     combined = _combine_predictions(preds, "weighted_average", [1.0, 1.0])
