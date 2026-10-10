@@ -1730,6 +1730,45 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 
 ---
 
+## ADR-071 — hook 입력 dtype을 코더 계약에 명시하고 FE/preprocessing 비용 지침을 준다 (#498, ADR-041/068 보강)
+
+- 결정: (1) `agents/coder.py` `_REFLEXION_CONTRACT`의 Polars rules에 "preprocess/feature_transform hook은 현재 best의 preprocess 뒤에 실행되므로 그 pipeline이 인코딩한
+  문자열 컬럼은 이미 `Int32` 코드다. 문자열 키 `replace_strict`/문자열 리터럴 비교 금지, `train.schema`로 확인, `override=["preprocess"]`를 선언하면 직접 인코딩"을 추가한다
+  (`_BOOTSTRAP_CONTRACT`는 base가 없어 대상 아님). (2) `agents/playbook.py`: CODER에 "Feature cost" 불릿(FE/preprocessing은 attempt당 새 컬럼 8개 안팎, 저카디널리티 선호,
+  기존 컬럼 재인코딩 금지), STRATEGIST FE 불릿에 "attempt당 몇 개만 추가" 한 문장. (3) `cycle/run.py:_resource_kill_feedback`: FE/preprocessing의 CPU kill에 전용 분기
+  (모델 knob이 아니라 새 컬럼 수/연속값 컬럼을 줄이라고 안내), dtype 불일치 에러("conversion from str to ...", `cannot compare string with numeric`,
+  `could not convert string to float`)에 "이미 Int32로 인코딩됐다"는 분기를 둔다(원문 트레이스는 뒤에 붙인다).
+- 근거(2026-10-08 17:12Z~10-10 15:00Z, s5e8 FE+preprocessing 233건): 성공 7건. CPU 예산 kill 162건(preprocessing 99, FE 63), polars dtype 불일치 22건, 정적 가드(`take()`/`groupby()`) 약 12건.
+  확정 base의 `materialized_code` preprocess는 `pl.String` 컬럼 전체를 정렬 순서 `Int32`로 바꾸고, `PatchedPipeline`이 패치 hook을 그 뒤에 컴포즈한다. 그런데 계약과 EDA 카드는
+  "String columns have dtype pl.String"이라고만 안내해 `replace_strict(["jan",...])`, `== "success"` 같은 코드가 죽는다. 같은 이유로 가설 문장(예: "month가 알파벳순 문자열")도 틀린 전제를 둔다.
+  CPU kill의 피드백은 FE 패치가 바꿀 수 없는 n_estimators/n_splits/후보 수를 줄이라고 했다. kill 시점 CPU가 477/621s에 몰리는 것은 비용 분포가 아니라 워치독 투영 한계
+  (첫 시도 3105/5, 재시도는 남은 예산 기준)의 산물이라 실제 비용은 모른다.
+- 한계: 프롬프트 변경이라 코더 순응에 달려 있고 정적 검증이 아니다. "8개"와 "fold 비용이 컬럼 수에 비례(`max_bin=2047` LightGBM)"는 실측이 아닌 추정이며 초기값이다.
+  기존 STRATEGIST/CODER playbook(ADR-041)의 OOF target encoding·그룹 집계 권장이 컬럼 폭증을 유도했을 가능성이 있어 균형 문구를 넣었지만 그 권장 자체는 유지한다.
+  s6e8에서는 같은 FE/preprocessing이 성공률 83~97%였으므로 이 문제는 s5e8의 비용 구조(큰 base + 큰 데이터)에 한정될 수 있다.
+- 재고 트리거(배포 24~48h 후, 46h 환산 기준): (a) dtype 에러 22건이 5건 미만으로 내려가지 않으면 hook 입력 스키마를 실제 base preprocess 실행 결과(서브프로세스 probe)로 프롬프트에
+  주입하는 쪽을 검토한다. (b) FE/preprocessing의 CPU kill 비중(55~85%)이 그대로면 컬럼 수 대 fold-1 CPU를 실측하고, 저비용 서로게이트로 선별하는 설계를 별도 Milestone으로 연다.
+  (c) 양의 gain 비율이 눈에 띄게 줄면(탐색 위축) 컬럼 상한을 완화한다.
+
+---
+
+## ADR-072 — s6e6를 deep tier 두 번째 슬롯으로 추가한다 (#499, ADR-067 (a)/ADR-070 (b) 적용)
+
+- 결정: `config/competitions/s6e6.py`를 `ACTIVE=True`로 둔다. s5e8은 그대로 유지하므로 deep tier는 s5e8 + s6e6이다. 컴퓨트는 daemon의 리스 기반 라운드로빈(#133)으로 나뉜다.
+  runbook §4-13 절차를 따르되 동결 대회가 없어 7번(동결 대회 큐 취소)은 건너뛰고, 밴딧 리셋(6번)은 kill 벌점이 아님을 확인했으므로 하지 않는다.
+- 근거(2026-10-10): s5e8 확정 pipeline 19개가 전부 hyperparam_search이고 마지막은 10-06이다. v1.6.38 배포 후 46h 동안 597 attempt에서 jump 0, non-noop 성공 hyperparam_search 14건의 gain이 전부 0 이하,
+  Optuna 튜닝(37 trials)은 baseline 대비 -3.5e-7, 밴딧 5개 액션이 다시 dead(평균 0.046~0.066)다. ADR-070 (b)가 충족됐고 ADR-067 (a)(마지막 확정 후 7일 0건)는 10-13이다.
+  후보는 ADR-064 표의 차순위인 s6e6이다: SNR 10.2, LB 최고 0.96582와 p90 0.97227의 격차 0.00645, 07-22 이후 733 attempt에서 jump 25건(FE 12, preprocessing 12, ensemble 1)과
+  CPU kill 7건뿐이다. 유효 pipeline 3개(cv 0.9637~0.9648)는 리더보드 1위 0.97289보다 낮아 오염 징후가 없다. 밴딧(ensemble 0.048, model_swap 0.069)은 CPU kill이 아니라 실제 이력의 결과다.
+  `train_fingerprint`가 NULL이라 첫 사이클이 현재 값을 심고 통과하며, `eval_fingerprint`는 현재 노브와 일치한다.
+- 교체가 아니라 추가인 이유: s5e8을 동결하면 idle 튜닝과 auto-submit이 같이 멈추고(`ACTIVE` 공유), s5e8 컴퓨트가 0이 된다. 추가는 `ACTIVE=False` 한 줄로 되돌릴 수 있다.
+- 한계: 이산 지표(balanced_accuracy)라 fold-1 지름길이 꺼져(ADR-061) attempt마다 전체 CV 비용을 낸다. s6e6의 hyperparam_search는 190건에서 jump 0이다. 컴퓨트를 나누면 s5e8의 재탐색 속도가
+  절반이 된다. ADR-064의 한계 그대로, 선정 규칙은 "측정이 가능한 대회"를 고를 뿐 "탐색으로 개선되는 대회"를 보장하지 않는다.
+- 재고 트리거: (a) 배포 7일 안에 s6e6 확정 pipeline이 0건이면 s6e6를 동결하고 다음 후보를 고른다(s5e12는 CV-LB 불일치 조사가 선행, ADR-064). (b) s5e8이 10-13에도 확정 0건이면
+  ADR-067 (a)에 따라 s5e8 동결을 검토한다. (c) s6e6 FE/preprocessing 성공률과 CPU kill 비중은 ADR-071의 지침이 다른 대회에서도 유효한지 보는 지표로 같이 본다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |

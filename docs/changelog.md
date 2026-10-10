@@ -1,5 +1,20 @@
 # 변경 이력
 
+## v1.6.39 — s5e8 정체 대응 (Milestone "s5e8 정체 대응 2026-10", 2026-10-10)
+
+v1.6.38 점검(배포 후 46h): 인프라는 정상이고 #486 preselect 폭주는 해소됐지만 s5e8은 10-06 이후 확정 pipeline 0건, jump 0, 튜너 개선 0이었다. FE/preprocessing 233건 중 7건만 성공했다.
+
+- #497: registry CatBoost의 `depth`/`max_depth`를 라이브러리 상한 16으로 제한한다. ensemble 119건 중 `Maximum tree depth is 16`이 12건이었다(코더가 base lgbm의
+  `max_depth=32`를 복사한 것으로 추정). 이 에러로 죽던 시도만 달라지고 확정 cv는 안 바뀐다. 확인 지표: 해당 에러 12건/46h -> 0.
+- #498: 코더 계약에 hook 입력 dtype을 명시하고 FE/preprocessing 비용 지침과 전용 kill/dtype 피드백을 넣는다(ADR-071). base preprocess가 문자열 컬럼을 `Int32`로 바꾼 뒤 hook이
+  실행되는데 계약은 `pl.String`만 안내해 dtype 불일치가 22건 났고, CPU kill 162건의 재시도 피드백은 FE 패치가 바꿀 수 없는 n_estimators를 줄이라고 했다.
+  확인 지표: dtype 에러 22건/46h -> 5건 미만, FE/preprocessing 성공률(3%) 대비 상승.
+- #499: s6e6를 deep tier 두 번째 슬롯으로 활성화한다(ADR-072). s5e8 포화로 ADR-070 (b) 충족. s5e8은 유지한다. 확인 지표: s6e6 첫 사이클 fingerprint 가드 통과, attempt ok율, CPU kill 비중,
+  7일 안 확정 pipeline.
+- 제외: FE/preprocessing/ensemble CPU 예산 상향 — Airflow attempt `execution_timeout=45분`과 `cpus=1.5`가 시도당 상한을 같이 묶고, ADR-044 선례와 낮은 과거 jump율이 근거다. 재검토 조건은 ADR-071 (b).
+
+---
+
 ## v1.6.37 — s5e8 탐색 재가동 (Milestone "s5e8 탐색 재가동 2026-10", 2026-10-09)
 
 v1.6.36 점검에서 인프라는 정상이었지만 s5e8 jump가 10-05부터 0으로 수렴하고 밴딧이 5개 액션을 전부 dead로 판정한 상태였다. 원인 3개를 고치고 레버를 추가한다.
