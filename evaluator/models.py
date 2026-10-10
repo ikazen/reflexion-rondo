@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 _MAX_BUILD_MODEL_RETRIES = 3
 _UNEXPECTED_KWARG_RE = re.compile(r"unexpected keyword argument '(\w+)'")
 _MULTIPLE_KWARG_RE = re.compile(r"got multiple values for keyword argument '(\w+)'")
+_CATBOOST_MAX_DEPTH = 16  # oblivious tree 상한 — 넘기면 fit()이 CatBoostError("Maximum tree depth is 16")로 죽는다
 
 MODEL_REGISTRY: dict[str, dict[str, str]] = {
     "lgbm":          {"module": "lightgbm",           "classifier": "LGBMClassifier",                "regressor": "LGBMRegressor"},
@@ -105,4 +106,8 @@ def build_registry_model(model_name: str, params: dict, ctx: "PipelineContext") 
     base_params = dict(params or {})
     if "random_state" not in base_params and "random_seed" not in base_params:
         base_params["random_state"] = ctx.seed
+    if model_name == "catboost":
+        for key in ("depth", "max_depth"):
+            if base_params.get(key, 0) > _CATBOOST_MAX_DEPTH:
+                base_params[key] = _CATBOOST_MAX_DEPTH
     return construct_with_kwarg_retry(lambda p: cls(**p), base_params)
