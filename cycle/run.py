@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -599,6 +600,12 @@ def _retrieval_scores(lessons: list[dict]) -> list[float | None] | None:
     return [l.get("score") for l in lessons] or None
 
 
+_FEATURE_ACTIONS = ("feature_engineering", "preprocessing")
+_DTYPE_MISMATCH_RE = re.compile(
+    r"conversion from `str` to|cannot compare string with numeric|could not convert string to float"
+)
+
+
 def _resource_kill_feedback(error_trace: str, cpu_budget_sec: float, action_type: str = "") -> str:
     """워치독이 리소스 상한 초과로 강제종료한 에러는 원문(rc=-9 등) 대신 실행
     가능한 지시로 바꿔 재생성 피드백에 넘긴다. 원문은 "이유 모르게 죽었다"로만
@@ -611,6 +618,13 @@ def _resource_kill_feedback(error_trace: str, cpu_budget_sec: float, action_type
             f"이 앙상블은 CPU 예산 {cpu_budget_sec:.0f}초를 초과해 종료됐다(코드 버그 아님). 멤버의 n_estimators/"
             "iterations/max_depth는 줄이지 마라 — 약한 멤버는 블렌드를 더 나쁘게 만든다. 가장 비싼 멤버를 빼 멤버 수를"
             " 줄이거나, method가 stack이면 weighted_average로 바꿔라."
+        )
+    if error_trace.startswith("cpu budget exceeded") and action_type in _FEATURE_ACTIONS:
+        # 이 패치는 모델·n_estimators·후보 수를 못 바꾼다 — 일반 문구는 바꿀 수 없는 값을 가리킨다.
+        return (
+            f"이 패치는 CPU 예산 {cpu_budget_sec:.0f}초를 초과해 종료됐다(코드 버그 아님). 현재 best는 큰 LightGBM이라 fold 비용이 "
+            "컬럼 수에 비례한다. 새로 만드는 컬럼을 8개 안팎으로 줄이고, 연속값 컬럼·기존 컬럼 재인코딩·컬럼 다수의 OOF target "
+            "encoding·행 단위 map_elements를 빼라."
         )
     if "during preselect" in error_trace:  # runtime/isolate.py:_watch의 preselect 투영 kill 메시지와 맞물린다
         return (
@@ -629,6 +643,12 @@ def _resource_kill_feedback(error_trace: str, cpu_budget_sec: float, action_type
             "이 파이프라인은 메모리 상한을 초과해 강제 종료됐다(코드 버그 아님)."
             " 배치 크기, 피처 수, 모델 복잡도를 줄이거나 청크 처리로 메모리"
             " 사용량을 낮춰라."
+        )
+    if _DTYPE_MISMATCH_RE.search(error_trace):
+        return (
+            "컬럼 dtype이 가정과 다르다. 이 hook은 현재 best pipeline의 preprocess가 문자열 컬럼을 이미 Int32 ordinal 코드로 바꾼 "
+            "뒤에 실행된다 — 그 컬럼에 문자열 키 replace_strict나 문자열 리터럴 비교를 쓰지 말고 train.schema로 dtype을 확인한 뒤 "
+            "숫자 코드로 다뤄라. override=[\"preprocess\"]를 선언했다면 문자열 컬럼 인코딩을 직접 해야 한다.\n" + error_trace
         )
     return error_trace
 

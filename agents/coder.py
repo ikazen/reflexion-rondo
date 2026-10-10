@@ -248,6 +248,13 @@ class Patch:
     mapping = {v: i for i, v in enumerate(sorted(train[col].drop_nulls().unique().to_list()))}
     train = train.with_columns(pl.col(col).replace_strict(mapping, default=-1).cast(pl.Int32))
     valid = valid.with_columns(pl.col(col).replace_strict(mapping, default=-1).cast(pl.Int32))
+- Column dtypes at YOUR hook: preprocess/feature_transform run AFTER the current best pipeline's preprocess (see
+  "Accumulation"). Read that preprocess in the "Current Best Pipeline" section — a string column it encodes is already
+  a pl.Int32 ordinal code when your hook receives it, even though the EDA card lists it as String. On such a column
+  replace_strict with string keys or a comparison like pl.col(c) == "yes" raises `conversion from str to i32 failed` /
+  `cannot compare string with numeric type`. Check train.schema (or train[c].dtype == pl.String) before string-specific
+  code and treat an already-encoded column as a numeric code. If you declare override = ["preprocess"], the base
+  encoding is gone and you must encode every pl.String feature column yourself.
 - pl.concat requires identical schemas
 - No inplace mutations
 - clip() takes positional args: expr.clip(lower_bound, upper_bound)

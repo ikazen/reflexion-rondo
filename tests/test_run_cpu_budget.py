@@ -12,6 +12,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import polars as pl
+import pytest
 
 from agents.strategist import StrategyDecision
 from cycle.run import CycleConfig, _resource_kill_feedback, run_attempt_core
@@ -179,6 +180,41 @@ def test_preselect_kill_feedback_tells_the_coder_to_cut_candidates():
     assert "CPU 예산 2700초" in feedback
     assert "후보" in feedback
     assert feedback != _resource_kill_feedback(_CPU_KILL, 2700, "hyperparam_search")
+
+
+@pytest.mark.parametrize("action_type", ["feature_engineering", "preprocessing"])
+def test_feature_action_kill_feedback_targets_column_count_not_model_knobs(action_type):
+    """FE/preprocessing 패치는 모델·n_estimators를 못 바꾼다 — s5e8 v1.6.38 점검에서 두 액션의 CPU kill이 162건이었는데
+    일반 문구("n_estimators/n_splits를 줄여라")는 바꿀 수 없는 값을 가리켰다."""
+    feedback = _resource_kill_feedback(_CPU_KILL, 2700, action_type)
+    assert "CPU 예산 2700초" in feedback
+    assert "컬럼" in feedback
+    assert "n_estimators" not in feedback
+    assert "더 싼 파이프라인" not in feedback
+
+
+def test_feature_action_projected_kill_gets_the_same_feedback():
+    projected = "cpu budget exceeded: projected 2395s CPU during fold 1 (limit 2074s)"
+    assert _resource_kill_feedback(projected, 2074, "preprocessing") == _resource_kill_feedback(
+        _CPU_KILL, 2074, "preprocessing"
+    )
+
+
+@pytest.mark.parametrize("message", [
+    "polars.exceptions.InvalidOperationError: conversion from `str` to `i32` failed in column 'literal'",
+    "polars.exceptions.ComputeError: cannot compare string with numeric type (i32)",
+    "ValueError: could not convert string to float: 'management'",
+])
+def test_dtype_mismatch_feedback_explains_the_base_already_encoded_columns(message):
+    feedback = _resource_kill_feedback(message, 2700, "feature_engineering")
+    assert "Int32" in feedback
+    assert "train.schema" in feedback
+    assert message in feedback
+
+
+def test_unrelated_error_feedback_is_unchanged():
+    trace = "ValueError: Input contains infinity or a value too large for dtype('float64')."
+    assert _resource_kill_feedback(trace, 2700, "feature_engineering") == trace
 
 
 def test_ensemble_memory_kill_feedback_is_unchanged():
