@@ -69,3 +69,11 @@ def test_coder_injects_playbook_into_system_message() -> None:
             messages = mock_client.return_value.chat.call_args.kwargs["messages"]
         system_content = next(m["content"] for m in messages if m["role"] == "system")
         assert CODER_PLAYBOOK in system_content
+
+
+def test_playbooks_warn_that_feature_count_drives_cv_cost() -> None:
+    """FE/preprocessing 233건 중 162건이 CPU 예산 kill — 컬럼 수가 비용을 키운다는 안내와 개수 상한."""
+    coder, strategist = " ".join(CODER_PLAYBOOK.split()), " ".join(STRATEGIST_PLAYBOOK.split())
+    assert "at most about 8 new columns" in coder
+    assert "killed by the CPU budget" in coder
+    assert "CV time grows with the column count" in strategist

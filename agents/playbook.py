@@ -13,7 +13,8 @@ Curated Playground Series strategy (static baseline knowledge — not a measured
 - On tabular Playground data the largest score movers are usually feature engineering, not the estimator or its
   hyperparameters: out-of-fold target/count/frequency encoding of categoricals, pairwise ratios and products of
   the most predictive numerics, per-category aggregations (mean/std/min/max of key numerics grouped by each
-  categorical), and date-part decomposition.
+  categorical), and date-part decomposition. Add only a few of these per attempt: CV time grows with the column
+  count, and an over-wide patch is killed by the CPU budget before it is scored.
 - Model diversity then blend. Three GBDTs trained separately (lgbm, xgboost, catboost) and averaged usually beats
   any one heavily tuned model; a stacked ridge meta-model on their out-of-fold predictions is the standard next step.
 - Prefer a wide search over a hand-picked hyperparameter list: widen the ranges (num_leaves, learning_rate log-scale,
@@ -54,4 +55,8 @@ pandas spellings).
   non-zero L1/L2. Every candidate is refit once on 80% of train before the CV runs, and that counts against the CPU
   budget: keep the sum of n_estimators over all candidates under about 4x the current best's n_estimators
   (ctx.best_params), and give no single candidate more than 2x its n_estimators or less than half its learning_rate.
+- Feature cost: the current best is a large LightGBM (see ctx.best_params), so CV time grows with the number of feature
+  columns. For feature_engineering/preprocessing add at most about 8 new columns per attempt, prefer low-cardinality or
+  integer-valued columns over new continuous ones, and do not re-encode columns the current best already encodes. A patch
+  whose first fold costs several times the current best is killed by the CPU budget and is never scored.
 - Do not re-propose a change whose only effect last time was a higher CV with a worse or flat audit holdout."""

@@ -286,3 +286,14 @@ def test_ensemble_prompt_examples_do_not_anchor_on_small_member_params():
     ensemble_section = _REFLEXION_CONTRACT.split("## ensemble action_type")[1].split("## model_swap action_type")[0]
     assert "n_estimators" not in ensemble_section.replace("Do NOT lower `n_estimators`", "")
     assert "0.05" not in ensemble_section
+
+
+def test_reflexion_contract_tells_hooks_that_encoded_columns_are_already_int32() -> None:
+    """s5e8 v1.6.38 점검: base preprocess가 문자열 컬럼을 Int32로 바꾼 뒤 hook이 실행되는데 계약은 "String"만 안내해
+    replace_strict(문자열 키)/문자열 리터럴 비교가 22건 죽었다. 부트스트랩에는 base가 없어 해당 없음."""
+    from agents.coder import _BOOTSTRAP_CONTRACT, _REFLEXION_CONTRACT
+    flat = " ".join(_REFLEXION_CONTRACT.split())
+    assert "already a pl.Int32 ordinal code" in flat
+    assert "train.schema" in flat
+    assert 'override = ["preprocess"]' in flat
+    assert "already a pl.Int32 ordinal code" not in _BOOTSTRAP_CONTRACT
