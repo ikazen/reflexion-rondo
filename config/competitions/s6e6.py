@@ -15,7 +15,8 @@ DROP_COLS         = ["id"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s6e6/data/"
 EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
-ACTIVE            = False  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
+ACTIVE            = True  # deep tier 두 번째 슬롯 (#499, ADR-072) — s5e8 포화로 추가. 재활성 전에 baseline을
+# `bin.establish_baseline --remeasure`로 현재 평가 의미에 맞춰 다시 잰다(runbook §4-13).
 
 EDA_CARD = """competition: playground-series-s6e6 (Predicting Stellar Class)
 task: multiclass classification (3 classes)  metric: balanced_accuracy  target: class
