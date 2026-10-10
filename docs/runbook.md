@@ -445,6 +445,9 @@ promote task가 대회 best attempt의 제출 CSV를 MinIO(`submissions/<competi
 9. `/api/heartbeat`의 `current_competition`, 재활성 대회 첫 사이클의 fingerprint 가드 통과, 첫 슈퍼사이클 액션 배정이 dead 액션 없이 나뉘고 attempt의 `[last_progress]`에서
    `preselect_done`의 cpu가 수백 초 안쪽인지(동결 확인) 본다.
 
+슬롯 **추가**(동결 대회 없음, ADR-072)면 7번을 건너뛴다. 6번(밴딧 리셋)은 먼저 `raw.attempts`에서 해당 대회의 CPU kill 비중을 보고, 낮으면(s6e6: 733건 중 7건) 밴딧이 실제 이력이므로 리셋하지 않는다.
+`train_fingerprint`가 NULL인 대회는 첫 사이클이 현재 값을 심고 통과하므로(`_fingerprint_guard`) 지문 가드가 막지 않는다 — 그래도 3번 remeasure는 baseline 점수를 현재 평가 의미로 맞추려고 한다.
+
 ### 4-3. auto-submit 일시중단 복구
 
 cv-LB 발산 트립와이어가 발동하면 `raw.competitions.auto_submit_paused_reason`이 채워지고 해당 대회의 자동 제출이 멈춘다(decisions.md ADR-026). 발동 조건은
