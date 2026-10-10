@@ -611,7 +611,7 @@ def _resource_kill_feedback(error_trace: str, cpu_budget_sec: float, action_type
     가능한 지시로 바꿔 재생성 피드백에 넘긴다. 원문은 "이유 모르게 죽었다"로만
     읽혀 재시도가 비슷하게 비싼 코드를 다시 쓰는 낭비를 낳았다(2026-08 실측:
     CPU kill attempt 113건이 예외 없이 이 경로로 재시도했고 전부 같은 자리에서
-    다시 실패)."""
+    다시 실패). dtype 불일치(#498)처럼 원문만으로는 원인을 못 짚는 에러에도 같은 경로로 지시문을 붙인다."""
     if error_trace.startswith("cpu budget exceeded") and action_type == "ensemble":
         # 멤버의 트리 수를 줄이라고 하면 코더가 멤버를 base보다 약하게 만들어 블렌드가 나빠진다(#362, ADR-057).
         return (
