@@ -11,6 +11,9 @@ v1.6.38 점검(배포 후 46h): 인프라는 정상이고 #486 preselect 폭주�
   확인 지표: dtype 에러 22건/46h -> 5건 미만, FE/preprocessing 성공률(3%) 대비 상승.
 - #499: s6e6를 deep tier 두 번째 슬롯으로 활성화한다(ADR-072). s5e8 포화로 ADR-070 (b) 충족. s5e8은 유지한다. 확인 지표: s6e6 첫 사이클 fingerprint 가드 통과, attempt ok율, CPU kill 비중,
   7일 안 확정 pipeline.
+- 배포(2026-10-10): 빌드 DAG(`v1.6.39`, 4 task success, task 이미지 즉시 라이브) -> s6e6 `establish_baseline --remeasure`(유효 3건 cv 변화 0, 격리 0, `train_fingerprint` 반영, `freeze_base`는
+  `selected_params` 없음으로 대상 아님) -> `release.sh v1.6.39`(compose `a2a2c3a`, heartbeat exit 22 레이스는 `docker inspect`/`/api/health`로 확인) -> `POST /api/queue`로 s6e6 큐 투입.
+  스키마 변경 없음. s6e6 첫 사이클 attempt 3건(FE, hyperparam_search, preprocessing)이 모두 성공했고 지문 가드를 통과했다. 24~48h 관측은 아직 미완료.
 - 제외: FE/preprocessing/ensemble CPU 예산 상향 — Airflow attempt `execution_timeout=45분`과 `cpus=1.5`가 시도당 상한을 같이 묶고, ADR-044 선례와 낮은 과거 jump율이 근거다. 재검토 조건은 ADR-071 (b).
 
 ---
