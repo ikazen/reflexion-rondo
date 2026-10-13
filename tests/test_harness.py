@@ -2754,3 +2754,66 @@ def test_permutation_importance_keeps_every_row_below_the_cap(monkeypatch):
     evaluate_pipeline(BasePipeline(), _make_df(n=300), ctx)
 
     assert seen == [100, 100, 100]
+
+
+class _ParamsOnlyPatch:
+    def param_candidates(self, ctx):
+        return [{"max_iter": 50}]
+
+
+class _ParamsAndFeaturesPatch(_ParamsOnlyPatch):
+    def feature_transform(self, train, valid, target, ctx):
+        return train.drop(target), valid.drop(target)
+
+
+def _base_ctx(**overrides) -> PipelineContext:
+    fields = dict(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+        prev_best=0.9, best_params={"max_iter": 50},
+    )
+    return PipelineContext(**{**fields, **overrides})
+
+
+def test_params_only_patch_that_selects_the_base_params_exits_before_the_folds():
+    """#507: 후보를 더해도 preselect가 base params를 다시 고르면 이후 계산은 base와 같다 — fold를 돌지 않는다."""
+    result = evaluate_pipeline(PatchedPipeline(BasePipeline(), _ParamsOnlyPatch()), _make_df(), _base_ctx())
+
+    assert result.noop_early_exit and result.is_noop_tie
+    assert result.cv_score == 0.9 and result.gain_vs_best == 0.0
+    assert result.fold_scores is None
+    assert result.selected_params == {"max_iter": 50}
+
+
+def test_base_params_exit_also_covers_discrete_metrics():
+    """fold-1 점수 일치 지름길은 이산 지표에서 꺼지지만(ADR-061) 이 조기 종료는 구조적 동일성이라 켜져 있다."""
+    ctx = _base_ctx(metric="accuracy")
+    result = evaluate_pipeline(PatchedPipeline(BasePipeline(), _ParamsOnlyPatch()), _make_df(), ctx)
+
+    assert result.noop_early_exit
+
+
+@pytest.mark.parametrize("ctx_overrides", [
+    {"best_params": {"max_iter": 999}},
+    {"best_params": None},
+    {"prev_best": None},
+])
+def test_base_params_exit_needs_the_same_params_and_a_baseline(ctx_overrides):
+    result = evaluate_pipeline(PatchedPipeline(BasePipeline(), _ParamsOnlyPatch()), _make_df(), _base_ctx(**ctx_overrides))
+
+    assert not result.noop_early_exit
+    assert len(result.fold_scores) == 3
+
+
+def test_base_params_exit_is_skipped_when_the_patch_touches_other_hooks():
+    result = evaluate_pipeline(PatchedPipeline(BasePipeline(), _ParamsAndFeaturesPatch()), _make_df(), _base_ctx())
+
+    assert not result.noop_early_exit
+
+
+def test_base_params_exit_is_skipped_for_collect_oof():
+    pipeline = PatchedPipeline(BasePipeline(), _ParamsOnlyPatch())
+
+    result = evaluate_pipeline(pipeline, _make_df(), _base_ctx(), collect_oof=True)
+
+    assert not result.noop_early_exit
+    assert result.oof_preds is not None
