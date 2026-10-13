@@ -128,6 +128,22 @@ def main() -> None:
         sys.exit(1)
 
     tuning_run_id = str(uuid.uuid4())
+    if not results:
+        # 행이 없으면 daemon 48h 스윕과 승격 트리거가 같은 pipeline을 매시간 다시 건다(s6e6 래퍼 build_model).
+        insert_tuned_params(
+            conn,
+            id_=str(uuid.uuid4()),
+            tuning_run_id=tuning_run_id,
+            competition_id=comp.COMPETITION_ID,
+            model_type="untunable",
+            member_index=None,
+            params={},
+            cv_score=confirmed_cv,
+            baseline_cv_score=confirmed_cv,
+            n_trials=0,
+            improved=False,
+        )
+        print("  nothing tunable — recorded an untunable row")
     for r in results:
         insert_tuned_params(
             conn,
