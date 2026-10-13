@@ -1634,6 +1634,12 @@ def test_combine_predictions_weighted_average_respects_weights():
     assert combined[0] == pytest.approx(2.5)  # (3*0 + 1*10) / 4
 
 
+def test_combine_predictions_weighted_average_of_string_labels_falls_back_to_majority_vote():
+    preds = [np.array(["a", "a", "b"]), np.array(["b", "b", "b"])]
+    combined = _combine_predictions(preds, "weighted_average", [1.0, 3.0])
+    assert combined.tolist() == ["b", "b", "b"]
+
+
 def test_combine_predictions_unknown_method_raises():
     preds = [np.array([1.0]), np.array([2.0])]
     with pytest.raises(ValueError, match="unknown method"):
