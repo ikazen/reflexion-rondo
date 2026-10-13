@@ -23,6 +23,8 @@ from evaluator.models import build_registry_model, construct_with_kwarg_retry, r
 
 _PI_REPEATS = 3
 _PI_TOP_N = 20
+# 중요도는 Reflector 프롬프트에만 쓰인다. 전체 검증 행으로 재면 s6e6 FE/preprocessing attempt CPU의 63%였고 fold-1 투영은 이 비용을 못 본다(#506).
+_PI_MAX_ROWS = 20_000
 # 확정 pipeline의 base 점수를 결정하는 값이다 — 후보는 promote마다 뒤에 누적되고 캡은 꼬리를
 # 자르므로 가장 최근 승자부터 빠진다. 12->6으로 줄였다가 s6e8 base가 -0.0011 회귀해 3일간
 # 무산출이었다(#347). 바꾸면 대회별 remeasure가 필요하다.
@@ -992,6 +994,9 @@ def _fold_importance(
     scorer = lambda est, X, y: metric_sign * float(  # noqa: E731
         fn(y, est.predict_proba(X)[:, 1] if metric_class == "binary_proba" else est.predict(X))
     )
+    if len(yva) > _PI_MAX_ROWS:
+        rows = np.random.default_rng(ctx.seed).choice(len(yva), _PI_MAX_ROWS, replace=False)
+        Xva, yva = Xva[rows], yva[rows]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         pi = _permutation_importance(
