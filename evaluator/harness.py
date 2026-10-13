@@ -18,6 +18,7 @@ from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit, KFo
 _AUDIT_SEED = 2025  # 고정 seed — 대회·재시작과 무관하게 항상 동일 holdout 분리
 
 from config.settings import LABEL_Z
+from evaluator.contract import _ALL_HOOKS
 from evaluator.metrics import float_noise_tolerance, get as get_metric
 from evaluator.models import build_registry_model, construct_with_kwarg_retry, resolve_model_class
 
@@ -942,6 +943,15 @@ def _noop_early_exit_result(ctx: PipelineContext, selected_params: dict, model_t
     )
 
 
+def _preselect_chose_base(pipeline: object, selected_params: dict, ctx: PipelineContext) -> bool:
+    """패치가 param_candidates만 정의하고 preselect가 확정 base의 params를 다시 골랐으면 이후 계산은 base와 동일하다(#507).
+    점수 일치로 추정하는 fold-1 지름길(ADR-061)과 달리 구조적 동일성이라 이산 지표에도 쓴다."""
+    patch = getattr(pipeline, "patch", None)
+    if patch is None or ctx.prev_best is None or ctx.best_params is None:
+        return False
+    return {h for h in _ALL_HOOKS if hasattr(patch, h)} == {"param_candidates"} and selected_params == ctx.best_params
+
+
 def _after_first_fold(
     ctx: PipelineContext, fold_scores: list[float], collect_oof: bool, fold1_shortcut_ok: bool,
     cpu_at_loop_start: float, selected_params: dict, model_type: str | None,
@@ -1110,6 +1120,11 @@ def evaluate_pipeline(
     ensemble_spec_dict = pipeline.ensemble_spec(ctx)
     model_spec_dict = pipeline.model_spec(ctx) if ensemble_spec_dict is None else None
     model_type = model_spec_dict.get("model") if model_spec_dict is not None else None
+
+    if not collect_oof and _preselect_chose_base(pipeline, selected_params, ctx):
+        if ctx.progress:
+            ctx.progress(f"stage=cv_done cpu={_cpu_seconds():.0f}")
+        return _noop_early_exit_result(ctx, selected_params, model_type)
 
     fold_scores: list[float] = []
     # regression_error 메트릭 전용 trivial baseline(train fold 타깃 평균으로만
