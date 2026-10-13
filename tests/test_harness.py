@@ -2717,3 +2717,40 @@ def test_progress_stops_at_the_fold_where_the_evaluation_is_cut_short():
         evaluate_pipeline(BasePipeline(), _make_df(), ctx)
 
     assert lines[-1].startswith("stage=fold_done fold=1/3")
+
+
+def _record_importance_rows(monkeypatch) -> list[int]:
+    seen: list[int] = []
+    real = harness_module._permutation_importance
+
+    def recorder(model, X, y, **kwargs):
+        seen.append(len(y))
+        return real(model, X, y, **kwargs)
+
+    monkeypatch.setattr(harness_module, "_permutation_importance", recorder)
+    return seen
+
+
+def test_permutation_importance_is_capped_to_a_row_sample(monkeypatch):
+    """#506: 중요도는 Reflector 프롬프트용이라 큰 검증 fold 전체를 재면 FE/preprocessing attempt CPU의 대부분을 쓴다."""
+    monkeypatch.setattr(harness_module, "_PI_MAX_ROWS", 30)
+    seen = _record_importance_rows(monkeypatch)
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True, action_type="feature_engineering",
+    )
+
+    result = evaluate_pipeline(BasePipeline(), _make_df(n=300), ctx)
+
+    assert seen == [30, 30, 30]
+    assert result.feature_importance is not None
+
+
+def test_permutation_importance_keeps_every_row_below_the_cap(monkeypatch):
+    seen = _record_importance_rows(monkeypatch)
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True, action_type="preprocessing",
+    )
+
+    evaluate_pipeline(BasePipeline(), _make_df(n=300), ctx)
+
+    assert seen == [100, 100, 100]
