@@ -172,12 +172,11 @@ def test_tune_confirmed_pipeline_dispatches_to_ensemble_members():
     assert {r.model_name for r in results} == {"ridge", "random_forest"}
 
 
-def test_tune_confirmed_pipeline_freeform_build_model_raises():
+def test_tune_confirmed_pipeline_freeform_build_model_has_nothing_to_tune():
     pipeline = PatchedPipeline(BasePipeline(), _FreeformPatch())
     ctx = _ctx()
     df = _make_df()
-    with pytest.raises(ValueError, match="not tunable"):
-        tune_confirmed_pipeline(pipeline, df, ctx, n_trials=1)
+    assert tune_confirmed_pipeline(pipeline, df, ctx, n_trials=1) == []
 
 
 _S5E4_LIKE = '''
@@ -714,8 +713,7 @@ class _OnlyBaseMembersPipeline:
 
 
 def test_ensemble_of_only_base_members_has_nothing_to_tune():
-    with pytest.raises(ValueError, match="every ensemble member is 'base'"):
-        tune_confirmed_pipeline(_OnlyBaseMembersPipeline(), None, None, n_trials=1)
+    assert tune_confirmed_pipeline(_OnlyBaseMembersPipeline(), None, None, n_trials=1) == []
 
 
 class _BaseAndTwoMembersPipeline:

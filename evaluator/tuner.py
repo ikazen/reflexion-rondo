@@ -440,7 +440,7 @@ def tune_confirmed_pipeline(
 ) -> list[TunerResult]:
     """pipeline이 model_spec이면 단일 결과, ensemble_spec이면 멤버별 독립 튜닝 결과
     목록을 반환한다. 둘 다 없으면 pipeline_source에서 레지스트리 모델을 정적 추론하고
-    (infer_registry_model), 추론도 실패하면 튜닝 대상이 없다는 에러.
+    (infer_registry_model), 추론도 실패하면 튜닝 대상이 없으니 빈 목록을 돌려준다.
 
     timeout_sec는 멤버 전체를 합친 런의 wall-clock 예산이다(멤버별 상한이 아니다) — 앙상블은 남은 예산을
     남은 멤버 수로 나눠 배분하고, 예산이 바닥나면 나머지 멤버는 튜닝하지 않는다(#350).
@@ -450,7 +450,8 @@ def tune_confirmed_pipeline(
         members = ensemble_spec.get("members") or []
         tunable = [i for i, m in enumerate(members) if m.get("model") != _BASE_MEMBER]
         if members and not tunable:
-            raise ValueError(f"tune_confirmed_pipeline: every ensemble member is {_BASE_MEMBER!r} — nothing to tune")
+            _LOG.warning("tune_confirmed_pipeline: every ensemble member is %r — nothing to tune", _BASE_MEMBER)
+            return []
         started_at = time.monotonic()
         results: list[TunerResult] = []
         for pos, i in enumerate(tunable):
@@ -486,8 +487,8 @@ def tune_confirmed_pipeline(
             seed_params=seed_params, expected_baseline_cv=expected_baseline_cv,
         )]
 
-    raise ValueError(
+    _LOG.warning(
         "tune_confirmed_pipeline: pipeline declares neither ensemble_spec nor model_spec, and "
-        "its build_model is not a statically-inferable single registry model — not tunable "
-        "(ADR-034/ADR-035, #229/#252)"
+        "its build_model is not a statically-inferable single registry model — not tunable (ADR-034/ADR-035)"
     )
+    return []
