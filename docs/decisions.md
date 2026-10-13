@@ -1769,6 +1769,51 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 
 ---
 
+## ADR-073 — permutation importance 검증 행을 2만 행으로 제한한다 (#506, ADR-056/063 보강)
+
+- 결정: `evaluator/harness.py:_fold_importance`가 검증 fold가 `_PI_MAX_ROWS`(20,000행)를 넘으면 `ctx.seed` 고정 샘플로 permutation importance를 잰다. `_PI_REPEATS`(3), 상위 20개, fold별 평균/표준편차 집계는
+  그대로다. 중요도는 `feature_engineering`/`preprocessing` attempt에서만 계산되고 소비처는 Reflector 프롬프트뿐이다. cv/gain/label과 평가 지문은 바뀌지 않는다(`_PI_MAX_ROWS`는 지문 제외 상수).
+- 근거(2026-10-10 19:37Z ~ 10-13, s6e6): `cpu budget exceeded: 36xxs CPU used (limit 3600s)` hard-limit kill이 22건 / 21.3 CPU-h(7일 s6e6 CPU 163.4h의 13%)였고 전부 FE/preprocessing이다
+  (hyperparam_search는 0건). 13건은 `fold_done fold=5/5`, 9건은 `fold_done fold=4/5` 직후에 죽었다. attempt 경로는 holdout을 안 돌리므로(`eval_isolated`에 `holdout_data`를 안 넘김) 죽은 곳은 fold 뒤 중요도다.
+  로컬 16코어 실측(s6e6 확정 pipeline, 5-fold): 중요도 없음 1275 CPU-s(fold당 255), FE 평가 3437(중요도 fold당 약 430, 합 2150 = 63%), 상한 적용 후 1755(-49%), cv 0.966147로 동일.
+  `fold_done` 줄은 중요도 앞에 찍히고 fold-1 투영(harness `_after_first_fold`)과 워치독 투영은 fit만 재서 투영 1275 대 실제 3437이었다 — 5x690 < 4140이라 통과한 뒤 예산 끝에서 죽는다.
+- 한계: 20k 샘플의 상위 20개 순서는 전체 행보다 노이즈가 크다(Reflector 입력 품질 저하는 측정하지 않았다). 중요도 비용 자체는 남아(fold당 약 80) 투영이 아직 약 30% 낮게 본다 — 이전에는 170%였다.
+  `fold_done` 줄을 중요도 뒤로 옮기면 투영이 정확해지지만 harness 조기 중단 테스트와 kill 위치 분석(`[last_progress]`)의 의미가 바뀌어 이번에는 하지 않았다.
+- 재고 트리거(배포 24~48h 후): (a) s6e6 hard-limit kill(기준 일 8건)이 1건 이하로 내려오는지, FE/preprocessing attempt CPU p50(기준 2444/2224)이 내려오는지. (b) 남으면 `fold_done`을 중요도 뒤로
+  옮기고 fold-1 투영도 그 뒤에서 한다. (c) Reflector의 FE/preprocessing 교훈 품질이 눈에 띄게 나빠지면 샘플 크기를 늘린다.
+
+---
+
+## ADR-074 — preselect가 base params를 고른 param_candidates 전용 패치는 fold 전에 noop 종료한다 (#507, ADR-061/065 보완)
+
+- 결정: `evaluate_pipeline`은 preselect 직후 `not collect_oof`이고 패치(`pipeline.patch`)가 정의한 훅이 정확히 `{"param_candidates"}`(`evaluator.contract._ALL_HOOKS`로 판정)이며
+  `selected_params == ctx.best_params`(확정 base의 params)이면 fold를 돌지 않고 기존 `_noop_early_exit_result`를 돌려준다. `cycle/run.py`의 "noop tie -> 다른 후보로 1회 재시도"가 그대로 이어받는다.
+- 근거(s6e6, 같은 창): hyperparam_search 73건 / 31.1 CPU-h(s6e6 CPU의 19%)가 gain 정확히 0.0이고 `params == base params`였다(샘플 11건 확인). 후보를 더해도 `preselect_params`가 base 후보를 다시 골랐고,
+  balanced_accuracy는 이산 지표라 fold-1 점수 일치 지름길이 꺼져(ADR-061, #390) 5-fold를 끝까지 돌았다. 패치가 param_candidates뿐이고 선택 params가 같으면 이후 계산은 구조적으로 base와 동일하다 —
+  점수 우연 일치에 기대는 지름길과 달리 이산 지표에도 안전하다. `contract._ALLOWED_HOOKS`는 강제가 아니라 action_type으로는 판정할 수 없다.
+  로컬 실측(s6e6 확정 pipeline + 약한 후보 2개): `noop_early_exit=True`, 290 CPU-s(base 전체 평가는 1275).
+- 한계: base 후보 자체를 preselect가 매번 다시 학습하는 비용(약 260 CPU-s)은 남는다. ensemble_spec/model_spec base는 `best_params`가 비어 대상이 아니다(보수적). 같은 base params를 반복해서 고르게 만드는
+  프롬프트 쪽 원인(가설 문장이 "over-parameterized"로 수렴)은 건드리지 않았다. 밴딧에서 hyperparam_search가 noop tie가 되면 배정이 FE/preprocessing 쪽으로 옮겨 갈 수 있다.
+- 재고 트리거(24~48h): (a) s6e6 hyperparam_search 중 `noop_early_exit` 비율과 CPU p50(기준 비트 동일 73건/2.7일, p50 1377s). (b) 재시도 후보도 다시 noop이면 재시도 피드백을 보강한다.
+  (c) base 후보의 preselect 점수를 캐시해 260 CPU-s를 줄이는 것은 별도 설계 후보다.
+
+---
+
+## ADR-075 — s5e8을 deep tier에서 동결하고 s6e6 단독으로 운영한다 (#509, ADR-067 (a)/ADR-072 (b) 적용)
+
+- 결정: `config/competitions/s5e8.py`를 `ACTIVE=False`로 둔다. deep tier는 s6e6(다중분류/balanced_accuracy) 하나다. 새 슬롯은 추가하지 않는다 — s5e12는 CV 0.727 / LB 0.697 불일치 조사가 선행(ADR-064)이고
+  s6e8은 새 레버가 없다(ADR-064 (c)). 배포 시점에 s5e8 pending/running 큐는 없었다(리필만 막으면 된다). s5e8의 auto-submit과 idle 튜닝도 `ACTIVE` 판정을 공유하므로 함께 멈춘다.
+- 근거(2026-10-13 측정): 마지막 확정 pipeline 10-06 이후 7일 0건(ADR-067 (a)/ADR-072 (b) 충족). v1.6.39 배포 후 65h: FE/preprocessing 성공 0/115(CPU kill 100건), 비noop 성공 83건 중 양의 gain 0건(최대 -0.00039),
+  Optuna 튜닝 3회 전부 `improved=False`(10-09/10-11 best 동일, baseline 대비 -3.5e-7). 7일 fleet CPU 428h 중 s5e8이 264.5h(62%)를 썼다. 마지막 제출은 10-06(LB 0.97452, p90 0.9771까지 0.00258).
+  FE/preprocessing은 fold당 CPU가 약 650이라 5-fold에 예산 2700s(+마진 1.15)를 구조적으로 넘는다. 예산을 올리려면 airflow-stack의 attempt `execution_timeout`(45분)과 `cpus`(1.5)를 같이 올려야 해서
+  인프라 변경과 컴퓨트 증가가 따르고 이전 결정(ADR-044, ADR-071)이 반복해서 제외했다.
+- 한계: 단일 대회 집중이라 s6e6가 포화하면 탐색 컴퓨트가 갈 곳이 없다. s5e8은 LB-p90 격차가 deep tier 후보 중 작은 쪽(0.00258)이었다. 동결 원인 중 FE/ensemble의 예산 구조는 풀지 않았고
+  ADR-073으로 중요도 비용을 줄였을 때 s5e8 FE가 완주 가능한지는 측정하지 않았다(s6e6 기준 FE 평가 -49%).
+- 재고 트리거: (a) s6e6 확정 pipeline이 14일 0건이면 다음 후보(s5e12 불일치 조사 선행, s6e8 새 레버 필요)를 검토한다. (b) ADR-073 이후에도 s5e8 FE가 예산에 걸릴지 로컬 실측으로 확인하고 완주 가능하면
+  재활성한다(재활성 절차는 runbook 4-13, baseline 재측정 포함). (c) 동결 후 s6e6의 하루 확정 pipeline 수와 fleet CPU 대비 비중으로 효과를 본다(성공 판정: 확정 수 증가).
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |

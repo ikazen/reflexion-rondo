@@ -24,7 +24,7 @@ from evaluator.models import build_registry_model, construct_with_kwarg_retry, r
 
 _PI_REPEATS = 3
 _PI_TOP_N = 20
-# 중요도는 Reflector 프롬프트에만 쓰인다. 전체 검증 행으로 재면 s6e6 FE/preprocessing attempt CPU의 63%였고 fold-1 투영은 이 비용을 못 본다(#506).
+# 중요도는 Reflector 프롬프트에만 쓰여 표본으로 충분하다. 전체 검증 행이면 FE/preprocessing attempt CPU의 대부분이고 fold-1 투영도 이를 못 본다(ADR-073).
 _PI_MAX_ROWS = 20_000
 # 확정 pipeline의 base 점수를 결정하는 값이다 — 후보는 promote마다 뒤에 누적되고 캡은 꼬리를
 # 자르므로 가장 최근 승자부터 빠진다. 12->6으로 줄였다가 s6e8 base가 -0.0011 회귀해 3일간
@@ -1124,6 +1124,7 @@ def evaluate_pipeline(
     model_type = model_spec_dict.get("model") if model_spec_dict is not None else None
 
     if not collect_oof and _preselect_chose_base(pipeline, selected_params, ctx):
+        # 조기 반환도 CV 종료를 알린다 — _after_first_fold와 같은 이유(#448).
         if ctx.progress:
             ctx.progress(f"stage=cv_done cpu={_cpu_seconds():.0f}")
         return _noop_early_exit_result(ctx, selected_params, model_type)

@@ -1,5 +1,29 @@
 # 변경 이력
 
+## v1.6.40 — s6e6 집중과 낭비 회수 (Milestone "s6e6 집중과 낭비 회수 2026-10", 2026-10-13)
+
+v1.6.39 점검(배포 후 65h): 인프라 정상, #497(CatBoost depth 12건 -> 0)과 #498 dtype 부분(22건 -> 1건)은 효과가 있었고 s6e6 슬롯(#499)은 확정 pipeline 2개, jump 8건, LB 0.9654 -> 0.96738로 성공했다.
+반면 s5e8은 FE/preprocessing 성공 0/115, 비noop 성공 83건 중 양의 gain 0건으로 7일 정체(ADR-067 (a)/ADR-072 (b) 충족)였고, s6e6에서는 CPU 낭비 세 가지가 발견됐다.
+
+- #506: permutation importance 검증 행을 2만 행으로 제한한다(ADR-073). s6e6 hard-limit kill 22건 / 21.3 CPU-h가 전부 FE/preprocessing이었고, 로컬 실측에서 중요도가 FE 평가 CPU의 63%(3437 중 2150)였다.
+  상한 적용 후 1755 CPU-s(-49%), cv 동일. 확인 지표: hard-limit kill(기준 일 8건) -> 1건 이하, FE/preprocessing CPU p50(기준 2444/2224).
+  후속(같은 날): 새 상수가 `tests/test_eval_fingerprint.py` 분류에 없어 main 테스트가 깨졌다 — 지문 제외 상수로 등록(PR #514).
+- #507: preselect가 base params를 다시 고른 param_candidates 전용 패치는 fold 전에 noop으로 종료한다(ADR-074). base와 비트 동일한 hyperparam_search가 73건 / 31.1 CPU-h였다(이산 지표라 fold-1 지름길이 꺼져 있었다).
+  로컬 실측 290 CPU-s(전체 평가 1275). 확인 지표: s6e6 hyperparam_search의 `noop_early_exit` 비율, CPU p50(기준 1377s).
+- #508: 튜닝 대상이 없는 pipeline은 `untunable` 행을 기록하고 정상 종료한다. s6e6 확정 pipeline의 build_model이 커스텀 래퍼라 튜닝 DAG가 35회 연속 실패했고, 행이 없어 스윕이 매시간 다시 걸었다.
+  `tune_confirmed_pipeline`은 이제 예외 대신 빈 목록을 돌려준다. 확인 지표: 튜닝 DAG 실패 0회, `raw.tuned_params`에 s6e6 `untunable` 1행.
+- #509: s5e8을 deep tier에서 동결한다(ADR-075). deep tier는 s6e6 단독. 배포 시점에 s5e8 큐는 없었다.
+- #517: 문자열 라벨 ensemble이 `weighted_average`를 명시하면 가중 다수결로 처리한다. 밴딧 리셋 직후 배정된 s6e6 ensemble 2건이 모두 `could not convert string to float: QSO`로 죽어 발견했다
+  (과거 161건 중 3건). 같은 날 task 이미지만 v1.6.41로 다시 올렸다(harness만 변경, daemon 컷오버 없음, compose는 v1.6.40 유지).
+- 데이터 작업: s6e6 `ensemble` 밴딧 행 삭제(alpha 1.04, beta 20.7 — 전부 2026-08-05 이전 증거, base 멤버 #362와 materialize 정합 #374 이전). 그 뒤 ensemble이 배정된 적이 없다(70 사이클 < ADR-060 재탐색 주기 100).
+  확인 지표: 24h 안에 s6e6 ensemble 배정 시작, 양의 gain과 CPU kill 비중.
+- 배포(2026-10-13): 빌드 DAG(`v1.6.40`, 4 task success, task 이미지 즉시 라이브) -> `release.sh v1.6.40`(compose `1483999`, heartbeat exit 22 레이스는 `docker inspect`/`/api/health`/`/api/heartbeat`로 확인) ->
+  daemon 컨테이너 exec로 밴딧 행 삭제. 스키마 변경 없음. s6e6 큐(12/20)는 컷오버를 넘어 유지됐다.
+- 제외: s6e6 래퍼 build_model 튜닝 확장(trial 1회 약 1400 CPU-s라 3h 예산에서 약 12 trial), s6e6 원본 데이터 병합(컬럼 일치 미확인), `_CPU_PROJECTION_MARGIN` 조정,
+  `fold_done`을 중요도 뒤로 옮기는 투영 정확화(ADR-073 재고 (b)), s5e8 예산 상향(airflow-stack `execution_timeout`/`cpus` 동반 변경).
+
+---
+
 ## v1.6.39 — s5e8 정체 대응 (Milestone "s5e8 정체 대응 2026-10", 2026-10-10)
 
 v1.6.38 점검(배포 후 46h): 인프라는 정상이고 #486 preselect 폭주는 해소됐지만 s5e8은 10-06 이후 확정 pipeline 0건, jump 0, 튜너 개선 0이었다. FE/preprocessing 233건 중 7건만 성공했다.

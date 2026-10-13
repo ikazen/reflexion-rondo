@@ -377,6 +377,8 @@ PATCH /api/v2/dags/reflexion_rondo_tune/dagRuns/<dag_run_id>   {"state": "failed
 `raw.tuned_params`에 `n_trials=0`, `improved=false`, `params={}` 행만 있으면 baseline 게이트가 탐색을 건너뛴 것이다(튜너 baseline이 확정
 pipeline cv와 상대 1e-6 넘게 다름 — 태스크 로그에 `tuner: baseline ... 비교 불가능`). 자유형 `build_model` base(s6e8)에서 정상이며
 advisory(`ctx.tuned_params`)는 생성되지 않는다.
+`model_type='untunable'`, `n_trials=0` 행은 튜닝 대상이 없는 pipeline(추론 불가한 커스텀 래퍼 `build_model`, base 멤버만 있는 ensemble)이라는
+기록이다(#508). 행이 있어야 48h 스윕과 승격 트리거가 같은 pipeline을 매시간 다시 걸지 않는다. s6e6가 이 경우다.
 
 승격 트리거는 대회의 최근 5회 튜닝이 모두 미개선이면 건너뛴다(#479, `daemon 로그: promotion-triggered tune skipped ... no improvement`). 확인 쿼리:
 `select bool_or(improved), max(created_at) from raw.tuned_params where competition_id = '<competition-id>' group by tuning_run_id order by 2 desc limit 5`.
