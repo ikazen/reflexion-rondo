@@ -13,6 +13,8 @@ v1.6.39 점검(배포 후 65h): 인프라 정상, #497(CatBoost depth 12건 -> 0
 - #508: 튜닝 대상이 없는 pipeline은 `untunable` 행을 기록하고 정상 종료한다. s6e6 확정 pipeline의 build_model이 커스텀 래퍼라 튜닝 DAG가 35회 연속 실패했고, 행이 없어 스윕이 매시간 다시 걸었다.
   `tune_confirmed_pipeline`은 이제 예외 대신 빈 목록을 돌려준다. 확인 지표: 튜닝 DAG 실패 0회, `raw.tuned_params`에 s6e6 `untunable` 1행.
 - #509: s5e8을 deep tier에서 동결한다(ADR-075). deep tier는 s6e6 단독. 배포 시점에 s5e8 큐는 없었다.
+- #517: 문자열 라벨 ensemble이 `weighted_average`를 명시하면 가중 다수결로 처리한다. 밴딧 리셋 직후 배정된 s6e6 ensemble 2건이 모두 `could not convert string to float: QSO`로 죽어 발견했다
+  (과거 161건 중 3건). 같은 날 task 이미지만 v1.6.41로 다시 올렸다(harness만 변경, daemon 컷오버 없음, compose는 v1.6.40 유지).
 - 데이터 작업: s6e6 `ensemble` 밴딧 행 삭제(alpha 1.04, beta 20.7 — 전부 2026-08-05 이전 증거, base 멤버 #362와 materialize 정합 #374 이전). 그 뒤 ensemble이 배정된 적이 없다(70 사이클 < ADR-060 재탐색 주기 100).
   확인 지표: 24h 안에 s6e6 ensemble 배정 시작, 양의 gain과 CPU kill 비중.
 - 배포(2026-10-13): 빌드 DAG(`v1.6.40`, 4 task success, task 이미지 즉시 라이브) -> `release.sh v1.6.40`(compose `1483999`, heartbeat exit 22 레이스는 `docker inspect`/`/api/health`/`/api/heartbeat`로 확인) ->
