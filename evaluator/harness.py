@@ -293,6 +293,8 @@ def _combine_predictions(member_preds: list[np.ndarray], method: str, weights: l
         raise ValueError(
             f"ensemble_spec: unknown method {method!r} — use 'weighted_average' or 'majority_vote'"
         )
+    if member_preds[0].dtype.kind in "OUS":  # 문자열 라벨은 평균할 수 없다 — 코더가 weighted_average를 명시해도 다수결로 처리한다(#517)
+        return _weighted_majority_vote(member_preds, weights)
     total_w = sum(weights)
     combined = sum(w * np.asarray(p, dtype=float) for w, p in zip(weights, member_preds)) / total_w
     return combined
