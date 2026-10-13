@@ -16,8 +16,8 @@ DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_I
 S3_DATA_PATH      = "s5e8/data/"
 EXTRA_TRAIN_PATHS: list[str] = ["original.csv"]  # UCI Bank Marketing bank-full(45,211행, y를 1/0으로 변환) — 컬럼 완전
 # 일치, twin 0건(#489). MinIO kaggle/s5e8/data/original.csv.
-ACTIVE            = True  # deep tier 재활성 (#422, ADR-064) — s6e8 동결로 빈 슬롯 교체. 재활성 전에 baseline을
-# `bin.establish_baseline --remeasure`로 현재 평가 의미에 맞춰 다시 잰다(휴면 중 평가 의미가 바뀌었다).
+ACTIVE            = False  # deep tier 동결 (#509, ADR-075) — 마지막 확정(10-06) 이후 7일 jump 0, v1.6.39 배포 후 65h에
+# FE/preprocessing 성공 0/115, 양의 gain 0/83. 재활성 전 ADR-075 재고 기준 확인, baseline은 `bin.establish_baseline --remeasure`로 다시 잰다.
 
 # attempt 평가에만 적용한다. confirm/holdout/merge-verify는 승격 후보의 재평가라 기본 3600s를 유지한다. 근거와 복원 조건은 ADR-066.
 ATTEMPT_CPU_BUDGET_SECS = 2700
