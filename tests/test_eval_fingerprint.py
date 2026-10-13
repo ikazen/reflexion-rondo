@@ -25,6 +25,7 @@ _NUMERIC_EXEMPT = {
     "evaluator/harness.py": {
         "_PI_REPEATS": "permutation importance 전용이라 cv_score에 영향 없음",
         "_PI_TOP_N": "permutation importance 전용이라 cv_score에 영향 없음",
+        "_PI_MAX_ROWS": "permutation importance 전용이라 cv_score에 영향 없음",
         "_LEAK_PERFECT_HIGH": "누수 판정 임계값 — 점수가 아니라 에러 여부를 바꾼다",
         "_LEAK_PERFECT_LOW": "누수 판정 임계값 — 점수가 아니라 에러 여부를 바꾼다",
         "_REGRESSION_LEAK_BASELINE_RATIO": "비현실 점수 판정 임계값 — 점수가 아니라 에러 여부를 바꾼다",
