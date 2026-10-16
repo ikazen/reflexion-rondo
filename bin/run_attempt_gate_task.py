@@ -40,7 +40,8 @@ def _should_fire(
 
     quorum은 n_success(성공만) 기준 — n_done(성공+실패)으로 세면 실패 2개만으로도
     발화해 promote가 winner 없이 바로 종료되고(#214), 아직 도는 세 번째(성공할
-    수도 있는) attempt는 이 사이클에서 영영 빠진다. grace/maxwait는 "뭐라도 결과가
+    수도 있는) attempt는 이 사이클에서 영영 빠진다. futility 조기 중단(ADR-076)은 성공으로 세지 않는다 —
+    수 분 만에 끝난 2개가 완주 중인 attempt를 이 사이클에서 빼버리기 때문이다. grace/maxwait는 "뭐라도 결과가
     나오는 대로 무기한 대기하지 않는다"는 안전장치라 n_done/경과시간 그대로 둔다 —
     전부 에러여도 grace/maxwait는 발화해야 사이클이 안 막힌다.
 
@@ -100,7 +101,7 @@ def main() -> None:
             # 조용히 틀어진다. AT TIME ZONE 'utc' 캐스트를 지우지 말 것.
             row = conn.execute(
                 """
-                SELECT count(*) FILTER (WHERE cv_score IS NOT NULL),
+                SELECT count(*) FILTER (WHERE cv_score IS NOT NULL AND NOT coalesce(futility_early_exit, false)),
                        count(*) FILTER (WHERE cv_score IS NOT NULL OR error_trace IS NOT NULL),
                        EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'utc') - min(run_ts)))
                 FROM raw.attempts

@@ -2823,3 +2823,111 @@ def test_base_params_exit_is_skipped_for_collect_oof():
 
     assert not result.noop_early_exit
     assert result.oof_preds is not None
+
+
+# fold-1 paired futility stop (ADR-076, #519)
+
+def _futility_ctx(baseline_fold_scores, prev_best=0.5, **overrides) -> PipelineContext:
+    return PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+        prev_best=prev_best, prev_best_fold_scores=baseline_fold_scores, futility_stop=True, **overrides,
+    )
+
+
+def _worse_than_baseline(baseline: list[float], shift: float = 0.5) -> list[float]:
+    """실제 fold 점수보다 shift만큼 높은 baseline — 후보가 모든 fold에서 baseline보다 나쁘다."""
+    return [s + shift for s in baseline]
+
+
+@pytest.fixture
+def no_audit(monkeypatch):
+    monkeypatch.setattr(harness_module, "_FUTILITY_AUDIT_FRAC", 0.0)
+
+
+def test_futility_stops_after_fold1_when_delta_is_far_below_baseline_noise(no_audit):
+    df = _make_df()
+    real = evaluate_pipeline(BasePipeline(), df, _ctx())
+    base = _worse_than_baseline(real.fold_scores)
+    progress = MagicMock()
+    result = evaluate_pipeline(BasePipeline(), df, _futility_ctx(base, progress=progress))
+    assert result.futility_early_exit is True
+    assert result.noop_early_exit is False and result.is_noop_tie is False
+    assert result.fold_scores is None and result.cv_fold_var is None
+    assert result.label == "neutral"
+    assert result.gain_vs_best == pytest.approx(real.fold_scores[0] - base[0])
+    assert result.cv_score == pytest.approx(0.5 + real.fold_scores[0] - base[0])
+    assert any("stage=cv_done" in c.args[0] for c in progress.call_args_list)
+
+
+def test_futility_does_not_stop_when_candidate_is_better_than_baseline(no_audit):
+    df = _make_df()
+    real = evaluate_pipeline(BasePipeline(), df, _ctx())
+    base = _worse_than_baseline(real.fold_scores, shift=-0.5)
+    result = evaluate_pipeline(BasePipeline(), df, _futility_ctx(base))
+    assert result.futility_early_exit is False
+    assert len(result.fold_scores) == 3
+
+
+def test_futility_threshold_scales_with_baseline_fold_std(no_audit):
+    """delta가 baseline fold 표준편차의 0.75배 이내면 통과한다 — 임계는 절대값이 아니라 fold 노이즈 척도다."""
+    df = _make_df()
+    real = evaluate_pipeline(BasePipeline(), df, _ctx())
+    jitter = [0.0, 0.2, -0.2]  # baseline std가 shift보다 커지게
+    base = [s + 0.05 + j for s, j in zip(real.fold_scores, jitter)]
+    result = evaluate_pipeline(BasePipeline(), df, _futility_ctx(base))
+    assert result.futility_early_exit is False
+
+
+def test_futility_is_off_unless_the_attempt_path_opts_in(no_audit):
+    df = _make_df()
+    real = evaluate_pipeline(BasePipeline(), df, _ctx())
+    ctx = PipelineContext(
+        target_col="y", metric="auc", n_splits=3, seed=42, is_classification=True,
+        prev_best=0.5, prev_best_fold_scores=_worse_than_baseline(real.fold_scores),
+    )
+    assert evaluate_pipeline(BasePipeline(), df, ctx).futility_early_exit is False
+
+
+def test_futility_skipped_for_collect_oof(no_audit):
+    df = _make_df()
+    real = evaluate_pipeline(BasePipeline(), df, _ctx())
+    ctx = _futility_ctx(_worse_than_baseline(real.fold_scores))
+    assert evaluate_pipeline(BasePipeline(), df, ctx, collect_oof=True).futility_early_exit is False
+
+
+def test_futility_skipped_when_baseline_fold_count_mismatches(no_audit):
+    df = _make_df()
+    real = evaluate_pipeline(BasePipeline(), df, _ctx())
+    ctx = _futility_ctx(_worse_than_baseline(real.fold_scores)[:2])
+    assert evaluate_pipeline(BasePipeline(), df, ctx).futility_early_exit is False
+
+
+def test_futility_audit_sample_runs_the_full_cv(monkeypatch):
+    """감사 표본은 중단 조건을 만족해도 끝까지 돌아 오탐률을 사후 계산할 수 있게 한다."""
+    monkeypatch.setattr(harness_module, "_FUTILITY_AUDIT_FRAC", 1.0)
+    df = _make_df()
+    real = evaluate_pipeline(BasePipeline(), df, _ctx())
+    result = evaluate_pipeline(BasePipeline(), df, _futility_ctx(_worse_than_baseline(real.fold_scores)))
+    assert result.futility_early_exit is False
+    assert len(result.fold_scores) == 3
+
+
+def test_futility_skipped_for_regression_error_metrics(no_audit):
+    ctx = PipelineContext(
+        target_col="y", metric="rmse", n_splits=3, seed=42, is_classification=False,
+        prev_best=1.0, prev_best_fold_scores=[0.1, 0.1, 0.1], futility_stop=True,
+    )
+    assert harness_module._fold1_futility_result(ctx, [5.0], -1, "regression_error", {}, None) is None
+
+
+def test_futility_respects_metric_sign_for_error_metrics(no_audit):
+    """metric_sign < 0(낮을수록 좋음)에서는 fold-1 점수가 baseline보다 클 때가 나쁜 쪽이다."""
+    ctx = PipelineContext(
+        target_col="y", metric="logloss", n_splits=3, seed=42, is_classification=True,
+        prev_best=0.3, prev_best_fold_scores=[0.30, 0.31, 0.29], futility_stop=True,
+    )
+    worse = harness_module._fold1_futility_result(ctx, [0.40], -1, "binary_proba", {}, None)
+    better = harness_module._fold1_futility_result(ctx, [0.20], -1, "binary_proba", {}, None)
+    assert worse is not None and worse.gain_vs_best == pytest.approx(-0.10)
+    assert worse.cv_score == pytest.approx(0.40)
+    assert better is None

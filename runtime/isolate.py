@@ -105,6 +105,7 @@ class IsolatedResult:
     peak_cpu_sec: float | None = None
     model_type: str | None = None
     noop_early_exit: bool = False
+    futility_early_exit: bool = False
 
 
 def _read_rss_bytes(pid: int) -> int | None:
@@ -362,6 +363,7 @@ def _read_result(
         peak_rss_bytes=peak_rss_bytes,
         peak_cpu_sec=peak_cpu_sec,
         noop_early_exit=out.get("noop_early_exit", False),
+        futility_early_exit=out.get("futility_early_exit", False),
     )
 
 
@@ -384,6 +386,7 @@ def eval_isolated(
     cpu_budget_sec: float | None = None,
     prev_best_fold_scores: list[float] | None = None,
     known_fold1_scores: list[list[float]] | None = None,
+    futility_stop: bool = False,
 ) -> IsolatedResult:
     with tempfile.TemporaryDirectory(prefix="rondo-eval-") as tmpdir:
         ws = Path(tmpdir)
@@ -405,6 +408,7 @@ def eval_isolated(
             "prev_best_fold_scores": prev_best_fold_scores,
             "cpu_budget_sec": cpu_budget,
             "known_fold1_scores": known_fold1_scores,
+            "futility_stop": futility_stop,
         }, best_source, holdout_data)
 
         env = {k: v for k, v in os.environ.items() if k in _EVAL_ENV_ALLOWLIST}

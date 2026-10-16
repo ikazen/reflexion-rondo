@@ -32,6 +32,8 @@ _NUMERIC_EXEMPT = {
         "_REGRESSION_IMPLAUSIBLE_BASELINE_RATIO": "degenerate 예측의 gain 저장값 하한 배수 — cv_score와 label 판정은 클립 전 값이라 불변",
         "_CPU_PROJECTION_MARGIN": "CPU 예산 투영 중단 임계값 — 완료된 평가의 점수가 아니라 중단 여부(에러)만 바꾼다",
         "_PRESELECT_CPU_FRACTION": "preselect CPU 투영 중단 임계값 — 완료된 평가의 점수가 아니라 중단 여부(에러)만 바꾼다",
+        "_FUTILITY_STD_MULT": "fold-1 futility 조기 중단 임계값 — 완료된 평가의 점수가 아니라 중단 여부만 바꾼다(ADR-076)",
+        "_FUTILITY_AUDIT_FRAC": "futility 감사 표본 비율 — 완료된 평가의 점수가 아니라 중단 여부만 바꾼다(ADR-076)",
     },
     "store/train_data.py": {
         "_TWIN_ABORT_FRAC": "twin 중복 비율 초과 시 중단 임계값 — 표본이 아니라 에러 여부를 바꾼다",
