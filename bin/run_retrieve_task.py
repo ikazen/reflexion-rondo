@@ -37,6 +37,7 @@ def main() -> None:
     parser.add_argument("--queue-id", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--k-retrieve", type=int, default=5)
+    parser.add_argument("--n-attempts", type=int, default=3)
     args = parser.parse_args()
 
     sys.path.insert(0, str(ROOT))
@@ -81,7 +82,7 @@ def main() -> None:
         lessons = []
     failure_lessons = search_failure_lessons(conn, competition_id, k=_ERROR_LESSON_K)
     lessons = _merge_lessons(lessons, failure_lessons)
-    assigned_actions = assign_super_cycle_actions(conn, competition_id, n_attempts=3)
+    assigned_actions = assign_super_cycle_actions(conn, competition_id, n_attempts=args.n_attempts)
     print(f"  assigned_actions: {assigned_actions}")
 
     conn.execute(
