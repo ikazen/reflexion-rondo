@@ -940,7 +940,7 @@ def run_attempt_core(
 
     gen_kwargs, source, generated, static_errs = _generate_attempt_source(conn, config, decision, prev_code, action_type)
 
-    # is_significant_gain(아래)과 eval_isolated의 fold-1 조기 중단(#339)이 같은 baseline fold_scores를 쓰므로 attempt당 1회만 조회한다.
+    # is_significant_gain(아래)과 eval_isolated의 fold-1 조기 중단(#339, futility ADR-076)이 같은 baseline fold_scores를 쓰므로 attempt당 1회만 조회한다.
     prev_best_fold_scores = _prev_best_fold_scores(conn, config.competition_id)
     if static_errs:
         ev = _EvalOutcome(source, generated - 1, "\n".join(static_errs), _NO_EVAL, None, None)
