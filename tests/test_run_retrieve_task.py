@@ -76,7 +76,7 @@ class _Conn:
         pass
 
 
-def _run_retrieve_with_mocks() -> "_Conn":
+def _run_retrieve_with_mocks(extra_argv: list[str] | None = None, assign=None) -> "_Conn":
     """모든 외부 의존을 mock 처리하고 run_retrieve_task.main()을 1회 실행. 사용된 conn을 반환."""
 
     def fake_import(name, *a, **k):
@@ -86,7 +86,8 @@ def _run_retrieve_with_mocks() -> "_Conn":
 
     conn = _Conn()
     argv = ["run_retrieve_task", "--competition", _SLUG, "--stage", "reflexion",
-            "--queue-id", "qid", "--run-id", "rid"]
+            "--queue-id", "qid", "--run-id", "rid", *(extra_argv or [])]
+    assign = assign or MagicMock(return_value={})
     try:
         with patch.object(sys, "argv", argv), \
              patch("store.db.connect", return_value=conn), \
@@ -96,7 +97,7 @@ def _run_retrieve_with_mocks() -> "_Conn":
              patch("cycle.run._build_retrieval_query", return_value="query"), \
              patch("memory.retriever.search", return_value=[]), \
              patch("memory.retriever.search_failure_lessons", return_value=[]), \
-             patch("cycle.action_optimizer.assign_super_cycle_actions", return_value={}), \
+             patch("cycle.action_optimizer.assign_super_cycle_actions", assign), \
              patch("importlib.import_module", side_effect=fake_import):
             import bin.run_retrieve_task as rrt
             importlib.reload(rrt)
@@ -108,6 +109,15 @@ def _run_retrieve_with_mocks() -> "_Conn":
         if str(ROOT) in sys.path:
             sys.path.remove(str(ROOT))
     return conn
+
+
+def test_n_attempts_defaults_to_three_and_is_overridable() -> None:
+    """ADR-076: cycle당 attempt 수는 DAG가 Airflow Variable로 정해 --n-attempts로 넘긴다. 미지정이면 기존 3."""
+    default, override = MagicMock(return_value={}), MagicMock(return_value={})
+    _run_retrieve_with_mocks(assign=default)
+    _run_retrieve_with_mocks(["--n-attempts", "5"], assign=override)
+    assert default.call_args.kwargs["n_attempts"] == 3
+    assert override.call_args.kwargs["n_attempts"] == 5
 
 
 def test_ttl_sweep_runs_after_retrieve() -> None:
