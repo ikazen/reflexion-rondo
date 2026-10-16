@@ -41,9 +41,10 @@ def _should_fire(
     quorum은 n_success(성공만) 기준 — n_done(성공+실패)으로 세면 실패 2개만으로도
     발화해 promote가 winner 없이 바로 종료되고(#214), 아직 도는 세 번째(성공할
     수도 있는) attempt는 이 사이클에서 영영 빠진다. futility 조기 중단(ADR-076)은 성공으로 세지 않는다 —
-    수 분 만에 끝난 2개가 완주 중인 attempt를 이 사이클에서 빼버리기 때문이다. grace/maxwait는 "뭐라도 결과가
-    나오는 대로 무기한 대기하지 않는다"는 안전장치라 n_done/경과시간 그대로 둔다 —
-    전부 에러여도 grace/maxwait는 발화해야 사이클이 안 막힌다.
+    수 분 만에 끝난 2개가 완주 중인 attempt를 이 사이클에서 빼버리기 때문이다. grace의 경과 시간(span_sec)도
+    futility를 제외한 첫 결과부터 센다 — 2분 만에 끝난 futility가 시계를 시작하면 15분 걸리는 완주 attempt가
+    grace(900s)에 잘린다(#524). grace/maxwait는 "뭐라도 결과가 나오는 대로 무기한 대기하지 않는다"는 안전장치라
+    n_done/경과시간 그대로 둔다 — 전부 에러여도 grace/maxwait는 발화해야 사이클이 안 막힌다.
 
     n_done>=n_expected(전부 끝남)면 성공 개수와 무관하게 즉시 발화한다(#219) — 3개가
     전부 몇 분 만에 에러로 끝나도 이 조건이 없으면 성공이 안 나온 채로 grace(900s)가
@@ -103,7 +104,7 @@ def main() -> None:
                 """
                 SELECT count(*) FILTER (WHERE cv_score IS NOT NULL AND NOT coalesce(futility_early_exit, false)),
                        count(*) FILTER (WHERE cv_score IS NOT NULL OR error_trace IS NOT NULL),
-                       EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'utc') - min(run_ts)))
+                       EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'utc') - min(run_ts) FILTER (WHERE NOT coalesce(futility_early_exit, false))))
                 FROM raw.attempts
                 WHERE super_cycle_id = %s
                 """,

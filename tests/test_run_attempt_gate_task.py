@@ -90,6 +90,14 @@ def test_zero_done_before_maxwait_waits():
     ) is None
 
 
+def test_only_futility_done_has_no_span_so_grace_does_not_fire():
+    """#524: futility만 끝난 상태는 SQL의 span_sec이 NULL이다 — grace가 걸리지 않고 완주 attempt를 기다린다."""
+    assert _should_fire(
+        n_success=0, n_done=2, n_expected=3, span_sec=None, waited_sec=950.0,
+        min_done=2, grace_sec=900, max_wait_sec=3000,
+    ) is None
+
+
 def test_main_exits_zero_when_context_missing(monkeypatch, capsys):
     """context row가 안 보이면(retrieve 지연 등) 재시도 후 exit 0 — 사이클을 죽이면 안 된다."""
     conn = MagicMock()
@@ -196,3 +204,5 @@ def test_poll_query_excludes_futility_stops_from_the_success_count(monkeypatch):
             pass
     poll_sql = next(c.args[0] for c in conn.execute.call_args_list if "FROM raw.attempts" in c.args[0])
     assert "NOT coalesce(futility_early_exit, false)" in poll_sql
+    # grace 시계는 futility가 아닌 첫 결과부터 센다 — 2분 만에 끝난 futility가 시작하면 완주 attempt가 900s grace에 잘린다(#524)
+    assert "min(run_ts) FILTER (WHERE NOT coalesce(futility_early_exit, false))" in poll_sql
