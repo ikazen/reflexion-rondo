@@ -10,6 +10,8 @@ p90까지 0.00428. 남은 낭비: s6e6 CPU 208.7 CPU-h의 79%가 FE/preprocessin
   `raw.attempts.futility_early_exit` 컬럼 추가, `attempt_gate` quorum은 이 행을 성공으로 세지 않는다. 대회 opt-in(`FUTILITY_STOP`, s6e6만).
 - #520: cycle당 attempt 수를 Airflow Variable `rondo_attempts_per_cycle`(기본 3)로 전환한다. `run_retrieve_task --n-attempts`(reflexion-rondo)와 cycle DAG의 attempt/absorb task 수,
   gate `--expected`/`--min-done`(`rondo_gate_min_done`, 기본 2)(airflow-stack#52). 기본값이라 동작 불변이다. `big` 슬롯이 fleet 3개라 futility로 놓인 슬롯을 채우려는 스위치다.
+- #524(v1.6.43, 같은 날): `attempt_gate`의 grace 시계를 futility를 제외한 첫 결과부터 센다. 배포 직후 혼합 cycle에서 futility가 115초에 끝나 시계를 시작했고 완주 중인 attempt_2가 1023초에 grace로 promote에서
+  빠졌다. task 이미지만 v1.6.43으로 올렸다(`bin/run_attempt_gate_task.py`만 변경, daemon 컷오버 없음, compose는 v1.6.42 유지).
 - 기각(로컬 실측): 소프트보팅 앙상블, 클래스 확률 배수 최적화, Optuna 레인 개방, s6e6 원본 데이터 병합(원본을 특정하지 못했다). ADR-076 참고.
 - 배포(2026-10-16): daemon 컨테이너에서 `ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS futility_early_exit boolean` 선반영 -> 빌드 DAG(`v1.6.42`, 4 task success, task 이미지 즉시 라이브) ->
   `release.sh v1.6.42`(compose `d191e09`, heartbeat exit 22 레이스는 `docker inspect`/`/api/health`/`/api/heartbeat`로 확인, s6e6 큐 유지) -> airflow-stack#53 머지(import 오류 0, task 수 불변).

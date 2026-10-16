@@ -1826,8 +1826,10 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
   fold 난이도를 상쇄한다) 규칙 적용 시 291건(42%)이 중단, CPU 99.7 CPU-h(31%) 절감, 최종 delta > +0.0001인 19건과 jump 5건은 0건 중단이었다(jump의 fold-1 delta 최소 +0.0001, 임계는 약 -0.00026).
   배수는 0.5~1.5를 훑어 정했다: 0.5는 334건 중단/7건의 소폭 양성(최종 delta 0~+0.0001) 손실, 1.0은 252건/1건 손실, 1.5는 127건 중단이다. 0.75는 둘 사이의 값이다.
 - label을 neutral로 둔 이유: `regression`으로 하면 밴딧 β+1이 되어 이 변경이 FE/preprocessing 배정까지 흔든다. 효과를 CPU 절감 하나로 분리하려고 보상식은 건드리지 않는다.
-- gate 상호작용: futility로 수 분 만에 끝난 attempt를 성공으로 세면 2개만으로 quorum이 발화해 완주 중인 attempt가 그 cycle의 promote에서 빠진다. 이전에도 noop 조기 종료가 같은 방식으로 세어졌으나
-  (hp의 45%) 비율이 낮았다. 이번에는 futility 행만 제외하고 noop은 그대로 둔다(범위 제한).
+- gate 상호작용 두 가지: (1) futility로 수 분 만에 끝난 attempt를 성공으로 세면 2개만으로 quorum이 발화해 완주 중인 attempt가 그 cycle의 promote에서 빠진다. 이전에도 noop 조기 종료가 같은 방식으로
+  세어졌으나(hp의 45%) 비율이 낮았다. 이번에는 futility 행만 제외하고 noop은 그대로 둔다(범위 제한). (2) grace 시계(첫 결과 이후 900초)도 futility가 시작하면 안 된다 — 배포 직후 첫 혼합 cycle에서
+  futility가 115초에 끝나 시계가 시작됐고 완주 중이던 attempt_2가 1023초에 grace 발화로 빠졌다(완주 FE/preprocessing wall 중앙값 약 15분). 이 두 번째는 배포 후 관측으로 발견해 #524로 고쳤다
+  (경과 시간을 `min(run_ts) FILTER (WHERE NOT futility)`부터 센다, v1.6.43).
 - 한계: 양성 표본이 19건/jump 5건이라 "0건 중단"의 통계력이 낮다(95% 상한 약 15%). 그래서 감사 표본을 둔다. 슬롯은 fleet 3개(`big` 큐)이고 daemon이 cycle을 직렬 처리하며 gate가 느린 attempt를
   기다리므로, CPU 절감만으로는 cycle 시간이 거의 줄지 않는다(3개 중 하나라도 완주하면 그 시간). 처리량 이득은 cycle당 attempt 수 스위치(`rondo_attempts_per_cycle`, #520)로 빈 슬롯을 채워야 나온다.
   지문 대상이 아니다(완료된 평가의 점수는 불변, 중단 여부만 바뀐다) — remeasure는 필요 없다.

@@ -487,7 +487,8 @@ futility로 일찍 끝난 attempt의 슬롯은 cycle 끝까지 논다. 처리량
 - 감사 표본 오탐률: 완주한 attempt(`fold_scores` 있음, `futility_early_exit` 아님) 중 `fold_scores[1] - baseline fold_scores[1]`이 `-0.75 * std(baseline)` 미만인 것(= 중단 조건 충족인데 감사로
   끝까지 돈 것)의 최종 `gain_vs_best`가 +0.0001을 넘거나 label이 jump인 비율. baseline은 attempt 직전 확정 pipeline의 fold_scores(`coalesce(pipelines.fold_scores, attempts.fold_scores)`).
   5%를 넘으면 `_FUTILITY_STD_MULT`를 올리거나 `FUTILITY_STOP = False`.
-- gate 발화 사유는 attempt_gate task 로그의 `fired reason=`. futility가 늘면 `quorum`이 줄고 `all_done`/`grace`가 늘 수 있다.
+- gate 발화 사유는 attempt_gate task 로그의 `fired reason=`. futility가 늘면 `quorum`이 줄고 `all_done`/`grace`가 늘 수 있다. grace 시계와 quorum 성공 수는 futility 행을 세지 않는다(#524) —
+  혼합 cycle(futility + 완주)에서 완주 attempt가 `grace`로 잘리지 않는지 본다.
 
 attempt 수 스위치(airflow-stack Variables, UI Admin -> Variables 또는 `airflow variables set`):
 
