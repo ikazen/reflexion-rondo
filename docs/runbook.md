@@ -475,6 +475,27 @@ psql "$RONDO_DB_URL" -c "update raw.competitions set auto_submit_paused_reason =
 
 Postgres가 concurrent read를 처리한다. daemon은 단일 프로세스로 순차 실행이므로 write 충돌이 없다. 여러 daemon을 띄우는 구성은 현재 미지원.
 
+### 5-1. fold-1 futility stop 관측과 attempt 수 스위치 (#519/#520, ADR-076)
+
+`big` 큐 슬롯은 fleet 전체 3개(worker-vm 1, mac-server 2)이고 attempt/promote/tune이 나눠 쓴다. daemon은 cycle을 직렬 처리하고 gate가 느린 attempt를 기다리므로,
+futility로 일찍 끝난 attempt의 슬롯은 cycle 끝까지 논다. 처리량 이득은 cycle당 attempt 수를 늘려 빈 슬롯을 채울 때 나온다.
+
+관측(읽기 전용):
+
+- futility 비율: `SELECT action_type, count(*), count(*) FILTER (WHERE futility_early_exit) FROM raw.attempts WHERE competition_id = '<competition-id>' AND run_ts >= '<배포 시각>' GROUP BY 1`
+  (기대: s6e6 FE/preprocessing의 35~45%). futility 행은 `fold_scores IS NULL`, `cv_score` 있음, `error_trace IS NULL`이다.
+- 감사 표본 오탐률: 완주한 attempt(`fold_scores` 있음, `futility_early_exit` 아님) 중 `fold_scores[1] - baseline fold_scores[1]`이 `-0.75 * std(baseline)` 미만인 것(= 중단 조건 충족인데 감사로
+  끝까지 돈 것)의 최종 `gain_vs_best`가 +0.0001을 넘거나 label이 jump인 비율. baseline은 attempt 직전 확정 pipeline의 fold_scores(`coalesce(pipelines.fold_scores, attempts.fold_scores)`).
+  5%를 넘으면 `_FUTILITY_STD_MULT`를 올리거나 `FUTILITY_STOP = False`.
+- gate 발화 사유는 attempt_gate task 로그의 `fired reason=`. futility가 늘면 `quorum`이 줄고 `all_done`/`grace`가 늘 수 있다.
+
+attempt 수 스위치(airflow-stack Variables, UI Admin -> Variables 또는 `airflow variables set`):
+
+1. 켜기: `rondo_attempts_per_cycle=5`, `rondo_gate_min_done=3`, `rondo_gate_grace_sec=1500`. DAG 파싱 시 조회라 파서 주기(30초) 안에 반영되고, 이미 도는 dagRun은 생성 시점의 DAG 버전을 쓴다.
+   5개를 슬롯 3개에 넣으면 2파로 돈다. min_done이 2이면 후속 attempt가 시작도 전에 gate가 발화해 결과를 버리고 다음 cycle 슬롯까지 점유한다.
+2. 관측: cycle 소요(기준 약 16.5분), 일별 attempt 수(기준 약 227), gate 발화 사유, queued 대기, tune DAG 경합(tune이 슬롯 1개를 3~4시간 점유), mac-server 메모리(Colima VM 크기 확인 필요).
+3. 롤백: `rondo_attempts_per_cycle=3`, `rondo_gate_min_done=2`, `rondo_gate_grace_sec=900`. 처리량 이득이 +15% 미만이면 되돌린다.
+
 ## 6. 생성 코드 격리 실행
 
 `runtime/isolate.py`가 tmpdir를 생성하고 `runner.py`를 subprocess로 실행한다.

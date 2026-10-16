@@ -1,5 +1,22 @@
 # 변경 이력
 
+## v1.6.42 — s6e6 슬롯 효율 (Milestone "s6e6 슬롯 효율 2026-10", 2026-10-16)
+
+v1.6.40/41 점검(배포 후 2.5일): 인프라 정상, 의도한 효과 전부 확인 — s6e6 FE hard-limit kill 30/111 -> 2/219, preprocessing kill 19 -> 0, FE/prep CPU p50 2238/2224 -> 1333/1207,
+hyperparam_search `noop_early_exit` 54/119(CPU p50 1346 -> 661), 튜닝 DAG 35회 연속 실패 -> 3회 성공(`untunable` 행 3개), 문자열 라벨 ensemble 크래시 0건. 확정 pipeline 4개(각 +0.00026), LB 0.9657 -> 0.96799,
+p90까지 0.00428. 남은 낭비: s6e6 CPU 208.7 CPU-h의 79%가 FE/preprocessing인데 양의 gain은 4.8%였다.
+
+- #519: fold-1 paired futility stop(ADR-076). s6e6 완료 attempt 691건 리플레이에서 fold-1 delta와 최종 delta의 상관 0.986, 임계 적용 시 42% 중단 / CPU 31% 절감 / 양성 19건·jump 5건 손실 0.
+  `raw.attempts.futility_early_exit` 컬럼 추가, `attempt_gate` quorum은 이 행을 성공으로 세지 않는다. 대회 opt-in(`FUTILITY_STOP`, s6e6만).
+- #520: cycle당 attempt 수를 Airflow Variable `rondo_attempts_per_cycle`(기본 3)로 전환한다. `run_retrieve_task --n-attempts`(reflexion-rondo)와 cycle DAG의 attempt/absorb task 수,
+  gate `--expected`/`--min-done`(`rondo_gate_min_done`, 기본 2)(airflow-stack#52). 기본값이라 동작 불변이다. `big` 슬롯이 fleet 3개라 futility로 놓인 슬롯을 채우려는 스위치다.
+- 기각(로컬 실측): 소프트보팅 앙상블, 클래스 확률 배수 최적화, Optuna 레인 개방, s6e6 원본 데이터 병합(원본을 특정하지 못했다). ADR-076 참고.
+- 배포(2026-10-16): daemon 컨테이너에서 `ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS futility_early_exit boolean` 선반영 -> 빌드 DAG(`v1.6.42`, 4 task success, task 이미지 즉시 라이브) ->
+  `release.sh v1.6.42`(compose `d191e09`, heartbeat exit 22 레이스는 `docker inspect`/`/api/health`/`/api/heartbeat`로 확인, s6e6 큐 유지) -> airflow-stack#53 머지(import 오류 0, task 수 불변).
+  attempt 수 스위치는 켜지 않은 상태(기본 3). 켜는 조건과 절차는 runbook 5-1.
+
+---
+
 ## v1.6.40 — s6e6 집중과 낭비 회수 (Milestone "s6e6 집중과 낭비 회수 2026-10", 2026-10-13)
 
 v1.6.39 점검(배포 후 65h): 인프라 정상, #497(CatBoost depth 12건 -> 0)과 #498 dtype 부분(22건 -> 1건)은 효과가 있었고 s6e6 슬롯(#499)은 확정 pipeline 2개, jump 8건, LB 0.9654 -> 0.96738로 성공했다.
