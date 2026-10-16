@@ -15,7 +15,11 @@ p90까지 0.00428. 남은 낭비: s6e6 CPU 208.7 CPU-h의 79%가 FE/preprocessin
 - 기각(로컬 실측): 소프트보팅 앙상블, 클래스 확률 배수 최적화, Optuna 레인 개방, s6e6 원본 데이터 병합(원본을 특정하지 못했다). ADR-076 참고.
 - 배포(2026-10-16): daemon 컨테이너에서 `ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS futility_early_exit boolean` 선반영 -> 빌드 DAG(`v1.6.42`, 4 task success, task 이미지 즉시 라이브) ->
   `release.sh v1.6.42`(compose `d191e09`, heartbeat exit 22 레이스는 `docker inspect`/`/api/health`/`/api/heartbeat`로 확인, s6e6 큐 유지) -> airflow-stack#53 머지(import 오류 0, task 수 불변).
-  attempt 수 스위치는 켜지 않은 상태(기본 3). 켜는 조건과 절차는 runbook 5-1.
+  attempt 수 스위치는 기본 3으로 둔다(아래 시험 결과, runbook 5-1).
+- 배포 후 실측(2026-10-16, s6e6, 02:20~03:27Z 1.1h, N=3): attempt 21.5/h(배포 전 14h 평균 9.6/h), cycle 8.1/h(3.3/h), futility는 FE/preprocessing 34건 중 25건(74%)이고 평균 CPU 약 170초(완주 약 1200초).
+  시간당 CPU는 3.4 CPU-h/h로 배포 전 4.0과 비슷하다 — 절감분이 CPU 감소가 아니라 처리량(스크리닝한 제안 수)으로 바뀌었다. 감사 표본 2건 중 오탐 0. jump는 이 창에서 0건(표본이 작다).
+- attempt 수 5 시험(03:28~03:55Z, 3 cycle): 21.5 -> 24.3 attempt/h(+13%)에 그쳤고 ensemble 3건이 에러로 슬롯을 최대 14분 점유해 3으로 롤백했다. `assign_super_cycle_actions`의 부족분 채움이
+  라운드로빈이라 eligible이 3개([FE, prep, ensemble])일 때 N=5에서 ensemble이 40% 배정된다 -> #526(독립 Thompson 표본으로 채우기). 수정 전에는 N>3으로 올리지 않는다.
 
 ---
 

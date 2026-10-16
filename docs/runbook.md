@@ -492,6 +492,7 @@ futility로 일찍 끝난 attempt의 슬롯은 cycle 끝까지 논다. 처리량
 
 attempt 수 스위치(airflow-stack Variables, UI Admin -> Variables 또는 `airflow variables set`):
 
+0. **현재 N>3으로 올리지 않는다(#526)**: 부족분을 라운드로빈으로 채워 낮은 평균 액션(ensemble)이 과배정된다. 2026-10-16 시험은 +13%에 그치고 3으로 롤백했다. 아래는 #526 수정 뒤의 절차다.
 1. 켜기: `rondo_attempts_per_cycle=5`, `rondo_gate_min_done=3`, `rondo_gate_grace_sec=1500`. DAG 파싱 시 조회라 파서 주기(30초) 안에 반영되고, 이미 도는 dagRun은 생성 시점의 DAG 버전을 쓴다.
    5개를 슬롯 3개에 넣으면 2파로 돈다. min_done이 2이면 후속 attempt가 시작도 전에 gate가 발화해 결과를 버리고 다음 cycle 슬롯까지 점유한다.
 2. 관측: cycle 소요(기준 약 16.5분), 일별 attempt 수(기준 약 227), gate 발화 사유, queued 대기, tune DAG 경합(tune이 슬롯 1개를 3~4시간 점유), mac-server 메모리(Colima VM 크기 확인 필요).
