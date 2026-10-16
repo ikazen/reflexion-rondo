@@ -1814,6 +1814,34 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 
 ---
 
+## ADR-076 — fold-1 paired delta가 baseline 노이즈보다 나쁘면 attempt를 조기 중단한다 (#519, ADR-061/073 보완)
+
+- 결정: `FUTILITY_STOP = True`인 대회(s6e6)의 attempt는 fold-1 직후 `metric_sign * (fold1 - base1) < -_FUTILITY_STD_MULT(0.75) * std(prev_best_fold_scores)`이면 나머지 fold와 permutation importance를
+  건너뛰고 `EvalResult.futility_early_exit=True`로 반환한다(`evaluator/harness.py:_fold1_futility_result`). 결과는 `cv_score = prev_best + fold-1 delta`(추정값), `gain_vs_best = 그 delta`,
+  label `neutral`, `fold_scores/cv_fold_var = None`이다. 적용하지 않는 경우: `collect_oof`(승격 재평가), `regression_error` metric_class(`gain_vs_best_relative` 스케일 미검증),
+  baseline fold 수 불일치, 대회 opt-in 꺼짐. 중단 조건을 만족한 attempt의 `_FUTILITY_AUDIT_FRAC`(10%)는 끝까지 돌려 오탐률을 사후 계산하게 한다.
+  `raw.attempts.futility_early_exit` 컬럼이 추가됐고 `attempt_gate`의 quorum 성공 수는 이 행을 세지 않는다.
+- 근거(2026-10-16, s6e6): 배포 후 2.5일 CPU 208.7 CPU-h의 79%가 FE/preprocessing인데 양의 gain은 21/437건(4.8%), jump 1건이었다. 10-10 21:30Z 이후 완료 attempt 691건을 리플레이했다
+  (baseline은 attempt 시각 직전의 확정 pipeline fold_scores이고 저장된 `gain_vs_best`와 685/691건 일치). fold-1 delta와 최종 평균 delta의 상관은 0.986이고(fold 분할이 결정적이라 paired 차이가
+  fold 난이도를 상쇄한다) 규칙 적용 시 291건(42%)이 중단, CPU 99.7 CPU-h(31%) 절감, 최종 delta > +0.0001인 19건과 jump 5건은 0건 중단이었다(jump의 fold-1 delta 최소 +0.0001, 임계는 약 -0.00026).
+  배수는 0.5~1.5를 훑어 정했다: 0.5는 334건 중단/7건의 소폭 양성(최종 delta 0~+0.0001) 손실, 1.0은 252건/1건 손실, 1.5는 127건 중단이다. 0.75는 둘 사이의 값이다.
+- label을 neutral로 둔 이유: `regression`으로 하면 밴딧 β+1이 되어 이 변경이 FE/preprocessing 배정까지 흔든다. 효과를 CPU 절감 하나로 분리하려고 보상식은 건드리지 않는다.
+- gate 상호작용 두 가지: (1) futility로 수 분 만에 끝난 attempt를 성공으로 세면 2개만으로 quorum이 발화해 완주 중인 attempt가 그 cycle의 promote에서 빠진다. 이전에도 noop 조기 종료가 같은 방식으로
+  세어졌으나(hp의 45%) 비율이 낮았다. 이번에는 futility 행만 제외하고 noop은 그대로 둔다(범위 제한). (2) grace 시계(첫 결과 이후 900초)도 futility가 시작하면 안 된다 — 배포 직후 첫 혼합 cycle에서
+  futility가 115초에 끝나 시계가 시작됐고 완주 중이던 attempt_2가 1023초에 grace 발화로 빠졌다(완주 FE/preprocessing wall 중앙값 약 15분). 이 두 번째는 배포 후 관측으로 발견해 #524로 고쳤다
+  (경과 시간을 `min(run_ts) FILTER (WHERE NOT futility)`부터 센다, v1.6.43).
+- 한계: 양성 표본이 19건/jump 5건이라 "0건 중단"의 통계력이 낮다(95% 상한 약 15%). 그래서 감사 표본을 둔다. 슬롯은 fleet 3개(`big` 큐)이고 daemon이 cycle을 직렬 처리하며 gate가 느린 attempt를
+  기다리므로, CPU 절감만으로는 cycle 시간이 거의 줄지 않는다(3개 중 하나라도 완주하면 그 시간). 처리량 이득은 cycle당 attempt 수 스위치(`rondo_attempts_per_cycle`, #520)로 빈 슬롯을 채워야 나온다.
+  지문 대상이 아니다(완료된 평가의 점수는 불변, 중단 여부만 바뀐다) — remeasure는 필요 없다.
+- 배포 후 실측(2026-10-16, N=3, 1.1h): 처리량이 attempt 9.6 -> 21.5/h, cycle 3.3 -> 8.1/h로 올랐다(전부 FE/preprocessing가 배정됐다 — hp/ensemble/model_swap은 dead). CPU는 시간당 4.0 -> 3.4 CPU-h로
+  비슷하다: 절감분이 CPU 감소가 아니라 같은 CPU로 스크리닝한 제안 수로 바뀌었다(제안당 CPU 약 1/2.6). 처리량을 더 올리려는 attempt 수 5 시험은 +13%에 그치고 라운드로빈 채움 문제로 롤백했다(#526).
+- 재고 트리거: (a) 배포 24~48h 후 감사 표본 오탐률(완주한 attempt 중 fold-1 delta가 임계 미만인 것의 최종 delta > +0.0001 또는 jump 비율)이 5%를 넘으면 배수를 1.0 이상으로 올리거나 끈다.
+  (b) s6e6 jump/일이 기준(약 1/일)보다 뚜렷이 줄면 끈다(`FUTILITY_STOP = False`). (c) 다른 이산/연속 지표 대회에 opt-in하기 전에 같은 리플레이(fold-1 delta 대 최종 delta 상관, 양성 손실)를 그 대회 데이터로 먼저 돌린다.
+- 기각한 대안(같은 날 로컬 실측): 소프트보팅 앙상블(xgb 0.96663 대비 xgb+lgbm 0.96657, +cat 0.96651 — 상관 높은 GBDT라 이득 없음), 클래스 확률 배수 최적화(nested 5-fold로 xgb 단독 +0.00009,
+  xgb+lgbm 블렌드 +0.0005이나 블렌드 CPU 1.8배). s6e6 ensemble 29건(16.2 CPU-h)의 gain이 전부 정확히 0인 것은 2멤버 다수결이 동률 시 첫 멤버(base)와 같기 때문이다 — 밴딧이 이미 dead로 처리한다.
+
+---
+
 ## 미정 항목 (TBD)
 
 | 항목 | 제안 | 상태 |

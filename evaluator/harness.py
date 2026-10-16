@@ -960,7 +960,8 @@ def _fold1_futility_result(
 ) -> EvalResult | None:
     """fold-1이 baseline보다 fold 노이즈 대비 충분히 나쁘면 조기 중단 결과를, 아니면 None을 돌려준다(ADR-076).
 
-    fold 분할이 결정적이라 fold-1 paired delta가 최종 평균 delta와 거의 같다(s6e6 리플레이 상관 0.986)."""
+    fold 분할이 결정적이라 fold-1 paired delta가 최종 평균 delta와 거의 같다(s6e6 리플레이 상관 0.986).
+    regression_error는 gain_vs_best_relative(baseline_cv 나눗셈)가 fold-1에서 검증되지 않아 제외한다."""
     base = ctx.prev_best_fold_scores
     if (
         not ctx.futility_stop
@@ -980,9 +981,9 @@ def _fold1_futility_result(
     gain = metric_sign * raw_delta
     return EvalResult(
         cv_score=ctx.prev_best + raw_delta,
-        cv_fold_var=None,
+        cv_fold_var=None,  # 1-fold 값을 채우면 competition_snr 뷰가 오염된다(_noop_early_exit_result와 같은 이유)
         fold_scores=None,
-        label="neutral",
+        label="neutral",  # regression이면 밴딧 β+1이라 FE/preprocessing 배정까지 흔들린다(ADR-076)
         gain_vs_best=gain,
         gain_vs_best_relative=gain,
         selected_params=selected_params,
@@ -1033,9 +1034,10 @@ def _after_first_fold(
             if len(cached) == ctx.n_splits and cached[0] == fold_scores[0]:
                 return None, list(cached)
 
+    # tie/캐시 매칭은 나머지 fold를 공짜로 채우므로 그보다 뒤에 둔다 — 앞으로 옮기면 그 회수 경로가 조용히 죽는다.
     if not collect_oof:
         _, metric_sign, metric_class = get_metric(ctx.metric)
-        futile = _fold1_futility_result(ctx, fold_scores, metric_sign, metric_class, selected_params, model_type)
+        futile =_fold1_futility_result(ctx, fold_scores, metric_sign, metric_class, selected_params, model_type)
         if futile is not None:
             return futile, None
 
