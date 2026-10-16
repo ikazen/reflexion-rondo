@@ -90,6 +90,11 @@ ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS peak_cpu_sec double precision;
 -- 직접 쿼리 가능하게 컬럼으로 영속화한다(#356 잔여). forward-only, backfill 불가.
 ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS noop_early_exit boolean;
 
+-- fold-1 paired delta가 baseline 대비 fold 노이즈보다 나빠 나머지 fold를 건너뛴 attempt(ADR-076).
+-- cv_score는 prev_best에 fold-1 delta를 더한 추정값이고 fold_scores/cv_fold_var는 NULL이다.
+-- attempt_gate가 quorum에서 이 행을 성공으로 세지 않는 데 쓴다. forward-only, backfill 불가.
+ALTER TABLE raw.attempts ADD COLUMN IF NOT EXISTS futility_early_exit boolean;
+
 -- 아래 ALTER TABLE raw.pipelines 문들보다 먼저 나와야 한다(#113/#243) — 완전히 빈
 -- DB에 처음 스키마를 적용할 때 ALTER가 CREATE보다 앞서면 "relation raw.pipelines
 -- does not exist"로 부트스트랩이 실패한다. 라이브 프로덕션 DB는 테이블이 항상 이미

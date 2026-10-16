@@ -61,6 +61,7 @@ class CycleConfig:
     slug: str | None = None  # S3 경로용 모듈명 (e.g. s4e1), 미설정 시 competition_id fallback
     holdout: pl.DataFrame | None = None  # 값이 있을 때만 run_attempt_core가 평가 전에 fingerprint/baseline 가드를 건다(attempt task가 채움)
     cpu_budget_secs: float | None = None  # comp.CPU_BUDGET_SECS 오버라이드, 미설정 시 env/DEFAULT_CPU_BUDGET_SECS
+    futility_stop: bool = False  # comp.FUTILITY_STOP — fold-1 paired delta가 나쁘면 나머지 fold를 건너뛴다(ADR-076)
 
 
 @dataclass(frozen=True, slots=True)
@@ -741,6 +742,7 @@ def _evaluate_attempt(
             cpu_budget_sec=cpu_remaining,
             prev_best_fold_scores=prev_best_fold_scores,
             known_fold1_scores=known_fold1_scores,
+            futility_stop=config.futility_stop,
         )
         peak_rss_bytes = iso.peak_rss_bytes
         peak_cpu_sec = iso.peak_cpu_sec
@@ -861,6 +863,7 @@ def _attempt_row(
         "params":           json.dumps(res.selected_params) if res.selected_params else None,
         "model_type":       res.model_type,
         "noop_early_exit":  res.noop_early_exit,
+        "futility_early_exit": res.futility_early_exit,
     }
 
 

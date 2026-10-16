@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import random
 import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -57,6 +58,10 @@ _REGRESSION_IMPLAUSIBLE_BASELINE_RATIO = 10.0
 _CPU_PROJECTION_MARGIN = 1.15
 # preselect(후보 전부를 80% train으로 재학습)가 이 비율의 예산을 넘겨 쓸 것으로 투영되면 워치독이 CV 전에 중단한다(ADR-068).
 _PRESELECT_CPU_FRACTION = 0.5
+# fold-1 paired delta가 baseline fold 표준편차의 이 배수만큼 나쁘면 나머지 fold를 돌지 않는다(ADR-076).
+_FUTILITY_STD_MULT = 0.75
+# 중단 대상의 이 비율은 끝까지 돌려 오탐률을 실측한다(완주한 attempt의 fold_scores로 사후 계산).
+_FUTILITY_AUDIT_FRAC = 0.1
 
 
 def is_significant_gain(
@@ -547,6 +552,8 @@ class EvalResult:
     # True지만, 이 필드는 "5-fold를 다 돌고 나서야 안 tie"와 "1 fold만 쓰고 조기
     # 확정한 tie"를 구분해 재시도 여부 판단에 쓴다.
     noop_early_exit: bool = False
+    # fold-1 paired delta가 임계보다 나빠 나머지 fold를 건너뛰었는지(ADR-076). cv_score는 prev_best + fold-1 delta의 추정값이다.
+    futility_early_exit: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -577,6 +584,8 @@ class PipelineContext:
     # 그 attempt의 값으로 채운다. #339(확정 base와의 tie)와 달리 base가 아닌 임의의 과거 attempt와도
     # 매칭해 반복 재생산(같은 params로 수렴하는 서로 다른 patch 등)의 fold 계산을 회수한다.
     known_fold1_scores: list[list[float]] | None = None
+    # attempt 경로에서만 켠다(ADR-076) — confirm/holdout/merge-verify는 완전한 점수가 필요하다.
+    futility_stop: bool = False
     # runner가 워크스페이스 파일에 append하는 콜백 — 워치독이 kill 사유에 마지막 줄을 붙여 kill 위치를 남긴다(ADR-063).
     progress: Callable[[str], None] | None = None
 
@@ -945,6 +954,43 @@ def _noop_early_exit_result(ctx: PipelineContext, selected_params: dict, model_t
     )
 
 
+def _fold1_futility_result(
+    ctx: PipelineContext, fold_scores: list[float], metric_sign: int, metric_class: str,
+    selected_params: dict, model_type: str | None,
+) -> EvalResult | None:
+    """fold-1이 baseline보다 fold 노이즈 대비 충분히 나쁘면 조기 중단 결과를, 아니면 None을 돌려준다(ADR-076).
+
+    fold 분할이 결정적이라 fold-1 paired delta가 최종 평균 delta와 거의 같다(s6e6 리플레이 상관 0.986)."""
+    base = ctx.prev_best_fold_scores
+    if (
+        not ctx.futility_stop
+        or ctx.prev_best is None
+        or base is None
+        or len(base) != ctx.n_splits
+        or metric_class == "regression_error"
+    ):
+        return None
+    raw_delta = fold_scores[0] - base[0]
+    if metric_sign * raw_delta >= -_FUTILITY_STD_MULT * float(np.std(base)):
+        return None
+    if random.random() < _FUTILITY_AUDIT_FRAC:
+        return None
+    if ctx.progress:
+        ctx.progress(f"stage=cv_done cpu={_cpu_seconds():.0f}")
+    gain = metric_sign * raw_delta
+    return EvalResult(
+        cv_score=ctx.prev_best + raw_delta,
+        cv_fold_var=None,
+        fold_scores=None,
+        label="neutral",
+        gain_vs_best=gain,
+        gain_vs_best_relative=gain,
+        selected_params=selected_params,
+        model_type=model_type,
+        futility_early_exit=True,
+    )
+
+
 def _preselect_chose_base(pipeline: object, selected_params: dict, ctx: PipelineContext) -> bool:
     """패치가 param_candidates만 정의하고 preselect가 확정 base의 params를 다시 골랐으면 이후 계산은 base와 동일하다(#507).
     점수 일치로 추정하는 fold-1 지름길(ADR-061)과 달리 구조적 동일성이라 이산 지표에도 쓴다."""
@@ -986,6 +1032,12 @@ def _after_first_fold(
         for cached in ctx.known_fold1_scores:
             if len(cached) == ctx.n_splits and cached[0] == fold_scores[0]:
                 return None, list(cached)
+
+    if not collect_oof:
+        _, metric_sign, metric_class = get_metric(ctx.metric)
+        futile = _fold1_futility_result(ctx, fold_scores, metric_sign, metric_class, selected_params, model_type)
+        if futile is not None:
+            return futile, None
 
     if not collect_oof and ctx.cpu_budget_sec and ctx.n_splits > 1:
         # fold-1이 쓴 CPU로 나머지 fold 비용을 투영한다(#361). kill은 예산 전체를 태우고 산출 0이지만, 여기서

@@ -182,3 +182,17 @@ def test_main_continues_past_transient_poll_error(monkeypatch, capsys):
             raised = e.code
     assert raised == 0
     assert "reason=quorum" in capsys.readouterr().out
+
+
+def test_poll_query_excludes_futility_stops_from_the_success_count(monkeypatch):
+    """ADR-076: fold-1 futility로 수 분 만에 끝난 attempt를 성공으로 세면 quorum이 일찍 발화해 완주 중인 attempt가 빠진다."""
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.side_effect = [("sc-123",), (2, 2, 120.0)]
+    monkeypatch.setattr(sys, "argv", ["run_attempt_gate_task", "--run-id", "rid-1"])
+    with patch("store.db.connect", return_value=conn), patch("time.sleep"):
+        try:
+            main()
+        except SystemExit:
+            pass
+    poll_sql = next(c.args[0] for c in conn.execute.call_args_list if "FROM raw.attempts" in c.args[0])
+    assert "NOT coalesce(futility_early_exit, false)" in poll_sql

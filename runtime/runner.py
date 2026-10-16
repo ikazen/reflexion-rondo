@@ -164,6 +164,7 @@ def main() -> None:
         prev_best_fold_scores=inp.get("prev_best_fold_scores"),
         cpu_budget_sec=inp.get("cpu_budget_sec"),
         known_fold1_scores=inp.get("known_fold1_scores"),
+        futility_stop=inp.get("futility_stop", False),
         progress=_progress,
     )
 
@@ -206,6 +207,7 @@ def main() -> None:
         "holdout_error": holdout_error,
         "model_type": result.model_type,
         "noop_early_exit": result.noop_early_exit,
+        "futility_early_exit": result.futility_early_exit,
     })
 
 

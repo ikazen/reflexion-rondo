@@ -36,7 +36,7 @@ def _noop_tie(peak_cpu_sec: float, cv_score: float = 0.9) -> IsolatedResult:
     )
 
 
-def _run(eval_side_effect, generate_code_mock=None, validate_patch_mock=None):
+def _run(eval_side_effect, generate_code_mock=None, validate_patch_mock=None, config=None):
     conn = MagicMock()
     generate_code_mock = generate_code_mock or MagicMock(return_value="source")
     validate_patch_mock = validate_patch_mock or MagicMock(return_value=[])
@@ -61,7 +61,7 @@ def _run(eval_side_effect, generate_code_mock=None, validate_patch_mock=None):
         patch("cycle.run.update_bandit"),
     ):
         data = run_attempt_core(
-            conn, _config(), lessons=[], prev_best_cv=0.9,
+            conn, config or _config(), lessons=[], prev_best_cv=0.9,
         )
     return data, mock_insert, mock_eval, generate_code_mock
 
@@ -189,3 +189,37 @@ def test_retry_static_validation_exhausted_keeps_tie_result():
     assert data.is_noop_tie is True
     assert data.cv_score == 0.9
     assert data.label == "neutral"
+
+
+def _futility_stopped() -> IsolatedResult:
+    return IsolatedResult(
+        cv_score=0.8995, cv_fold_var=None, fold_scores=None, label="neutral",
+        gain_vs_best=-0.0005, gain_vs_best_relative=-0.0005, error_trace=None,
+        futility_early_exit=True, peak_cpu_sec=210.0,
+    )
+
+
+def test_futility_stop_flag_reaches_eval_isolated_and_the_row():
+    """ADR-076: CycleConfig.futility_stop이 eval에 전달되고, 조기 중단 결과는 재시도 없이 futility 행으로 저장된다."""
+    config = _config()
+    object.__setattr__(config, "futility_stop", True)
+    data, mock_insert, mock_eval, generate_code_mock = _run(eval_side_effect=[_futility_stopped()], config=config)
+    assert mock_eval.call_count == 1
+    assert mock_eval.call_args_list[0].kwargs["futility_stop"] is True
+    assert generate_code_mock.call_count == 1
+    row = mock_insert.call_args[0][1]
+    assert row["futility_early_exit"] is True
+    assert row["noop_early_exit"] is False
+    assert row["fold_scores"] is None and row["cv_fold_var"] is None
+    assert row["label"] == "neutral" and row["error_trace"] is None
+    assert data.is_noop_tie is False
+
+
+def test_futility_stop_defaults_to_off():
+    ok = IsolatedResult(
+        cv_score=0.9, cv_fold_var=0.001, fold_scores=[0.89, 0.9, 0.91],
+        label="neutral", gain_vs_best=0.01, error_trace=None, peak_cpu_sec=120.0,
+    )
+    _data, mock_insert, mock_eval, _ = _run(eval_side_effect=[ok])
+    assert mock_eval.call_args_list[0].kwargs["futility_stop"] is False
+    assert mock_insert.call_args[0][1]["futility_early_exit"] is False

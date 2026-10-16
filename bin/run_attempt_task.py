@@ -78,6 +78,7 @@ def main() -> None:
         slug=args.competition,
         holdout=holdout,
         cpu_budget_secs=attempt_cpu_budget_secs(comp),
+        futility_stop=getattr(comp, "FUTILITY_STOP", False),
     )
 
     data = run_attempt_core(
