@@ -156,11 +156,30 @@ def test_shortfall_is_filled_with_live_actions_not_dead_ones():
     assert set(result) == {"feature_engineering", "preprocessing"}
 
 
-def test_shortfall_repeats_the_best_ranked_live_action():
+def test_shortfall_gives_each_live_action_a_slot_then_draws_the_rest():
     conn = _conn_with_dead_actions(_THREE_DEAD, total_attempts=50)
     result = assign_super_cycle_actions(conn, "s6e8", n_attempts=3, seed=42)
     assert result[0] != result[1]
-    assert result[2] == result[0]
+    assert result[2] in {"feature_engineering", "preprocessing"}
+
+
+def test_shortfall_fill_favors_the_higher_mean_action():
+    """#530: 부족분 채움이 라운드로빈이면 두 액션이 거의 반반(3:2)이다 — 독립 Thompson 표본이면 평균이 높은 쪽이 대부분을 받는다."""
+    def conn():
+        c = MagicMock()
+        bandit_result = MagicMock()
+        bandit_result.fetchall.return_value = [(a, 1.0, 20.0) for a in _THREE_DEAD] + [
+            ("feature_engineering", 9.0, 1.0),  # mean 0.9
+            ("preprocessing", 2.0, 8.0),  # mean 0.2
+        ]
+        count_result = MagicMock()
+        count_result.fetchone.return_value = (50,)
+        c.execute.side_effect = [bandit_result, count_result]
+        return c
+
+    picked = [a for seed in range(200) for a in assign_super_cycle_actions(conn(), "s6e8", n_attempts=5, seed=seed)]
+    assert set(picked) == {"feature_engineering", "preprocessing"}
+    assert picked.count("feature_engineering") >= 0.7 * len(picked)
 
 
 def test_all_dead_falls_back_to_the_original_ranking():

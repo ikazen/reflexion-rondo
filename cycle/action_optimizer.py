@@ -143,11 +143,13 @@ def assign_super_cycle_actions(
 
     eligible = [a for a in ranked if a not in dead]
     picked = eligible[:n_attempts]
-    if len(picked) < n_attempts:
-        # dead가 3개 이상이면 후보가 n_attempts에 모자란다 — dead로 채우면 배제한 의미가 사라지므로 살아 있는 액션을
-        # 반복 배정하고, 하나도 없을 때만 원래 랭킹에서 채운다(#404, ADR-060).
-        pool = eligible or ranked
-        picked = [pool[i % len(pool)] for i in range(n_attempts)]
+    if len(picked) < n_attempts and not eligible:
+        picked = [ranked[i % len(ranked)] for i in range(n_attempts)]
+    while len(picked) < n_attempts:
+        # dead가 많아 후보가 n_attempts에 모자라면 dead로 채우지 않고(#404, ADR-060) 살아 있는 액션 위에서 슬롯마다 독립 Thompson
+        # 표본을 뽑아 채운다 — 라운드로빈은 평균이 낮은 액션에도 같은 몫을 준다(#526/#530).
+        draws = {a: float(rng.beta(*bandit.get(a, (1.0, 1.0)))) for a in eligible}
+        picked.append(max(draws, key=draws.__getitem__))
     return picked
 
 
