@@ -25,6 +25,7 @@ from config.settings import MODEL_CODER, PROMOTE_CONFIRM_SEEDS
 from cycle.action_optimizer import get_action_prior, update_bandit
 from cycle.error_pitfalls import normalize_error, top_error_pitfalls
 from cycle.stagnation import StagnationSignal, detect_stagnation
+from cycle.strategist_context import base_summary_lines, tried_on_base_lines
 from cycle.materialize import materialize_best_pipeline
 from cycle.promotion import (
     PromotionCache,
@@ -484,7 +485,9 @@ def _last_hypothesis(conn: PgConn, competition_id: str) -> str | None:
     return row[0] if row else None
 
 
-def _dynamic_eda_context(conn: PgConn, competition_id: str, prev_best_cv: float | None) -> str:
+def _dynamic_eda_context(
+    conn: PgConn, competition_id: str, prev_best_cv: float | None, prev_code: str | None = None,
+) -> str:
     """매 사이클 DB를 조회해 EDA 카드 하단에 붙일 동적 컨텍스트를 생성한다."""
     window = 10
     lines: list[str] = ["\n## Current State"]
@@ -533,6 +536,8 @@ def _dynamic_eda_context(conn: PgConn, competition_id: str, prev_best_cv: float 
         ]
         lines.append(f"- recent failures: {'; '.join(fail_parts)}")
 
+    lines.extend(base_summary_lines(prev_code))
+    lines.extend(tried_on_base_lines(conn, competition_id))
     return "\n".join(lines)
 
 
@@ -871,9 +876,9 @@ def _attempt_row(
 
 def _strategize_attempt(
     conn: PgConn, config: CycleConfig, lessons: list[dict], prev_best_cv: float | None, stagnation: StagnationSignal,
-    forced_action: str | None,
+    forced_action: str | None, prev_code: str | None,
 ) -> StrategyDecision:
-    enriched_eda = config.eda_card + _dynamic_eda_context(conn, config.competition_id, prev_best_cv)
+    enriched_eda = config.eda_card + _dynamic_eda_context(conn, config.competition_id, prev_best_cv, prev_code)
     action_prior = get_action_prior(conn, config.competition_id)
     t_strategize = time.monotonic()
     decision = strategize(
@@ -936,8 +941,8 @@ def run_attempt_core(
         config.stage, prev_best_cv, len(lessons),
         stagnation.is_stagnant if stagnation else False,
     )
-    decision = _strategize_attempt(conn, config, lessons, prev_best_cv, stagnation, forced_action)
     prev_code = _load_best_pipeline(config.competition_id)
+    decision = _strategize_attempt(conn, config, lessons, prev_best_cv, stagnation, forced_action, prev_code)
     action_type = "bootstrap" if (config.stage == "bootstrap" and not prev_code) else decision.action_type
 
     gen_kwargs, source, generated, static_errs = _generate_attempt_source(conn, config, decision, prev_code, action_type)

@@ -57,6 +57,8 @@ This means a normal `feature_transform` patch should ADD new engineered columns,
 rebuild the whole feature set from scratch — the existing columns are already coming from the
 composed base version. Same idea for `preprocess`: assume upstream cleaning already happened,
 and layer your own additional step on top.
+The columns the current best pipeline creates (the `.alias(...)` names in the Current Best Pipeline section) are NOT in your
+hook's input — they only exist in the unioned output — so recompute what you need from the raw columns.
 If you genuinely need to throw away the current best pipeline's version of a hook instead of
 composing with it (e.g. a full feature-engineering rewrite that must NOT see the old columns),
 declare it explicitly:
