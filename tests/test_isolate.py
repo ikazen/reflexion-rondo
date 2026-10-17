@@ -474,6 +474,12 @@ def test_eval_isolated_defaults_known_fold1_scores_to_none() -> None:
     assert _input_json_seen_by_runner()["known_fold1_scores"] is None
 
 
+def test_eval_isolated_passes_fold1_reuse_discrete_to_the_runner() -> None:
+    """#531: 대회 opt-in 플래그가 runner의 input.json으로 넘어가야 하고 기본은 꺼짐이다."""
+    assert _input_json_seen_by_runner(fold1_reuse_discrete=True)["fold1_reuse_discrete"] is True
+    assert _input_json_seen_by_runner()["fold1_reuse_discrete"] is False
+
+
 def test_eval_isolated_passes_futility_stop_to_the_runner() -> None:
     """ADR-076: attempt 경로만 켜는 futility 플래그가 runner의 input.json으로 넘어가야 하고 기본은 꺼짐이다."""
     assert _input_json_seen_by_runner(futility_stop=True)["futility_stop"] is True

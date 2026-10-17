@@ -387,6 +387,7 @@ def eval_isolated(
     prev_best_fold_scores: list[float] | None = None,
     known_fold1_scores: list[list[float]] | None = None,
     futility_stop: bool = False,
+    fold1_reuse_discrete: bool = False,
 ) -> IsolatedResult:
     with tempfile.TemporaryDirectory(prefix="rondo-eval-") as tmpdir:
         ws = Path(tmpdir)
@@ -409,6 +410,7 @@ def eval_isolated(
             "cpu_budget_sec": cpu_budget,
             "known_fold1_scores": known_fold1_scores,
             "futility_stop": futility_stop,
+            "fold1_reuse_discrete": fold1_reuse_discrete,
         }, best_source, holdout_data)
 
         env = {k: v for k, v in os.environ.items() if k in _EVAL_ENV_ALLOWLIST}

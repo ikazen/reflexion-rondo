@@ -1352,6 +1352,31 @@ def test_discrete_label_metric_disables_the_fold1_cache(monkeypatch):
     assert result.fold_scores == other.fold_scores  # 같은 계산이라 값은 같지만 캐시가 아니라 실제로 돌았다
 
 
+def test_discrete_label_metric_reuses_the_base_tie_when_the_competition_opts_in(monkeypatch):
+    """#531: FOLD1_REUSE_DISCRETE 대회는 이산 지표에서도 base와 fold-1이 같으면 나머지 fold를 건너뛴다."""
+    df = _make_df(n=300)
+    baseline = evaluate_pipeline(BasePipeline(), df, _accuracy_ctx())
+    calls = _count_fit_predict(monkeypatch)
+    ctx = _accuracy_ctx(
+        prev_best=baseline.cv_score, prev_best_fold_scores=baseline.fold_scores, fold1_reuse_discrete=True,
+    )
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+
+    assert len(calls) == 1
+    assert result.noop_early_exit is True
+
+
+def test_discrete_label_metric_reuses_the_fold1_cache_when_the_competition_opts_in(monkeypatch):
+    df = _make_df(n=300)
+    other = evaluate_pipeline(BasePipeline(), df, _accuracy_ctx())
+    calls = _count_fit_predict(monkeypatch)
+    ctx = _accuracy_ctx(prev_best=0.5, known_fold1_scores=[other.fold_scores], fold1_reuse_discrete=True)
+    result = evaluate_pipeline(BasePipeline(), df, ctx)
+
+    assert len(calls) == 1
+    assert result.fold_scores == other.fold_scores
+
+
 def test_continuous_metric_keeps_the_fold1_shortcuts(monkeypatch):
     """연속 출력 지표(auc)는 지름길이 그대로 동작한다 — 게이트가 classification에만 걸리는지 확인."""
     df = _make_df(n=300)

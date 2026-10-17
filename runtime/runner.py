@@ -165,6 +165,7 @@ def main() -> None:
         cpu_budget_sec=inp.get("cpu_budget_sec"),
         known_fold1_scores=inp.get("known_fold1_scores"),
         futility_stop=inp.get("futility_stop", False),
+        fold1_reuse_discrete=inp.get("fold1_reuse_discrete", False),
         progress=_progress,
     )
 
