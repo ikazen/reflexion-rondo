@@ -62,6 +62,7 @@ class CycleConfig:
     holdout: pl.DataFrame | None = None  # 값이 있을 때만 run_attempt_core가 평가 전에 fingerprint/baseline 가드를 건다(attempt task가 채움)
     cpu_budget_secs: float | None = None  # comp.CPU_BUDGET_SECS 오버라이드, 미설정 시 env/DEFAULT_CPU_BUDGET_SECS
     futility_stop: bool = False  # comp.FUTILITY_STOP — fold-1 paired delta가 나쁘면 나머지 fold를 건너뛴다(ADR-076)
+    fold1_reuse_discrete: bool = False  # comp.FOLD1_REUSE_DISCRETE — 이산 지표에서도 fold-1 일치 지름길을 쓴다(#531, ADR-061)
 
 
 @dataclass(frozen=True, slots=True)
@@ -743,6 +744,7 @@ def _evaluate_attempt(
             prev_best_fold_scores=prev_best_fold_scores,
             known_fold1_scores=known_fold1_scores,
             futility_stop=config.futility_stop,
+            fold1_reuse_discrete=config.fold1_reuse_discrete,
         )
         peak_rss_bytes = iso.peak_rss_bytes
         peak_cpu_sec = iso.peak_cpu_sec

@@ -79,6 +79,7 @@ def main() -> None:
         holdout=holdout,
         cpu_budget_secs=attempt_cpu_budget_secs(comp),
         futility_stop=getattr(comp, "FUTILITY_STOP", False),
+        fold1_reuse_discrete=getattr(comp, "FOLD1_REUSE_DISCRETE", False),
     )
 
     data = run_attempt_core(

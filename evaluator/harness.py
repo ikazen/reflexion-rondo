@@ -586,6 +586,9 @@ class PipelineContext:
     known_fold1_scores: list[list[float]] | None = None
     # attempt 경로에서만 켠다(ADR-076) — confirm/holdout/merge-verify는 완전한 점수가 필요하다.
     futility_stop: bool = False
+    # 대회 opt-in(#531, ADR-061) — 이산 라벨 지표에서도 fold-1 일치 지름길(#339/#376)을 쓴다. balanced_accuracy인 s6e6은 fold-1이 같은 330건 중
+    # 327건이 5 fold 전체가 동일했다. 켜지 않은 대회는 ADR-061의 이산 지표 제외가 그대로다.
+    fold1_reuse_discrete: bool = False
     # runner가 워크스페이스 파일에 append하는 콜백 — 워치독이 kill 사유에 마지막 줄을 붙여 kill 위치를 남긴다(ADR-063).
     progress: Callable[[str], None] | None = None
 
@@ -1201,9 +1204,10 @@ def evaluate_pipeline(
         else None
     )
 
-    # fold-1 스칼라 일치로 나머지 fold를 건너뛰는 지름길(#339/#376)은 이산 라벨 지표(accuracy 등)에선 쓰지 않는다 —
+    # fold-1 스칼라 일치로 나머지 fold를 건너뛰는 지름길(#339/#376)은 이산 라벨 지표(accuracy 등)에선 기본으로 쓰지 않는다 —
     # fold-1 점수가 우연히 같은 경우가 많아 "fold-1이 같으면 나머지도 같다"는 전제가 성립하지 않는다(#390, ADR-061).
-    fold1_shortcut_ok = not collect_oof and metric_class != "classification"
+    # 실측으로 전제가 성립한 대회만 ctx.fold1_reuse_discrete로 켠다(#531).
+    fold1_shortcut_ok = not collect_oof and (metric_class != "classification" or ctx.fold1_reuse_discrete)
     cpu_at_loop_start = _cpu_seconds()
     for fold_idx, (tr_idx, va_idx) in enumerate(_make_folds(y, ctx, is_original=is_original)):
         tr = train[list(tr_idx)]
