@@ -15,9 +15,9 @@ Global/Cluster 티어는 대회 누적 후 승격 예정.
   regression 또는 error_trace → β += 1.0
   is_noop_tie                 → β += 1.0  (cv_score가 prev_best와 재현 노이즈 안에서
                                             동일 — patch가 유효 계산을 안 바꿨다는
-                                            신호. 정보가 0이라 실패와 같게 센다 — 0.3이면
-                                            순수 noop의 고정점 mean이 0.125로 dead 문턱
-                                            0.1보다 높아 무효과 액션이 안 죽는다, #528)
+                                            신호. 정보가 0이라 실패와 같게 센다 — 순수 noop의
+                                            고정점 mean 1/(2+20w)가 dead 문턱 0.1 밑이 되려면
+                                            w>0.4여야 한다, #528)
   neutral                     → α, β 각 0.1 (약한 신호 유지)
 
 ON CONFLICT 시 decay(_BANDIT_DECAY=0.95)로 기존 α/β를 prior(1.0) 쪽으로 수축 후 가산.
@@ -144,6 +144,7 @@ def assign_super_cycle_actions(
     eligible = [a for a in ranked if a not in dead]
     picked = eligible[:n_attempts]
     if len(picked) < n_attempts and not eligible:
+        # 살아 있는 후보가 하나도 없으면 배정을 못 하는 것보다 낫도록 원래 랭킹에서 채운다(#404).
         picked = [ranked[i % len(ranked)] for i in range(n_attempts)]
     while len(picked) < n_attempts:
         # dead가 많아 후보가 n_attempts에 모자라면 dead로 채우지 않고(#404, ADR-060) 살아 있는 액션 위에서 슬롯마다 독립 Thompson

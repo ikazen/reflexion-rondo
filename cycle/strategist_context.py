@@ -14,11 +14,15 @@ _HYPOTHESIS_CHARS = 120
 _COLUMNS_LIMIT = 60
 _PARAMS_CHARS = 400
 _ALIAS = re.compile(r"""\.alias\(\s*['"]([^'"]+)['"]\s*\)""")
-_MODEL = re.compile(r"\b(?:XGB|LGBM|CatBoost|HistGradientBoosting|RandomForest|ExtraTrees)\w*?(?:Classifier|Regressor)\b|\bLogisticRegression\b")
+_MODEL = re.compile(
+    r"\b(?:XGB|LGBM|CatBoost|HistGradientBoosting|RandomForest|ExtraTrees)\w*?(?:Classifier|Regressor)\b|\bLogisticRegression\b"
+)
 
 
 def tried_on_base_lines(conn: PgConn, competition_id: str) -> list[str]:
     """마지막 유효 확정 pipeline 이후 에러 아닌 attempt를 (action_type, gain)으로 묶어 반복이 많은 순으로 돌려준다."""
+    # 확정 pipeline이 없으면 서브쿼리가 NULL이라 결과가 비고 블록이 안 붙는다(부트스트랩). gain 7자리 반올림은 비트 동일한 재평가를
+    # 묶는다 — 연속 지표의 재현 노이즈(1e-7~2e-6, ADR-062)로 갈라진 같은 계산은 못 묶는다.
     rows = conn.execute(
         """
         select action_type, round(gain_vs_best::numeric, 7), count(*),
@@ -41,7 +45,11 @@ def tried_on_base_lines(conn: PgConn, competition_id: str) -> list[str]:
     ).fetchall()
     if not rows:
         return []
-    lines = ["\n## Already tried on this base (one line per distinct outcome — do not propose these again, pick something materially different)"]
+    header = (
+        "\n## Already tried on this base (one line per distinct outcome — "
+        "do not propose these again, pick something materially different)"
+    )
+    lines = [header]
     for action_type, gain, cnt, hypothesis in rows:
         text = " ".join((hypothesis or "").split())[:_HYPOTHESIS_CHARS]
         lines.append(f"- {action_type} x{cnt} gain={float(gain):+.6f}: {text}")
