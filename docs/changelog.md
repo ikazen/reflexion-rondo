@@ -1,5 +1,24 @@
 # 변경 이력
 
+## v1.6.44 — s6e6 탐색 낭비 제거 (Milestone "s6e6 탐색 낭비 제거 2026-10", 2026-10-17)
+
+v1.6.42/43 점검(배포 후 31h): 인프라 정상, futility는 설계대로 동작(FE/prep의 약 74% 중단, 중단 조건을 충족했지만 끝까지 돈 34건에서 gain > +0.0001과 jump 0건)했으나
+마지막 확정 pipeline이 10-14 22:47이라 2.5일, 690 attempt, 164 CPU-h에서 양의 gain이 0건이다. attempt/h는 약 10에서 13으로 늘었고(배포 직후 1.1h 표본의 21.5는 과대),
+시간당 CPU는 약 3.5에서 1.9 CPU-h로 줄어 fleet이 논다. 원인은 동일 계산 재평가, Strategist의 시야, ensemble 부활, 큐 공백이었다.
+
+- #531: s6e6의 이산 지표에서 fold-1 일치 지름길(#339/#376)을 켠다(ADR-061 amend). 대회 opt-in `FOLD1_REUSE_DISCRETE`(`PipelineContext.fold1_reuse_discrete`).
+  10-10 이후 fold-1이 이전 attempt와 같은 330건의 327건(99.1%)이 5 fold 전체 동일했고 149 CPU-h였다. 승격 게이트는 지름길과 무관하게 재평가한다.
+- #532: Strategist 컨텍스트에 base 요약(모델 클래스, `.alias` 컬럼명, param_candidates)과 "이 base에서 이미 시도한 것"(마지막 확정 이후 (action, gain)별 상위 12개)을 넣고,
+  코더 계약에 hook 입력에 base가 만든 컬럼이 없다는 한 줄을 넣는다(ADR-077, `cycle/strategist_context.py`). 마지막 승격 이후 에러 아닌 626건 중 39%가 이전 attempt와 gain이 7자리까지 같았다.
+- #528: `_NOOP_TIE_PENALTY` 0.3 -> 1.0(ADR-065 적용). 순수 noop의 정상 상태 mean이 0.125라 dead 문턱 0.1 위에 남아 ensemble(gain 정확히 0)이 에러가 줄 때마다 부활했다
+  (배포 후 28건, 10-17 하루 22건, 7.8 CPU-h). 순수 noop 약 10건 연속이면 dead가 된다.
+- #529: 정상 종료(done)한 대회의 큐 리필 대기를 0.5h에서 0으로(`_QUEUE_REFILL_IDLE_HOURS_AFTER_DONE`). 활성 대회가 하나라 큐 20 cycle(약 4h)마다 30~55분(9회 실측) 놀았다. daemon 변경이라 컷오버가 필요하다.
+- #530: 후보가 n_attempts에 모자랄 때 라운드로빈 대신 슬롯마다 독립 Thompson 표본으로 채운다(ADR-060 amend, #526의 코드 부분). eligible >= n이면 동작 불변. N=5 재시험은 배포 후 Variable 변경이다(runbook 5-1).
+- 제외: 튜닝 레인 개방(트라이얼이 레지스트리 모델로 돌아 s6e6 래퍼를 재현하지 못하고 결과가 LLM 힌트일 뿐이라 pipeline-native 경로가 먼저 필요하다), #39 신규 대회 온보딩.
+  같은 cycle의 병렬 attempt끼리 가설을 공유하는 것은 이번 범위 밖이다.
+
+---
+
 ## v1.6.42 — s6e6 슬롯 효율 (Milestone "s6e6 슬롯 효율 2026-10", 2026-10-16)
 
 v1.6.40/41 점검(배포 후 2.5일): 인프라 정상, 의도한 효과 전부 확인 — s6e6 FE hard-limit kill 30/111 -> 2/219, preprocessing kill 19 -> 0, FE/prep CPU p50 2238/2224 -> 1333/1207,

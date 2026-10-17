@@ -1452,6 +1452,10 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
   preprocessing]`), 살아 있는 후보가 하나도 없을 때만 원래 랭킹에서 채운다. 재탐색 창은 그대로다. 한계: 슬롯이 살아
   있는 액션으로 옮겨갈 뿐이라 CPU 절감이 아니라 정보 수확률 개선이다(feature_engineering은 attempt당 CPU가 preprocessing의
   약 3배). s6e8이 정체 상태(v1.6.26 이후 122 attempt 중 jump 0)라 기대 효과는 작다.
+- **[2026-10-17 #530 amend]**: 위 "살아 있는 액션을 Thompson 순위 순으로 순환해 반복 배정"을 슬롯마다 독립 Thompson 표본으로 바꿨다. 순환은 평균이 낮은 액션에도
+  같은 몫을 줘서(s6e6 N=5 시험에서 eligible [FE, prep, ensemble]이 `[FE, ensemble, prep, FE, ensemble]`로 ensemble 40%, 3건 전부 에러) 처리량이 +13%에 그쳤다.
+  이제 eligible 각 1슬롯을 먼저 주고 남는 슬롯은 eligible 위에서 매번 Beta 표본의 argmax로 채운다(`cycle/action_optimizer.py`). eligible >= n이면 동작이 같다.
+  살아 있는 후보가 하나도 없을 때의 랭킹 폴백도 그대로다.
 
 ---
 
@@ -1485,6 +1489,12 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
   `prev_best_fold_scores`/`known_fold1_scores` 없이 처음부터 재평가하고, 지름길 입력은 `cycle/run.py:run_attempt_core`만 넘긴다. 남는 한계:
   연속 지표에서도 매칭의 약 8~12%는 나머지 fold가 다르며, 그 영향은 승격되지 않는 attempt의 점수·라벨 오차(대부분 노이즈 수준, 드물게 1e-4대)에
   머문다. #406은 같은 캐시 히트 경로에서 회귀 baseline 점수가 빠져 `gain_vs_best_relative`가 정규화되지 않던 결함을 고쳤다.
+- **[2026-10-17 #531 amend]**: 이산 지표 제외를 대회 opt-in으로 푼다. `config/competitions/s6e6.py`의 `FOLD1_REUSE_DISCRETE = True`가 `PipelineContext.fold1_reuse_discrete`로
+  전달되어 #339/#376 지름길을 balanced_accuracy에서도 켠다(전달 경로는 `FUTILITY_STOP`과 같다). 근거는 s6e6 실측이다: 10-10 이후 fold_scores 5개 attempt 796건 중
+  fold-1이 이전 attempt와 같은 330건의 327건(99.1%)이 5 fold 전체가 비트 단위로 동일하고 149 CPU-h를 썼다(오탐 3건 = 0.9%). 위 s4e11 accuracy의 85% 불일치와 정반대다 —
+  accuracy는 해상도가 낮아 서로 다른 계산이 우연히 같은 값을 내지만 balanced_accuracy의 fold 점수는 해상도가 충분하다. 대회마다 근거가 다르므로 전역 해제가 아니라 상수다.
+  승격 게이트는 이 지름길과 무관하게 재평가하므로(위 문단) 오탐 영향은 승격되지 않는 attempt의 점수/라벨 오차에 그친다. 2-fold 키는 328건 중 327건 일치로 이득이 거의 없어 채택하지 않았다.
+  지름길 순서는 base tie -> 과거 attempt 캐시 -> futility(ADR-076)로 이미 그렇다. 다른 이산 지표 대회에 켜기 전에 그 대회 데이터로 같은 일치율 실측(fold-1 일치 쌍의 전체 fold 일치 비율)을 먼저 낸다.
 
 ---
 
@@ -1615,6 +1625,10 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
   정상 소폭 개선이 tie로 묶이는 사례가 나오면 허용폭을 재검토한다. kill이 줄었는데도 hyperparam_search가 유일한 alive로 남아 슬롯을 독점하면 `_NOOP_TIE_PENALTY`를
   0.4 초과(예: 0.5)로 올려 순수 tie 반복도 dead가 되게 한다(정상 상태 평균 1/(2 + 20w) < 0.1 <=> w > 0.4). 5개 전부 dead가 길게 이어지는 대회는
   ADR-064 방식의 동결 검토 대상이다.
+- **[2026-10-17 #528 적용]**: 위 재고 트리거를 s6e6 ensemble에서 만났다. 멤버 2개 다수결은 동률이면 첫 멤버(base)와 같아 gain이 정확히 0이라(ADR-076) tie가 되는데,
+  에러가 줄면 평균이 0.125 쪽으로 올라와 문턱 위로 부활한다(v1.6.42 이후 28건 배정, 10-17 하루 22건, 7.8 CPU-h). `_NOOP_TIE_PENALTY`를 0.3에서 1.0으로 올렸다 —
+  제안값 0.5는 순수 tie 반복이 dead(mean < 0.1)에 이르는 데 연속 약 31건이 필요하고 1.0은 약 10건이다(ADR-060의 "약 10회 연속 실패"와 같다). noop은 정의상 동일 계산이라 정보가 0이고
+  비용은 실패와 같으므로 같은 무게로 센다. 100 attempt 재탐색 창은 그대로라 회복 경로가 남는다. 위험: hyperparam_search처럼 한때 생산적이던 액션이 포화로 noop만 내면 더 일찍 dead가 된다.
 
 ---
 
@@ -1839,6 +1853,21 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
   (b) s6e6 jump/일이 기준(약 1/일)보다 뚜렷이 줄면 끈다(`FUTILITY_STOP = False`). (c) 다른 이산/연속 지표 대회에 opt-in하기 전에 같은 리플레이(fold-1 delta 대 최종 delta 상관, 양성 손실)를 그 대회 데이터로 먼저 돌린다.
 - 기각한 대안(같은 날 로컬 실측): 소프트보팅 앙상블(xgb 0.96663 대비 xgb+lgbm 0.96657, +cat 0.96651 — 상관 높은 GBDT라 이득 없음), 클래스 확률 배수 최적화(nested 5-fold로 xgb 단독 +0.00009,
   xgb+lgbm 블렌드 +0.0005이나 블렌드 CPU 1.8배). s6e6 ensemble 29건(16.2 CPU-h)의 gain이 전부 정확히 0인 것은 2멤버 다수결이 동률 시 첫 멤버(base)와 같기 때문이다 — 밴딧이 이미 dead로 처리한다.
+
+---
+
+## ADR-077 — Strategist에 base 요약과 이 base에서 이미 시도한 것을 준다 (#532)
+
+- 결정: `cycle/strategist_context.py`가 `_dynamic_eda_context`(EDA 카드 하단)에 두 블록을 붙인다. (1) `## Current base pipeline`: 확정 base 코드에서 모델 클래스명,
+  `.alias('...')` 컬럼명, `param_candidates` 리터럴만 뽑는다(코드 전문은 코더만 본다). (2) `## Already tried on this base`: 마지막 유효 확정 pipeline의 attempt 이후 에러 아닌 attempt를
+  (action_type, round(gain, 7))로 묶어 건수 상위 12개를 `xN gain=<g>: <가설 120자>`로 보여준다. 동일 gain은 동일 계산이라는 것이 묶는 근거다(s6e6에서 fold-1 일치 쌍의 99%가 5 fold 전체 동일, ADR-061 #531).
+  코더 계약에는 hook 입력에 base가 만든 컬럼이 없다는 한 줄을 넣었다(`feature_transform`은 base와 같은 입력을 독립 호출해 결과를 합친다). `prev_code` 로드를 strategize 앞으로 옮겼다.
+- 근거(s6e6, 마지막 승격 10-14 22:47 이후 690 attempt): Strategist 프롬프트에 base 코드/피처/모델과 시도 이력이 없었다(액션 개수와 실패 1건 50자뿐). 에러 아닌 626건 중 247건(39%)이
+  이전 attempt와 gain이 7자리까지 같았고(spectral_type 온도순 x16, one-hot x33, winsorize 등), base가 XGBoost 래퍼인데 가설은 "the current LightGBM"이라 쓰고 base에 이미 있는
+  color index(u_g, g_r)와 alpha sin/cos를 다시 제안했다. 이 중 완주한 중복이 약 50 CPU-h다. 레시피(lessons)는 top-5 유사도 검색이라 반복을 막지 못했다.
+- 한계: 같은 cycle의 병렬 attempt는 서로의 가설을 못 본다. 상위 12개만 보이므로 반복이 적은 가설은 안 보인다. 컬럼 목록은 `.alias`로 만든 것만 잡는다. 프롬프트가 호출당 500~700 토큰 늘어난다.
+- 재고 트리거: 배포 후 48h 동일 gain 반복 비율이 39%에서 20% 아래로 안 내려오거나 Ollama Cloud 429가 늘면 상위 개수/글자 수를 줄인다. 반복은 줄었는데 jump가 안 나오면 다음 레버는
+  pipeline-native 튜닝 경로다(튜너가 레지스트리 모델로 돌아 래퍼 base를 재현하지 못한다, `evaluator/tuner.py`의 `_SingleModelTrialPipeline`).
 
 ---
 
