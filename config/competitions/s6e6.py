@@ -18,6 +18,7 @@ EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미�
 ACTIVE            = True  # deep tier 두 번째 슬롯 (#499, ADR-072) — s5e8 포화로 추가. 재활성 전에 baseline을
 # `bin.establish_baseline --remeasure`로 현재 평가 의미에 맞춰 다시 잰다(runbook §4-13).
 FUTILITY_STOP     = True  # fold-1 paired delta가 baseline 대비 나쁘면 나머지 fold를 건너뛴다 (#519, ADR-076)
+EXCLUDED_ACTIONS  = ("ensemble",)  # 2멤버 다수결은 항상 base와 같고 3멤버 GBDT 혼합은 -0.0002~-0.009다. futility 행이 neutral이라 밴딧이 못 죽인다 (#541)
 FOLD1_REUSE_DISCRETE = True  # 이산 지표에서도 fold-1 일치 시 나머지 fold를 재사용한다 (#531, ADR-061) — 일치 330건 중 327건이 5 fold 전체 동일
 
 EDA_CARD = """competition: playground-series-s6e6 (Predicting Stellar Class)

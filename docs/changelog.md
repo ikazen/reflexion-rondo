@@ -1,5 +1,15 @@
 # 변경 이력
 
+## v1.6.45 — s6e6 ensemble 배정 제외 (Milestone "s6e6 탐색 낭비 제거 2026-10", 2026-10-17)
+
+v1.6.44 배포 후 점검에서 #528(noop 벌점 1.0)이 ensemble을 죽은 채로 두지 못함을 확인했다. 재탐색 창으로 돌아온 3멤버 GBDT ensemble이 base보다 나쁜데(-0.0002 ~ -0.009)
+futility 행이 neutral 라벨이라 밴딧이 약한 긍정으로 세어 평균이 0.098에서 0.148이 됐고, 15:05~16:40Z에 7건(CPU의 약 21%)이 배정됐다.
+
+- #541: 대회 config `EXCLUDED_ACTIONS`로 배정에서 액션을 제외한다(ADR-078). s6e6는 `("ensemble",)`. 밴딧 갱신과 재탐색 창은 그대로, 제외 액션은 창이 열려도 후보가 아니다.
+  task 이미지만 바뀐다(`bin/run_retrieve_task.py`, `cycle/action_optimizer.py`).
+
+---
+
 ## v1.6.44 — s6e6 탐색 낭비 제거 (Milestone "s6e6 탐색 낭비 제거 2026-10", 2026-10-17)
 
 v1.6.42/43 점검(배포 후 31h): 인프라 정상, futility는 설계대로 동작(FE/prep의 약 74% 중단, 중단 조건을 충족했지만 끝까지 돈 34건에서 gain > +0.0001과 jump 0건)했으나

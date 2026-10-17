@@ -110,8 +110,9 @@ def assign_super_cycle_actions(
     competition_id: str,
     n_attempts: int = 3,
     seed: int | None = None,
+    excluded: tuple[str, ...] = (),
 ) -> list[str]:
-    """bandit Thompson sample 1회로 전체 action을 순위 매기고 top-n을 배정한다.
+    """bandit Thompson sample 1회로 전체 action을 순위 매기고 top-n을 배정한다. excluded는 대회 config가 정한 배정 제외 액션이다.
 
     seed=None(기본)이면 매 사이클 새 엔트로피 → 탐색. 테스트에서만 고정.
     """
@@ -129,6 +130,7 @@ def assign_super_cycle_actions(
     scores = {
         action: float(rng.beta(*bandit.get(action, (1.0, 1.0))))
         for action in ACTION_TYPES
+        if action not in excluded
     }
     ranked = sorted(scores, key=scores.__getitem__, reverse=True)
 

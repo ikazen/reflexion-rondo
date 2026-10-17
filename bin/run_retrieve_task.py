@@ -82,7 +82,9 @@ def main() -> None:
         lessons = []
     failure_lessons = search_failure_lessons(conn, competition_id, k=_ERROR_LESSON_K)
     lessons = _merge_lessons(lessons, failure_lessons)
-    assigned_actions = assign_super_cycle_actions(conn, competition_id, n_attempts=args.n_attempts)
+    assigned_actions = assign_super_cycle_actions(
+        conn, competition_id, n_attempts=args.n_attempts, excluded=tuple(getattr(comp, "EXCLUDED_ACTIONS", ())),
+    )
     print(f"  assigned_actions: {assigned_actions}")
 
     conn.execute(
