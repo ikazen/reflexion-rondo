@@ -421,3 +421,18 @@ def test_pure_noop_sequence_converges_to_dead():
         if n == 5:
             assert not _is_dead_action(alpha, beta)
     assert _is_dead_action(alpha, beta)
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_excluded_action_is_never_assigned(seed):
+    result = assign_super_cycle_actions(_conn(), "s6e6", n_attempts=5, seed=seed, excluded=("ensemble",))
+    assert len(result) == 5
+    assert "ensemble" not in result
+
+
+def test_excluded_action_stays_out_inside_the_reexplore_window():
+    """#541: 재탐색 창이 열려도 대회 config가 제외한 액션은 후보가 되지 않는다(dead 해제와 별개)."""
+    for seed in range(30):
+        conn = _conn_with_dead_actions(["ensemble", "hyperparam_search"], total_attempts=100)
+        result = assign_super_cycle_actions(conn, "s6e6", n_attempts=5, seed=seed, excluded=("ensemble",))
+        assert "ensemble" not in result
