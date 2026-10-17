@@ -303,13 +303,14 @@ def _sweep_low_gain_lessons(conn: PgConn) -> None:
 # cycle_queue 완전 고갈 시 자동 재보급 — 안 그러면 사람이 enqueue할 때까지 daemon 전체가
 # idle에 멈춘다(#196 실측: 2026-08-17~18 큐 소진 후 27시간 attempt 0건). pending/running이
 # 하나도 없을 때만, config/competitions/*.py 전체 중 최근 idle 임계값 이상 attempt가 없던(또는
-# 한 번도 없던) 대회를 재큐잉한다. 임계값은 직전 큐가 정상 종료(done)였으면 짧게, 실패/취소/이력
-# 없음이면 길게 잡는다 — 6h를 일괄 적용하면 두 대회가 큐를 번갈아 돌 때 방금 끝난 쪽은 idle이
-# 아니고 다른 쪽은 6h가 찰 때까지 fleet이 논다(#363 실측: 큐 전환 21회 중 10회에 1~6h 공백).
+# 한 번도 없던) 대회를 재큐잉한다. 임계값은 직전 큐가 정상 종료(done)였으면 0(바로), 실패/취소/이력
+# 없음이면 6h로 잡는다 — 6h를 일괄 적용하면 두 대회가 큐를 번갈아 돌 때 fleet이 논다(#363 실측: 큐 전환
+# 21회 중 10회에 1~6h 공백). done도 0.5h를 두면 활성 대회가 하나일 때 큐 20 cycle(약 4h)마다 30~55분 논다(#529 실측 9회).
+# done은 성공 cycle이 있어야 하므로 즉시 재큐잉해도 루프 속도는 cycle 소요와 5분 스윕이 막는다.
 # 긴 임계값은 실패하는 대회가 재보급 루프를 도는 것을 막는 안전장치라 남겨둔다.
 _QUEUE_REFILL_SWEEP_INTERVAL_SEC = 300
 _QUEUE_REFILL_IDLE_HOURS = 6
-_QUEUE_REFILL_IDLE_HOURS_AFTER_DONE = 0.5
+_QUEUE_REFILL_IDLE_HOURS_AFTER_DONE = 0
 _QUEUE_REFILL_N_CYCLES = 20
 _last_queue_refill_sweep: float = 0.0
 
