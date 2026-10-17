@@ -3,7 +3,7 @@
 2026-08-17~18 실측: 큐가 완전히 비면 daemon이 idle에 멈추고 사람이 enqueue할
 때까지 27시간 attempt 0건이었다. _sweep_queue_refill이 pending/running이
 하나도 없을 때만, 오래 idle한(또는 한 번도 안 돈) 대회를 재큐잉하는지 검증한다.
-직전 큐가 정상 종료(done)였으면 idle 임계값이 짧다(#363).
+직전 큐가 정상 종료(done)였으면 idle 임계값이 없다(#363, #529).
 """
 from __future__ import annotations
 
@@ -183,15 +183,15 @@ def _sweep_with(
 
 
 def test_sweep_refills_quickly_after_a_queue_that_finished_normally(monkeypatch):
-    """#363: 두 대회가 큐를 번갈아 돌 때 방금 끝난 대회가 아닌 쪽(1h 전에 끝남)은 6h를 기다리지 않고 바로 재보급한다."""
+    """#363: 큐가 정상 종료(done)한 대회는 6h를 기다리지 않고 바로 재보급한다."""
     inserted, _ = _sweep_with(monkeypatch, {"s5e4": 1.0, "s6e8": 0.05}, {"s5e4": "done", "s6e8": "done"})
-    assert inserted == {"s5e4"}
+    assert inserted == {"s5e4", "s6e8"}
 
 
-def test_sweep_does_not_refill_a_competition_that_just_finished(monkeypatch):
-    """done 직후(임계값 0.5h 이내)에는 재보급하지 않는다 — 전 사이클이 즉시 skip되는 경우의 재보급 루프 방지."""
-    inserted, _ = _sweep_with(monkeypatch, {"s6e8": 0.2}, {"s6e8": "done"})
-    assert inserted == set()
+def test_sweep_refills_a_competition_that_just_finished_without_waiting(monkeypatch):
+    """#529: 활성 대회가 하나면 done 직후 30분을 기다리는 동안 fleet 전체가 논다 — 다음 스윕에서 바로 재보급한다."""
+    inserted, _ = _sweep_with(monkeypatch, {"s6e8": 0.01}, {"s6e8": "done"})
+    assert inserted == {"s6e8"}
 
 
 @pytest.mark.parametrize("status", ["failed", "cancelled"])
