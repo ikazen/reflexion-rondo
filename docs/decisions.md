@@ -1629,6 +1629,7 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
   에러가 줄면 평균이 0.125 쪽으로 올라와 문턱 위로 부활한다(v1.6.42 이후 28건 배정, 10-17 하루 22건, 7.8 CPU-h). `_NOOP_TIE_PENALTY`를 0.3에서 1.0으로 올렸다 —
   제안값 0.5는 순수 tie 반복이 dead(mean < 0.1)에 이르는 데 연속 약 31건이 필요하고 1.0은 약 10건이다(ADR-060의 "약 10회 연속 실패"와 같다). noop은 정의상 동일 계산이라 정보가 0이고
   비용은 실패와 같으므로 같은 무게로 센다. 100 attempt 재탐색 창은 그대로라 회복 경로가 남는다. 위험: hyperparam_search처럼 한때 생산적이던 액션이 포화로 noop만 내면 더 일찍 dead가 된다.
+  **[2026-10-17 배포 후 정정, #541]**: 이 벌점만으로는 ensemble이 죽은 채로 남지 않았다 — ADR-078 참고.
 
 ---
 
@@ -1868,6 +1869,21 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 - 한계: 같은 cycle의 병렬 attempt는 서로의 가설을 못 본다. 상위 12개만 보이므로 반복이 적은 가설은 안 보인다. 컬럼 목록은 `.alias`로 만든 것만 잡는다. 프롬프트가 호출당 500~700 토큰 늘어난다.
 - 재고 트리거: 배포 후 48h 동일 gain 반복 비율이 39%에서 20% 아래로 안 내려오거나 Ollama Cloud 429가 늘면 상위 개수/글자 수를 줄인다. 반복은 줄었는데 jump가 안 나오면 다음 레버는
   pipeline-native 튜닝 경로다(튜너가 레지스트리 모델로 돌아 래퍼 base를 재현하지 못한다, `evaluator/tuner.py`의 `_SingleModelTrialPipeline`).
+
+---
+
+## ADR-078 — 대회 config로 배정에서 제외할 액션을 정한다 (#541, ADR-060/065/076 보완)
+
+- 결정: `config/competitions/<slug>.py`의 `EXCLUDED_ACTIONS`(튜플, 기본 없음)를 `run_retrieve_task`가 읽어 `assign_super_cycle_actions(excluded=...)`에 넘기고,
+  제외된 액션은 Thompson 순위 매기기 전에 후보에서 빠진다. 밴딧 갱신과 100 attempt 재탐색 창은 그대로다(재탐색 창이 열려도 제외 액션은 후보가 아니다). s6e6는 `("ensemble",)`.
+- 근거: v1.6.44 배포(ADR-065 #528 적용) 뒤에도 ensemble이 다시 살아났다. 15:50Z에 재탐색 창(전체 attempt 수 % 100 < n_attempts)이 열려 후보로 돌아왔고, 이번 ensemble은 3멤버 GBDT 혼합이라
+  gain이 -0.0002 ~ -0.009로 base보다 나쁜데 futility 행이 항상 `neutral`이라(379건 중 379건, ADR-076이 FE/preprocessing 배정을 지키려고 정한 값) 밴딧이 약한 긍정(alpha+0.1, beta+0.1)으로 셌다.
+  평균이 0.098에서 0.148로 올라 dead 문턱을 넘었고 15:05~16:40Z에 7건(구간 CPU의 약 21%)이 배정됐다. 소프트보팅 xgb+lgbm+cat 0.96651 < xgb 0.96663(ADR-076 기각 목록)과 위 실사용 모두 이득이 없다.
+  noop 벌점(ADR-065)은 2멤버 다수결 tie에만 듣고, 나쁜 3멤버는 tie가 아니라서 걸리지 않는다.
+- 기각한 대안: futility 행을 regression으로 라벨링 — FE/preprocessing의 74%가 futility라 두 액션이 같이 dead로 수렴하고 ensemble/hyperparam_search/model_swap이 상대적으로 더 배정된다(ADR-076의 이유 그대로).
+  futility 전용 벌점(beta+0.3~0.5) — 순수 futility 시퀀스의 정상 상태 mean이 1/(2+20w)이라 w < 0.4면 dead 문턱 위에 남고, 0.5도 neutral이 섞이면 문턱 근처에서 흔들린다.
+- 한계: 제외 목록은 사람이 갱신해야 한다. s6e6에서 ensemble이 도움이 될 새 근거(예: 다양한 모델군 stacking의 로컬 실측 이득)가 나오면 제거한다. 다른 대회는 기본이 빈 튜플이라 동작이 같다.
+- 재고 트리거: ensemble 제외 후에도 slot 유휴/낭비가 크면 futility 라벨 체계(neutral 일괄)를 크기 기준(예: -10 sigma 밖만 regression)으로 다듬는 것을 검토한다.
 
 ---
 
