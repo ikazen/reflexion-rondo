@@ -306,8 +306,8 @@ def test_update_jump_is_full_win_not_positive_gain():
     assert params_ng[3] == pytest.approx(_HALF_SUCCESS) and params_ng[4] == pytest.approx(_NEUTRAL_INCREMENT)
 
 
-def test_update_noop_tie_penalizes_beta_weaker_than_failure():
-    """no-op tie는 실패(β+=1.0)보다 약하지만 neutral(β+=0.1)보다 뚜렷한 페널티."""
+def test_update_noop_tie_penalizes_beta_more_than_neutral():
+    """no-op tie는 neutral(β+=0.1)보다 뚜렷한 페널티."""
     conn = _update("neutral", 0.0, None, is_noop_tie=True)
     params = conn.execute.call_args[0][1]
     da, db = params[3], params[4]
@@ -390,3 +390,15 @@ def test_get_action_prior_seed_deterministic():
 def test_bandit_deltas_priority_table(label, gain, error, tie, expected):
     """에러/regression > no-op tie > jump > 양수 gain > 그 외 — update_bandit과 리플레이가 공유하는 표."""
     assert bandit_deltas(label, gain, error, tie) == pytest.approx(expected)
+
+
+def test_pure_noop_sequence_converges_to_dead():
+    """순수 noop 시퀀스는 dead 문턱 밑으로 수렴해야 한다(#528) — 벌점이 약하면 고정점 mean이 문턱 위에 머문다."""
+    alpha = beta = 1.0
+    for n in range(1, 13):
+        da, db = bandit_deltas("neutral", 0.0, None, is_noop_tie=True)
+        alpha = 1.0 + (alpha - 1.0) * _BANDIT_DECAY + da
+        beta = 1.0 + (beta - 1.0) * _BANDIT_DECAY + db
+        if n == 5:
+            assert not _is_dead_action(alpha, beta)
+    assert _is_dead_action(alpha, beta)
