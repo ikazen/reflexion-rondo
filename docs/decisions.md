@@ -1902,7 +1902,7 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 - 한계: 제외 목록은 사람이 갱신해야 한다. s6e6에서 ensemble이 도움이 될 새 근거(예: 다양한 모델군 stacking의 로컬 실측 이득)가 나오면 제거한다. 다른 대회는 기본이 빈 튜플이라 동작이 같다.
 - 재고 트리거: ensemble 제외 후에도 slot 유휴/낭비가 크면 futility 라벨 체계(neutral 일괄)를 크기 기준(예: -10 sigma 밖만 regression)으로 다듬는 것을 검토한다.
 - 개정(#543, 2026-10-24): s6e6 `EXCLUDED_ACTIONS`에 `model_swap`을 추가했다. 10-17 14:00Z 이후 587건 / 42 CPU-h(s6e6 CPU의 13%)에서 최대 gain -0.000249(양의 gain 0)였고 과거 jump도 없다.
-  base가 balanced sample_weight를 쓰는 XGBoost 래퍼라 레지스트리 모델로 교체하면 구조적으로 불리하다. 이 추가로 남는 액션은 FE/preprocessing/hyperparam_search뿐이다.
+  base가 balanced sample_weight를 쓰는 XGBoost 래퍼라 레지스트리 모델 교체가 불리할 것으로 추정하지만 원인은 검증하지 않았다. 이 추가로 남는 액션은 FE/preprocessing/hyperparam_search뿐이다.
   v1.6.45(#541)는 머지만 되고 v1.6.44 상태로 6일간 미배포였다 — 그 동안 ensemble이 10-23에도 29건 배정됐다(밴딧 갱신 16:23Z). v1.6.46이 둘을 함께 배포한다.
 
 ---

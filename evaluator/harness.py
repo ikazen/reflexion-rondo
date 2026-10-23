@@ -591,7 +591,7 @@ class PipelineContext:
     fold1_reuse_discrete: bool = False
     # runner가 워크스페이스 파일에 append하는 콜백 — 워치독이 kill 사유에 마지막 줄을 붙여 kill 위치를 남긴다(ADR-063).
     progress: Callable[[str], None] | None = None
-    # 튜닝 trial 전용(#546) — 이 수만큼 fold를 돌고 평균을 낸다. fold-1 점수와 최종 점수의 상관이 0.99라 탐색 비용을 1/n_splits로 줄인다.
+    # 튜닝 trial 전용(#546) — 이 수만큼 fold를 돌고 평균을 낸다. fold-1 대 최종 delta 상관이 0.986(s6e6, ADR-076)이라 탐색 비용을 1/n_splits로 줄인다.
     max_folds: int | None = None
 
 

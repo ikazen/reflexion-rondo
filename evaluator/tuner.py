@@ -1,6 +1,7 @@
 """Optuna 기반 하이퍼파라미터 튜닝 — 확정 pipeline(raw.pipelines)의 model_spec/ensemble_spec
 멤버 params를 900s attempt 예산 밖에서 오래(수십~수백 trial) 탐색한다(ADR-035, #230). 자유형
-build_model도 정적으로 "레지스트리 단일 모델 + params 전달"이 검증되면 추론해 튜닝한다(#252).
+build_model도 정적으로 "레지스트리 단일 모델 + params 전달"이 검증되면 추론해 튜닝하고(#252), 커스텀 래퍼면 build_model을
+그대로 태워 튜닝한다(#546).
 
 preprocess/feature_transform/postprocess_predictions은 확정 pipeline 그대로 두고 모델
 생성만 trial마다 바꾼다 — evaluate_pipeline(evaluator/harness.py)을 그대로 재사용해
@@ -351,7 +352,7 @@ def tune_wrapped_model(
     finalists: list[dict] = []
     for t in ranked:
         if t.user_attrs["full_params"] == seed_params:
-            break  # seed trial은 baseline의 fold-1이라 이보다 낮은 후보는 전체 CV를 돌려도 개선될 수 없다
+            break  # seed trial은 baseline의 fold-1이다 — 이보다 낮은 후보는 전체 CV 재확인 비용을 쓰지 않는다
         finalists.append(t.user_attrs["full_params"])
     best_params, best_cv = {}, baseline_cv
     for params in finalists[:_CONFIRM_TOP_K]:
@@ -483,8 +484,8 @@ def infer_registry_model(source: str) -> str | None:
 
 def infer_wrapped_registry_model(source: str) -> str | None:
     """build_model이 params를 커스텀 래퍼에 넘기고 모듈 전체에서 쓰는 레지스트리 모델 생성자가 정확히 1종이면 그 키를 반환한다(#546).
-    infer_registry_model과 달리 래퍼 클래스를 허용한다 — 래퍼가 params를 그 모델 생성자에 넘기는지는 정적으로 따지지 않고
-    tune_wrapped_model의 baseline 일치 검사가 잡는다."""
+    infer_registry_model과 달리 래퍼 클래스를 허용한다. 래퍼가 params를 실제로 쓰는지는 정적으로 검증하지 않는다 — 안 쓰면 모든 trial이
+    seed와 같은 점수라 재확인 대상 없이 improved=False로 끝난다."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
@@ -600,6 +601,7 @@ def tune_confirmed_pipeline(
 
     wrapped = infer_wrapped_registry_model(pipeline_source) if pipeline_source else None
     candidates = pipeline.param_candidates(ctx) if wrapped is not None else []
+    # 동결 base(ADR-054)만 대상이다 — 후보가 여러 개면 preselect가 고르는 params를 seed로 특정할 수 없다.
     if wrapped is not None and len(candidates) == 1:
         _LOG.info("tune_confirmed_pipeline: wrapped build_model → tuning %r through the pipeline's own build_model", wrapped)
         return [tune_wrapped_model(
