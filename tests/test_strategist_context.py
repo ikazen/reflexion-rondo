@@ -82,3 +82,13 @@ def test_base_summary_survives_unparseable_code():
     lines = base_summary_lines("def broken(:\n  return XGBClassifier()")
     assert "- model classes: XGBClassifier" in lines
     assert not any(line.startswith("- param_candidates") for line in lines)
+
+
+def test_base_summary_reports_weighting_once_when_the_base_fits_with_weights():
+    code = _BASE + "\n_w = 1\nmodel.fit(X, y, sample_weight=w)\nmodel.fit(X2, y2, sample_weight=w2)\n"
+    lines = base_summary_lines(code)
+    assert "- class/sample weighting already applied, do not propose it again: sample_weight" in lines
+
+
+def test_base_summary_omits_weighting_line_without_weights():
+    assert not any("weighting" in line for line in base_summary_lines(_BASE))

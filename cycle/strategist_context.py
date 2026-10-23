@@ -9,10 +9,11 @@ import re
 
 from store.db import PgConn
 
-_TRIED_LIMIT = 12
+_TRIED_LIMIT = 24
 _HYPOTHESIS_CHARS = 120
 _COLUMNS_LIMIT = 60
 _PARAMS_CHARS = 400
+_WEIGHTING = re.compile(r"\b(sample_weight|class_weight|auto_class_weights|scale_pos_weight)\b")
 _ALIAS = re.compile(r"""\.alias\(\s*['"]([^'"]+)['"]\s*\)""")
 _MODEL = re.compile(
     r"\b(?:XGB|LGBM|CatBoost|HistGradientBoosting|RandomForest|ExtraTrees)\w*?(?:Classifier|Regressor)\b|\bLogisticRegression\b"
@@ -79,10 +80,12 @@ def base_summary_lines(prev_code: str | None) -> list[str]:
     models = list(dict.fromkeys(_MODEL.findall(prev_code)))
     columns = list(dict.fromkeys(_ALIAS.findall(prev_code)))[:_COLUMNS_LIMIT]
     params = _param_candidates_literal(prev_code)
+    weighting = list(dict.fromkeys(_WEIGHTING.findall(prev_code)))
     parts = [
         ("model classes", ", ".join(models)),
         ("engineered columns already created", ", ".join(columns)),
         ("param_candidates", params),
+        ("class/sample weighting already applied, do not propose it again", ", ".join(weighting)),
     ]
     lines = [f"- {name}: {value}" for name, value in parts if value]
     return ["\n## Current base pipeline (already in place — build on it, do not re-add these)", *lines] if lines else []
