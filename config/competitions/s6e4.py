@@ -15,7 +15,9 @@ DROP_COLS         = ["id"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s6e4/data/"
 EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
-ACTIVE            = False  # False면 daemon 큐 리필(_sweep_queue_refill) 대상 제외 (#227, Milestone v1.6.0)
+ACTIVE            = True  # deep tier 두 번째 슬롯 (#544, ADR-079) — s6e6 포화로 추가. 7일 안에 확정 pipeline 0건이면 동결
+FUTILITY_STOP     = True  # 365건 리플레이: fold-1 대 최종 delta 상관 0.9996, 임계 0.75 적용 시 78% 중단에 양성 8건 손실 0 (#544, ADR-076)
+FOLD1_REUSE_DISCRETE = True  # fold-1 일치 203건 중 202건이 5 fold 전체 동일 (#544, ADR-061)
 
 EDA_CARD = """competition: playground-series-s6e4 (Irrigation Need Prediction — Low/Medium/High)
 task: multiclass classification (3 classes)  metric: balanced_accuracy  target: Irrigation_Need
