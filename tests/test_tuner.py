@@ -1,6 +1,7 @@
 """evaluator.tuner — Optuna 튜닝 레인(#230) 단위 테스트. n_trials를 작게 줘 빠르게 돈다."""
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -14,13 +15,16 @@ from evaluator.tuner import (
     TunerResult,
     _extract_base_params_literal,
     _optimize,
+    _ParamCandidateTrialPipeline,
     _SingleModelTrialPipeline,
     _skip_if_baseline_incomparable,
     _to_result,
     infer_registry_model,
+    infer_wrapped_registry_model,
     tune_confirmed_pipeline,
     tune_ensemble_member,
     tune_single_model,
+    tune_wrapped_model,
 )
 
 
@@ -726,3 +730,154 @@ def test_ensemble_run_budget_is_split_across_tunable_members_only(monkeypatch):
     results = tune_confirmed_pipeline(_BaseAndTwoMembersPipeline(), None, None, n_trials=5, timeout_sec=900)
     assert seen == [450.0, 800.0]  # 멤버 1: 900/2, 멤버 2: (900-100)/1 — base 멤버는 몫을 차지하지 않는다
     assert [r.member_index for r in results] == [1, 2]
+
+
+_XGB_WRAPPER = '''
+class _Wrap:
+    def __init__(self, params, ctx):
+        self._m = XGBClassifier(**params)
+
+class Patch:
+    def build_model(self, params, ctx):
+        return _Wrap(params, ctx)
+'''
+
+
+@pytest.mark.parametrize("src,expected", [
+    (_XGB_WRAPPER, "xgboost"),
+    (_S6E8_LIKE, "xgboost"),
+    (_CUSTOM_WRAPPER, None),
+    (_MULTI_MODEL, None),
+    (_PARAMS_IGNORED, None),
+    ("def not_a_patch(): pass", None),
+    ("class Patch:\n    def build_model(self, params, ctx):\n        return _Wrap(", None),
+])
+def test_infer_wrapped_registry_model(src, expected):
+    assert infer_wrapped_registry_model(src) == expected
+
+
+class _WrappedLgbm:
+    """build_model이 params를 래퍼에 넘기는 형태. param_candidates는 확정 base처럼 한 개다."""
+    action_type = "hyperparam_search"
+
+    def param_candidates(self, ctx):
+        return [{"n_estimators": 20, "learning_rate": 0.1, "max_depth": 3, "verbosity": -1}]
+
+    def build_model(self, params, ctx):
+        from lightgbm import LGBMClassifier
+
+        class _Wrap:
+            def __init__(self):
+                self._m = LGBMClassifier(**params)
+
+            def fit(self, X, y):
+                self._m.fit(X, y)
+                return self
+
+            def predict(self, X):
+                return self._m.predict(X)
+
+        return _Wrap()
+
+
+def test_param_candidate_trial_pipeline_overrides_only_param_candidates():
+    base = PatchedPipeline(BasePipeline(), _WrappedLgbm())
+    trial = _ParamCandidateTrialPipeline(base, {"n_estimators": 5})
+    ctx = _ctx()
+    assert trial.param_candidates(ctx) == [{"n_estimators": 5}]
+    assert trial.model_spec(ctx) is None and trial.ensemble_spec(ctx) is None
+    assert trial.build_model({"n_estimators": 5}, ctx)._m.get_params()["n_estimators"] == 5
+
+
+def test_max_folds_limits_evaluation_to_the_first_folds():
+    pipeline = PatchedPipeline(BasePipeline(), _WrappedLgbm())
+    ctx = _ctx()
+    full = evaluate_pipeline(pipeline, _make_df(), ctx)
+    first = evaluate_pipeline(pipeline, _make_df(), replace(ctx, max_folds=1))
+    assert len(full.fold_scores) == 3 and len(first.fold_scores) == 1
+    assert first.fold_scores[0] == full.fold_scores[0]
+    assert first.cv_score == first.fold_scores[0]
+
+
+def test_tune_wrapped_model_runs_the_pipelines_own_build_model():
+    pipeline = PatchedPipeline(BasePipeline(), _WrappedLgbm())
+    result = tune_wrapped_model(pipeline, _make_df(), _ctx(), "lgbm", pipeline.param_candidates(_ctx())[0], n_trials=4)
+    assert result.model_name == "lgbm" and result.member_index is None
+    assert result.n_trials >= 1
+    assert result.improved == bool(result.best_params)
+    if result.improved:
+        assert result.best_cv_score > result.baseline_cv_score
+        assert result.best_params["verbosity"] == -1
+
+
+_WRAPPED_SRC = (
+    "class _Wrap:\n    def __init__(self, params, ctx):\n        self._m = LGBMClassifier(**params)\n"
+    "class Patch:\n    def build_model(self, params, ctx):\n        return _Wrap(params, ctx)\n"
+)
+
+
+def test_tune_confirmed_pipeline_dispatches_wrapped_build_model():
+    pipeline = PatchedPipeline(BasePipeline(), _WrappedLgbm())
+    results = tune_confirmed_pipeline(pipeline, _make_df(), _ctx(), n_trials=2, pipeline_source=_WRAPPED_SRC)
+    assert [r.model_name for r in results] == ["lgbm"]
+
+
+def test_tune_confirmed_pipeline_wrapped_without_a_single_candidate_is_untunable():
+    class _TwoCandidates(_WrappedLgbm):
+        def param_candidates(self, ctx):
+            return [{"n_estimators": 5}, {"n_estimators": 9}]
+
+    pipeline = PatchedPipeline(BasePipeline(), _TwoCandidates())
+    assert tune_confirmed_pipeline(pipeline, _make_df(), _ctx(), n_trials=1, pipeline_source=_WRAPPED_SRC) == []
+
+
+def _fake_wrapped_run(monkeypatch, fold1: dict[int, float], full: dict[int, float], baseline: float = 0.5, secs: float = 100.0):
+    """trial 번호 -> fold-1 점수/전체 CV. trial 0이 seed다. 반환: (budget 기록, 전체 CV로 재확인한 params 목록)."""
+    clock = _Clock()
+    monkeypatch.setattr(tuner_module, "time", SimpleNamespace(monotonic=clock))
+    seed = {"max_depth": 6, "extra": 1}
+    trials = [
+        SimpleNamespace(
+            state=optuna.trial.TrialState.COMPLETE, value=v, user_attrs={"full_params": seed if i == 0 else {**seed, "max_depth": i}},
+        )
+        for i, v in sorted(fold1.items())
+    ]
+    seen: dict = {"confirmed": []}
+
+    def fake_evaluate(pipe, train, ctx):
+        clock.now += secs
+        if isinstance(pipe, _ParamCandidateTrialPipeline):
+            seen["confirmed"].append(pipe.param_candidates(ctx)[0]["max_depth"])
+            return SimpleNamespace(cv_score=full[pipe.param_candidates(ctx)[0]["max_depth"]])
+        return SimpleNamespace(cv_score=baseline)
+
+    def fake_optimize(objective, n_trials, timeout, direction, seed_params=None):
+        seen["budget"] = timeout
+        return SimpleNamespace(trials=trials)
+
+    monkeypatch.setattr(tuner_module, "evaluate_pipeline", fake_evaluate)
+    monkeypatch.setattr(tuner_module, "_optimize", fake_optimize)
+    result = tune_wrapped_model(object(), None, _ctx(), "xgboost", seed, n_trials=5, timeout_sec=1000)
+    return result, seen
+
+
+def test_wrapped_study_budget_reserves_the_confirmation_evaluations(monkeypatch):
+    _, seen = _fake_wrapped_run(monkeypatch, {0: 0.5, 1: 0.6}, {1: 0.55})
+    assert seen["budget"] == 1000 - 100 - 2 * 100
+
+
+def test_wrapped_only_trials_above_the_seed_fold1_are_confirmed(monkeypatch):
+    result, seen = _fake_wrapped_run(monkeypatch, {0: 0.5, 1: 0.7, 2: 0.6, 3: 0.4, 4: 0.55}, {1: 0.52, 2: 0.51, 4: 0.9})
+    assert seen["confirmed"] == [1, 2]
+    assert result.best_params["max_depth"] == 1 and result.best_cv_score == 0.52
+    assert result.improved and result.n_trials == 5
+
+
+def test_wrapped_not_improved_when_no_confirmed_candidate_beats_the_baseline(monkeypatch):
+    result, _ = _fake_wrapped_run(monkeypatch, {0: 0.5, 1: 0.7}, {1: 0.49})
+    assert not result.improved and result.best_params == {} and result.best_cv_score == result.baseline_cv_score
+
+
+def test_wrapped_skips_confirmation_when_the_seed_has_the_best_fold1(monkeypatch):
+    result, seen = _fake_wrapped_run(monkeypatch, {0: 0.9, 1: 0.7, 2: 0.6}, {})
+    assert seen["confirmed"] == [] and not result.improved
