@@ -1,5 +1,23 @@
 # 변경 이력
 
+## v1.6.46 — s6e6 포화 대응과 포트폴리오 확장 (Milestone "s6e6 포화 대응과 포트폴리오 확장 2026-10", 2026-10-24)
+
+v1.6.44/45 점검(배포 후 6.5일): 인프라 정상(Airflow 4/4, `/api/health` 5/5, worker 4종 가동). v1.6.45(#541)는 머지만 되고 미배포여서 ensemble이 계속 배정됐다. N=5 시험은 켠 채로 운영 중이며
+s6e6 attempt가 하루 235(N=3, 10-15) -> 617~626(10-19/20)으로 늘었으나 10-22에 464로 내려갔다(원인 미확인, worker는 모두 살아 있다). 반면 산출은 없다: 10-14 22:47 이후 4,201 attempt에서
+확정 pipeline 0, 양의 gain(>1e-4) 0, 최대 gain FE +0.00008 / preprocessing +0.00002 / model_swap -0.00025. 마지막 제출은 10-15(LB 0.96799, p90까지 0.00428). #532 Strategist 컨텍스트는
+동일 gain 중복 비율을 41.0%에서 46.7%로 올려 목표(20% 미만)를 못 맞췄다(같은 정의, 가설 문장은 1843/1999가 고유 — 같은 아이디어를 다르게 쓴다). 에러는 건수 13%지만 CPU 2.7%라 제외했다.
+
+- #543: s6e6 `EXCLUDED_ACTIONS`에 `model_swap` 추가(ADR-078 amend). 587건 / 42 CPU-h 중 양의 gain 0. #541(ensemble 제외)과 함께 배포된다.
+- #544: s6e4를 deep tier 두 번째 슬롯으로 활성화(ADR-079). `ACTIVE`, `FUTILITY_STOP`, `FOLD1_REUSE_DISCRETE`를 켠다. 기존 365 attempt 리플레이로 fold-1 대 최종 delta 상관 0.9996, futility 78% 중단에 양성 손실 0,
+  fold-1 일치 203건 중 202건이 전체 fold 동일을 확인했다. bootstrap baseline remeasure dry-run은 cv 비트 일치. 밴딧 5행(구 예산 kill 벌점)은 배포 때 삭제한다.
+- #545: Strategist base 요약에 class/sample weighting 적용 여부를 넣고 시도 이력 상한을 12에서 24로(ADR-077 amend). 48h 중복 비율이 30% 아래로 안 내려오면 되돌린다.
+- #546: 커스텀 build_model 래퍼 pipeline을 직접 튜닝한다(ADR-050 amend). `PipelineContext.max_folds`로 trial을 fold-1만 재고 상위 2개만 전체 CV로 재확인한다. s6e6 실데이터 로컬 실측에서
+  baseline과 seed trial이 비트 일치했고 fold-1 trial이 전체 평가의 1/6 비용이다. 채택 경로(개선분 강제 슬롯)는 개선이 나오는지 보고 후속으로 한다.
+- 제외: s5e8/s6e8 재활성(FE/preprocessing가 예산 구조상 불가, ADR-075), 에러 수정(CatBoost multiclass 손실 충돌, base에 없는 컬럼 gal_l 참조 — CPU 2.7%), attempt CPU 예산 상향(airflow-stack timeout/cpus 동반 변경),
+  xgb+lgbm 블렌드와 클래스 확률 배수(로컬 +0.0005, CPU 1.8배, ADR-048 3경로 정렬 설계 선행).
+
+---
+
 ## v1.6.45 — s6e6 ensemble 배정 제외 (Milestone "s6e6 탐색 낭비 제거 2026-10", 2026-10-17)
 
 v1.6.44 배포 후 점검에서 #528(noop 벌점 1.0)이 ensemble을 죽은 채로 두지 못함을 확인했다. 재탐색 창으로 돌아온 3멤버 GBDT ensemble이 base보다 나쁜데(-0.0002 ~ -0.009)
