@@ -13,7 +13,7 @@ import copy
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import optuna
@@ -29,6 +29,7 @@ _LOG = logging.getLogger(__name__)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 _DEFAULT_N_TRIALS = 100
+_CONFIRM_TOP_K = 2  # fold-1 상위 후보 중 전체 CV로 다시 재는 수 — 최고 fold-1 하나만 믿으면 승자의 저주가 남는다
 _SEED = 42
 # 같은 pipeline의 baseline도 실행마다 상대 1e-8 안팎으로 흔들린다(s5e4 rmse 13.046045137~13.046045327)
 _BASELINE_MATCH_REL_TOL = 1e-6
@@ -128,6 +129,43 @@ class _EnsembleMemberTrialPipeline:
 
     def param_candidates(self, ctx: PipelineContext) -> list[dict]:
         return self._base.param_candidates(ctx)
+
+    def _chain_defines(self, hook_name: str) -> bool:
+        return self._base._chain_defines(hook_name)
+
+
+class _ParamCandidateTrialPipeline:
+    """param_candidates만 trial params 한 개로 덮고 나머지는 confirmed pipeline에 위임한다.
+    build_model이 params를 커스텀 래퍼에 넘기는 pipeline을 래퍼 그대로 태운다(#546)."""
+
+    def __init__(self, base: object, params: dict) -> None:
+        self._base = base
+        self._params = params
+
+    def preprocess(
+        self, train: pl.DataFrame, valid: pl.DataFrame, target: str, ctx: PipelineContext
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
+        return self._base.preprocess(train, valid, target, ctx)
+
+    def feature_transform(
+        self, train: pl.DataFrame, valid: pl.DataFrame, target: str, ctx: PipelineContext
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
+        return self._base.feature_transform(train, valid, target, ctx)
+
+    def postprocess_predictions(self, preds: np.ndarray, ctx: PipelineContext) -> np.ndarray:
+        return self._base.postprocess_predictions(preds, ctx)
+
+    def ensemble_spec(self, ctx: PipelineContext) -> None:
+        return None
+
+    def model_spec(self, ctx: PipelineContext) -> None:
+        return None
+
+    def build_model(self, params: dict, ctx: PipelineContext) -> object:
+        return self._base.build_model(params, ctx)
+
+    def param_candidates(self, ctx: PipelineContext) -> list[dict]:
+        return [self._params]
 
     def _chain_defines(self, hook_name: str) -> bool:
         return self._base._chain_defines(hook_name)
@@ -276,6 +314,56 @@ def tune_ensemble_member(
     return _to_result(study, model_name, member_index, baseline_cv, ctx)
 
 
+def tune_wrapped_model(
+    pipeline: object,
+    train: object,
+    ctx: PipelineContext,
+    model_name: str,
+    seed_params: dict,
+    n_trials: int = _DEFAULT_N_TRIALS,
+    timeout_sec: float | None = None,
+    expected_baseline_cv: float | None = None,
+) -> TunerResult:
+    """build_model이 params를 커스텀 래퍼에 넘기는 pipeline을 래퍼 그대로 튜닝한다(#546). 레지스트리 모델로 바꿔 끼우면
+    래퍼의 sample_weight/라벨 인코딩을 재현하지 못해 baseline과 비교할 수 없다. trial은 fold-1 점수로 탐색하고,
+    상위 _CONFIRM_TOP_K개만 전체 CV로 재확인해 baseline과 비교한다. timeout_sec는 baseline과 재확인을 포함한 전체 예산이다."""
+    started_at = time.monotonic()
+    space_fn = get_search_space(model_name)
+    baseline_cv = evaluate_pipeline(pipeline, train, ctx).cv_score
+    skipped = _skip_if_baseline_incomparable(model_name, None, baseline_cv, expected_baseline_cv)
+    if skipped is not None:
+        return skipped
+    full_eval_secs = time.monotonic() - started_at
+    fold1_ctx = replace(ctx, max_folds=1)
+
+    def objective(trial: "optuna.Trial") -> float:
+        params = {**seed_params, **space_fn(trial, ctx.is_classification)}
+        trial.set_user_attr("full_params", params)
+        return evaluate_pipeline(_ParamCandidateTrialPipeline(pipeline, params), train, fold1_ctx).cv_score
+
+    budget = _remaining_budget(timeout_sec, started_at)
+    study_budget = None if budget is None else max(budget - _CONFIRM_TOP_K * full_eval_secs, 1.0)
+    study = _optimize(objective, n_trials, study_budget, _direction(ctx), seed_params=seed_params)
+
+    _, metric_sign, _ = get_metric(ctx.metric)
+    completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    ranked = sorted(completed, key=lambda t: metric_sign * t.value, reverse=True)
+    finalists: list[dict] = []
+    for t in ranked:
+        if t.user_attrs["full_params"] == seed_params:
+            break  # seed trial은 baseline의 fold-1이라 이보다 낮은 후보는 전체 CV를 돌려도 개선될 수 없다
+        finalists.append(t.user_attrs["full_params"])
+    best_params, best_cv = {}, baseline_cv
+    for params in finalists[:_CONFIRM_TOP_K]:
+        cv = evaluate_pipeline(_ParamCandidateTrialPipeline(pipeline, params), train, ctx).cv_score
+        if metric_sign * (cv - best_cv) > 0:
+            best_params, best_cv = params, cv
+    return TunerResult(
+        model_name=model_name, member_index=None, best_params=best_params, best_cv_score=best_cv,
+        baseline_cv_score=baseline_cv, n_trials=len(completed), improved=bool(best_params),
+    )
+
+
 def _to_result(
     study: "optuna.Study", model_name: str, member_index: int | None, baseline_cv: float, ctx: PipelineContext,
 ) -> TunerResult:
@@ -393,6 +481,28 @@ def infer_registry_model(source: str) -> str | None:
     return key
 
 
+def infer_wrapped_registry_model(source: str) -> str | None:
+    """build_model이 params를 커스텀 래퍼에 넘기고 모듈 전체에서 쓰는 레지스트리 모델 생성자가 정확히 1종이면 그 키를 반환한다(#546).
+    infer_registry_model과 달리 래퍼 클래스를 허용한다 — 래퍼가 params를 그 모델 생성자에 넘기는지는 정적으로 따지지 않고
+    tune_wrapped_model의 baseline 일치 검사가 잡는다."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    patch = find_patch_class(tree)
+    build_model = next(
+        (n for n in (patch.body if patch else []) if isinstance(n, ast.FunctionDef) and n.name == "build_model"), None
+    )
+    if build_model is None or len(build_model.args.args) < 2:
+        return None
+    params_name = build_model.args.args[1].arg
+    if not any(isinstance(n, ast.Name) and n.id == params_name and isinstance(n.ctx, ast.Load) for n in ast.walk(build_model)):
+        return None
+    keys = {registry_key_for_class(name) for n in ast.walk(tree) if isinstance(n, ast.Call) and (name := _call_class_name(n))}
+    keys.discard(None)
+    return next(iter(keys)) if len(keys) == 1 and next(iter(keys)) in _INFERABLE_KEYS else None
+
+
 def _extract_base_params_literal(source: str) -> dict:
     """자유형 build_model 본문의 딕셔너리 리터럴에서 상수 kwargs만 best-effort로
     추출한다(#331) — Optuna 튜닝 seed_params용. 키별로 개별 평가하므로 같은 딕셔너리
@@ -440,7 +550,8 @@ def tune_confirmed_pipeline(
 ) -> list[TunerResult]:
     """pipeline이 model_spec이면 단일 결과, ensemble_spec이면 멤버별 독립 튜닝 결과
     목록을 반환한다. 둘 다 없으면 pipeline_source에서 레지스트리 모델을 정적 추론하고
-    (infer_registry_model), 추론도 실패하면 튜닝 대상이 없으니 빈 목록을 돌려준다.
+    (infer_registry_model), 커스텀 래퍼면 build_model을 그대로 태워 튜닝하고(infer_wrapped_registry_model), 둘 다 실패하면
+    튜닝 대상이 없으니 빈 목록을 돌려준다.
 
     timeout_sec는 멤버 전체를 합친 런의 wall-clock 예산이다(멤버별 상한이 아니다) — 앙상블은 남은 예산을
     남은 멤버 수로 나눠 배분하고, 예산이 바닥나면 나머지 멤버는 튜닝하지 않는다(#350).
@@ -485,6 +596,15 @@ def tune_confirmed_pipeline(
         return [tune_single_model(
             pipeline, train, ctx, inferred, n_trials=n_trials, timeout_sec=timeout_sec,
             seed_params=seed_params, expected_baseline_cv=expected_baseline_cv,
+        )]
+
+    wrapped = infer_wrapped_registry_model(pipeline_source) if pipeline_source else None
+    candidates = pipeline.param_candidates(ctx) if wrapped is not None else []
+    if wrapped is not None and len(candidates) == 1:
+        _LOG.info("tune_confirmed_pipeline: wrapped build_model → tuning %r through the pipeline's own build_model", wrapped)
+        return [tune_wrapped_model(
+            pipeline, train, ctx, wrapped, candidates[0], n_trials=n_trials, timeout_sec=timeout_sec,
+            expected_baseline_cv=expected_baseline_cv,
         )]
 
     _LOG.warning(
