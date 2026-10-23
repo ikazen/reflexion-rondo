@@ -1145,6 +1145,19 @@ lifetime 전량 False. 원인은 탐색 범위가 아니라 baseline과 trial이
   그중 개선이 나온 런은 1건(s6e8)뿐이다(s5e8은 27런 중 21런이 건너뛰어지고 놓친 개선 0건). 이력은 이미 트리거된 런만 담고 있어 건너뛴 뒤의 반사실은 알 수 없다.
 - 재고 트리거: 배포 후 한 달 안에 백오프 중인 대회의 idle 탐침이 개선을 내면 N을 줄이는 쪽을, 백오프 때문에 놓친 개선 사례가 보이면 N을 늘리는 쪽을 본다.
 
+**개정 (#546, 2026-10-24)**: ADR-077이 예고한 "pipeline-native 튜닝"을 구현했다. s6e6 base는 `_XGBParamWrapper`(`XGBClassifier(**params)`를 감싸 balanced sample_weight와 라벨 인코딩을 적용)라
+`infer_registry_model`이 None을 돌려 튜닝 DAG가 `untunable` 행만 남겼고(10-23), 레지스트리 모델로 바꿔 끼우면 래퍼를 재현하지 못한다(#341과 같은 비교 불가능성).
+
+- `infer_wrapped_registry_model`: `Patch.build_model`이 params를 쓰고 모듈 전체의 레지스트리 생성자가 정확히 1종이며 `param_candidates`가 한 개(동결 base, ADR-054)이면 그 모델 키로 `tune_wrapped_model`을 탄다.
+  모델 교체 없이 `_ParamCandidateTrialPipeline`이 `param_candidates`만 `[{**seed, **suggest}]`로 덮고 base의 `build_model`을 그대로 쓴다.
+- 탐색 비용: trial은 `PipelineContext.max_folds=1`로 fold-1만 잰다(fold-1 대 최종 delta 상관 0.986/0.9996, ADR-076/079). 상위 `_CONFIRM_TOP_K`(2)개만 전체 CV로 재확인해 baseline과 비교하고,
+  seed trial(현재 params)보다 fold-1이 낮은 후보는 재확인하지 않는다. 연구 예산에서 재확인 몫(`2 x baseline 전체 평가 시간`)을 먼저 뺀다. 승자의 저주는 전체 CV 재확인이 거른다.
+- 로컬 실측(s6e6 실데이터): baseline cv 0.9666740917316256이 확정 cv와 비트 일치(`_skip_if_baseline_incomparable` 통과), seed trial fold-1 0.9662642085027743이 baseline fold-1과 비트 일치,
+  전체 평가 280s 대비 fold-1 trial 20~45s(8 스레드). 튜닝 DAG는 cpus=2.0이라 trial당 몇 분 안팎이고 3h 예산에서 수십 trial이 가능하다.
+- 한계: 결과는 여전히 `ctx.tuned_params` advisory뿐이라 코더가 쓰지 않으면 확정 pipeline이 안 바뀐다. 개선이 실제로 나오면 hyperparam_search 슬롯 강제 배정을 후속으로 만든다(만들기 전에 개선 여부부터 본다).
+  탐색공간은 레지스트리 xgboost 공간(8개 키)이라 base의 gamma/max_bin 같은 키는 seed 값으로 고정된다.
+- 재고 트리거: 배포 후 s6e6 튜닝 런이 `untunable`이 아닌 xgboost 행을 남기는지, `improved=True`가 나오는지 본다. 3회 연속 미개선이면 ADR-050 백오프(#479)가 승격 트리거를 닫으므로 탐색공간 확장을 검토한다.
+
 ---
 
 ## ADR-051 — deep tier 포트폴리오 교체: s5e2 동결, s5e4 재활성 (#332)
@@ -1869,6 +1882,10 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
 - 한계: 같은 cycle의 병렬 attempt는 서로의 가설을 못 본다. 상위 12개만 보이므로 반복이 적은 가설은 안 보인다. 컬럼 목록은 `.alias`로 만든 것만 잡는다. 프롬프트가 호출당 500~700 토큰 늘어난다.
 - 재고 트리거: 배포 후 48h 동일 gain 반복 비율이 39%에서 20% 아래로 안 내려오거나 Ollama Cloud 429가 늘면 상위 개수/글자 수를 줄인다. 반복은 줄었는데 jump가 안 나오면 다음 레버는
   pipeline-native 튜닝 경로다(튜너가 레지스트리 모델로 돌아 래퍼 base를 재현하지 못한다, `evaluator/tuner.py`의 `_SingleModelTrialPipeline`).
+- 개정(#545, 2026-10-24): 배포 후 6.5일 실측에서 목표를 못 이뤘다. 같은 정의(에러 없음, stage reflexion, 7자리 gain)로 동일 gain 비율이 41.0%(배포 전 n=680) -> 46.7%(n=1782)였고,
+  가설 문장은 거의 다 달라(1843/1999 고유) 같은 아이디어를 다른 문장으로 쓴다. 최다 중복은 base가 이미 적용한 inverse-frequency class sample weights 제안 56건(gain 정확히 0)이었다.
+  `base_summary_lines`에 sample_weight/class_weight/auto_class_weights/scale_pos_weight 적용 여부 한 줄을 추가하고 `_TRIED_LIMIT`을 12에서 24로 올렸다.
+  판정: 48h 뒤 중복 비율이 30% 아래로 안 내려오면 되돌린다. 텍스트 기반 억제는 한계가 있고 다음 후보는 계산 지문 기반 사전 거절이다(소스 해시는 안 통한다, 행동 지문 필요).
 
 ---
 
@@ -1884,6 +1901,29 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
   futility 전용 벌점(beta+0.3~0.5) — 순수 futility 시퀀스의 정상 상태 mean이 1/(2+20w)이라 w < 0.4면 dead 문턱 위에 남고, 0.5도 neutral이 섞이면 문턱 근처에서 흔들린다.
 - 한계: 제외 목록은 사람이 갱신해야 한다. s6e6에서 ensemble이 도움이 될 새 근거(예: 다양한 모델군 stacking의 로컬 실측 이득)가 나오면 제거한다. 다른 대회는 기본이 빈 튜플이라 동작이 같다.
 - 재고 트리거: ensemble 제외 후에도 slot 유휴/낭비가 크면 futility 라벨 체계(neutral 일괄)를 크기 기준(예: -10 sigma 밖만 regression)으로 다듬는 것을 검토한다.
+- 개정(#543, 2026-10-24): s6e6 `EXCLUDED_ACTIONS`에 `model_swap`을 추가했다. 10-17 14:00Z 이후 587건 / 42 CPU-h(s6e6 CPU의 13%)에서 최대 gain -0.000249(양의 gain 0)였고 과거 jump도 없다.
+  base가 balanced sample_weight를 쓰는 XGBoost 래퍼라 레지스트리 모델로 교체하면 구조적으로 불리하다. 이 추가로 남는 액션은 FE/preprocessing/hyperparam_search뿐이다.
+  v1.6.45(#541)는 머지만 되고 v1.6.44 상태로 6일간 미배포였다 — 그 동안 ensemble이 10-23에도 29건 배정됐다(밴딧 갱신 16:23Z). v1.6.46이 둘을 함께 배포한다.
+
+---
+
+## ADR-079 — s6e4를 deep tier 두 번째 슬롯으로 추가한다 (#544, ADR-072/075 후속)
+
+- 결정: `config/competitions/s6e4.py`를 `ACTIVE=True`, `FUTILITY_STOP=True`, `FOLD1_REUSE_DISCRETE=True`로 둔다. deep tier는 s6e6 + s6e4다. 컴퓨트는 daemon의 리스 기반 라운드로빈(#133)으로 나뉘고
+  `ACTIVE=False` 한 줄로 되돌린다. runbook 4-13 절차를 따르되 동결 대회가 없어 7번(큐 취소)은 건너뛴다. 밴딧 5행은 구 예산(900s) 시절 kill 벌점이라 삭제한다(6번).
+- 근거(2026-10-24): s6e6가 10-14 22:47Z 이후 4,201 attempt에서 확정 pipeline 0, 양의 gain(>1e-4) 0, 최대 gain +0.00008이다(ADR-075 (a)의 14일 기준 10-28 직전). fleet이 s6e6 단독이라
+  7일 366 CPU-h가 전부 거기 갔다. 대안 평가: s5e8은 FE/preprocessing가 fold당 약 650 CPU-s x 5 > 예산 3105로 구조적 불가(ADR-075), s6e8은 동결 사유(새 레버 없음, ADR-064 (c)) 그대로,
+  s5e12는 CV 0.727 / LB 0.697 불일치 조사가 선행이다. ADR-064 선정 규칙(SNR >= 10)을 충족하는 후보는 없어 규칙 밖의 선택이다.
+  s6e4(multiclass/balanced_accuracy, 63만 행)는 s6e6와 같은 코드 경로다. LB 0.96783, p90 0.98110(격차 0.0133, s6e6의 3배). 확정 pipeline은 bootstrap 1개(plain LightGBM, 후보 n_estimators 100~400,
+  `class_weight='balanced'`)이고 누적 attempt 648건은 구 harness(예산 900s)에서 쌓여 s6e6의 11%다.
+- 사전 점검(읽기 전용): bootstrap baseline `--remeasure --dry-run`이 cv 0.9697870080165076으로 비트 일치, `eval_fingerprint`가 현재 값과 일치, `train_fingerprint`는 NULL이라 첫 사이클이 심는다.
+  기존 365 attempt(fold_scores 있음, 08-02~08-23) 리플레이: fold-1 대 최종 delta 상관 0.9996, futility 임계 0.75에서 78% 중단에 양성 8건 손실 0(0.5~1.5 전 구간에서 손실 0~1),
+  fold-1이 이전 attempt와 같은 203건 중 202건이 5 fold 전체 동일. 그래서 ADR-076 (c)의 리플레이 요건을 이 대회 데이터로 충족하고 두 opt-in을 켠다.
+- 한계: SNR 5.3(High 클래스 3.3%라 fold 분산이 커서 fold std 0.0012)이라 +0.0002~0.0004 수준의 개선은 paired 유의성 게이트를 통과하기 어렵다. 구 harness의 365 attempt 최대 gain은 +0.00043(양성 8건)이다.
+  양성이 8건뿐이라 "손실 0"의 통계력이 낮다(감사 표본 10%가 안전장치). s6e4 base는 레지스트리 LGBMClassifier(`infer_registry_model` 대상)라 idle 튜닝이 바로 돈다.
+  s6e6 컴퓨트가 절반이 된다 — s6e6가 14일째 0건이라 비용이 작다고 판단했다.
+- 재고 트리거: (a) 배포 7일 안에 s6e4 확정 pipeline이 0건이면 동결한다(`ACTIVE=False`). (b) 감사 표본 오탐률이 5%를 넘으면 `FUTILITY_STOP`을 끈다(runbook 5-1 쿼리).
+  (c) s6e4 첫 LB 제출의 CV-LB 차(08-14 제출 기준 cv 0.9700 대 LB 0.96783)가 벌어지면 ADR-048 점검을 한다. (d) s6e4에서 확정이 나오면 s6e6 동결(ADR-075 (a))을 같이 판단한다.
 
 ---
 

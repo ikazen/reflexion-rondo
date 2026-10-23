@@ -492,13 +492,17 @@ futility로 일찍 끝난 attempt의 슬롯은 cycle 끝까지 논다. 처리량
 
 attempt 수 스위치(airflow-stack Variables, UI Admin -> Variables 또는 `airflow variables set`):
 
-0. **#530(v1.6.44)으로 부족분 채움이 독립 Thompson 표본이 됐다.** 2026-10-16 시험(라운드로빈 채움)은 +13%에 그쳐 3으로 롤백했다. 배포 후 코드가 안정된 것을 본 뒤 아래 절차로 재시험한다.
+0. **#530(v1.6.44)으로 부족분 채움이 독립 Thompson 표본이 됐다.** 2026-10-16 시험(라운드로빈 채움)은 +13%에 그쳐 3으로 롤백했다. 재시험(10-17 이후)은 켠 채로 운영 중이다: Variable 5/3/1500,
+   s6e6 attempt가 하루 235(10-15, N=3) -> 617~626(10-19/20)으로 약 2.6배. 이후 582 -> 464(10-22)로 내려갔고 worker 4종(worker-vm, worker-vm-big, mac-server, mac-server-big)은 모두 살아 있어
+   인프라 원인은 못 찾았다(futility 비율 60~63% 동일, CPU-h/일 56 -> 45). 처리량 하락은 계속 관측한다.
 1. 켜기: `rondo_attempts_per_cycle=5`, `rondo_gate_min_done=3`, `rondo_gate_grace_sec=1500`. DAG 파싱 시 조회라 파서 주기(30초) 안에 반영되고, 이미 도는 dagRun은 생성 시점의 DAG 버전을 쓴다.
    5개를 슬롯 3개에 넣으면 2파로 돈다. min_done이 2이면 후속 attempt가 시작도 전에 gate가 발화해 결과를 버리고 다음 cycle 슬롯까지 점유한다.
 2. 관측: cycle 소요(기준 약 16.5분), 일별 attempt 수(기준 약 227), gate 발화 사유, queued 대기, tune DAG 경합(tune이 슬롯 1개를 3~4시간 점유), mac-server 메모리(Colima VM 크기 확인 필요).
 3. 롤백: `rondo_attempts_per_cycle=3`, `rondo_gate_min_done=2`, `rondo_gate_grace_sec=900`. 처리량 이득이 +15% 미만이면 되돌린다. 재시험(#530 이후)의 성공 기준은 attempt/h가 N=3 대비 +25% 이상이고 ensemble/model_swap 에러가 늘지 않는 것이다.
 
 중복 계산 관측(읽기 전용, #531): 최근 7일 완주 attempt 중 fold_scores 전체가 이전 attempt와 같은 행의 건수와 CPU-h. `SELECT count(*), round((sum(peak_cpu_sec) / 3600.0)::numeric, 1) FROM (SELECT peak_cpu_sec, row_number() OVER (PARTITION BY fold_scores::text ORDER BY run_ts) AS n FROM raw.attempts WHERE competition_id = '<competition-id>' AND fold_scores IS NOT NULL AND run_ts >= now() - interval '7 days') t WHERE n > 1`
+동일 gain 중복(Strategist 컨텍스트 효과, #532/#545): `WITH b AS (SELECT round(gain_vs_best::numeric, 7) g, run_ts FROM raw.attempts WHERE competition_id = '<competition-id>' AND stage = 'reflexion' AND error_trace IS NULL AND gain_vs_best IS NOT NULL AND run_ts >= '<기준 시각>'), r AS (SELECT row_number() OVER (PARTITION BY g ORDER BY run_ts) n FROM b) SELECT count(*), count(*) FILTER (WHERE n > 1) FROM r`
+(10-14 22:47 이후 배포 전 41.0%, v1.6.44 이후 46.7%). gain 정확히 0은 noop/base와 동일한 계산이다.
 `FOLD1_REUSE_DISCRETE` 이후에는 중복 행의 duration이 완주(약 900s)가 아니라 fold-1까지(약 250s)로 줄어야 한다. 다른 대회에 켜기 전에는 fold-1이 같은 쌍의 전체 fold 일치 비율을 그 대회 데이터로 먼저 잰다(s6e6: 327/330).
 
 ## 6. 생성 코드 격리 실행
