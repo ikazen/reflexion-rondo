@@ -1,5 +1,19 @@
 # 변경 이력
 
+## v1.6.47 — s6e4 레버 복구와 s6e6 동결 (Milestone "s6e4 레버 복구와 s6e6 동결 2026-10", 2026-10-26)
+
+v1.6.46 점검(배포 후 2.75일): 인프라 정상(compose/Airflow Variable 둘 다 v1.6.46, `/api/health` 5/5). #543은 배포 후 s6e6에 model_swap/ensemble 배정 0건. #545로 동일 gain 중복 비율이 s6e6 44.7%에서
+24.1%로 내려가 목표(30% 미만)를 달성했다(s6e4 17.2%). #546 s6e6 xgboost 튜닝 33 trial은 improved=False로 로컬 실측과 일치. 처리량은 시간당 약 5 cycle(attempt 약 25/h)로 안정이라 10-22의 464/일 하락은
+재현되지 않았다. #544 s6e4는 678 attempt, 양의 gain 123건, 확정 pipeline 2개(10-24), LB 0.97028. s6e6은 685 attempt에서 양의 gain 0(최대 +0.000047), 마지막 확정 10-14.
+
+- #554: 튜너 trial이 seed의 탐색공간 밖 params(class_weight 등)를 버리던 버그를 고쳤다(ADR-050 개정). s6e4 튜닝 두 행의 best cv가 가중 없는 lgbm과 같아 구조적으로 improved=True가 될 수 없었다.
+- #555: s6e4 `EXCLUDED_ACTIONS=("ensemble",)`(92건 양의 gain 0)와 EDA 카드의 클래스 확률 배수 `build_model` 래퍼(ADR-080). 실제 harness로 5-fold cv +0.00138(전 fold 양수), holdout +0.0008.
+  하네스는 바꾸지 않았다.
+- #556: s6e6 `ACTIVE=False`(ADR-080). s6e4가 단독 deep tier다.
+- 제외: s6e4 원본 데이터 병합(데이터셋 미특정), 두 번째 슬롯 선정(단독 48h 관측 후), s4e11/s5e4/s5e8 재활성, s6e4 futility 중단율(실측 약 15% 대 replay 예측 78%)의 원인 조사.
+
+---
+
 ## v1.6.46 — s6e6 포화 대응과 포트폴리오 확장 (Milestone "s6e6 포화 대응과 포트폴리오 확장 2026-10", 2026-10-24)
 
 v1.6.44/45 점검(배포 후 6.5일): 인프라 정상(Airflow 4/4, `/api/health` 5/5, worker 4종 가동). v1.6.45(#541)는 머지만 되고 미배포여서 ensemble이 계속 배정됐다. N=5 시험은 켠 채로 운영 중이며
