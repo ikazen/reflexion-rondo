@@ -1158,6 +1158,14 @@ lifetime 전량 False. 원인은 탐색 범위가 아니라 baseline과 trial이
   탐색공간은 레지스트리 xgboost 공간(8개 키)이라 base의 gamma/max_bin 같은 키는 seed 값으로 고정된다.
 - 재고 트리거: 배포 후 s6e6 튜닝 런이 `untunable`이 아닌 xgboost 행을 남기는지, `improved=True`가 나오는지 본다. 3회 연속 미개선이면 ADR-050 백오프(#479)가 승격 트리거를 닫으므로 탐색공간 확장을 검토한다.
 
+**개정 (#554, 2026-10-26)**: `tune_single_model`/`tune_ensemble_member`의 trial이 `space_fn` 결과만 평가해 seed의 탐색공간 밖 키(class_weight, objective, boosting_type 등)를 버렸다.
+s6e4 base는 `class_weight='balanced'`라 trial이 가중 없는 모델이 됐고, 튜닝 두 행의 best cv 0.96433/0.96404가 가중 없는 lgbm(로컬 0.96332)과 같고 baseline(0.96979/0.97107)보다 낮았다.
+저장 params에도 class_weight가 없다. 그래서 s6e4 튜닝은 구조적으로 `improved=True`가 될 수 없었다(`tune_wrapped_model`은 처음부터 `{**seed_params, **space}`로 합쳤다).
+trial params를 `{**seed_params, **space}`로 만든다. 탐색공간 키는 seed 값을 덮고 `full_params`가 완전한 dict가 되어 저장 params를 그대로 쓸 수 있다.
+- 한계: LightGBM 공간의 `scale_pos_weight`는 multiclass에서 효과 없는 차원이다(고치지 않았다). 과거 improved=True 행(s5e4 11건, s6e8 5건, s5e8 1건)의 저장 params는 전부 탐색공간 키뿐이다.
+  당시 seed에 공간 밖 키가 있었는지, 그래서 그 행들의 비교가 왜곡됐는지는 확인하지 않았다(영향 범위 미확인).
+- 재고 트리거: 배포 후 첫 s6e4 튜닝 행(daemon 유휴 스윕, 마지막 10-24 21:41 + 48h)의 params에 class_weight가 있고 best cv가 baseline 부근(0.971)인지 본다.
+
 ---
 
 ## ADR-051 — deep tier 포트폴리오 교체: s5e2 동결, s5e4 재활성 (#332)
@@ -1924,6 +1932,24 @@ ADR-055가 s5e4 제출을 전량 학습으로 되돌린다.
   s6e6 컴퓨트가 절반이 된다 — s6e6가 14일째 0건이라 비용이 작다고 판단했다.
 - 재고 트리거: (a) 배포 7일 안에 s6e4 확정 pipeline이 0건이면 동결한다(`ACTIVE=False`). (b) 감사 표본 오탐률이 5%를 넘으면 `FUTILITY_STOP`을 끈다(runbook 5-1 쿼리).
   (c) s6e4 첫 LB 제출의 CV-LB 차(08-14 제출 기준 cv 0.9700 대 LB 0.96783)가 벌어지면 ADR-048 점검을 한다. (d) s6e4에서 확정이 나오면 s6e6 동결(ADR-075 (a))을 같이 판단한다.
+
+## ADR-080 — s6e6 동결, s6e4 단독 운영, 클래스 확률 배수 레버 (#555, #556, ADR-072/075/079 후속)
+
+- 결정: (a) s6e6 `ACTIVE=False`(#556). s6e4가 단독 deep tier다. (b) s6e4 `EXCLUDED_ACTIONS=("ensemble",)`(#555). (c) s6e4 `EDA_CARD`에 클래스 확률 배수 `build_model` 래퍼를 실측값과 함께 싣는다.
+  하네스(평가 의미)는 바꾸지 않는다. (d) 튜너가 seed의 탐색공간 밖 params를 보존한다(ADR-050 개정 #554).
+- 근거(2026-10-26, v1.6.46 배포 2.75일 후): s6e6 685 attempt에서 양의 gain(>1e-4) 0, 최대 +0.000047, 77 CPU-h. 마지막 확정 10-14 22:47로 ADR-075 (a)의 14일이 이틀 남았다.
+  s6e4는 678 attempt, 양의 gain 123건, 확정 pipeline 2개(10-24)로 ADR-079 (d)의 조건을 채웠다. 확정 후 42h는 0건이라 단독이 되어도 s6e4의 포화 위험은 남는다.
+- 배수 래퍼: 로컬 단일 fold에서 lgbm base 0.97077, 검증 반쪽에서 학습한 배수를 다른 반쪽에 적용(cross-fit)하면 0.97267(+0.0019). 큰 lgbm/xgboost/블렌드도 배수를 적용하면 0.9720~0.9730으로 수렴해
+  모델 크기는 레버가 아니다. 실제 harness(`evaluate_pipeline`, 카드의 코드 블록을 그대로 추출)로 현재 best 대비 5-fold cv 0.97144 -> 0.97282(+0.00138, 5 fold 전부 양수 +0.0003~+0.0021, paired SE 0.00032),
+  audit holdout 0.97235 -> 0.97312(+0.0008). 소요 시간은 같다(43s 대 45s). v1.6.46 changelog가 "클래스 확률 배수(로컬 +0.0005, CPU 1.8배, ADR-048 3경로 정렬 설계 선행)"로 제외한 것은
+  s6e6 xgboost 블렌드 측정이었고, 이번에는 모델 내부(`fit`이 train의 10%로 배수를 학습, `predict`가 `argmax(proba * mult)`)라 CV/holdout/제출이 같은 `fit`/`predict`를 거쳐 3경로가 구조적으로 정렬된다.
+  s6e6(최소 클래스 14.3%)에는 적용하지 않는다(이전 실측 +0.00009).
+- model_swap을 제외하지 않은 이유: 17건 / 0.6 CPU-h로 낭비가 작고, 코더가 `build_model` 래퍼를 쓰는 통로다. 훅은 강제가 아니라 어떤 action_type이든 `build_model`을 구현할 수 있다.
+- 한계: 래퍼는 train의 10%를 배수 학습에 쓰므로 모델이 90%로 학습된다. 계획 통과선(+0.0015)에 못 미친 +0.00138이 그 손실이다. holdout은 63k 행 단일 측정이라 CV보다 증거 강도가 낮다.
+  카드는 advisory라 코더가 채택해야 효과가 난다. LB 상위(p90 0.9811)와 우리(0.9703)의 격차 0.0108은 이 레버로 못 메운다. 원본 데이터 병합(ADR-070)이 후속 후보인데 원본 데이터셋을 특정하지 못했다.
+- 재고 트리거: (a) 배포 후 72h 안에 래퍼를 채택한 attempt가 없거나 gain이 없으면 카드 대신 강제 슬롯을 검토한다. (b) ADR-079 (a)의 7일(10-31)에 s6e4 확정 pipeline이 추가로 0건이면 s6e4도 동결을 검토한다
+  (그러면 deep tier가 비므로 다음 대회는 `competition_snr`와 LB-p90 격차로 측정해서 고른다). (c) 단독 운영 48h 뒤 두 번째 슬롯을 정한다.
+  (d) s6e6 재활성은 새 레버를 로컬에서 측정한 뒤에만 한다(runbook 4-13).
 
 ---
 
