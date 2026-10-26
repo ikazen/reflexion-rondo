@@ -292,6 +292,35 @@ def test_tune_single_model_best_params_includes_fixed_search_space_keys():
     assert "C" in result.best_params and "l1_ratio" in result.best_params
 
 
+def test_tune_single_model_trials_keep_seed_keys_outside_the_search_space():
+    """#554: s6e4 base의 class_weight='balanced'처럼 탐색공간에 없는 seed 키가 trial에서 빠지면 baseline과 다른 모델을 비교한다."""
+    class _RfClassWeightPatch:
+        action_type = "model_swap"
+
+        def model_spec(self, ctx):
+            return {"model": "random_forest", "params": {"n_estimators": 10, "class_weight": "balanced"}}
+
+    pipeline = PatchedPipeline(BasePipeline(), _RfClassWeightPatch())
+    result = tune_confirmed_pipeline(pipeline, _make_df(), _ctx(), n_trials=3)[0]
+    assert result.best_params["class_weight"] == "balanced"
+    assert "max_depth" in result.best_params
+
+
+def test_tune_ensemble_member_trials_keep_seed_keys_outside_the_search_space():
+    class _EnsembleClassWeightPatch:
+        action_type = "ensemble"
+
+        def ensemble_spec(self, ctx):
+            return {"members": [
+                {"model": "ridge", "params": {"alpha": 1.0}},
+                {"model": "random_forest", "params": {"n_estimators": 10, "class_weight": "balanced"}},
+            ]}
+
+    pipeline = PatchedPipeline(BasePipeline(), _EnsembleClassWeightPatch())
+    result = tune_ensemble_member(pipeline, _make_df(), _ctx(), member_index=1, n_trials=3)
+    assert result.best_params["class_weight"] == "balanced"
+
+
 def test_to_result_falls_back_to_baseline_when_no_trials_completed():
     """study.optimize(catch=(Exception,))는 개별 trial 실패를 흡수해 FAIL 상태로
     남긴다 — 전부 실패해도 크래시 대신 baseline으로 안전하게 폴백해야 한다."""
