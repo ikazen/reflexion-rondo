@@ -15,8 +15,8 @@ DROP_COLS         = ["id"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s6e6/data/"
 EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
-ACTIVE            = True  # deep tier 두 번째 슬롯 (#499, ADR-072) — s5e8 포화로 추가. 재활성 전에 baseline을
-# `bin.establish_baseline --remeasure`로 현재 평가 의미에 맞춰 다시 잰다(runbook §4-13).
+ACTIVE            = False  # deep tier 동결 (#556, ADR-080) — 마지막 확정(10-14) 이후 12일, v1.6.46 배포 후 685 attempt에 양의 gain 0
+# (최대 +0.000047). 재활성 전에 ADR-080 재고 기준을 확인하고 baseline은 `bin.establish_baseline --remeasure`로 다시 잰다(runbook §4-13).
 FUTILITY_STOP     = True  # fold-1 paired delta가 baseline 대비 나쁘면 나머지 fold를 건너뛴다 (#519, ADR-076)
 # ensemble은 base 이하(-0.0002~-0.009), model_swap은 587건 모두 음수(최대 -0.00025). futility 행이 neutral이라 밴딧이 못 죽인다 (#541, #543)
 EXCLUDED_ACTIONS  = ("ensemble", "model_swap")
