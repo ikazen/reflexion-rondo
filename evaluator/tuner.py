@@ -257,7 +257,8 @@ def tune_single_model(
         return skipped
 
     def objective(trial: "optuna.Trial") -> float:
-        params = space_fn(trial, ctx.is_classification)
+        # seed의 탐색공간 밖 키(class_weight 등)를 버리면 baseline과 다른 모델을 비교한다(#554).
+        params = {**(seed_params or {}), **space_fn(trial, ctx.is_classification)}
         # search space 함수가 suggest 없이 고정값으로 넣은 키(예: elastic_net의
         # penalty/solver/max_iter)는 study.best_params에 안 남는다(#392) — trial이 실제로
         # 평가에 쓴 전체 dict를 따로 보관해 _to_result가 거기서 꺼내게 한다.
@@ -304,7 +305,7 @@ def tune_ensemble_member(
         return skipped
 
     def objective(trial: "optuna.Trial") -> float:
-        params = space_fn(trial, ctx.is_classification)
+        params = {**(seed_params or {}), **space_fn(trial, ctx.is_classification)}  # #554, 위 tune_single_model.objective와 동일 이유
         trial.set_user_attr("full_params", params)  # #392, 위 tune_single_model.objective와 동일 이유
         trial_pipeline = _EnsembleMemberTrialPipeline(pipeline, base_spec, member_index, params)
         return evaluate_pipeline(trial_pipeline, train, ctx).cv_score
