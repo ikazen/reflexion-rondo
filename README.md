@@ -3,6 +3,8 @@
 가중치 학습(fine-tuning) 없이 `경험 → 성찰(Reflection) → 지식화(RAG) → 재적용` 루프로,
 시간이 지날수록 Kaggle 정형 대회 성능이 스스로 향상되는 자가 개선형 시스템.
 
+**상태: 정지(2026-10-27, ADR-081).** 모든 대회가 `ACTIVE=False`이고 큐는 비어 있다. 코드·DB·데이터는 그대로이며 재개 절차는 `docs/runbook.md` 4-13.
+
 ## 시스템 목표
 
 1. **Intra-competition gain**: 한 대회 안에서 attempt가 누적될수록 CV가 개선된다.
