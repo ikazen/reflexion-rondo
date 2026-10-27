@@ -15,7 +15,7 @@ DROP_COLS         = ["id"]
 DATA_DIR          = Path(__file__).parent.parent.parent / "data" / COMPETITION_ID
 S3_DATA_PATH      = "s6e4/data/"
 EXTRA_TRAIN_PATHS: list[str] = []  # 원본 Kaggle 데이터셋 병합용, 미설정 시 동작 불변
-ACTIVE            = True  # deep tier 두 번째 슬롯 (#544, ADR-079) — s6e6 포화로 추가. 7일 안에 확정 pipeline 0건이면 동결
+ACTIVE            = False  # 프로젝트 정지 (#562, ADR-081) — 마지막 deep tier 대회. 재개는 runbook 4-13.
 FUTILITY_STOP     = True  # 365건 리플레이: fold-1 대 최종 delta 상관 0.9996, 임계 0.75 적용 시 78% 중단에 양성 8건 손실 0 (#544, ADR-076)
 FOLD1_REUSE_DISCRETE = True  # fold-1 일치 203건 중 202건이 5 fold 전체 동일 (#544, ADR-061)
 # ensemble 92건 중 양의 gain 0, 에러 28 (#555, ADR-080). model_swap은 17건뿐이고 build_model 래퍼(아래 EDA 카드)의 통로라 남긴다.

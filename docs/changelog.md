@@ -1,5 +1,11 @@
 # 변경 이력
 
+## v1.6.48 — 자율 탐색 정지 (#562, ADR-081, 2026-10-27)
+
+s6e4를 `ACTIVE=False`로 동결해 deep tier를 비웠다. 큐를 취소하고 daemon은 유휴로 둔다. 코드·DB·데이터는 그대로다. 근거와 재개 방법은 ADR-081.
+
+---
+
 ## v1.6.47 — s6e4 레버 복구와 s6e6 동결 (Milestone "s6e4 레버 복구와 s6e6 동결 2026-10", 2026-10-26)
 
 v1.6.46 점검(배포 후 2.75일): 인프라 정상(compose/Airflow Variable 둘 다 v1.6.46, `/api/health` 5/5). #543은 배포 후 s6e6에 model_swap/ensemble 배정 0건. #545로 동일 gain 중복 비율이 s6e6 44.7%에서
